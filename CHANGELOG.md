@@ -837,6 +837,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `npm run perf:typing:browser` fails on more than 4 transcript entries
   presented per streamed token (about 2 now, one per derivation).
 
+- Console: two per-render scans of the whole history no longer run on every
+  streamed token. Day separators formatted their full date with locale date
+  formatting each time the streaming turn rendered; a day key's label is now
+  formatted once. The active run (for Stop) was found by replaying every
+  frame of the identity log; it is now read back from the end, stopping at
+  the latest `run_started` that names its run, which gives the same answer
+  (a seeded test compares it with the replay) at the cost of the current
+  run instead of the whole log. `npm run perf:typing:browser` reports
+  active-run frames read per token and fails on more than 0.05 day-label
+  formats per streamed token.
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in

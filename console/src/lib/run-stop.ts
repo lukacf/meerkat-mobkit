@@ -1,4 +1,5 @@
 import type { ConsoleFrame } from "../types";
+import { countRender } from "./render-counts";
 
 /** One input that contributed to a stopped member run. */
 export interface RunStopContributor {
@@ -58,19 +59,28 @@ function isRunTerminal(frame: ConsoleFrame): boolean {
  * stop a run it cannot name.
  */
 export function activeRunIdFromFrames(frames: readonly ConsoleFrame[]): string | null {
-  let active: string | null = null;
-  for (const frame of frames) {
+  // Every `run_started` that names its run replaces the active one, so only
+  // the last of them and the frames after it decide: read back from the end
+  // (the current run) instead of the whole timeline on every streamed token.
+  let closesAny = false;
+  const closed = new Set<string>();
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const frame = frames[i];
     if (frame.event === "run_started") {
       const runId = frameRunId(frame);
-      if (runId) active = runId;
-      continue;
+      if (!runId) continue;
+      countRender("ActiveRunFramesRead", frames.length - i);
+      return closesAny || closed.has(runId) ? null : runId;
     }
-    if (active && isRunTerminal(frame)) {
+    if (isRunTerminal(frame)) {
+      // A terminal without a run id closes whichever run is active.
       const runId = frameRunId(frame);
-      if (!runId || runId === active) active = null;
+      if (runId) closed.add(runId);
+      else closesAny = true;
     }
   }
-  return active;
+  countRender("ActiveRunFramesRead", frames.length);
+  return null;
 }
 
 /** Validate the `mobkit/stop_member_run` result; fail closed on anything else. */

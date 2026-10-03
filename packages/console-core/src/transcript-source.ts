@@ -394,6 +394,25 @@ export function transcriptDayLabel(dayKey: string, now: Date = new Date()): stri
   const yesterday = transcriptDayKey(yesterdayDate.toISOString());
   if (dayKey === today) return "Today";
   if (dayKey === yesterday) return "Yesterday";
+  let label = dayLabels.get(dayKey);
+  if (label === undefined) {
+    label = formatDayKey(dayKey);
+    // Day keys are few; bound the cache all the same.
+    if (dayLabels.size >= 512) dayLabels.clear();
+    dayLabels.set(dayKey, label);
+  }
+  return label;
+}
+
+/// Full-date labels by day key. Locale date formatting cost tens of
+/// microseconds per call, and a streaming turn renders its separators again on
+/// every token; a key's full date never changes.
+const dayLabels = new Map<string, string>();
+
+function formatDayKey(dayKey: string): string {
+  // Test-only accounting on the render-count sink (see console render-counts).
+  const sink = (globalThis as { __consoleRenderCounts?: Record<string, number> }).__consoleRenderCounts;
+  if (sink) sink.DayLabelFormats = (sink.DayLabelFormats ?? 0) + 1;
   const [y, m, d] = dayKey.split("-").map((part) => Number.parseInt(part, 10));
   if (!y || !m || !d) return dayKey;
   const date = new Date(y, m - 1, d, 12);

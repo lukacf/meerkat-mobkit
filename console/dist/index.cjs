@@ -2075,6 +2075,18 @@ function transcriptDayLabel(dayKey, now = /* @__PURE__ */ new Date()) {
   const yesterday = transcriptDayKey(yesterdayDate.toISOString());
   if (dayKey === today) return "Today";
   if (dayKey === yesterday) return "Yesterday";
+  let label = dayLabels.get(dayKey);
+  if (label === void 0) {
+    label = formatDayKey(dayKey);
+    if (dayLabels.size >= 512) dayLabels.clear();
+    dayLabels.set(dayKey, label);
+  }
+  return label;
+}
+var dayLabels = /* @__PURE__ */ new Map();
+function formatDayKey(dayKey) {
+  const sink = globalThis.__consoleRenderCounts;
+  if (sink) sink.DayLabelFormats = (sink.DayLabelFormats ?? 0) + 1;
   const [y, m, d] = dayKey.split("-").map((part) => Number.parseInt(part, 10));
   if (!y || !m || !d) return dayKey;
   const date = new Date(y, m - 1, d, 12);
@@ -31370,6 +31382,12 @@ function findPaneResizeRoot(handle2) {
   return shellRoot instanceof HTMLElement ? shellRoot : null;
 }
 
+// src/lib/render-counts.ts
+function countRender(name2, amount = 1) {
+  const sink = globalThis.__consoleRenderCounts;
+  if (sink) sink[name2] = (sink[name2] ?? 0) + amount;
+}
+
 // src/lib/run-stop.ts
 function frameRunId(frame) {
   const direct = frame.runId?.trim();
@@ -31399,19 +31417,24 @@ function isRunTerminal(frame) {
   }
 }
 function activeRunIdFromFrames(frames) {
-  let active = null;
-  for (const frame of frames) {
+  let closesAny = false;
+  const closed = /* @__PURE__ */ new Set();
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const frame = frames[i];
     if (frame.event === "run_started") {
       const runId = frameRunId(frame);
-      if (runId) active = runId;
-      continue;
+      if (!runId) continue;
+      countRender("ActiveRunFramesRead", frames.length - i);
+      return closesAny || closed.has(runId) ? null : runId;
     }
-    if (active && isRunTerminal(frame)) {
+    if (isRunTerminal(frame)) {
       const runId = frameRunId(frame);
-      if (!runId || runId === active) active = null;
+      if (runId) closed.add(runId);
+      else closesAny = true;
     }
   }
-  return active;
+  countRender("ActiveRunFramesRead", frames.length);
+  return null;
 }
 function parseRunStopResult(result) {
   const receipt = result && typeof result === "object" ? result.receipt : void 0;
@@ -36164,14 +36187,6 @@ function useConsoleVariant() {
 
 // src/panels/Sidebar.tsx
 var import_react37 = __toESM(require("react"));
-
-// src/lib/render-counts.ts
-function countRender(name2) {
-  const sink = globalThis.__consoleRenderCounts;
-  if (sink) sink[name2] = (sink[name2] ?? 0) + 1;
-}
-
-// src/panels/Sidebar.tsx
 var import_jsx_runtime50 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 var NAV_LABEL = {
