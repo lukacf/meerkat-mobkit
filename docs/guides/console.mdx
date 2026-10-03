@@ -128,6 +128,32 @@ The center area is a multi-panel tabbed workspace. Each panel contains a `Conver
 - Send button (↑) — also supports Enter to send, Shift+Enter for newline
 - Footer shows: target agent, member ID, profile, and status
 
+### Local action feedback
+
+When a host supplies a recognized native refusal or audit fact, the Console
+shows feedback for the affected action. A permitted sibling or later reply
+can still appear in the same run.
+
+| Card | Meaning |
+|------|---------|
+| Permission denied | The request's operation permission was refused. |
+| Action could not start | Required process confinement was refused before the action ran. The card retains the exact typed cause. |
+| Action blocked by hook | A pre-tool hook explicitly denied this call. Its typed hook reason remains distinct from operation permission. |
+| Hook could not start | A pre-tool hook failed to launch. This is infrastructure feedback, without an invented permission or confinement cause. |
+| Audit update unavailable | Recording the action's outcome failed. Its actual result is unchanged; this notice does not justify repeating the action. |
+
+Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`
+when transforming shared timeline entries. The reusable `ConversationTranscript`
+renders this metadata automatically. A custom renderer can display its `title`,
+`detail` and supplied `toolCallId` or `operationId`; preserve those identifiers
+verbatim. The shared projection classifies supported typed payloads, rather than
+interpreting arbitrary tool messages as decisions.
+
+Keep run state attached to the controller's runtime lifecycle events. A local
+feedback card does not end a run. Rendering these cards does not configure
+native authorization, process confinement or durable audit; the host supplies
+those runtime capabilities separately.
+
 ### Voice conversations
 
 When the gateway has an authenticated OpenAI Live configuration, a blue
