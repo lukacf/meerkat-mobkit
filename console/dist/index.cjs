@@ -8104,11 +8104,11 @@ function addChildren(props, children) {
     }
   }
 }
-function productionCreate(_, jsx57, jsxs52) {
+function productionCreate(_, jsx57, jsxs53) {
   return create2;
   function create2(_2, type, props, key) {
     const isStaticChildren = Array.isArray(props.children);
-    const fn = isStaticChildren ? jsxs52 : jsx57;
+    const fn = isStaticChildren ? jsxs53 : jsx57;
     return key ? fn(type, props, key) : fn(type, props);
   }
 }
@@ -21317,13 +21317,69 @@ function resolveMarkdownImage(url, policy) {
   if (!value) return null;
   return /^(?:https?:\/\/|blob:)/iu.test(value) || !/^[a-z][a-z\d+.-]*:/iu.test(value) ? value : null;
 }
-function sourcePosition(node2) {
+function sourcePosition(node2, base = 0) {
+  const start2 = node2?.position?.start.offset;
+  const end = node2?.position?.end.offset;
   return {
-    "data-source-start": node2?.position?.start.offset,
-    "data-source-end": node2?.position?.end.offset
+    "data-source-start": start2 === void 0 ? void 0 : start2 + base,
+    "data-source-end": end === void 0 ? void 0 : end + base
   };
 }
 var plugins = [remarkGfm];
+var FENCE = /^ {0,3}(`{3,}|~{3,})/u;
+var LIST_MARKER = /^(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/u;
+var HTML_BLOCK = /^ {0,3}<(?:!--|script\b|pre\b|style\b|textarea\b)/iu;
+var HTML_BLOCK_END = /-->|<\/(?:script|pre|style|textarea)>/iu;
+var DEFINITION = /^ {0,3}\[[^\]\n]+\]:/mu;
+function splitMarkdownChunks(source) {
+  const chunks = [];
+  let chunkStart = 0;
+  let fence = null;
+  let html5 = false;
+  let blank = false;
+  let lineStart = 0;
+  while (lineStart < source.length) {
+    const newline = source.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? source.length : newline;
+    const line = source.slice(lineStart, lineEnd).replace(/\r$/u, "");
+    if (newline === -1) {
+      if (!fence && !html5 && blank && lineStart > chunkStart && /^[^\s\-+*\d`~<]/u.test(line)) {
+        chunks.push({ start: chunkStart, source: source.slice(chunkStart, lineStart) });
+        chunkStart = lineStart;
+      }
+      break;
+    }
+    if (fence) {
+      const close = FENCE.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length && line.trim() === close[1]) fence = null;
+      blank = false;
+    } else if (html5) {
+      if (HTML_BLOCK_END.test(line)) html5 = false;
+      blank = false;
+    } else if (!line.trim()) {
+      blank = true;
+    } else {
+      if (blank && lineStart > chunkStart && !/^\s/u.test(line) && !LIST_MARKER.test(line)) {
+        chunks.push({ start: chunkStart, source: source.slice(chunkStart, lineStart) });
+        chunkStart = lineStart;
+      }
+      blank = false;
+      const open = FENCE.exec(line);
+      if (open) fence = { char: open[1][0], length: open[1].length };
+      else if (HTML_BLOCK.test(line) && !HTML_BLOCK_END.test(line)) html5 = true;
+    }
+    lineStart = lineEnd + 1;
+  }
+  chunks.push({ start: chunkStart, source: source.slice(chunkStart) });
+  return chunks;
+}
+function chunksMatchWhole(source) {
+  return !DEFINITION.test(source);
+}
+function countParsedSource(length) {
+  const sink = globalThis.__consoleRenderCounts;
+  if (sink) sink.MarkdownSourceChars = (sink.MarkdownSourceChars ?? 0) + length;
+}
 function isJsonDocument(source) {
   if (!/^\s*[\[{]/u.test(source)) return false;
   try {
@@ -21332,42 +21388,59 @@ function isJsonDocument(source) {
     return false;
   }
 }
-var ConversationMarkdown = (0, import_react6.memo)(function ConversationMarkdown2({ block, urlPolicy, className }) {
-  const components = (0, import_react6.useMemo)(() => ({
+function markdownComponents(urlPolicy, base) {
+  return {
     a({ href = "", children, title, node: node2, ...props }) {
       const url = resolveMarkdownLink(href, urlPolicy);
-      if (!url) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { ...sourcePosition(node2), children });
+      if (!url) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { ...sourcePosition(node2, base), children });
       const external = /^https?:\/\//iu.test(url);
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("a", { ...props, href: url, title, ...sourcePosition(node2), ...external ? { target: "_blank", rel: "noopener noreferrer" } : {}, children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("a", { ...props, href: url, title, ...sourcePosition(node2, base), ...external ? { target: "_blank", rel: "noopener noreferrer" } : {}, children });
     },
     img({ src = "", alt = "", title, node: node2 }) {
       const url = resolveMarkdownImage(typeof src === "string" ? src : "", urlPolicy);
-      return url ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("img", { src: url, alt, title, loading: "lazy", ...sourcePosition(node2) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-markdown-image-placeholder", ...sourcePosition(node2), children: alt || "Image" });
+      return url ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("img", { src: url, alt, title, loading: "lazy", ...sourcePosition(node2, base) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-markdown-image-placeholder", ...sourcePosition(node2, base), children: alt || "Image" });
     },
     p({ children, node: node2 }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "cc-rich-paragraph", ...sourcePosition(node2), children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "cc-rich-paragraph", ...sourcePosition(node2, base), children });
     },
     pre({ children, node: node2 }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { className: "cc-rich-code-body", ...sourcePosition(node2), children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { className: "cc-rich-code-body", ...sourcePosition(node2, base), children });
     },
     code({ children, className: codeClass, node: node2 }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: codeClass, ...sourcePosition(node2), children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: codeClass, ...sourcePosition(node2, base), children });
     },
     table({ children, node: node2 }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-rich-table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("table", { className: "cc-rich-table", ...sourcePosition(node2), children }) });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-rich-table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("table", { className: "cc-rich-table", ...sourcePosition(node2, base), children }) });
     },
     blockquote({ children, node: node2 }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("blockquote", { ...sourcePosition(node2), children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("blockquote", { ...sourcePosition(node2, base), children });
     },
     li({ children, node: node2, className: listClass }) {
-      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("li", { className: listClass, ...sourcePosition(node2), children });
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("li", { className: listClass, ...sourcePosition(node2, base), children });
     }
-  }), [urlPolicy]);
+  };
+}
+var MarkdownPart = (0, import_react6.memo)(function MarkdownPart2({ source, base, urlPolicy, clobberPrefix }) {
+  countParsedSource(source.length);
+  const components = (0, import_react6.useMemo)(() => markdownComponents(urlPolicy, base), [urlPolicy, base]);
+  return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { remarkPlugins: plugins, remarkRehypeOptions: { clobberPrefix }, components, urlTransform: (url) => url, children: source });
+});
+var ConversationMarkdown = (0, import_react6.memo)(function ConversationMarkdown2({ block, urlPolicy, className }) {
+  const streamed = (0, import_react6.useRef)(false);
+  if (block.streaming) streamed.current = true;
   let content3;
   if (isJsonDocument(block.source)) {
     content3 = /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { className: "cc-rich-code-body", "data-source-start": 0, "data-source-end": block.source.length, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "language-json", children: block.source }) });
   } else {
-    content3 = /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { remarkPlugins: plugins, remarkRehypeOptions: { clobberPrefix: `markdown-${encodeURIComponent(block.id)}-` }, components, urlTransform: (url) => url, children: block.source });
+    const clobberPrefix = `markdown-${encodeURIComponent(block.id)}-`;
+    if (streamed.current && (block.streaming || chunksMatchWhole(block.source))) {
+      content3 = splitMarkdownChunks(block.source).map((chunk, index2) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_react6.Fragment, { children: [
+        index2 > 0 ? "\n" : null,
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(MarkdownPart, { source: chunk.source, base: chunk.start, urlPolicy, clobberPrefix })
+      ] }, chunk.start));
+    } else {
+      content3 = /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(MarkdownPart, { source: block.source, base: 0, urlPolicy, clobberPrefix });
+    }
   }
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
     "div",

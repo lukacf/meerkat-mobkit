@@ -73,6 +73,9 @@ const MAX_RECT_READS_PER_TOKEN = arg("max-rect-reads-per-token", null) === null 
 // callbacks, which run after the frame's layout. A one-off commit, such as a
 // send mounting its row, may still force one.
 const MAX_FORCED_LAYOUTS_PER_TOKEN = arg("max-forced-layouts-per-token", null) === null ? null : Number(arg("max-forced-layouts-per-token"));
+// Markdown source characters parsed per streamed token. Re-parsing the whole
+// reply on every token grew with its length; only the open block should.
+const MAX_MARKDOWN_CHARS_PER_TOKEN = arg("max-markdown-chars-per-token", null) === null ? null : Number(arg("max-markdown-chars-per-token"));
 const BUDGET_SPEC = process.env.MOBKIT_TYPING_LAG_BUDGET || arg("budget-p95", null);
 const BUDGET_P95 = BUDGET_SPEC === null || BUDGET_SPEC === true ? null : parseBudget(String(BUDGET_SPEC));
 
@@ -352,6 +355,7 @@ function workDelta(before, after, keystrokes) {
     fullDerivationsPerToken: full === null ? null : per(full, tokens),
     turnRendersPerToken: per(renders("TranscriptTurn"), tokens),
     rowRendersPerToken: per(renders("MessageRow"), tokens),
+    markdownCharsPerToken: per(renders("MarkdownSourceChars"), tokens),
     transcriptRendersPerKeystroke: per(renders("TranscriptView"), keystrokes),
     rowRendersPerKeystroke: per(renders("MessageRow"), keystrokes),
     rectReadsPerToken: per(after.rects - before.rects, tokens),
@@ -478,6 +482,7 @@ async function measureSize(browser, baseUrl, turns) {
     if (cdp) {
       const { profile } = await cdp.send("Profiler.stop");
       measured.profile = summarizeProfile(profile);
+      await fs.writeFile(path.join(outDir, `profile-${turns}-${scenario}.cpuprofile`), JSON.stringify(profile));
       await cdp.detach();
     }
     if (TRACE) {
@@ -573,7 +578,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
-            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)} markdown-chars/token=${fmt2(m.work.markdownCharsPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -610,6 +615,9 @@ async function main() {
         }
       }
       const streamingScenario = scenario === "streaming" || scenario === "send-streaming";
+      if (streamingScenario && MAX_MARKDOWN_CHARS_PER_TOKEN !== null && m.work.markdownCharsPerToken > MAX_MARKDOWN_CHARS_PER_TOKEN) {
+        failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.markdownCharsPerToken)} Markdown source characters parsed per token > ${MAX_MARKDOWN_CHARS_PER_TOKEN}; the streaming reply re-parses closed blocks`);
+      }
       if (streamingScenario && MAX_FORCED_LAYOUTS_PER_TOKEN !== null) {
         if (!m.breakdown) failures.push(`turns=${r.turns} ${scenario}: --max-forced-layouts-per-token needs --trace`);
         else if (m.work.forcedLayoutsPerToken > MAX_FORCED_LAYOUTS_PER_TOKEN) {
