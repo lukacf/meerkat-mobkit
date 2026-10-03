@@ -194,3 +194,7 @@ meerkat = { version = "=0.8.50", features = ["test-realtime-fixtures"] }
 # decode counter, so decode assertions attribute decodes to the test's own
 # session instead of the process-wide count every parallel test moves.
 meerkat-core = { version = "=0.8.50", features = ["test-support"] }
+# `test-support` (test-only) exposes meerkat-runtime's run-start hold read, so
+# the restart test can assert a restored member without its customizer tools
+# is held, and released once they publish.
+meerkat-runtime = { version = "=0.8.50", features = ["sqlite-store", "live", "test-support"] }

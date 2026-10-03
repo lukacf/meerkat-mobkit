@@ -9,7 +9,13 @@
 //!   input admitted at activation) carries them in its LLM request.
 //! - A pre-activation `customize_build` that fails is recorded as
 //!   `IdentityStatus::customizer_tools_pending` with the typed reason, and the
-//!   materialization that publishes clears it.
+//!   materialization that publishes clears it. The mob build also asks meerkat
+//!   to hold the member's run starts (`HostRunStartHoldReason::ToolsNotPublished`)
+//!   until then; here the publication releases that hold before the member's
+//!   registration, so the member runs unheld once materialized. (The hold
+//!   takes effect when meerkat's own resume revives the member first, a mob
+//!   log left Running; the release itself is unit-tested in the identity
+//!   runtime.)
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -227,6 +233,15 @@ async fn resolved_tools(runtime: &meerkat_mobkit::UnifiedRuntime) -> Vec<String>
     .tools
 }
 
+/// Whether meerkat holds the member's run starts, read from its runtime
+/// (`None` while the member's session is not registered there).
+async fn member_run_starts_held(runtime: &meerkat_mobkit::UnifiedRuntime) -> Option<bool> {
+    let status = runtime.identity_runtime()?.status(&id(MEMBER)).await.ok()?;
+    let session_id = status.session_id?;
+    let machine = runtime.mob_runtime().session_service()?.runtime_adapter()?;
+    machine.run_starts_held_for_test(&session_id).await
+}
+
 async fn wait_for_turn(capture: &CaptureClient, want: usize, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while capture.count() < want {
@@ -345,6 +360,9 @@ async fn a_failed_early_customize_is_pending_until_the_materialization_publishes
             && pending.reason.contains("host refused build 1"),
         "{pending:?}"
     );
+    // Lazy: nothing has registered the restored member's runtime yet, and
+    // the materialization publishes (releasing the hold) before it registers.
+    assert_eq!(member_run_starts_held(&runtime).await, None);
 
     // Materialization (here driven by a send) publishes and clears it.
     identity_runtime
@@ -357,6 +375,11 @@ async fn a_failed_early_customize_is_pending_until_the_materialization_publishes
     wait_for_turn(&capture, 1, "the materializing turn").await;
     let status = identity_runtime.status(&id(MEMBER)).await.expect("status");
     assert!(status.customizer_tools_pending.is_none(), "{status:?}");
+    assert_eq!(
+        member_run_starts_held(&runtime).await,
+        Some(false),
+        "the released hold never reached the member's registration"
+    );
     assert!(resolved_tools(&runtime).await.contains(&TOOL.to_string()));
     assert!(capture.last().expect("captured request").contains(TOOL));
     runtime.shutdown().await;
