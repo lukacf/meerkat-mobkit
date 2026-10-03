@@ -79,6 +79,17 @@ pub(super) enum AssistantHistoryRefreshGate {
     /// emits no event of its own that would re-drive it, so the backfill arms
     /// a re-drive on the next typed change.
     StatusUnknown,
+    /// The member is idle on this session but its durable work has not
+    /// landed: inputs are still queued, staged or awaiting their boundary
+    /// commit (a burst draining between runs, or trailing commits). Not
+    /// settled, and a read now would only be read again once the queue
+    /// drains, so the backfill skips it and arms a re-drive on that drain.
+    Draining,
+    /// A run is open on this session. Unsettled like `Pending`, so the pass
+    /// still restores positive frames (a boot-time turn can run for minutes),
+    /// but the run ends through durable writes, so the backfill also arms the
+    /// drain re-drive for the settled refresh instead of leaving it to a tick.
+    Running,
     Settled,
 }
 
@@ -125,74 +136,14 @@ pub(super) async fn observe(
     session_id: &str,
     requested: bool,
 ) -> AssistantHistoryRefreshGate {
-    let member =
-        crate::member_comms_id::roster_member_id_for_supplied_id(&record.runtime_member_id);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     observe_with(
         requested,
         session_id,
-        || async {
-            tokio::time::timeout_at(deadline, async {
-                let Ok(expected_session) = meerkat_core::SessionId::parse(session_id) else {
-                    return MemberStatusRead::NotBound;
-                };
-                let primary = entry.runtime.handle();
-                let (handle, member) = if primary.resolve_bridge_session_id(&member).await
-                    == Some(expected_session.clone())
-                {
-                    (primary, member)
-                } else {
-                    // Alias and source labels cannot distinguish identical
-                    // member names in different mobs. Recover the handle from
-                    // the existing member resolver and its runtime binding.
-                    let mut owner = None;
-                    for resolved in
-                        Box::pin(super::member_sources_for_entry_including_hidden(entry)).await
-                    {
-                        if resolved.member.agent_identity != member
-                            && resolved.runtime_identity != record.runtime_member_id
-                        {
-                            continue;
-                        }
-                        if resolved
-                            .handle
-                            .resolve_bridge_session_id(&resolved.member.agent_identity)
-                            .await
-                            != Some(expected_session.clone())
-                        {
-                            continue;
-                        }
-                        if owner.is_some() {
-                            return MemberStatusRead::NotBound;
-                        }
-                        owner = Some((resolved.handle, resolved.member.agent_identity));
-                    }
-                    let Some(owner) = owner else {
-                        return MemberStatusRead::NotBound;
-                    };
-                    owner
-                };
-                // The binding only routes the observation. Fresh typed status
-                // must still prove that this exact session is idle.
-                let Ok(status) = crate::member_status_observation::observe_member_status_until(
-                    &handle, &member, deadline,
-                )
-                .await
-                else {
-                    return MemberStatusRead::NoAnswer;
-                };
-                let Some(current_session) = status.current_session_id else {
-                    return MemberStatusRead::NotBound;
-                };
-                match status.progress {
-                    Some(progress) => {
-                        MemberStatusRead::Observed(current_session.to_string(), progress.run_state)
-                    }
-                    None => MemberStatusRead::NoAnswer,
-                }
-            })
-            .await
-            .unwrap_or(MemberStatusRead::NoAnswer)
+        || {
+            Box::pin(read_member_status(
+                entry, record, session_id, deadline, false,
+            ))
         },
         || async {
             tokio::time::timeout_at(deadline, entry.runtime.session_commit_pending(session_id))
@@ -200,38 +151,221 @@ pub(super) async fn observe(
                 .ok()
                 .flatten()
         },
+        || async {
+            tokio::time::timeout_at(
+                deadline,
+                Box::pin(entry.runtime.session_has_active_inputs(session_id)),
+            )
+            .await
+            .ok()
+            .flatten()
+        },
     )
     .await
 }
 
-async fn observe_with<StatusRead, StatusFuture, CommitRead, CommitFuture>(
+/// One bounded read of the member's typed status for `session_id`. With
+/// `require_running_mob`, a member whose owning mob is not running (stopped,
+/// completed, destroyed) reads `NotBound`: it keeps no live queue there.
+async fn read_member_status(
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+    session_id: &str,
+    deadline: tokio::time::Instant,
+    require_running_mob: bool,
+) -> MemberStatusRead {
+    let member =
+        crate::member_comms_id::roster_member_id_for_supplied_id(&record.runtime_member_id);
+    tokio::time::timeout_at(deadline, async {
+        let Ok(expected_session) = meerkat_core::SessionId::parse(session_id) else {
+            return MemberStatusRead::NotBound;
+        };
+        let primary = entry.runtime.handle();
+        let (handle, member) = if primary.resolve_bridge_session_id(&member).await
+            == Some(expected_session.clone())
+        {
+            (primary, member)
+        } else {
+            // Alias and source labels cannot distinguish identical
+            // member names in different mobs. Recover the handle from
+            // the existing member resolver and its runtime binding.
+            let mut owner = None;
+            for resolved in Box::pin(super::member_sources_for_entry_including_hidden(entry)).await
+            {
+                if resolved.member.agent_identity != member
+                    && resolved.runtime_identity != record.runtime_member_id
+                {
+                    continue;
+                }
+                if resolved
+                    .handle
+                    .resolve_bridge_session_id(&resolved.member.agent_identity)
+                    .await
+                    != Some(expected_session.clone())
+                {
+                    continue;
+                }
+                if owner.is_some() {
+                    return MemberStatusRead::NotBound;
+                }
+                owner = Some((resolved.handle, resolved.member.agent_identity));
+            }
+            let Some(owner) = owner else {
+                return MemberStatusRead::NotBound;
+            };
+            owner
+        };
+        // The binding only routes the observation. Fresh typed status
+        // must still prove that this exact session is idle.
+        let Ok(status) = crate::member_status_observation::observe_member_status_until(
+            &handle, &member, deadline,
+        )
+        .await
+        else {
+            return MemberStatusRead::NoAnswer;
+        };
+        let Some(current_session) = status.current_session_id else {
+            return MemberStatusRead::NotBound;
+        };
+        if require_running_mob
+            && !matches!(handle.status().await, Ok(meerkat_mob::MobState::Running))
+        {
+            return MemberStatusRead::NotBound;
+        }
+        match status.progress {
+            Some(progress) => {
+                MemberStatusRead::Observed(current_session.to_string(), progress.run_state)
+            }
+            None => MemberStatusRead::NoAnswer,
+        }
+    })
+    .await
+    .unwrap_or(MemberStatusRead::NoAnswer)
+}
+
+/// Whether the member is still bound to `session_id` and live (idle or in a
+/// run, in a running mob), so a queue it has not drained yet can still
+/// drain. A member that is no longer bound, whose mob is stopped, completed
+/// or destroyed, whose actor does not answer, or whose run state is unknown
+/// is not: its queue will not drain through writes this process observes.
+pub(super) async fn member_still_progressing(
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+    session_id: &str,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    matches!(
+        Box::pin(read_member_status(entry, record, session_id, deadline, true)).await,
+        MemberStatusRead::Observed(current, MemberRunState::Idle | MemberRunState::RunOpen)
+            if current == session_id
+    )
+}
+
+/// A session's durable work, tracked across one drain re-drive's checks. An
+/// input leaves the active set when its boundary commits, but its terminal
+/// receipt is finalized in a later durable write: a refresh started in
+/// between reads an image the receipt write then moves past. The tracker
+/// keeps every input it has seen active until its receipt is final.
+#[derive(Default)]
+pub(super) struct SessionDrainTracker {
+    watched: std::collections::BTreeSet<uuid::Uuid>,
+}
+
+/// Where a session's durable work stands for a drain re-drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DrainState {
+    /// No commit pending, no active input, every input seen active has its
+    /// receipt finalized: refresh now.
+    Drained,
+    /// Durable work is still landing: wait for the session's next write.
+    Draining,
+    /// The runtime no longer holds or can progress the session (stopped,
+    /// retired or destroyed, given a new driver, durability blocked): its
+    /// queue cannot drain through writes this process observes. Refresh now
+    /// and read what is durable.
+    Stalled,
+    /// A read did not answer within its bound: wait for the next change.
+    NoAnswer,
+}
+
+impl SessionDrainTracker {
+    pub(super) async fn state(&mut self, entry: &RuntimeEntry, session_id: &str) -> DrainState {
+        let watched = self.watched.iter().copied().collect::<Vec<_>>();
+        match Box::pin(
+            entry
+                .runtime
+                .session_drain_observation(session_id, &watched),
+        )
+        .await
+        {
+            crate::mob_handle_runtime::SessionDrainRead::Observed(observation) => {
+                self.watched = observation
+                    .active
+                    .iter()
+                    .chain(&observation.unfinalized)
+                    .copied()
+                    .collect();
+                if !observation.commit_pending && self.watched.is_empty() {
+                    DrainState::Drained
+                } else {
+                    DrainState::Draining
+                }
+            }
+            crate::mob_handle_runtime::SessionDrainRead::Stalled => DrainState::Stalled,
+            crate::mob_handle_runtime::SessionDrainRead::NoAnswer => DrainState::NoAnswer,
+        }
+    }
+}
+
+async fn observe_with<
+    StatusRead,
+    StatusFuture,
+    CommitRead,
+    CommitFuture,
+    ActiveRead,
+    ActiveFuture,
+>(
     requested: bool,
     session_id: &str,
     read_status: StatusRead,
     read_commit: CommitRead,
+    read_active: ActiveRead,
 ) -> AssistantHistoryRefreshGate
 where
     StatusRead: FnOnce() -> StatusFuture,
     StatusFuture: Future<Output = MemberStatusRead>,
     CommitRead: FnOnce() -> CommitFuture,
     CommitFuture: Future<Output = Option<bool>>,
+    ActiveRead: FnOnce() -> ActiveFuture,
+    ActiveFuture: Future<Output = Option<bool>>,
 {
     if !requested {
         return AssistantHistoryRefreshGate::PositiveOnly;
     }
     let current_session = match read_status().await {
         MemberStatusRead::Observed(current_session, MemberRunState::Idle) => current_session,
-        MemberStatusRead::Observed(_, MemberRunState::RunOpen) | MemberStatusRead::NotBound => {
-            return AssistantHistoryRefreshGate::Pending;
+        MemberStatusRead::Observed(current_session, MemberRunState::RunOpen) => {
+            return if current_session == session_id {
+                AssistantHistoryRefreshGate::Running
+            } else {
+                AssistantHistoryRefreshGate::Pending
+            };
         }
+        MemberStatusRead::NotBound => return AssistantHistoryRefreshGate::Pending,
         MemberStatusRead::Observed(_, MemberRunState::Unknown) | MemberStatusRead::NoAnswer => {
             return AssistantHistoryRefreshGate::StatusUnknown;
         }
     };
-    if current_session != session_id || read_commit().await != Some(false) {
+    if current_session != session_id {
         return AssistantHistoryRefreshGate::Pending;
     }
-    AssistantHistoryRefreshGate::Settled
+    // Idle between runs is not settled while durable work is still landing:
+    // a queued burst drains run by run, and each run's commits trail it.
+    match (read_commit().await, read_active().await) {
+        (Some(false), Some(false)) => AssistantHistoryRefreshGate::Settled,
+        (Some(true), _) | (_, Some(true)) => AssistantHistoryRefreshGate::Draining,
+        _ => AssistantHistoryRefreshGate::Pending,
+    }
 }
 
 #[cfg(test)]
@@ -342,10 +476,60 @@ mod tests {
                 calls.borrow_mut().push("commit");
                 ready(Some(false))
             },
+            || {
+                calls.borrow_mut().push("active");
+                ready(Some(false))
+            },
         )
         .await;
         assert_eq!(gate, AssistantHistoryRefreshGate::PositiveOnly);
         assert!(calls.borrow().is_empty());
+    }
+
+    /// An idle member whose queued burst is still draining (or whose commits
+    /// still trail) is not settled: the gate reads `Draining` until both its
+    /// active inputs and its pending commit have landed, and only an
+    /// inconclusive read is `Pending`.
+    #[tokio::test]
+    async fn an_idle_member_with_queued_inputs_is_draining_not_settled() {
+        let gate = |commit: Option<bool>, active: Option<bool>| {
+            observe_with(
+                true,
+                "session-a",
+                || {
+                    ready(MemberStatusRead::Observed(
+                        "session-a".into(),
+                        MemberRunState::Idle,
+                    ))
+                },
+                move || ready(commit),
+                move || ready(active),
+            )
+        };
+        assert_eq!(
+            gate(Some(false), Some(true)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(true), Some(false)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(true), Some(true)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(false), None).await,
+            AssistantHistoryRefreshGate::Pending
+        );
+        assert_eq!(
+            gate(None, Some(false)).await,
+            AssistantHistoryRefreshGate::Pending
+        );
+        assert_eq!(
+            gate(Some(false), Some(false)).await,
+            AssistantHistoryRefreshGate::Settled
+        );
     }
 
     #[tokio::test]
@@ -525,6 +709,10 @@ realm_profile = "worker"
             ),
             (
                 MemberStatusRead::Observed("session-a".into(), MemberRunState::RunOpen),
+                AssistantHistoryRefreshGate::Running,
+            ),
+            (
+                MemberStatusRead::Observed("session-b".into(), MemberRunState::RunOpen),
                 AssistantHistoryRefreshGate::Pending,
             ),
             (
@@ -546,6 +734,10 @@ realm_profile = "worker"
                 },
                 || {
                     calls.borrow_mut().push("commit");
+                    ready(Some(false))
+                },
+                || {
+                    calls.borrow_mut().push("active");
                     ready(Some(false))
                 },
             )
@@ -573,15 +765,21 @@ realm_profile = "worker"
                     calls.borrow_mut().push("commit");
                     ready(pending)
                 },
+                || {
+                    calls.borrow_mut().push("active");
+                    ready(Some(false))
+                },
             )
             .await;
-            assert_eq!(*calls.borrow(), ["status", "commit"]);
+            assert_eq!(*calls.borrow(), ["status", "commit", "active"]);
+            // A pending commit is durable work still landing: draining, not
+            // settled. Only an inconclusive read stays plainly pending.
             assert_eq!(
                 gate,
-                if pending == Some(false) {
-                    AssistantHistoryRefreshGate::Settled
-                } else {
-                    AssistantHistoryRefreshGate::Pending
+                match pending {
+                    Some(false) => AssistantHistoryRefreshGate::Settled,
+                    Some(true) => AssistantHistoryRefreshGate::Draining,
+                    None => AssistantHistoryRefreshGate::Pending,
                 }
             );
         }
