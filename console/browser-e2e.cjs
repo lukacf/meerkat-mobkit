@@ -3223,7 +3223,7 @@ async function runAuthorizationFeedbackProof() {
     frame("done", "run_completed", { result: "I continued with the permitted calendar read." }, 7),
     frame("interaction-done", "interaction_complete", { result: "I continued with the permitted calendar read." }, 8),
   ];
-  const server = await startMockConsoleServer(await reservePort(), { timelineFramesByIdentity: { "identity:luka": frames } });
+  const server = await startMockConsoleServer({ timelineFramesByIdentity: { "identity:luka": frames } });
   let browser;
   let finishPreview;
   try {
