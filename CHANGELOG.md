@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
+  MobTerminalShutdownOutcome` (see Changed). Code constructing the report
+  must set it; `MobTerminalShutdownOutcome` is `#[non_exhaustive]`.
+
 - `ContinuityStore::as_incremental_sessions` no longer has a default. Every
   continuity store now states whether it serves MobKit's session-delta
   channel: a decorator forwards its inner store's channel, and a
@@ -127,6 +131,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- MobKit runs on meerkat 0.8.51:
+  - `UnifiedRuntime::shutdown` drives the mob actor's terminal teardown with
+    one `MobHandle::shutdown_with_report` call bounded by
+    `MOB_TERMINAL_SHUTDOWN_BUDGET` (5 s), instead of retrying `shutdown` for
+    up to 5 s. Meerkat now owns the convergence (stuck retirements, held
+    unregisters and in-flight runs are settled or reported, not refused), and
+    the outcome is `UnifiedRuntimeShutdownReport::mob_terminal_shutdown`:
+    `Completed(MobShutdownReport)`, `AlreadyShutDown` (the mob answered with a
+    closed command channel, which a mob shutting down answers to every caller
+    request), `Refused` or `SkippedMobStopFailed`. It stays outside
+    `cleanup_completed()`, as before.
+  - The implicit-delegate idle sweep warns when a retirement does not
+    complete within `retire`'s wait, then awaits the member's
+    `retirement_settlement()` and reports how it settled: retired, or stuck
+    at a named stage with its cause. A stuck retirement stays owned by the
+    mob until it is re-driven (`MobHandle::redrive_retirement` or a mob
+    resume); the sweep no longer loses sight of a member that stays
+    `Retiring`.
+  - The mob stop logs each member whose run starts the stop could not hold.
+  - Live channel closes pass their typed cause to meerkat (`OpenAbandoned`
+    for an open-failure cleanup, `ClientRequested` for `live/close`).
+- Docs: `[profiles.*.tools] deny` (meerkat 0.8.51's per-profile tool deny
+  list) is documented in the configuration reference, including both
+  failure paths, and the `comms` row points at it.
 
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
@@ -615,6 +644,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Durable-behind admission skips transcript commits that meerkat 0.8.51's
+  history retention has retired. Their parent projection now returns
+  `TranscriptRevisionRetired` (a retired commit has no body to prove
+  against); admission treated it as a store write failure, so a session
+  compacted past its retention cut could no longer be persisted
+  (`identity_first_repeated_compaction`). Other projection errors still
+  fail the write.
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled

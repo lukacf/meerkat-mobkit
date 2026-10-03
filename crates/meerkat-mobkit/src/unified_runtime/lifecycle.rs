@@ -5,6 +5,11 @@ use std::future::IntoFuture;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+/// Bound on the mob actor's terminal teardown in [`UnifiedRuntime::shutdown`].
+/// It runs after the mob stop quiesced members, inside the mob quiesce window
+/// the published shutdown horizon already counts.
+pub const MOB_TERMINAL_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+
 /// Budget for joining supervisor cleanups retired by replacement. See
 /// [`UnifiedRuntime::join_retired_supervisor_cleanups`] for why this is its own
 /// value rather than a second spend of `drain_timeout`.
@@ -23,8 +28,8 @@ use crate::mob_handle_runtime::{
 use crate::runtime::RuntimeDecisionState;
 
 use super::types::{
-    ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome, RediscoverReport,
-    RetiredSupervisorCleanupOutcome, RetiredSupervisorKind, ShutdownDrainReport,
+    ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome, MobTerminalShutdownOutcome,
+    RediscoverReport, RetiredSupervisorCleanupOutcome, RetiredSupervisorKind, ShutdownDrainReport,
     UnifiedRuntimeError, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
@@ -444,38 +449,11 @@ impl UnifiedRuntime {
         // Active identities Broken instead of leaving them Dormant.
         // Best-effort: a refusal leaves the route registered and is reported
         // loudly rather than failing the report.
-        if mob_stop.is_ok() {
-            // The mob actor deliberately retains itself as the retry owner
-            // when terminal teardown catches an in-flight run
-            // terminalization ("runtime teardown observed owned
-            // terminalization ... after acquiring its driver authority");
-            // `MobHandle::shutdown` auto-retries only the lifecycle-pending
-            // error classes, so drive the remaining convergence here with a
-            // bounded retry instead of abandoning the route on first refusal.
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            let mut retry_delay = Duration::from_millis(50);
-            loop {
-                match self.mob_handle().shutdown().await {
-                    Ok(()) => break,
-                    Err(error) if std::time::Instant::now() < deadline => {
-                        tracing::debug!(
-                            %error,
-                            "mob terminal shutdown refused; retrying until the actor converges"
-                        );
-                        tokio::time::sleep(retry_delay).await;
-                        retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            "mob terminal shutdown after stop did not converge; the supervisor \
-                             in-proc route may remain registered until process exit"
-                        );
-                        break;
-                    }
-                }
-            }
-        }
+        let mob_terminal_shutdown = if mob_stop.is_ok() {
+            self.shutdown_mob_actor().await
+        } else {
+            MobTerminalShutdownOutcome::SkippedMobStopFailed
+        };
 
         // Phase 3: Close event router
         self.close_event_router().await;
@@ -495,6 +473,46 @@ impl UnifiedRuntime {
             mob_stop,
             identity_authority_release,
             retired_supervisor_cleanup,
+            mob_terminal_shutdown,
+        }
+    }
+
+    /// The mob actor's terminal teardown, once: meerkat 0.8.51's
+    /// `shutdown_with_report` owns its convergence (stuck retirements, held
+    /// unregisters and in-flight runs are settled or reported, not retried),
+    /// bounded by [`MOB_TERMINAL_SHUTDOWN_BUDGET`].
+    async fn shutdown_mob_actor(&self) -> MobTerminalShutdownOutcome {
+        let deadline = std::time::Instant::now() + MOB_TERMINAL_SHUTDOWN_BUDGET;
+        match self
+            .mob_handle()
+            .shutdown_with_report(meerkat_mob::ShutdownOptions::default().with_deadline(deadline))
+            .await
+        {
+            Ok(report) => {
+                if !report.is_clean() {
+                    tracing::warn!(
+                        members = ?report.members,
+                        "mob terminal shutdown completed with members it could not settle"
+                    );
+                }
+                MobTerminalShutdownOutcome::Completed(report)
+            }
+            // A mob shutting down answers every caller request with a closed
+            // command channel: the actor is already gone, not failing.
+            Err(
+                meerkat_mob::MobError::ActorCommandChannelClosed
+                | meerkat_mob::MobError::ActorReplyChannelClosed,
+            ) => MobTerminalShutdownOutcome::AlreadyShutDown,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "mob terminal shutdown after stop was refused; the supervisor in-proc \
+                     route may remain registered until process exit"
+                );
+                MobTerminalShutdownOutcome::Refused {
+                    error: error.to_string(),
+                }
+            }
         }
     }
 
@@ -670,7 +688,19 @@ impl UnifiedRuntime {
             tokio::time::sleep(Duration::from_millis(250)).await;
             last = handle.stop().await;
         }
-        last.map_err(MobRuntimeError::from)
+        // meerkat 0.8.51: Stop reports each member (run and run-start hold).
+        // A member whose run starts could not be held may still start a turn
+        // while the mob is Stopped; teardown proceeds, so say so.
+        last.map(|report| {
+            for (identity, reason) in report.not_holdable() {
+                tracing::warn!(
+                    agent_identity = %identity,
+                    ?reason,
+                    "mob stop could not hold this member's run starts"
+                );
+            }
+        })
+        .map_err(MobRuntimeError::from)
     }
 
     /// Drain pending agent/module events from the mob event router and
