@@ -179,6 +179,52 @@ class TestAgentEvent:
 
 class TestMobEvent:
     @pytest.mark.asyncio
+    async def test_unfamiliar_hook_reasons_stay_opaque_and_tool_status_unchanged(self):
+        # No receiving-refusal carrier is declared here; unfamiliar fields
+        # remain open payloads, not a local permission or run-failure fact.
+        reasons = [
+            {"reason_code": "future_hook_cause", "version": 99, "details": {"kind": "denied"}},
+            {"reason_code": 17, "refusal": "denied"},
+            ["denied", None],
+            None,
+        ]
+        hooks = [{
+            "type": "hook_launch_refused", "hook_id": "host-hook", "point": "pre_tool_execution",
+            "tool_use_id": "  opaque-call  ", "reason": reason,
+            "future_detail": {"version": 99, "values": [None, 1]},
+        } for reason in reasons]
+        result = '{"version":99,"cause":{"kind":"denied","future":[null,true]}}'
+        payloads = [
+            *hooks,
+            {"type": "tool_execution_completed", "id": "  opaque-call  ", "name": "read_file",
+             "content": [{"type": "text", "text": result}], "result": result,
+             "is_error": True, "duration_ms": 1},
+            {"type": "tool_result_received", "id": "  opaque-call  ", "name": "read_file",
+             "is_error": True, "future_detail": {"kind": "denied"}},
+            {"type": "run_completed", "session_id": "session-opaque", "result": "done"},
+        ]
+
+        async def wire():
+            for index, payload in enumerate(payloads):
+                yield SseEvent(id=str(index), event=payload["type"], data=json.dumps({
+                    "member_id": "agent-1", "payload": payload,
+                }))
+
+        events = [envelope.event async for envelope in EventStream(wire(), MobEvent)]
+        for event, hook in zip(events, hooks):
+            assert isinstance(event, UnknownEvent)
+            assert event.type == "hook_launch_refused"
+            assert event.data == hook
+        tool, feedback, completed = events[len(hooks):]
+        assert isinstance(tool, ToolExecutionCompleted)
+        assert (tool.id, tool.result, tool.is_error) == ("  opaque-call  ", result, True)
+        assert isinstance(feedback, ToolResultReceived)
+        assert (feedback.id, feedback.is_error) == ("  opaque-call  ", True)
+        assert isinstance(completed, RunCompleted)
+        assert (completed.session_id, completed.result) == ("session-opaque", "done")
+        assert not any(isinstance(event, RunFailed) for event in events)
+
+    @pytest.mark.asyncio
     async def test_local_refusal_wire_keeps_call_feedback_and_stream_continuity(self):
         refusal = '{"error":"operation_refused","message":"operation unavailable under current authorization"}'
         hook = {

@@ -258,6 +258,54 @@ describe("parseAgentEvent", () => {
 });
 
 describe("local refusal SSE compatibility", () => {
+  it("keeps unfamiliar hook reasons opaque and tool status unchanged", async () => {
+    // This SDK has no receiving-refusal carrier. These are open-payload
+    // compatibility probes, not a proposed receiver event or permission fact.
+    const reasons = [
+      { reason_code: "future_hook_cause", version: 99, details: { kind: "denied" } },
+      { reason_code: 17, refusal: "denied" },
+      ["denied", null],
+      null,
+    ];
+    const hooks = reasons.map((reason) => ({
+      type: "hook_launch_refused", hook_id: "host-hook", point: "pre_tool_execution",
+      tool_use_id: "  opaque-call  ", reason, future_detail: { version: 99, values: [null, 1] },
+    }));
+    const result = '{"version":99,"cause":{"kind":"denied","future":[null,true]}}';
+    const payloads = [
+      ...hooks,
+      { type: "tool_execution_completed", id: "  opaque-call  ", name: "read_file",
+        content: [{ type: "text", text: result }], result, is_error: true, duration_ms: 1 },
+      { type: "tool_result_received", id: "  opaque-call  ", name: "read_file", is_error: true,
+        future_detail: { kind: "denied" } },
+      { type: "run_completed", session_id: "session-opaque", result: "done" },
+    ];
+    async function* wire() {
+      for (const [index, payload] of payloads.entries()) {
+        yield { id: String(index), event: payload.type,
+          data: JSON.stringify({ member_id: "agent-1", payload }) };
+      }
+    }
+    const events = [];
+    for await (const event of new EventStream(wire(), parseMobEventFromSse)) events.push(event.event);
+    for (const [index, hook] of hooks.entries()) {
+      const event = events[index];
+      assert.equal(event.type, "hook_launch_refused");
+      assert.ok("data" in event);
+      assert.deepEqual(event.data, hook);
+    }
+    const [tool, feedback, completed] = events.slice(hooks.length);
+    assert.equal(tool.type, "tool_execution_completed");
+    assert.ok("id" in tool && "result" in tool && "isError" in tool);
+    assert.deepEqual([tool.id, tool.result, tool.isError], ["  opaque-call  ", result, true]);
+    assert.equal(feedback.type, "tool_result_received");
+    assert.ok("id" in feedback && "isError" in feedback);
+    assert.deepEqual([feedback.id, feedback.isError], ["  opaque-call  ", true]);
+    assert.ok(isRunCompleted(completed));
+    assert.deepEqual([completed.sessionId, completed.result], ["session-opaque", "done"]);
+    assert.equal(events.some(isRunFailed), false);
+  });
+
   it("keeps call feedback and continues through subsequent packets", async () => {
     const refusal = '{"error":"operation_refused","message":"operation unavailable under current authorization"}';
     const hook = {
