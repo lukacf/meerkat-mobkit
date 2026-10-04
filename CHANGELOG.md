@@ -798,6 +798,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cannot answer reused callback IDs on a replacement process, and retired
   readers cannot fail its pending requests.
 
+- A voice channel reopened through MobKit while delegated work from an
+  earlier channel was still running now opens with Meerkat's "work started
+  before this call is still finishing" startup line (meerkat #1652), so the
+  model does not claim that work is done before its result arrives. MobKit's
+  live composition now binds its delegation coordinator as the open
+  authority's post-close work source, as Meerkat's RPC router does; before,
+  no MobKit door bound one.
 - A declared role migration is applied on the boot path, or refused typed;
   it is never silently dropped (HomeCore: children declared
   `role_migrations` to a restricted profile but kept their old role and
