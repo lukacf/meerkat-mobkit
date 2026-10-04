@@ -6226,18 +6226,22 @@ comms = true
                 // sum is a hand-written enumeration of phases rather than
                 // anything derived from them. Whoever adds the next phase pays
                 // the same tax: state it here, or silently overrun the horizon.
-                + meerkat_mobkit::unified_runtime::lifecycle::RETIRED_SUPERVISOR_JOIN_BUDGET,
-            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, scheduler overhead, and the retired-supervisor join"
+                + meerkat_mobkit::unified_runtime::lifecycle::RETIRED_SUPERVISOR_JOIN_BUDGET
+                // The mob actor's terminal teardown (`shutdown_with_report`).
+                // Uncounted, the outer timeout could fire inside it and drop
+                // the whole report, per-member mob outcomes included.
+                + meerkat_mobkit::unified_runtime::lifecycle::MOB_TERMINAL_SHUTDOWN_BUDGET,
+            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, scheduler overhead, the retired-supervisor join, and the mob terminal shutdown"
         );
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
             + GATEWAY_STDOUT_DRAIN_TIMEOUT
             + meerkat_mobkit::console_voice::CONSOLE_VOICE_SHUTDOWN_TIMEOUT;
-        assert_eq!(gateway_phase_budget, Duration::from_secs(337));
+        assert_eq!(gateway_phase_budget, Duration::from_secs(342));
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS),
-            Duration::from_secs(347)
+            Duration::from_secs(352)
         );
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
@@ -8584,19 +8588,20 @@ const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 // open while identity-owned cleanup runs. The runtime budget deliberately
 // covers two complete callback windows: one for an already-admitted identity
 // operation which shutdown must join, and one for the final batched lease
-// release. The 312-second runtime budget is exactly two 130-second provider
+// release. The 317-second runtime budget is exactly two 130-second provider
 // callback windows, the runtime's 30-second event drain, its 10-second mob
-// quiesce window, 10 seconds of scheduler overhead, and the 2-second
-// retired-supervisor join.
+// quiesce window, 10 seconds of scheduler overhead, the 2-second
+// retired-supervisor join, and the 5-second mob terminal shutdown that
+// produces the per-member shutdown report.
 const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
 const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-// The bounded gateway phases total at most 337 seconds (5 + 5 + 10 + 312 + 5).
+// The bounded gateway phases total at most 342 seconds (5 + 5 + 10 + 317 + 5).
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
-const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 347_000;
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 352_000;
 
 // -- mobkit/init: accepted, then settled (#550) ------------------------------
 //

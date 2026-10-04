@@ -719,9 +719,10 @@ The stock persistent gateway also advertises a private shutdown handshake and
 its bounded `stdio_shutdown_horizon_ms` in the `mobkit/init` result. SDK hosts
 keep stdin and provider callbacks open until that handshake completes, then
 close the process. Honor the advertised `stdio_shutdown_horizon_ms` rather than
-hard-coding it. The current stock 347-second horizon covers an already-admitted
+hard-coding it. The current stock 352-second horizon covers an already-admitted
 provider callback, runtime event and mob drains, the final lease-release
-callback, and bounded response-delivery/reaping margin. Provider operations
+callback, the mob's terminal shutdown report, and bounded
+response-delivery/reaping margin. Provider operations
 must resolve or reject within their public 120-second contract. The Python host
 allows 125 seconds for event-loop completion before cancelling that callback;
 the TypeScript host exposes the same cancellation as an optional

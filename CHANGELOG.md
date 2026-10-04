@@ -157,6 +157,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     closed command channel, which a mob shutting down answers to every caller
     request), `Refused` or `SkippedMobStopFailed`. It stays outside
     `cleanup_completed()`, as before.
+  - The gateway's runtime shutdown budget counts that 5 s teardown:
+    `GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT` (and `UnifiedRuntime::shutdown_horizon`)
+    is 317 s, and the advertised `stdio_shutdown_horizon_ms` is 352 000, so
+    the outer timeout can never fire inside the teardown and drop the
+    per-member shutdown report. Hosts that honour the advertised horizon need
+    no change; a deployment grace period must cover 352 s plus process exit.
   - The implicit-delegate idle sweep warns when a retirement does not
     complete within `retire`'s wait, then awaits the member's
     `retirement_settlement()` and reports how it settled: retired, or stuck
