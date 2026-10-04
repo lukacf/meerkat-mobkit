@@ -4327,14 +4327,15 @@ var ConsoleActivityProjection = class {
         this.index(this.runs, id, byInteraction);
       }
       for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, phase2] of byRun.runPhases) {
+        if (phase2.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase2);
+      }
       byInteraction.interactionOpen || (byInteraction.interactionOpen = byRun.interactionOpen);
       byInteraction.unidentifiedRunOpen || (byInteraction.unidentifiedRunOpen = byRun.unidentifiedRunOpen);
       byInteraction.inputOpen || (byInteraction.inputOpen = byRun.inputOpen);
       byInteraction.auxiliaryOpen || (byInteraction.auxiliaryOpen = byRun.auxiliaryOpen);
-      if (byRun.order > byInteraction.order) {
-        byInteraction.phase = byRun.phase;
-        byInteraction.order = byRun.order;
-      }
+      if (byRun.ownerPhase.order > byInteraction.ownerPhase.order) byInteraction.ownerPhase = byRun.ownerPhase;
+      this.selectOwnerPhase(byInteraction);
       this.forget(byRun);
       owner = byInteraction;
     }
@@ -4344,10 +4345,12 @@ var ConsoleActivityProjection = class {
         context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
         runIds: /* @__PURE__ */ new Set(),
         openRuns: /* @__PURE__ */ new Set(),
+        runPhases: /* @__PURE__ */ new Map(),
         interactionOpen: false,
         unidentifiedRunOpen: false,
         inputOpen: false,
         auxiliaryOpen: false,
+        ownerPhase: { phase: null, order: 0 },
         phase: null,
         order: 0
       };
@@ -4364,9 +4367,26 @@ var ConsoleActivityProjection = class {
     }
     return owner;
   }
+  selectOwnerPhase(owner) {
+    const previousOrder = owner.order;
+    let latest = owner.ownerPhase;
+    for (const contribution of owner.runPhases.values()) {
+      if (contribution.phase !== null && contribution.order > latest.order) latest = contribution;
+    }
+    owner.phase = latest.phase;
+    owner.order = latest.order;
+    if (this.phaseOwner === owner && owner.order < previousOrder) this.selectPhaseOwner();
+  }
+  selectPhaseOwner() {
+    this.phaseOwner = void 0;
+    for (const active of this.active) {
+      if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+    }
+  }
   refreshOwner(owner, retainAssociation = false) {
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (retainAssociation && !open && owner.phase === null) return;
     if (owner.interactionOpen) this.interactionsOpen.add(owner);
     else this.interactionsOpen.delete(owner);
     if (hasRun) this.runsOpen.add(owner);
@@ -4376,13 +4396,9 @@ var ConsoleActivityProjection = class {
     if (open || owner.phase !== null) {
       this.active.add(owner);
       if (owner.phase !== null && (!this.phaseOwner || owner.order > this.phaseOwner.order)) this.phaseOwner = owner;
-    } else if (retainAssociation) this.active.delete(owner);
-    else this.forget(owner);
+    } else this.forget(owner);
     if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
-      this.phaseOwner = void 0;
-      for (const active of this.active) {
-        if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
-      }
+      this.selectPhaseOwner();
     }
     this.phase = this.phaseOwner?.phase ?? null;
   }
@@ -4461,12 +4477,16 @@ var ConsoleActivityProjection = class {
     }
     const owner = this.owner(frame);
     if (!owner) return false;
+    const order2 = ++this.order;
+    let ownerPhaseEvent = !frame.runId;
     switch (frame.event) {
       case "user_input":
+        ownerPhaseEvent = true;
         owner.inputOpen = !terminalUser;
         if (terminalUser) owner.auxiliaryOpen = false;
         break;
       case "interaction_started":
+        ownerPhaseEvent = true;
         owner.interactionOpen = true;
         break;
       case "run_started":
@@ -4477,13 +4497,17 @@ var ConsoleActivityProjection = class {
       case "interaction_failed":
       case "message_delivery_failed":
       case "system_notice":
+        ownerPhaseEvent = true;
         owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
         owner.openRuns.clear();
+        owner.runPhases.clear();
         break;
       case "run_completed":
       case "run_failed":
-        if (frame.runId) owner.openRuns.delete(frame.runId);
-        else owner.unidentifiedRunOpen = false;
+        if (frame.runId) {
+          owner.openRuns.delete(frame.runId);
+          owner.runPhases.delete(frame.runId);
+        } else owner.unidentifiedRunOpen = false;
         break;
       case "text_complete":
       case "text_delta":
@@ -4497,9 +4521,23 @@ var ConsoleActivityProjection = class {
     }
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     if (frame.event === "text_complete" || frame.event === "turn_completed") phase2 = owner.interactionOpen || hasRun ? "waiting" : null;
-    if (frame.event === "run_completed" || frame.event === "run_failed") phase2 = owner.interactionOpen ? "waiting" : null;
-    owner.phase = phase2 ?? null;
-    owner.order = ++this.order;
+    if (frame.event === "run_completed" || frame.event === "run_failed") {
+      if (!owner.runPhases.size && !owner.unidentifiedRunOpen || !frame.runId) {
+        owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order: order2 };
+      }
+      this.selectOwnerPhase(owner);
+    } else {
+      const contribution = { phase: phase2 ?? null, order: order2 };
+      if (frame.runId && !ownerPhaseEvent) {
+        if (contribution.phase === null) owner.runPhases.delete(frame.runId);
+        else owner.runPhases.set(frame.runId, contribution);
+      } else owner.ownerPhase = contribution;
+      if (contribution.phase === null) this.selectOwnerPhase(owner);
+      else {
+        owner.phase = contribution.phase;
+        owner.order = contribution.order;
+      }
+    }
     this.refreshOwner(owner);
     this.terminal = terminal && this.phase === null;
     return true;

@@ -4246,15 +4246,19 @@ function isIntermediateHistoryAssistantStep(frame: ConsoleFrame): boolean {
   return message.role === "block_assistant" && message.stop_reason === "tool_use";
 }
 
+type LifecyclePhase = { phase: ResponsePhase; order: number };
+
 type LifecycleOwner = {
   context: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">;
   interactionId?: string;
   runIds: Set<string>;
   openRuns: Set<string>;
+  runPhases: Map<string, LifecyclePhase>;
   interactionOpen: boolean;
   unidentifiedRunOpen: boolean;
   inputOpen: boolean;
   auxiliaryOpen: boolean;
+  ownerPhase: LifecyclePhase;
   phase: ResponsePhase;
   order: number;
 };
@@ -4318,19 +4322,23 @@ export class ConsoleActivityProjection {
       for (const key of ["runtimeKey", "identity", "sessionId"] as const) byInteraction.context[key] ??= byRun.context[key];
       for (const id of byRun.runIds) { byInteraction.runIds.add(id); this.index(this.runs, id, byInteraction); }
       for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, phase] of byRun.runPhases) {
+        if (phase.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase);
+      }
       byInteraction.interactionOpen ||= byRun.interactionOpen;
       byInteraction.unidentifiedRunOpen ||= byRun.unidentifiedRunOpen;
       byInteraction.inputOpen ||= byRun.inputOpen;
       byInteraction.auxiliaryOpen ||= byRun.auxiliaryOpen;
-      if (byRun.order > byInteraction.order) { byInteraction.phase = byRun.phase; byInteraction.order = byRun.order; }
+      if (byRun.ownerPhase.order > byInteraction.ownerPhase.order) byInteraction.ownerPhase = byRun.ownerPhase;
+      this.selectOwnerPhase(byInteraction);
       this.forget(byRun);
       owner = byInteraction;
     }
     if (!interaction && !run) owner = this.matching(this.anonymous, frame);
     if (!owner) {
       owner = { context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
-        runIds: new Set(), openRuns: new Set(), interactionOpen: false, unidentifiedRunOpen: false,
-        inputOpen: false, auxiliaryOpen: false, phase: null, order: 0 };
+        runIds: new Set(), openRuns: new Set(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
+        inputOpen: false, auxiliaryOpen: false, ownerPhase: { phase: null, order: 0 }, phase: null, order: 0 };
       if (!interaction && !run) this.anonymous.push(owner);
     }
     for (const key of ["runtimeKey", "identity", "sessionId"] as const) owner.context[key] ??= frame[key];
@@ -4338,24 +4346,41 @@ export class ConsoleActivityProjection {
     if (run) { owner.runIds.add(run); this.index(this.runs, run, owner); }
     return owner;
   }
+  private selectOwnerPhase(owner: LifecycleOwner): void {
+    const previousOrder = owner.order;
+    let latest = owner.ownerPhase;
+    for (const contribution of owner.runPhases.values()) {
+      // A newer cleared phase is still evidence; associations cannot revive
+      // an older contribution by treating that null as an absent observation.
+      if (contribution.phase !== null && contribution.order > latest.order) latest = contribution;
+    }
+    owner.phase = latest.phase;
+    owner.order = latest.order;
+    // A settled run can reveal an older phase. Let another owner's newer
+    // contribution win rather than dating the survivor with the terminal.
+    if (this.phaseOwner === owner && owner.order < previousOrder) this.selectPhaseOwner();
+  }
+  private selectPhaseOwner(): void {
+    this.phaseOwner = undefined;
+    for (const active of this.active) {
+      if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+    }
+  }
   private refreshOwner(owner: LifecycleOwner, retainAssociation = false): void {
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (retainAssociation && !open && owner.phase === null) return;
     if (owner.interactionOpen) this.interactionsOpen.add(owner); else this.interactionsOpen.delete(owner);
     if (hasRun) this.runsOpen.add(owner); else this.runsOpen.delete(owner);
     if (open) this.busyOwners.add(owner); else this.busyOwners.delete(owner);
     if (open || owner.phase !== null) {
       this.active.add(owner);
       if (owner.phase !== null && (!this.phaseOwner || owner.order > this.phaseOwner.order)) this.phaseOwner = owner;
-    } else if (retainAssociation) this.active.delete(owner);
-    else this.forget(owner);
+    } else this.forget(owner);
     // Visual text completion need not settle queue-busy ownership. Only a
     // settled displayed phase scans other active contributions, never tokens.
     if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
-      this.phaseOwner = undefined;
-      for (const active of this.active) {
-        if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
-      }
+      this.selectPhaseOwner();
     }
     this.phase = this.phaseOwner?.phase ?? null;
   }
@@ -4405,20 +4430,25 @@ export class ConsoleActivityProjection {
     }
     const owner = this.owner(frame);
     if (!owner) return false;
+    const order = ++this.order;
+    let ownerPhaseEvent = !frame.runId;
     switch (frame.event) {
       case "user_input":
+        ownerPhaseEvent = true;
         owner.inputOpen = !terminalUser;
         if (terminalUser) owner.auxiliaryOpen = false;
         break;
-      case "interaction_started": owner.interactionOpen = true; break;
+      case "interaction_started": ownerPhaseEvent = true; owner.interactionOpen = true; break;
       case "run_started":
         if (frame.runId) owner.openRuns.add(frame.runId); else owner.unidentifiedRunOpen = true;
         break;
       case "interaction_complete": case "interaction_failed": case "message_delivery_failed": case "system_notice":
+        ownerPhaseEvent = true;
         owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
-        owner.openRuns.clear(); break;
+        owner.openRuns.clear(); owner.runPhases.clear(); break;
       case "run_completed": case "run_failed":
-        if (frame.runId) owner.openRuns.delete(frame.runId); else owner.unidentifiedRunOpen = false;
+        if (frame.runId) { owner.openRuns.delete(frame.runId); owner.runPhases.delete(frame.runId); }
+        else owner.unidentifiedRunOpen = false;
         break;
       case "text_complete": case "text_delta": break;
       case "turn_completed": owner.inputOpen = owner.auxiliaryOpen = false; break;
@@ -4426,9 +4456,22 @@ export class ConsoleActivityProjection {
     }
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     if (frame.event === "text_complete" || frame.event === "turn_completed") phase = owner.interactionOpen || hasRun ? "waiting" : null;
-    if (frame.event === "run_completed" || frame.event === "run_failed") phase = owner.interactionOpen ? "waiting" : null;
-    owner.phase = phase ?? null;
-    owner.order = ++this.order;
+    if (frame.event === "run_completed" || frame.event === "run_failed") {
+      // Observed run phases and explicit run starts are different facts. A
+      // sibling's live text survives even when its start was not retained.
+      if ((!owner.runPhases.size && !owner.unidentifiedRunOpen) || !frame.runId) {
+        owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order };
+      }
+      this.selectOwnerPhase(owner);
+    } else {
+      const contribution = { phase: phase ?? null, order };
+      if (frame.runId && !ownerPhaseEvent) {
+        if (contribution.phase === null) owner.runPhases.delete(frame.runId);
+        else owner.runPhases.set(frame.runId, contribution);
+      } else owner.ownerPhase = contribution;
+      if (contribution.phase === null) this.selectOwnerPhase(owner);
+      else { owner.phase = contribution.phase; owner.order = contribution.order; }
+    }
     this.refreshOwner(owner);
     this.terminal = terminal && this.phase === null;
     return true;
