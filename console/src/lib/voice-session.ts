@@ -10,7 +10,9 @@ import { callConsoleRpc } from "./network";
 import { errorMessage, httpStatusCode, jsonRpcErrorCode } from "./errors";
 import { CONSOLE_RPC_PATHS } from "./contract";
 import { parseVoiceContextStatus, type VoiceContextPreparation } from "./voice-context";
-import { parseVoiceCaptions, VOICE_CAPTIONS_METHOD, type VoiceCaption } from "./voice-captions";
+import {
+  parseVoiceCaptions, VOICE_CAPTIONS_METHOD, type VoiceCaption, type VoicePlaybackHint,
+} from "./voice-captions";
 
 export const VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1000;
 export const VOICE_CONNECT_TIMEOUT_MS = 30_000;
@@ -38,6 +40,10 @@ export const VOICE_CAPTION_WAIT_MS = 10_000;
 /** Pause before the next caption read after an empty batch or a failed read. */
 export const VOICE_CAPTION_IDLE_DELAY_MS = 250;
 export const VOICE_CAPTION_RETRY_DELAY_MS = 1_000;
+/** Barge-in playback gate: silence while ducked, unity otherwise, 10 ms ramp. */
+export const VOICE_PLAYBACK_DUCKED_GAIN = 0;
+export const VOICE_PLAYBACK_UNITY_GAIN = 1;
+export const VOICE_PLAYBACK_GAIN_TIME_CONSTANT_S = 0.01;
 const CONTEXT_POLL_INTERVAL_MS = 1_000;
 const CONTEXT_RETRY_INTERVAL_MS = 5_000;
 const SAMPLE_INTERVAL_MS = 100;
@@ -357,6 +363,8 @@ interface Attempt {
   microphone?: AnalyserNode;
   speaker?: AnalyserNode;
   gain?: GainNode;
+  /** Barge-in gate between the speaker analyser and `gain` (duck/restore hints). */
+  playbackGate?: GainNode;
   nodes: AudioNode[];
   pending?: PendingLiveChannelHandle;
   readiness?: LivePlaybackOwnerReadiness;
@@ -545,6 +553,7 @@ export function createVoiceSession(
     attempt.microphone = undefined;
     attempt.speaker = undefined;
     attempt.gain = undefined;
+    attempt.playbackGate = undefined;
   }
 
   function quiesceLocal(attempt: Attempt) {
@@ -984,10 +993,28 @@ export function createVoiceSession(
    * retraction drops the item. The committed row retires a caption in the chat pane
    * by its `realtime_origin.provider_item_ids`, never by text.
    */
-  function applyCaptions(captions: readonly VoiceCaption[]) {
+  /**
+   * Apply Meerkat's barge-in hint to the playback gate: duck to silence while the user
+   * speaks over the assistant, restore afterwards, with a short ramp (the policy the
+   * Meerkat TypeScript SDK's applyLiveAssistantPlaybackHint applies).
+   */
+  function applyPlaybackHint(attempt: Attempt, hint: VoicePlaybackHint) {
+    const gate = attempt.playbackGate;
+    const context = attempt.context;
+    if (!gate || !context) return;
+    const target = hint === "duck" ? VOICE_PLAYBACK_DUCKED_GAIN : VOICE_PLAYBACK_UNITY_GAIN;
+    gate.gain.cancelScheduledValues(context.currentTime);
+    gate.gain.setTargetAtTime(target, context.currentTime, VOICE_PLAYBACK_GAIN_TIME_CONSTANT_S);
+  }
+
+  function applyCaptions(attempt: Attempt, captions: readonly VoiceCaption[]) {
     let next: LiveSpeechItem[] = [...snapshot.liveSpeech];
     let changed = false;
     for (const caption of captions) {
+      if (caption.kind === "playback_hint") {
+        applyPlaybackHint(attempt, caption.hint);
+        continue;
+      }
       const index = next.findIndex((item) => item.speaker === "assistant" && item.itemId === caption.itemId);
       if (caption.kind === "retracted") {
         if (index >= 0) {
@@ -1055,7 +1082,7 @@ export function createVoiceSession(
           identity: attempt.target.identity, requestId: attempt.requestId, channelId,
         }, after);
         after = batch.cursor;
-        applyCaptions(batch.captions);
+        applyCaptions(attempt, batch.captions);
         delay = batch.captions.length > 0 ? 0 : VOICE_CAPTION_IDLE_DELAY_MS;
       } catch (error) {
         if (error instanceof Cancelled || !isCurrent()) return;
@@ -1084,6 +1111,11 @@ export function createVoiceSession(
     gain.connect(context.destination);
     attempt.gain = gain;
     attempt.nodes.push(gain);
+    const playbackGate = context.createGain();
+    playbackGate.gain.value = VOICE_PLAYBACK_UNITY_GAIN;
+    playbackGate.connect(gain);
+    attempt.playbackGate = playbackGate;
+    attempt.nodes.push(playbackGate);
     const microphone = context.createAnalyser();
     microphone.fftSize = 2048;
     const source = context.createMediaStreamSource(stream);
@@ -1108,7 +1140,7 @@ export function createVoiceSession(
         speaker.fftSize = 2048;
         const remoteSource = context.createMediaStreamSource(attempt.remote!);
         remoteSource.connect(speaker);
-        speaker.connect(gain);
+        speaker.connect(playbackGate);
         attempt.speaker = speaker;
         attempt.nodes.push(remoteSource, speaker);
       }

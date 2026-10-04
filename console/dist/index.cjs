@@ -42434,6 +42434,11 @@ function parseVoiceCaptions(raw, scope, after) {
       exactKeys2(caption, ["kind", "item_id"]);
       return { kind: "retracted", itemId: itemId(caption.item_id) };
     }
+    if (caption.kind === "playback_hint") {
+      exactKeys2(caption, ["kind", "hint"]);
+      if (caption.hint !== "duck" && caption.hint !== "restore") invalid();
+      return { kind: "playback_hint", hint: caption.hint };
+    }
     return invalid();
   });
   return { cursor, captions };
@@ -42455,6 +42460,9 @@ var VOICE_AUDIO_RESUME_TIMEOUT_MS = 15e3;
 var VOICE_CAPTION_WAIT_MS = 1e4;
 var VOICE_CAPTION_IDLE_DELAY_MS = 250;
 var VOICE_CAPTION_RETRY_DELAY_MS = 1e3;
+var VOICE_PLAYBACK_DUCKED_GAIN = 0;
+var VOICE_PLAYBACK_UNITY_GAIN = 1;
+var VOICE_PLAYBACK_GAIN_TIME_CONSTANT_S = 0.01;
 var CONTEXT_POLL_INTERVAL_MS = 1e3;
 var CONTEXT_RETRY_INTERVAL_MS = 5e3;
 var SAMPLE_INTERVAL_MS = 100;
@@ -42743,6 +42751,7 @@ function createVoiceSession(baseUrl, environment) {
     attempt.microphone = void 0;
     attempt.speaker = void 0;
     attempt.gain = void 0;
+    attempt.playbackGate = void 0;
   }
   function quiesceLocal(attempt) {
     attempt.abort.abort();
@@ -43116,10 +43125,22 @@ function createVoiceSession(baseUrl, environment) {
       )
     });
   }
-  function applyCaptions(captions) {
+  function applyPlaybackHint(attempt, hint) {
+    const gate = attempt.playbackGate;
+    const context = attempt.context;
+    if (!gate || !context) return;
+    const target = hint === "duck" ? VOICE_PLAYBACK_DUCKED_GAIN : VOICE_PLAYBACK_UNITY_GAIN;
+    gate.gain.cancelScheduledValues(context.currentTime);
+    gate.gain.setTargetAtTime(target, context.currentTime, VOICE_PLAYBACK_GAIN_TIME_CONSTANT_S);
+  }
+  function applyCaptions(attempt, captions) {
     let next = [...snapshot.liveSpeech];
     let changed = false;
     for (const caption of captions) {
+      if (caption.kind === "playback_hint") {
+        applyPlaybackHint(attempt, caption.hint);
+        continue;
+      }
       const index2 = next.findIndex((item) => item.speaker === "assistant" && item.itemId === caption.itemId);
       if (caption.kind === "retracted") {
         if (index2 >= 0) {
@@ -43184,7 +43205,7 @@ function createVoiceSession(baseUrl, environment) {
           channelId
         }, after);
         after = batch.cursor;
-        applyCaptions(batch.captions);
+        applyCaptions(attempt, batch.captions);
         delay2 = batch.captions.length > 0 ? 0 : VOICE_CAPTION_IDLE_DELAY_MS;
       } catch (error) {
         if (error instanceof Cancelled || !isCurrent()) return;
@@ -43211,6 +43232,11 @@ function createVoiceSession(baseUrl, environment) {
     gain.connect(context.destination);
     attempt.gain = gain;
     attempt.nodes.push(gain);
+    const playbackGate = context.createGain();
+    playbackGate.gain.value = VOICE_PLAYBACK_UNITY_GAIN;
+    playbackGate.connect(gain);
+    attempt.playbackGate = playbackGate;
+    attempt.nodes.push(playbackGate);
     const microphone = context.createAnalyser();
     microphone.fftSize = 2048;
     const source = context.createMediaStreamSource(stream);
@@ -43235,7 +43261,7 @@ function createVoiceSession(baseUrl, environment) {
         speaker.fftSize = 2048;
         const remoteSource = context.createMediaStreamSource(attempt.remote);
         remoteSource.connect(speaker);
-        speaker.connect(gain);
+        speaker.connect(playbackGate);
         attempt.speaker = speaker;
         attempt.nodes.push(remoteSource, speaker);
       }

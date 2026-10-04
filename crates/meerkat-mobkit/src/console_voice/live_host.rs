@@ -160,11 +160,17 @@ struct SharedHost {
 
 struct Host(Arc<SharedHost>);
 
-struct RejectPlaybackPublication;
+/// Console voice's public observation publisher. Playback-output
+/// publications are refused (console's unmeasured policy never requests
+/// one); barge-in playback hints go to the call's caption stream, which the
+/// browser applies to its playback gain.
+struct ConsoleLivePublisher {
+    captions: Arc<VoiceCaptionHub>,
+}
 
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
-    for RejectPlaybackPublication
+    for ConsoleLivePublisher
 {
     async fn publish(
         &self,
@@ -174,6 +180,34 @@ impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
         // Console's unmeasured policy must never request a played-output
         // publication. Reject a policy mismatch rather than attest delivery.
         Err(meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError::Rejected)
+    }
+
+    /// `live/assistant_playback_hint` for console voice: the newest hint
+    /// replaces the channel's entry in the caption stream. Never waits on
+    /// the browser; a hint for a session without a console call is dropped.
+    async fn publish_playback_hint(
+        &self,
+        binding: meerkat_live::ProviderWebrtcBinding,
+        hint: meerkat::experimental_gpt_live::ExperimentalLivePlaybackHint,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError>
+    {
+        let hint = match hint {
+            meerkat::experimental_gpt_live::ExperimentalLivePlaybackHint::Duck => {
+                super::captions::VoicePlaybackHint::Duck
+            }
+            meerkat::experimental_gpt_live::ExperimentalLivePlaybackHint::Restore => {
+                super::captions::VoicePlaybackHint::Restore
+            }
+            _ => {
+                return Err(meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError::Rejected);
+            }
+        };
+        self.captions.publish_playback_hint(
+            binding.session_id(),
+            binding.channel_id().as_str(),
+            hint,
+        );
+        Ok(())
     }
 }
 
@@ -309,7 +343,9 @@ impl ConsoleVoiceController {
                 .mob_runtime()
                 .agent_mob_mcp_state()
                 .ok_or("console voice requires the Mob MCP owner")?,
-            Arc::new(RejectPlaybackPublication),
+            Arc::new(ConsoleLivePublisher {
+                captions: Arc::clone(&captions),
+            }),
         );
         let handler = crate::live_wiring::live_rpc_handler_with_console_policy(
             ctx, service, machine, capability, summary,
@@ -347,6 +383,54 @@ pub(crate) mod tests {
 
     // These real hosts share upstream process-wide projection budgets.
     static SHARED_HOST_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+    /// Console voice puts Meerkat's barge-in hint on the call's caption
+    /// stream for the channel the hint names; the newest hint wins.
+    #[tokio::test]
+    async fn console_publisher_routes_playback_hints_to_the_caption_stream() {
+        use meerkat::experimental_gpt_live::{
+            ExperimentalLivePlaybackHint, ExperimentalLivePublicObservationPublisher,
+        };
+        let captions = Arc::new(VoiceCaptionHub::default());
+        let session = meerkat_core::SessionId::new();
+        let registration = captions.register(&session);
+        let publisher = ConsoleLivePublisher {
+            captions: Arc::clone(&captions),
+        };
+        let binding = meerkat_live::ProviderWebrtcBinding::new(
+            meerkat_live::LiveChannelId::new("voice-channel-a"),
+            session.clone(),
+            meerkat_live::LiveRuntimeBindingGeneration::new(1),
+            meerkat_live::LiveRuntimeBindingFence::new(1),
+        );
+        publisher
+            .publish_playback_hint(binding.clone(), ExperimentalLivePlaybackHint::Duck)
+            .await
+            .expect("a duck hint is published");
+        assert_eq!(
+            registration
+                .read("voice-channel-a", 0)
+                .expect("read")
+                .captions,
+            vec![super::super::captions::VoiceCaption::PlaybackHint {
+                hint: super::super::captions::VoicePlaybackHint::Duck
+            }]
+        );
+        publisher
+            .publish_playback_hint(binding, ExperimentalLivePlaybackHint::Restore)
+            .await
+            .expect("a restore hint is published");
+        assert_eq!(
+            registration
+                .read("voice-channel-a", 0)
+                .expect("read")
+                .captions,
+            vec![super::super::captions::VoiceCaption::PlaybackHint {
+                hint: super::super::captions::VoicePlaybackHint::Restore
+            }],
+            "the newest hint replaces the channel's entry"
+        );
+    }
 
     #[derive(Default)]
     pub(crate) struct ProviderCapture {
