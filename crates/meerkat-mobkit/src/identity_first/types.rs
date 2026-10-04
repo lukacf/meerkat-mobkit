@@ -753,6 +753,15 @@ pub enum ContinuityFailureKind {
     /// resumes the same session with no extra flag. The typed hold rides
     /// [`SessionRepairRequired`] on the identity status and member health.
     RepairRequired,
+    /// A role migration this activation declared for the identity was not
+    /// applied, so the member was not attached under the undeclared role (the
+    /// bridge's `ResumeRejectionKind::RoleMigrationNotApplied`): Meerkat
+    /// refused the restamp, the declared predecessor is not the member's
+    /// durable role, or a Present identity intent owns the member and pins
+    /// its profile. The durable session is preserved; the activation's
+    /// `identity_bootstrap` reports the identity Broken with this kind, so a
+    /// host never deploys believing the migration landed.
+    RoleMigrationNotApplied,
 }
 
 /// Typed "session needs repair" hold recorded against a Broken identity.

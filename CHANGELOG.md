@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `UnifiedRuntimeBuilderError` gains
   `SessionStoreNotIncremental { store_kind }` (see Added). Exhaustive matches
   must handle it.
+- `identity_first::ResumeRejectionKind` and
+  `identity_first::ContinuityFailureKind` gain `RoleMigrationNotApplied`
+  (see Fixed). Exhaustive matches must handle it. On the wire,
+  `identity_bootstrap` restore progress can carry the new kind
+  `role_migration_not_applied`.
 
 - `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
   `durability: StorageSlotDurability`. Match `Declared(declaration)` or
@@ -633,6 +638,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A declared role migration is applied on the boot path, or refused typed;
+  it is never silently dropped (HomeCore: children declared
+  `role_migrations` to a restricted profile but kept their old role and
+  its tools, such as `spawn_member` and `delegate`, after the restart).
+  - The mob's explicit resume restores every member under its durable
+    role before the session bridge runs, and Meerkat lets neither that
+    restore nor its spawn customizer change the profile. The migration
+    rode only on the bridge's resume Spawn, which collided with the
+    restored member, and the collision handling adopted the occupant as
+    it was.
+  - When a declared migration meets an occupant on another role and
+    MobKit has repair custody, the bridge applies it: it retires the
+    restored member to absence (after proving the resume source exists,
+    carrying queued input) and resumes the same session under the
+    declared role with `resume_from_role`, which Meerkat re-verifies
+    against the durable predecessor role.
+  - Where a Present identity intent owns the member's materialization,
+    retiring it would fight MobMachine, so the resume is refused with
+    `ResumeRejectionKind::RoleMigrationNotApplied` and the identity is
+    degraded with a detail naming the migration. The `mobkit/init` result
+    shows it: `identity_bootstrap` reports the identity `broken` with
+    restore kind `role_migration_not_applied` and `ready: false`, so a
+    host never deploys believing the migration landed. Meerkat's own typed
+    refusals (`MemberRoleMigrationRequired`, `MemberRoleMigrationRejected`)
+    now classify as the same kind.
+  - An occupant whose role is not the declared predecessor is refused
+    typed before any retire: the declaration does not describe it, and
+    Meerkat would refuse the restamp after the member was already gone.
+  - Any attach under a declaration checks that the member runs the
+    declared role, and refuses typed when it does not.
 - A managed peer edge the topology no longer wants is unwired after a
   restart (HomeCore: children's agents kept reaching the parents' after the
   topology provider stopped declaring those edges).

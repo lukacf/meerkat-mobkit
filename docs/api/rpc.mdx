@@ -176,6 +176,12 @@ with `MobError::MemberRoleMigrationRejected` on mismatch, and ignores the
 declaration once the roles already agree, so a leftover declaration is inert
 rather than a repeat restamp.
 
+A declared migration is applied on the restart path even though the mob first
+restores the member under its stored role, or it is refused: the identity is
+then Broken and `identity_bootstrap` in the `mobkit/init` result reports it with
+restore kind `role_migration_not_applied` and `ready: false`. See
+[Roster](/concepts/roster) for when MobKit applies and when it refuses.
+
 A malformed payload fails `mobkit/init` with `-32602` rather than arming
 nothing, on both gateway binaries and whether or not an identity plane is
 configured. One identity declared twice with conflicting `from_role` values is
