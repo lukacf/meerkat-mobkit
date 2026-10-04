@@ -442,38 +442,60 @@ test("startup deadline cancels production HTTP headers and JSON body reads", { t
   for (const stalled of ["timeline headers", "timeline body", "history headers", "history body"]) {
     await t.test(stalled, async () => {
       const frames = runFrames("run-a");
+      const [resource, phase] = stalled.split(" ");
+      const resourceOf = url => String(url).includes("/console/timeline?") ? "timeline" : "history";
       let releaseClosed;
       const closed = new Promise(resolve => { releaseClosed = resolve; });
+      // The deadline expires once the intended read has started, never on
+      // elapsed time: a cold first request on a loaded runner can take longer
+      // than any fixed budget to reach the server.
+      const expiry = new AbortController();
       let stalledRead = false;
       const server = http.createServer((request, response) => {
-        const resource = request.url.startsWith("/console/timeline?") ? "timeline" : "history";
-        if (stalled.startsWith(resource)) {
+        const requested = resourceOf(request.url);
+        if (requested === resource) {
           stalledRead = true;
           response.on("close", releaseClosed);
-          if (stalled.endsWith("body")) {
+          if (phase === "body") {
             response.writeHead(200, { "content-type": "application/json" });
             response.write("{");
+          } else {
+            // The client is now waiting for headers that never come.
+            expiry.abort();
           }
           return;
         }
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(resource === "timeline" ? { frames } : historyPage()));
+        response.end(JSON.stringify(requested === "timeline" ? { frames } : historyPage()));
       });
       server.listen(0, "127.0.0.1");
       await once(server, "listening");
       const baseUrl = `http://127.0.0.1:${server.address().port}`;
-      let guard;
+      // The production readers, with the moment they start reading the
+      // stalled JSON body observed.
+      const readers = startupLineageReaders({
+        baseUrl, backendUrl: baseUrl,
+        fetch: async (url, init) => {
+          const response = await fetch(url, init);
+          if (phase === "body" && resourceOf(url) === resource) {
+            const json = response.json.bind(response);
+            response.json = () => {
+              const reading = json();
+              expiry.abort();
+              return reading;
+            };
+          }
+          return response;
+        },
+      });
       try {
-        await assert.rejects(waitForStartupLineage({
-          ...startupLineageReaders({ baseUrl, backendUrl: baseUrl }), timeoutMs: 150,
-        }), /Timed out: .*startup Acceptance reply/);
+        await assert.rejects(waitForStartupLineage({ ...readers, expiry: expiry.signal }),
+          /Timed out: .*startup Acceptance reply/);
         assert(stalledRead, "the deadline interrupted the intended actual HTTP read");
-        await Promise.race([
-          closed,
-          new Promise((_, reject) => { guard = setTimeout(() => reject(new Error("aborted HTTP read stayed open")), 500); }),
-        ]);
+        // The cancelled read closes its connection; the test's own timeout
+        // bounds this wait.
+        await closed;
       } finally {
-        clearTimeout(guard);
         server.closeAllConnections();
         await new Promise(resolve => server.close(resolve));
       }
