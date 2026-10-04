@@ -507,6 +507,9 @@ async fn register_roster_metadata(
     } else {
         Vec::new()
     };
+    runtime.set_identity_edge_ownership(
+        super::runtime::IdentityEdgeOwnership::for_topology_provider(topology_provider.is_some()),
+    );
     runtime.set_desired_peer_edges(managed_edges.clone()).await;
 
     // Reserve the full roster before the one fleet-wide metadata read. Each

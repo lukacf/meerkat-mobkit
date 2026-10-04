@@ -66,7 +66,7 @@ impl DefinitionWiringEdgeDiscovery {
         })
     }
 
-    fn desired_edges(&self, members: &[EdgeMemberView]) -> Vec<DesiredPeerEdge> {
+    pub(crate) fn desired_edges(&self, members: &[EdgeMemberView]) -> Vec<DesiredPeerEdge> {
         let mut edges = BTreeSet::new();
         if self.auto_wire_orchestrator
             && let Some(orchestrator_profile) = &self.orchestrator_profile

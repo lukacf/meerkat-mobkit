@@ -128,6 +128,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Behaviour change (identity-first runtimes with a topology provider): with
+  a topology provider, reconcile unwires identity edges that neither the
+  provider nor the definition's wiring declares, including edges wired
+  before a restart; to keep such an edge, declare it in your provider.
+  Runtimes without a topology provider are unchanged: they unwire only the
+  edges they wired.
+
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
   Any other peer's or scheduled turn can satisfy the identity-wide wait used
@@ -626,6 +633,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A managed peer edge the topology no longer wants is unwired after a
+  restart (HomeCore: children's agents kept reaching the parents' after the
+  topology provider stopped declaring those edges).
+  - The managed-edge set was process memory, empty at boot, while the mob's
+    wiring is durable and replays. A dropped edge was neither managed nor
+    desired, so reconcile never unwired it, and agents cannot unwire it
+    either (external-managed custody denies `unwire_members`).
+  - Under a topology provider, the identities' external-managed custody
+    makes the topology the edges' desired-state owner. Reconcile now prunes
+    every live edge between two identities that no declared owner wants:
+    not the provider plus operator intent, and not the mob definition's
+    wiring over the identity roster, which keeps its own edges so the two
+    never fight.
 - Console: a member-kickoff notice no longer shows Meerkat's peer transport
   projection. Meerkat 0.8.50 sends kickoff status (`mob.kickoff_*`) as peer
   requests whose content is model-facing routing text (the peer spec with its

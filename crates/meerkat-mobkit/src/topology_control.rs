@@ -1433,7 +1433,25 @@ impl TopologyRuntimeHandle {
                 report.skipped_missing_members.push(logical);
             }
         }
-        for (a, b) in managed.difference(&desired) {
+        // Reconcile unwires every managed edge that is not desired and, when
+        // a topology provider owns the topology, every live identity edge
+        // that no declared owner wants (one wired before a restart is live
+        // but unmanaged; one the definition's wiring declares is kept).
+        let reconciled_away = match context.runtime.identity_edge_ownership() {
+            crate::identity_first::runtime::IdentityEdgeOwnership::TopologyProvider => {
+                let definition_declared =
+                    context.runtime.definition_declared_identity_edges().await;
+                managed
+                    .iter()
+                    .chain(actual.difference(&definition_declared))
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            }
+            crate::identity_first::runtime::IdentityEdgeOwnership::WiredByThisProcess => {
+                managed.clone()
+            }
+        };
+        for (a, b) in reconciled_away.difference(&desired) {
             let logical = match DesiredPeerEdge::new(a.to_string(), b.to_string()) {
                 Ok(edge) => edge,
                 Err(_) => continue,
