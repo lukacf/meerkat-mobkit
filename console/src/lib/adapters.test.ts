@@ -1142,6 +1142,58 @@ for (const [surface, inferPhase, resolvePhase] of [
   }
 }
 
+for (const [event, inputStatus, terminalStatus, data] of [
+  ["message_delivery_failed", "delivery_failed", "delivery_failed", { reason: "host-human input refused", data: { kind: "host_human_input_unsupported" } }],
+  ["interaction_complete", "delivered", "completed", { reason: "steer_delivered", handling_mode: "steer" }],
+] as const) {
+  test(`keeps owner A phase after input B emits ${event}`, () => {
+    const scope = { identity: "owner", runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    // The queried input status reflects the same B delivery terminal.
+    const frames = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", data: {} },
+      { ...scope, id: "input-B", event: "user_input", sourceKind: "send", interactionId: "interaction-B", status: inputStatus, data: { content: "Steer B", handling_mode: "steer" } },
+      { ...scope, id: "input-B-terminal", event, sourceKind: "synthetic", interactionId: "interaction-B", status: terminalStatus, data },
+    ];
+    assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+    assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+    const completed = [...frames, { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", data: { text: "Owner A completed" } }];
+    assert.equal(inferResponsePhaseFromFrames(completed), null);
+    assert.equal(resolvePanelResponsePhase({ frames: completed, serverPhase: "generating" }), null);
+  });
+}
+
+test("sparse owner linking cannot merge conflicting known sessions", () => {
+  const interaction = { identity: "owner", runtimeKey: "runtime", sessionId: "session-A" };
+  const run = { identity: "owner", runtimeKey: "runtime", sessionId: "session-B" };
+  const frames = [
+    { ...interaction, id: "interaction-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+    { ...run, id: "run-start", event: "run_started", runId: "run-B", data: {} },
+    { identity: "owner", id: "sparse-link", event: "run_started", interactionId: "interaction-A", runId: "run-B", data: {} },
+    { ...interaction, id: "interaction-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} },
+  ];
+  assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+  assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+  const completed = [...frames, { ...run, id: "run-terminal", event: "run_completed", runId: "run-B", data: {} }];
+  assert.equal(inferResponsePhaseFromFrames(completed), null);
+});
+
+test("sparse owner linking preserves the run's known scope", () => {
+  const scope = { identity: "owner", runtimeKey: "runtime", sessionId: "session-A" };
+  const frames = [
+    { id: "interaction-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+    { ...scope, id: "run-start", event: "run_started", runId: "run-A", data: {} },
+    { id: "sparse-link", event: "run_started", interactionId: "interaction-A", runId: "run-A", data: {} },
+    { ...scope, sessionId: "session-B", id: "wrong-session-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} },
+  ];
+  assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+  assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+  const completed = [...frames, { ...scope, id: "owner-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} }];
+  assert.equal(inferResponsePhaseFromFrames(completed), null);
+  assert.equal(resolvePanelResponsePhase({ frames: completed, serverPhase: "generating" }), null);
+});
+
 test("resolvePanelResponsePhase lets local terminal history clear stale server phase", () => {
   assert.equal(
     resolvePanelResponsePhase({

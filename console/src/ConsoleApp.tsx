@@ -34,6 +34,7 @@ import {
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
   settledHistoryActivity,
+  ConsoleActivityProjection,
   topologyMutationIntent,
 } from "@console-core";
 
@@ -278,7 +279,7 @@ interface IdentityLog extends IdentityLogCore {
   /// Incrementally folded busy lifecycle, valid while `busyFoldedThrough`
   /// tracks the newest lifecycle frame seen in timestamp order. An older
   /// lifecycle frame arriving late invalidates it and forces one replay.
-  busyLifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean };
+  busyLifecycle: ConsoleActivityProjection;
   busyFoldedThroughMs: number;
   busyFoldValid: boolean;
   /// `null` while we haven't asked the server yet; `true` if the
@@ -846,7 +847,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
     capturedAt: null,
@@ -1179,7 +1180,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
         byKey: new Map(),
@@ -1327,6 +1328,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         merged.previous.runtimeKey !== merged.next.runtimeKey ||
         merged.previous.identity !== merged.next.identity ||
         merged.previous.sessionId !== merged.next.sessionId ||
+        merged.previous.interactionId !== merged.next.interactionId ||
+        merged.previous.runId !== merged.next.runId ||
+        merged.previous.status !== merged.next.status ||
+        merged.previous.data !== merged.next.data ||
         merged.previous.cursor !== merged.next.cursor ||
         merged.previous.event === "assistant_history_snapshot" ||
         merged.next.event === "assistant_history_snapshot" ||
@@ -1417,53 +1422,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
   }
 
-  /// Fold one lifecycle frame into `lifecycle`. Mirrors the replay switch in
-  /// `recomputeBusyStateFromLog` exactly; both must stay in step.
-  function foldBusyFrame(
-    lifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean },
-    frame: ConsoleFrame,
-  ): void {
-    switch (frame.event) {
-      case "interaction_started":
-        lifecycle.interactionOpen = true;
-        break;
-      case "run_started":
-        lifecycle.runOpen = true;
-        break;
-      case "run_completed":
-      case "run_failed":
-        lifecycle.runOpen = false;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        lifecycle.interactionOpen = false;
-        lifecycle.runOpen = false;
-        lifecycle.legacyBusy = false;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) {
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          lifecycle.legacyBusy = false;
-        }
-        break;
-      default: {
-        const transition = busyTransitionForFrame(frame);
-        if (transition !== null) lifecycle.legacyBusy = transition;
-        break;
-      }
-    }
-  }
-
-  function busyFromLifecycle(lifecycle: {
-    interactionOpen: boolean;
-    runOpen: boolean;
-    legacyBusy: boolean;
-  }): boolean {
-    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
-  }
-
   /// Live path: fold the frame in place when it is not older than the newest
   /// lifecycle frame already folded. Frames arrive in order almost always,
   /// so this is O(1) per frame; a late frame (older timestamp) invalidates
@@ -1478,19 +1436,18 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       recomputeBusyStateFromLog(identity);
       return;
     }
-    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
     if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    foldBusyFrame(log.busyLifecycle, frame);
+    if (!log.busyLifecycle.fold(frame)) return;
     log.busyFoldedThroughMs = ts;
     identityLifecycleRef.current[identity] = {
       interactionOpen: log.busyLifecycle.interactionOpen,
       runOpen: log.busyLifecycle.runOpen,
     };
-    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
+    applyBusyState(identity, log.busyLifecycle.busy);
   }
 
   /// Full replay over the transcript-ordered lifecycle frames. Used for the
@@ -1498,14 +1455,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   /// the ordinary live path never pays for it.
   function recomputeBusyStateFromLog(identity: string): void {
     const log = getOrCreateLog(identity);
-    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
     const frames = sortedEvents(log);
     const coveredHistory = settledHistoryActivity(frames);
     const ordered = frames
       // A committed tool row remains transcript evidence. Once the same
       // session's settled observation covers it, it cannot reopen the queue.
-      .filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame))
+      .filter((frame) => !coveredHistory.has(frame))
       .sort((a, b) => {
         const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
         if (timeDelta !== 0) return timeDelta;
@@ -1514,7 +1471,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
       });
     for (const frame of ordered) {
-      foldBusyFrame(lifecycle, frame);
+      lifecycle.fold(frame);
       if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
         foldedThrough = frame.timestampMs;
       }
@@ -1526,7 +1483,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       interactionOpen: lifecycle.interactionOpen,
       runOpen: lifecycle.runOpen,
     };
-    applyBusyState(identity, busyFromLifecycle(lifecycle));
+    applyBusyState(identity, lifecycle.busy);
   }
 
   /// Reconcile a server-history fetch into the identity log. Frames
@@ -1663,7 +1620,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (inFlight) {
       return inFlight.then(() => {
         if (options.clearPhase) {
-          clearPhaseForIdentity(normalized);
+          recomputePhaseForIdentity(normalized);
           forceRender();
         }
       });
@@ -1678,7 +1635,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         limit: 200,
       });
       reconcileServerLog(normalized, page.frames, page.available);
-      if (options.clearPhase) clearPhaseForIdentity(normalized);
+      if (options.clearPhase) recomputePhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
@@ -2186,15 +2143,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function updatePanelPhaseFromFrame(
     panelKey: string,
     frame: ConsoleFrame,
-    lifecycleBusy = false,
+    projectedPhase: "waiting" | "tool-executing" | "generating" | null = null,
   ): boolean {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) return commitPanelPhase(panelKey, null);
+        if (isTerminalUserInputStatus(frame.status)) return commitPanelPhase(panelKey, projectedPhase);
         return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
+      case "run_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
@@ -2239,23 +2197,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "interaction_complete":
       case "interaction_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, null);
+        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, projectedPhase);
         return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) {
-          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+          return commitPanelPhase(panelKey, projectedPhase);
         }
         return false;
       case "message_delivery_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       default:
         return false;
     }
@@ -2281,7 +2239,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return recomputePhaseForIdentity(identity);
     }
     let changed = false;
-    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
@@ -2289,7 +2246,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey(panel.id, target),
         frame,
-        lifecycleBusy,
+        getOrCreateLog(identity).busyLifecycle.phase,
       )) changed = true;
     }
     return changed;
@@ -3198,7 +3155,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         // No event log on this runtime — SSE is the canonical source,
         // there's nothing to backfill.
         if (log.hasServerLog === false) {
-          clearPhaseForIdentity(identity);
+          recomputePhaseForIdentity(identity);
           forceRender();
           return;
         }

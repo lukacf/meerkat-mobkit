@@ -362,6 +362,7 @@ export {
   createUserEntry,
   describeMemoryTimelineEvent,
   inferResponsePhaseFromFrames,
+  ConsoleActivityProjection,
   isAgentPinned,
   mapFramesToTimelineEntries,
   mergeConversationFrames,

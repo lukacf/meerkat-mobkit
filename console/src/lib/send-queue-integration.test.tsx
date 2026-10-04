@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleApp } from "../ConsoleApp";
 import type { MobKitConsoleTransport } from "./headless";
+import type { ConsoleFrame } from "../types";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
@@ -542,6 +543,101 @@ describe("stock durable queue integration", () => {
     const saved = savedAttempts();
     expect(saved[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated" });
     expect(JSON.parse(saved[0].envelopeJson).handling_mode).toBe("steer");
+  });
+
+  it.each([
+    ["message_delivery_failed", "delivery_failed", { reason: "host-human input refused", data: { kind: "host_human_input_unsupported" } }],
+    ["interaction_complete", "completed", { reason: "steer_delivered", handling_mode: "steer" }],
+  ] as const)("keeps owner A busy after input B emits %s", async (event, status, data) => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", timestampMs: startedAt, data: { content: "Active owner work A" } },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 1, data: {} },
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("queued input C waits for owner A");
+    const stack = await screen.findByTestId("pending-stack");
+    expect(within(stack).getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const inputB: ConsoleFrame = { ...scope, id: "input-B", event: "user_input", sourceKind: "send",
+      interactionId: "interaction-B", timestampMs: startedAt + 2, status: "queued", data: { content: "Steer B", handling_mode: "steer" } };
+    const terminalB: ConsoleFrame = { ...scope, id: "input-B-terminal", event, sourceKind: "synthetic",
+      interactionId: "interaction-B", timestampMs: startedAt + 3, status, data };
+    history.push(inputB, terminalB);
+    await act(async () => { receive?.(inputB); receive?.(terminalB); });
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminalA: ConsoleFrame = { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 4, data: { text: "Owner A completed" } };
+    history.push(terminalA);
+    await act(async () => { receive?.(terminalA); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("queued input C waits for owner A");
+  });
+
+  it("replays owner IDs corrected on the same terminal record before draining", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const terminal: ConsoleFrame = { ...scope, id: "corrected-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", timestampMs: startedAt + 2, frameVersion: 1, data: { text: "Initial A terminal" } };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", timestampMs: startedAt, data: {} },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 1, data: {} },
+      terminal,
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Initial A terminal", { selector: "p" });
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    const corrected = { ...terminal, interactionId: "interaction-B", frameVersion: 2 };
+    history[2] = corrected;
+    await act(async () => { receive?.({ ...scope, id: "terminal-update", event: "frame_updated", data: { frame: corrected } }); });
+    await compose("queued input C waits for corrected owner A");
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminalA: ConsoleFrame = { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", timestampMs: startedAt + 3, data: { text: "Owner A completed" } };
+    history.push(terminalA);
+    await act(async () => { receive?.(terminalA); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("queued input C waits for corrected owner A");
+  });
+
+  it("keeps tool-only owner work queued through text completion until a terminal turn", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session", interactionId: "interaction-A", runId: "run-A" };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "tool-A-result", event: "tool_execution_completed", timestampMs: startedAt, data: {} },
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("queued input C waits for a terminal turn");
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    const text: ConsoleFrame = { ...scope, id: "text-A-complete", event: "text_complete", timestampMs: startedAt + 1, data: { content: "Tool work text finished" } };
+    history.push(text);
+    await act(async () => { receive?.(text); });
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminal: ConsoleFrame = { ...scope, id: "turn-A-complete", event: "turn_completed", timestampMs: startedAt + 2, data: { stop_reason: "end_turn" } };
+    history.push(terminal);
+    await act(async () => { receive?.(terminal); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   });
 
   it("keeps the active owner run busy after a refused steer", async () => {

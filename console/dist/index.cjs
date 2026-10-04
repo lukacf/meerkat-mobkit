@@ -4166,6 +4166,9 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+function ownerContextsConflict(left, right) {
+  return ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
+}
 function formatServerToolAnnotations(annotations) {
   return annotations.map((annotation, index2) => {
     const record6 = annotation && typeof annotation === "object" ? annotation : null;
@@ -4300,24 +4303,113 @@ function isIntermediateHistoryAssistantStep(frame) {
   const message = data.message && typeof data.message === "object" ? data.message : {};
   return message.role === "block_assistant" && message.stop_reason === "tool_use";
 }
-function inferResponsePhaseFromFrames(frames, fallback = null) {
-  const coveredHistory = settledHistoryActivity(frames);
-  let phase2 = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+var ConsoleActivityProjection = class {
+  constructor(fallback = null) {
+    __publicField(this, "interactions", /* @__PURE__ */ new Map());
+    __publicField(this, "runs", /* @__PURE__ */ new Map());
+    __publicField(this, "anonymous", []);
+    __publicField(this, "active", /* @__PURE__ */ new Set());
+    __publicField(this, "busyOwners", /* @__PURE__ */ new Set());
+    __publicField(this, "interactionsOpen", /* @__PURE__ */ new Set());
+    __publicField(this, "runsOpen", /* @__PURE__ */ new Set());
+    __publicField(this, "phaseOwner");
+    __publicField(this, "order", 0);
+    __publicField(this, "phase");
+    __publicField(this, "terminal", false);
+    this.phase = fallback;
+  }
+  get busy() {
+    return this.busyOwners.size > 0;
+  }
+  get interactionOpen() {
+    return this.interactionsOpen.size > 0;
+  }
+  get runOpen() {
+    return this.runsOpen.size > 0;
+  }
+  matching(owners, frame) {
+    const matches = owners?.filter((owner) => !ownerContextsConflict(owner.context, frame) && !(owner.interactionId && frame.interactionId && owner.interactionId !== frame.interactionId));
+    return matches?.length === 1 ? matches[0] : void 0;
+  }
+  index(map3, key, owner) {
+    const owners = map3.get(key) ?? [];
+    if (!owners.includes(owner)) map3.set(key, [...owners, owner]);
+  }
+  forget(owner) {
+    const remove = (map3, key) => {
+      const remaining = map3.get(key)?.filter((value) => value !== owner) ?? [];
+      if (remaining.length) map3.set(key, remaining);
+      else map3.delete(key);
+    };
+    if (owner.interactionId) remove(this.interactions, owner.interactionId);
+    for (const id of owner.runIds) remove(this.runs, id);
+    this.anonymous = this.anonymous.filter((value) => value !== owner);
+    this.active.delete(owner);
+    this.busyOwners.delete(owner);
+    this.interactionsOpen.delete(owner);
+    this.runsOpen.delete(owner);
+  }
+  owner(frame) {
+    var _a, _b;
+    const interaction = typeof frame.interactionId === "string" && frame.interactionId.length ? frame.interactionId : void 0;
+    const run = typeof frame.runId === "string" && frame.runId.length ? frame.runId : void 0;
+    const byInteraction = interaction ? this.matching(this.interactions.get(interaction), frame) : void 0;
+    const byRun = run ? this.matching(this.runs.get(run), frame) : void 0;
+    if (byInteraction && byRun && ownerContextsConflict(byInteraction.context, byRun.context)) return void 0;
+    let owner = byInteraction ?? byRun;
+    if (byInteraction && byRun && byInteraction !== byRun && !byRun.interactionId) {
+      for (const key of ["runtimeKey", "identity", "sessionId"]) (_a = byInteraction.context)[key] ?? (_a[key] = byRun.context[key]);
+      for (const id of byRun.runIds) {
+        byInteraction.runIds.add(id);
+        this.index(this.runs, id, byInteraction);
+      }
+      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      byInteraction.auxiliaryOpen || (byInteraction.auxiliaryOpen = byRun.auxiliaryOpen);
+      if (byRun.order > byInteraction.order) {
+        byInteraction.phase = byRun.phase;
+        byInteraction.order = byRun.order;
+      }
+      this.forget(byRun);
+      owner = byInteraction;
+    }
+    if (!interaction && !run) owner = this.matching(this.anonymous, frame);
+    if (!owner) {
+      owner = {
+        context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
+        runIds: /* @__PURE__ */ new Set(),
+        openRuns: /* @__PURE__ */ new Set(),
+        interactionOpen: false,
+        unidentifiedRunOpen: false,
+        inputOpen: false,
+        auxiliaryOpen: false,
+        phase: null,
+        order: 0
+      };
+      if (!interaction && !run) this.anonymous.push(owner);
+    }
+    for (const key of ["runtimeKey", "identity", "sessionId"]) (_b = owner.context)[key] ?? (_b[key] = frame[key]);
+    if (interaction) {
+      owner.interactionId = interaction;
+      this.index(this.interactions, interaction, owner);
+    }
+    if (run) {
+      owner.runIds.add(run);
+      this.index(this.runs, run, owner);
+    }
+    return owner;
+  }
+  fold(frame) {
+    if (isIntermediateHistoryAssistantStep(frame)) return false;
+    const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
+    let phase2;
+    let terminal = false;
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
-        else phase2 = "waiting";
+        phase2 = terminalUser ? null : "waiting";
+        terminal = terminalUser;
         break;
       case "interaction_started":
-        interactionOpen = true;
-        phase2 = "waiting";
-        break;
       case "run_started":
-        runOpen = true;
         phase2 = "waiting";
         break;
       case "tool_call_requested":
@@ -4328,50 +4420,116 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
       case "server_tool_content":
         if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
         else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
+        else return false;
         break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase2 = "waiting";
-        break;
-      case "reasoning_delta":
-        phase2 = "generating";
-        break;
       case "reasoning_complete":
         phase2 = "waiting";
         break;
+      case "reasoning_delta":
       case "text_delta":
         phase2 = "generating";
         break;
       case "text_complete":
-        phase2 = interactionOpen || runOpen ? "waiting" : null;
-        break;
       case "interaction_complete":
       case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase2 = null;
-        break;
       case "run_completed":
       case "run_failed":
-        runOpen = false;
-        phase2 = interactionOpen ? "waiting" : null;
+      case "message_delivery_failed":
+        phase2 = null;
+        terminal = true;
         break;
       case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) phase2 = null;
+        if (!systemNoticeClearsBusyState(frame)) {
+          this.terminal = false;
+          return false;
+        }
+        phase2 = null;
+        terminal = true;
         break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase2 = interactionOpen || runOpen ? "waiting" : null;
+        const reason = data.stop_reason ?? data.stopReason;
+        if (reason === "tool_use") {
+          this.terminal = false;
+          return false;
         }
+        phase2 = null;
+        terminal = true;
         break;
       }
       default:
+        return false;
+    }
+    const owner = this.owner(frame);
+    if (!owner) return false;
+    switch (frame.event) {
+      case "user_input":
+        owner.inputOpen = !terminalUser;
+        if (terminalUser) owner.auxiliaryOpen = false;
+        break;
+      case "interaction_started":
+        owner.interactionOpen = true;
+        break;
+      case "run_started":
+        if (frame.runId) owner.openRuns.add(frame.runId);
+        else owner.unidentifiedRunOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "message_delivery_failed":
+      case "system_notice":
+        owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
+        owner.openRuns.clear();
+        break;
+      case "run_completed":
+      case "run_failed":
+        if (frame.runId) owner.openRuns.delete(frame.runId);
+        else owner.unidentifiedRunOpen = false;
+        break;
+      case "text_complete":
+      case "text_delta":
+        break;
+      case "turn_completed":
+        owner.inputOpen = owner.auxiliaryOpen = false;
+        break;
+      default:
+        owner.auxiliaryOpen = true;
         break;
     }
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    if (frame.event === "text_complete" || frame.event === "turn_completed") phase2 = owner.interactionOpen || hasRun ? "waiting" : null;
+    if (frame.event === "run_completed" || frame.event === "run_failed") phase2 = owner.interactionOpen ? "waiting" : null;
+    const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (owner.interactionOpen) this.interactionsOpen.add(owner);
+    else this.interactionsOpen.delete(owner);
+    if (hasRun) this.runsOpen.add(owner);
+    else this.runsOpen.delete(owner);
+    if (open) this.busyOwners.add(owner);
+    else this.busyOwners.delete(owner);
+    if (open || phase2 !== null) {
+      this.active.add(owner);
+      owner.phase = phase2 ?? null;
+      owner.order = ++this.order;
+      if (owner.phase !== null) this.phaseOwner = owner;
+    } else this.forget(owner);
+    if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
+      this.phaseOwner = void 0;
+      for (const active of this.active) {
+        if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+      }
+    }
+    this.phase = this.phaseOwner?.phase ?? null;
+    this.terminal = terminal && this.phase === null;
+    return true;
   }
-  return phase2;
+};
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  const coveredHistory = settledHistoryActivity(frames);
+  const projection = new ConsoleActivityProjection(fallback);
+  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  return projection.phase;
 }
 function isTerminalUserInputStatus(status) {
   return status === "completed" || status === "delivery_failed" || status === "failed";
@@ -4391,74 +4549,9 @@ function resolvePanelResponsePhase(args) {
 }
 function latestRoutableFrameIsTerminal(frames) {
   const coveredHistory = settledHistoryActivity(frames);
-  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
-    const frame = frames[index2];
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index2);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-function hasOpenLifecycleBefore(frames, beforeIndex) {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
-    switch (frames[index2].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
+  const projection = new ConsoleActivityProjection();
+  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  return projection.terminal;
 }
 
 // ../packages/console-core/src/contract.ts
@@ -26127,7 +26220,7 @@ function cursorSeq(cursor) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 function transcriptSourceOrder(left, right) {
-  if (ownerContextsConflict(left, right)) return null;
+  if (ownerContextsConflict2(left, right)) return null;
   const sameSession = Boolean(left.runtimeKey && left.runtimeKey === right.runtimeKey && left.sessionId && left.sessionId === right.sessionId);
   if (sameSession && left.sourceKind === "console_event" && right.sourceKind === "console_event") {
     const sequence = (frame) => {
@@ -27375,11 +27468,11 @@ function terminalFrameVisibleText(frame) {
   }
   return "";
 }
-function ownerContextsConflict(left, right) {
+function ownerContextsConflict2(left, right) {
   return ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
 }
 function sameAssistantRunOwner(left, right) {
-  if (ownerContextsConflict(left, right)) return false;
+  if (ownerContextsConflict2(left, right)) return false;
   const leftRun = left.runId?.trim() || "";
   const rightRun = right.runId?.trim() || "";
   const leftInteraction = left.interactionId?.trim() || "";
@@ -27395,9 +27488,9 @@ function sameTextStreamOwner(left, right) {
   }
   if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
     const key = assistantMessageKey(left);
-    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
+    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict2(left, right));
   }
-  return Boolean(left && !ownerContextsConflict(left, right) && (left.runId?.trim() || "") === (right.runId?.trim() || "") && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
+  return Boolean(left && !ownerContextsConflict2(left, right) && (left.runId?.trim() || "") === (right.runId?.trim() || "") && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
 }
 function assistantOwnerKey(frame) {
   const messageKey = assistantMessageKey(frame);
@@ -29128,7 +29221,7 @@ function createTimelineFold(agent, frames, options) {
     const scope = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId]);
     let result = occurrenceToolResults.get(scope);
     if (!result) {
-      const matching = orderedFrames.filter((other) => !ownerContextsConflict(frame, other));
+      const matching = orderedFrames.filter((other) => !ownerContextsConflict2(frame, other));
       matching.sort((left, right) => Number(left.sourceKind === "session_history") - Number(right.sourceKind === "session_history"));
       result = historyToolResults(matching, cardToolCallIds, true);
       occurrenceToolResults.set(scope, result);
@@ -44007,7 +44100,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
     capturedAt: null,
@@ -44267,7 +44360,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         events: [],
         version: 0,
         sorted: null,
-        busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+        busyLifecycle: new ConsoleActivityProjection(),
         busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
         busyFoldValid: true,
         byKey: /* @__PURE__ */ new Map(),
@@ -44360,7 +44453,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!updated || !updated.id) return false;
       const merged = mergeFrameUpdate(log, updated);
       if (!merged) return false;
-      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.interactionId !== merged.next.interactionId || merged.previous.runId !== merged.next.runId || merged.previous.status !== merged.next.status || merged.previous.data !== merged.next.data || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
         log.busyFoldValid = false;
       }
       clearOptimisticUserForFrame(identity, updated);
@@ -44409,69 +44502,32 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       maybeDrainHead(identity);
     }
   }
-  function foldBusyFrame(lifecycle, frame) {
-    switch (frame.event) {
-      case "interaction_started":
-        lifecycle.interactionOpen = true;
-        break;
-      case "run_started":
-        lifecycle.runOpen = true;
-        break;
-      case "run_completed":
-      case "run_failed":
-        lifecycle.runOpen = false;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        lifecycle.interactionOpen = false;
-        lifecycle.runOpen = false;
-        lifecycle.legacyBusy = false;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) {
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          lifecycle.legacyBusy = false;
-        }
-        break;
-      default: {
-        const transition = busyTransitionForFrame(frame);
-        if (transition !== null) lifecycle.legacyBusy = transition;
-        break;
-      }
-    }
-  }
-  function busyFromLifecycle(lifecycle) {
-    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
-  }
   function updateBusyStateForFrame(identity, frame) {
     const log = getOrCreateLog(identity);
     if (frame.event === "assistant_history_snapshot" || frame.event === "frame_updated" && !log.busyFoldValid) {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
     if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    foldBusyFrame(log.busyLifecycle, frame);
+    if (!log.busyLifecycle.fold(frame)) return;
     log.busyFoldedThroughMs = ts;
     identityLifecycleRef.current[identity] = {
       interactionOpen: log.busyLifecycle.interactionOpen,
       runOpen: log.busyLifecycle.runOpen
     };
-    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
+    applyBusyState(identity, log.busyLifecycle.busy);
   }
   function recomputeBusyStateFromLog(identity) {
     const log = getOrCreateLog(identity);
-    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
     const frames = sortedEvents(log);
     const coveredHistory = settledHistoryActivity(frames);
-    const ordered = frames.filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame)).sort((a, b) => {
+    const ordered = frames.filter((frame) => !coveredHistory.has(frame)).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
@@ -44479,7 +44535,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
     });
     for (const frame of ordered) {
-      foldBusyFrame(lifecycle, frame);
+      lifecycle.fold(frame);
       if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
         foldedThrough = frame.timestampMs;
       }
@@ -44491,7 +44547,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       interactionOpen: lifecycle.interactionOpen,
       runOpen: lifecycle.runOpen
     };
-    applyBusyState(identity, busyFromLifecycle(lifecycle));
+    applyBusyState(identity, lifecycle.busy);
   }
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
@@ -44582,7 +44638,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (inFlight) {
       return inFlight.then(() => {
         if (options.clearPhase) {
-          clearPhaseForIdentity(normalized);
+          recomputePhaseForIdentity(normalized);
           forceRender();
         }
       });
@@ -44596,7 +44652,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         limit: 200
       });
       reconcileServerLog(normalized, page.frames, page.available);
-      if (options.clearPhase) clearPhaseForIdentity(normalized);
+      if (options.clearPhase) recomputePhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
@@ -44983,14 +45039,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       forceRender();
     }, delayMs);
   }
-  function updatePanelPhaseFromFrame(panelKey, frame, lifecycleBusy = false) {
+  function updatePanelPhaseFromFrame(panelKey, frame, projectedPhase = null) {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, null);
+        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, projectedPhase);
         return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
+      case "run_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
@@ -45031,23 +45088,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "interaction_complete":
       case "interaction_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) return commitPanelPhase(panelKey, null);
+        if (systemNoticeClearsBusyState2(frame)) return commitPanelPhase(panelKey, projectedPhase);
         return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) {
-          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+          return commitPanelPhase(panelKey, projectedPhase);
         }
         return false;
       case "message_delivery_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       default:
         return false;
     }
@@ -45059,7 +45116,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return recomputePhaseForIdentity(identity);
     }
     let changed = false;
-    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -45067,7 +45123,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey2(panel.id, target),
         frame,
-        lifecycleBusy
+        getOrCreateLog(identity).busyLifecycle.phase
       )) changed = true;
     }
     return changed;
@@ -45801,7 +45857,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) {
-          clearPhaseForIdentity(identity);
+          recomputePhaseForIdentity(identity);
           forceRender();
           return;
         }
