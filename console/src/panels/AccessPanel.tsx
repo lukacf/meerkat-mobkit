@@ -175,6 +175,8 @@ export function AccessPanel({
   const [previewAction, setPreviewAction] = React.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = React.useState("");
   const [previewResult, setPreviewResult] = React.useState<AccessPreviewResult | null>(null);
+  const previewSubjectInput = React.useRef<HTMLInputElement>(null);
+  const inspectFocusPending = React.useRef(false);
 
   const actions = status?.actions ?? [];
   const [saving, setSaving] = React.useState(false);
@@ -204,6 +206,12 @@ export function AccessPanel({
     setGroupMembersDraft(""); setEditingGroup(null); setMutationError(null);
   }, [scope]);
   React.useEffect(() => () => { previewVersion.current += 1; }, []);
+  React.useEffect(() => {
+    if (tab === "preview" && inspectFocusPending.current) {
+      previewSubjectInput.current?.focus();
+      inspectFocusPending.current = false;
+    }
+  }, [tab]);
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
@@ -222,6 +230,15 @@ export function AccessPanel({
     setEditingGroup(name);
     setGroupNameDraft(name);
     setGroupMembersDraft(formatListInput(members));
+  }
+
+  function inspectSubject(subject: string) {
+    if (!current || saving) return;
+    previewVersion.current += 1;
+    setPreviewResult(null); setPreviewError(null); setPreviewPending(false);
+    setPreviewSubject(subject);
+    inspectFocusPending.current = true;
+    setTab("preview");
   }
 
   function submitGroup() {
@@ -298,7 +315,7 @@ export function AccessPanel({
           Refresh
         </button>
       </div>
-      <fieldset className="gating__list access-panel__body" disabled={tab === "preview" ? !current : !canEdit} style={{ border: 0, margin: 0, minWidth: 0 }}>
+      <fieldset className="gating__list access-panel__body" disabled={tab === "preview" ? !current : tab === "groups" ? !current || saving : !canEdit} style={{ border: 0, margin: 0, minWidth: 0 }}>
         {tab === "overview" ? (
           <div className="gating__policies">
             <div className="gpolicy" data-state={enabled ? "active" : "paused"}>
@@ -404,7 +421,19 @@ export function AccessPanel({
                       <span className="chip">no members</span>
                     ) : (
                       (group.members || []).map((member) => (
-                        <span className="chip" key={member}>{member}</span>
+                        <span className="chip" key={member} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {member}
+                          {current && !saving ? (
+                            <button
+                              type="button"
+                              style={{ textDecoration: "underline" }}
+                              aria-label={`Inspect access for ${member}`}
+                              onClick={() => inspectSubject(member)}
+                            >
+                              Inspect access
+                            </button>
+                          ) : null}
+                        </span>
                       ))
                     )}
                   </div>
@@ -670,6 +699,7 @@ export function AccessPanel({
                   Subject
                   <input
                     data-testid="access-preview-subject"
+                    ref={previewSubjectInput}
                     value={previewSubject}
                     onChange={(event) => setPreviewSubject(event.target.value)}
                     placeholder="alice@example.com"

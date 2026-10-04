@@ -132,3 +132,106 @@ describe("preview decision and error scope", () => {
     expect(screen.getByTestId("access-preview-run")).toBeEnabled();
   });
 });
+
+describe("group member access inspection", () => {
+  const subject = "service:operations/shift-7";
+
+  it("prefills an exact subject and evaluates only when explicitly requested", async () => {
+    const input = props();
+    const config = { ...input.config, groups: { operations: { members: [subject] } } };
+    render(<AccessPanel {...input} config={config} />);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByRole("button", { name: `Inspect access for ${subject}` }));
+    expect(screen.getByTestId("access-preview-subject")).toHaveValue(subject);
+    expect(screen.getByTestId("access-preview-subject")).toHaveFocus();
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    expect(input.onPreview).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-preview-run")); });
+    expect(input.onPreview).toHaveBeenCalledExactlyOnceWith(subject, "agent.view", undefined);
+    expect(screen.getByTestId("access-preview-result")).toBeVisible();
+
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByRole("button", { name: `Inspect access for ${subject}` }));
+    expect(screen.getByTestId("access-preview-subject")).toHaveValue(subject);
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    expect(input.onPreview).toHaveBeenCalledTimes(1);
+    expect(input.onSaveGroup).not.toHaveBeenCalled();
+  });
+
+  it("ignores an old in-flight answer after selecting a group member", async () => {
+    const input = props();
+    let resolve!: (value: AccessPreviewResult) => void;
+    input.onPreview = vi.fn(() => new Promise(done => { resolve = done; }));
+    const config = { ...input.config, groups: { operations: { members: [subject] } } };
+    render(<AccessPanel {...input} config={config} />);
+    fireEvent.click(screen.getByTestId("access-tab:preview"));
+    fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "old-subject" } });
+    fireEvent.click(screen.getByTestId("access-preview-run"));
+    expect(input.onPreview).toHaveBeenCalledWith("old-subject", "agent.view", undefined);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByRole("button", { name: `Inspect access for ${subject}` }));
+    expect(screen.getByTestId("access-preview-subject")).toHaveValue(subject);
+    expect(screen.getByTestId("access-preview-run")).toBeEnabled();
+    await act(async () => { resolve({ allowed: true, reason: "OLD_SUBJECT_ANSWER" }); });
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    expect(document.body).not.toHaveTextContent("OLD_SUBJECT_ANSWER");
+    expect(input.onPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows read-only inspection without exposing policy mutations", async () => {
+    const input = props();
+    const config = { ...input.config, groups: { operations: { members: [subject] } } };
+    render(<AccessPanel {...input} config={config} readOnly />);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    expect(screen.queryByTestId("access-group-edit:operations")).toBeNull();
+    expect(screen.queryByTestId("access-group-delete:operations")).toBeNull();
+    expect(screen.queryByTestId("access-group-save")).toBeNull();
+    const inspect = screen.getByRole("button", { name: `Inspect access for ${subject}` });
+    expect(inspect).toBeEnabled();
+    fireEvent.click(inspect);
+    expect(input.onPreview).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-preview-run")); });
+    expect(input.onPreview).toHaveBeenCalledExactlyOnceWith(subject, "agent.view", undefined);
+    expect(input.onSaveGroup).not.toHaveBeenCalled();
+    expect(input.onDeleteGroup).not.toHaveBeenCalled();
+    expect(input.onSetEnabled).not.toHaveBeenCalled();
+  });
+
+  it.each(["unavailable", "not-admin", "refreshing", "stale"])("keeps inspection unavailable when %s", (kind) => {
+    const input = props();
+    const config = { ...input.config, groups: { operations: { members: [subject] } } };
+    const status = { ...input.status, available: kind !== "unavailable", can_administer: kind !== "not-admin" };
+    render(<AccessPanel {...input} config={config} status={status}
+      loading={kind === "refreshing"} error={kind === "stale" ? "Owner unavailable" : null} />);
+    const groups = screen.queryByTestId("access-tab:groups");
+    if (groups) fireEvent.click(groups);
+    const inspect = screen.queryByRole("button", { name: `Inspect access for ${subject}` });
+    if (inspect) {
+      expect(inspect).toBeDisabled();
+      fireEvent.click(inspect);
+    }
+    expect(screen.queryByTestId("access-preview-subject")).toBeNull();
+    expect(input.onPreview).not.toHaveBeenCalled();
+    expect(input.onSaveGroup).not.toHaveBeenCalled();
+  });
+
+  it("does not switch the preview subject while a policy save is pending", async () => {
+    const input = props();
+    let finish!: (value: boolean) => void;
+    input.onSetEnabled = vi.fn(() => new Promise(done => { finish = done; }));
+    const config = { ...input.config, groups: { operations: { members: [subject] } } };
+    render(<AccessPanel {...input} config={config} />);
+    fireEvent.click(screen.getByTestId("access-toggle-enabled"));
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    const inspect = screen.queryByRole("button", { name: `Inspect access for ${subject}` });
+    if (inspect) {
+      expect(inspect).toBeDisabled();
+      fireEvent.click(inspect);
+    }
+    expect(screen.queryByTestId("access-preview-subject")).toBeNull();
+    expect(input.onPreview).not.toHaveBeenCalled();
+    await act(async () => { finish(true); });
+    expect(screen.getByRole("button", { name: `Inspect access for ${subject}` })).toBeEnabled();
+    expect(input.onSaveGroup).not.toHaveBeenCalled();
+  });
+});

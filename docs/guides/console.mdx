@@ -742,6 +742,13 @@ authorizes mob-level observation but does not grant `agent.view` for every
 agent. To observe everything, a principal needs both `mob.observe` and an
 applicable `agent.view` grant.
 
+In **Console access**, open **Groups** and choose **Inspect access** beside a
+member to prefill that exact subject in **Preview**. Select an action and
+optional agent, then choose **Evaluate** to ask the access controller. The
+shortcut does not evaluate automatically or change policy, and remains
+available to authorized administrators on a read-only connection. A preview is
+an observation, not permission for a later action or a native tool grant.
+
 Upstream hosts that already know a user's ACL can also force the stock console UI
 into view-only mode without changing MobKit auth: set
 `window.__MOBKIT_CONSOLE_READ_ONLY__ = true` before loading the console bundle,
