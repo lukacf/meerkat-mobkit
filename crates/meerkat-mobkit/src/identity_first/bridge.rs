@@ -1392,6 +1392,14 @@ pub enum ResumeRejectionKind {
     /// the identity with the typed [`super::types::SessionRepairRequired`]
     /// hold on the FIRST encounter (the HomeCore 2026-09-22 wedge).
     AuditedEndpointDivergence,
+    /// A role migration this activation declared for the identity was not
+    /// applied: meerkat refused it (`MobError::MemberRoleMigrationRequired` or
+    /// `MemberRoleMigrationRejected`), or the member the mob restored still
+    /// runs another role and this resume may not restamp it (for example a
+    /// Present identity intent owns its materialization). The member is never
+    /// attached under the undeclared role: a declaration is applied or refused,
+    /// never a silent no-op.
+    RoleMigrationNotApplied,
     /// Any other resume-time failure.
     Other,
 }
@@ -1449,6 +1457,56 @@ pub(crate) fn archived_not_revivable_park_reason(
 /// Deliberately loud: a rejected resume degrades the identity until a
 /// reconcile retry succeeds, and the operator needs the real (classified)
 /// error — not a generic fallback reason.
+/// A role migration declared for this resume: `(from_role, to_role)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclaredRoleMigration {
+    from_role: meerkat_mob::ProfileName,
+    to_role: meerkat_mob::ProfileName,
+}
+
+impl DeclaredRoleMigration {
+    /// The migration a resume spec carries, if it declares one.
+    fn of(spawn_spec: &SpawnMemberSpec) -> Option<Self> {
+        spawn_spec
+            .launch_mode
+            .resume_from_role()
+            .map(|from_role| Self {
+                from_role: from_role.clone(),
+                to_role: spawn_spec.role_name.clone(),
+            })
+    }
+}
+
+/// Refuse to attach a member that does not run the role its declared
+/// migration names. Typed, logged, and never a silent no-op.
+fn role_migration_not_applied(
+    identity: &AgentIdentity,
+    session_id: &meerkat_core::types::SessionId,
+    migration: &DeclaredRoleMigration,
+    observed_role: Option<&meerkat_mob::ProfileName>,
+    reason: &str,
+) -> BridgeError {
+    let observed = observed_role.map_or("no rostered member", |role| role.as_str());
+    tracing::error!(
+        identity = %identity,
+        session_id = %session_id,
+        from_role = %migration.from_role,
+        to_role = %migration.to_role,
+        observed_role = observed,
+        reason,
+        "declared role migration not applied; refusing to attach the member under an \
+         undeclared role (durable session preserved, identity degraded)"
+    );
+    BridgeError::ResumeRejected {
+        kind: ResumeRejectionKind::RoleMigrationNotApplied,
+        detail: format!(
+            "declared role migration of {identity} from '{}' to '{}' was not applied: \
+             {reason} (observed role: {observed})",
+            migration.from_role, migration.to_role
+        ),
+    }
+}
+
 fn resume_rejected(
     identity: &AgentIdentity,
     session_id: &meerkat_core::types::SessionId,
@@ -1583,6 +1641,13 @@ fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
         }
     ) {
         return ResumeRejectionKind::ArchivedNotRevivable;
+    }
+    if matches!(
+        error,
+        meerkat_mob::MobError::MemberRoleMigrationRequired { .. }
+            | meerkat_mob::MobError::MemberRoleMigrationRejected { .. }
+    ) {
+        return ResumeRejectionKind::RoleMigrationNotApplied;
     }
     if matches!(error, meerkat_mob::MobError::MemberRestoreFailed { .. }) {
         return ResumeRejectionKind::MemberRestoreFailed;
@@ -4339,6 +4404,74 @@ impl MobSessionBridge {
     ) -> CollisionCustody {
         identity_actuation_custody(&self.handle, identity.as_str(), Some(session_id)).await
     }
+
+    /// The role the committed roster member for `member_id` runs, or `None`
+    /// when no member is committed (a spawn still in custody).
+    async fn rostered_role(
+        &self,
+        member_id: &MobAgentIdentity,
+    ) -> Result<Option<meerkat_mob::ProfileName>, meerkat_mob::MobError> {
+        Ok(self
+            .handle
+            .get_member(member_id)
+            .await?
+            .map(|entry| entry.role))
+    }
+
+    /// Whether the member a resume collided with has not taken the migration
+    /// this resume declares: it is committed and runs a role other than the
+    /// declared target. The mob actor's explicit resume restores members
+    /// under their durable role before this bridge runs, so this is how a
+    /// declared migration shows up on the boot path.
+    async fn occupant_misses_declared_role(
+        &self,
+        migration: Option<&DeclaredRoleMigration>,
+        member_id: &MobAgentIdentity,
+    ) -> Result<Option<meerkat_mob::ProfileName>, meerkat_mob::MobError> {
+        let Some(migration) = migration else {
+            return Ok(None);
+        };
+        Ok(self
+            .rostered_role(member_id)
+            .await?
+            .filter(|role| *role != migration.to_role))
+    }
+
+    /// After attaching to, or re-resuming, a member under a declared
+    /// migration, the member must run the declared role. Anything else is a
+    /// typed refusal and the bookkeeping this resume recorded is dropped, so
+    /// a declaration is applied or refused, never silently ignored.
+    async fn require_declared_role(
+        &self,
+        migration: Option<&DeclaredRoleMigration>,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        let Some(migration) = migration else {
+            return Ok(());
+        };
+        let refusal = match self.rostered_role(member_id).await {
+            Ok(Some(role)) if role == migration.to_role => return Ok(()),
+            Ok(observed) => role_migration_not_applied(
+                identity,
+                session_id,
+                migration,
+                observed.as_ref(),
+                "the member this resume attached does not run the declared role",
+            ),
+            Err(error) => role_migration_not_applied(
+                identity,
+                session_id,
+                migration,
+                None,
+                &format!("the member's role could not be read back: {error}"),
+            ),
+        };
+        self.forget_runtime_member(runtime_id).await;
+        Err(refusal)
+    }
 }
 
 /// Who may actuate on one identity, read from the only authoritative desired
@@ -5790,6 +5923,7 @@ impl SessionBridge for MobSessionBridge {
         self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
+        let declared_migration = DeclaredRoleMigration::of(&spawn_spec);
 
         match self.spawn_member_spec(spawn_spec.clone()).await {
             Ok(()) => {
@@ -5800,6 +5934,49 @@ impl SessionBridge for MobSessionBridge {
                 })
             }
             Err(error) if is_member_already_exists_error(&error) => {
+                // A DECLARED ROLE MIGRATION the mob's own restore did not take.
+                // The mob actor's explicit resume restores every member under
+                // its durable role before this bridge runs, and meerkat lets
+                // neither that restore nor its spawn customizer change the
+                // profile. So on the boot path the migration this Spawn carries
+                // meets an occupant still on the old role. Every branch below
+                // either applies the migration (retire the occupant to absence,
+                // then resume the same session with `resume_from_role`, the
+                // sequence meerkat's own refusal names: "stop or retire its
+                // current runtime before restamping") or refuses typed. None
+                // adopts the occupant as it is.
+                let occupant_missing_migration = match self
+                    .occupant_misses_declared_role(declared_migration.as_ref(), &mid)
+                    .await
+                {
+                    Ok(observed) => observed,
+                    Err(probe_error) => {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &probe_error,
+                            "declared role migration occupant probe",
+                        ));
+                    }
+                };
+                // The occupant runs neither the target nor the declared
+                // predecessor: the declaration does not describe this member,
+                // and Meerkat would refuse the restamp anyway. Refuse BEFORE
+                // any destructive step rather than retire a member the resume
+                // cannot replace.
+                if let (Some(migration), Some(observed)) = (
+                    declared_migration.as_ref(),
+                    occupant_missing_migration.as_ref(),
+                ) && *observed != migration.from_role
+                {
+                    return Err(role_migration_not_applied(
+                        identity,
+                        session_id,
+                        migration,
+                        Some(observed),
+                        "the restored member's role is not the declared predecessor role",
+                    ));
+                }
                 // CUSTODY FIRST. A roster collision is not by itself evidence
                 // that the occupant is stale. If the identity store - the only
                 // authoritative desired state - holds a valid Present intent
@@ -5816,9 +5993,35 @@ impl SessionBridge for MobSessionBridge {
                 // projection below, which is what actually has to agree.
                 match self.collision_custody(identity, session_id).await {
                     CollisionCustody::MobMachineOwns => {
-                        return self
+                        // The Present intent pins the member's profile, and
+                        // retiring an occupant MobMachine is converging is
+                        // exactly what custody-first forbids. Refuse rather
+                        // than adopt the undeclared role.
+                        if let Some(migration) = declared_migration.as_ref()
+                            && let Some(observed) = occupant_missing_migration.as_ref()
+                        {
+                            return Err(role_migration_not_applied(
+                                identity,
+                                session_id,
+                                migration,
+                                Some(observed),
+                                "a Present identity intent owns this member's materialization, so \
+                                 this resume may not retire it to restamp its role; declare the \
+                                 new profile in the identity intent",
+                            ));
+                        }
+                        let outcome = self
                             .await_convergence_and_attach(runtime_id, &mid, identity, session_id)
-                            .await;
+                            .await?;
+                        self.require_declared_role(
+                            declared_migration.as_ref(),
+                            runtime_id,
+                            &mid,
+                            identity,
+                            session_id,
+                        )
+                        .await?;
+                        return Ok(outcome);
                     }
                     CollisionCustody::Indeterminate => {
                         // Fail closed and retryable. Falling through here is
@@ -5867,7 +6070,12 @@ impl SessionBridge for MobSessionBridge {
                         // session is what produced "session already has a
                         // different operation": the destructive path was aimed
                         // at the thing it was trying to recover.
+                        // ...unless a declared migration has not been taken:
+                        // then this occupant is the member under the wrong
+                        // role, and the preconditioned retire below is how
+                        // the migration is applied.
                         if occupant_is_ours
+                            && occupant_missing_migration.is_none()
                             && self.handle.resolve_bridge_session_id(&mid).await.as_ref()
                                 == Some(session_id)
                         {
@@ -5907,7 +6115,7 @@ impl SessionBridge for MobSessionBridge {
                 // the just-finished build marked a healthy identity Broken).
                 match classify_colliding_occupant(self.handle.get_member(&mid).await) {
                     CollidingOccupant::InFlight => {
-                        return self
+                        let outcome = self
                             .await_in_flight_spawn_and_attach(
                                 runtime_id,
                                 &mid,
@@ -5915,7 +6123,16 @@ impl SessionBridge for MobSessionBridge {
                                 session_id,
                                 &spawn_spec,
                             )
-                            .await;
+                            .await?;
+                        self.require_declared_role(
+                            declared_migration.as_ref(),
+                            runtime_id,
+                            &mid,
+                            identity,
+                            session_id,
+                        )
+                        .await?;
+                        return Ok(outcome);
                     }
                     // Committed, and already bound to the very session being
                     // resumed: this IS the member, not a stale predecessor.
@@ -5926,9 +6143,12 @@ impl SessionBridge for MobSessionBridge {
                     // healthy member to re-resume the session it already runs
                     // (the resume-source precondition below checks the durable
                     // source, not this binding, so it cannot guard this).
+                    // A declared migration the occupant has not taken is
+                    // the exception: the retire below applies it.
                     CollidingOccupant::Committed
-                        if self.handle.resolve_bridge_session_id(&mid).await.as_ref()
-                            == Some(session_id) =>
+                        if occupant_missing_migration.is_none()
+                            && self.handle.resolve_bridge_session_id(&mid).await.as_ref()
+                                == Some(session_id) =>
                     {
                         tracing::info!(
                             identity = %identity,
@@ -5964,12 +6184,28 @@ impl SessionBridge for MobSessionBridge {
                 // roster entry left by an earlier rejected resume. Retire the
                 // collision and retry the RESUME — never a fresh spawn; the
                 // durable session must stay bound to the identity.
-                tracing::warn!(
-                    identity = %identity,
-                    session_id = %session_id,
-                    error = %error,
-                    "resume_session hit a roster collision; retiring the stale member and retrying resume"
-                );
+                if let (Some(migration), Some(observed)) = (
+                    declared_migration.as_ref(),
+                    occupant_missing_migration.as_ref(),
+                ) {
+                    tracing::info!(
+                        identity = %identity,
+                        session_id = %session_id,
+                        from_role = %migration.from_role,
+                        to_role = %migration.to_role,
+                        observed_role = %observed,
+                        "applying a declared role migration: retiring the member the mob \
+                         restored under its durable role, then resuming the same session under \
+                         the declared role"
+                    );
+                } else {
+                    tracing::warn!(
+                        identity = %identity,
+                        session_id = %session_id,
+                        error = %error,
+                        "resume_session hit a roster collision; retiring the stale member and retrying resume"
+                    );
+                }
                 // Preconditions FIRST (OB3 run 33758a41): the retire below is
                 // destructive — on the ephemeral runtime-store shape it takes
                 // the stale member's in-memory state and queued inputs with
@@ -6027,6 +6263,14 @@ impl SessionBridge for MobSessionBridge {
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
                 self.readmit_carried_inputs(&mid, session_id, capture).await;
+                self.require_declared_role(
+                    declared_migration.as_ref(),
+                    runtime_id,
+                    &mid,
+                    identity,
+                    session_id,
+                )
+                .await?;
                 Ok(ResumeSessionOutcome::Resumed {
                     session_id: session_id.clone(),
                 })
@@ -8525,6 +8769,25 @@ mod tests {
 
         let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
         assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);
+        let required = meerkat_mob::MobError::MemberRoleMigrationRequired {
+            member_id: meerkat_mob::AgentIdentity::from("child-1"),
+            stored_role: meerkat_mob::ProfileName::from("identity"),
+            requested_role: meerkat_mob::ProfileName::from("identity-child"),
+        };
+        assert_eq!(
+            classify_resume_error(&required),
+            ResumeRejectionKind::RoleMigrationNotApplied
+        );
+        let rejected = meerkat_mob::MobError::MemberRoleMigrationRejected {
+            member_id: meerkat_mob::AgentIdentity::from("child-1"),
+            declared_predecessor_role: meerkat_mob::ProfileName::from("predecessor"),
+            requested_role: meerkat_mob::ProfileName::from("identity-child"),
+            reason: "durable predecessor role is 'identity', not the declared role".to_string(),
+        };
+        assert_eq!(
+            classify_resume_error(&rejected),
+            ResumeRejectionKind::RoleMigrationNotApplied
+        );
 
         // meerkat-mob hands a joined observer (and the collision retire before
         // a resume retry) the SAME failure through its transparent shared

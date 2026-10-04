@@ -7548,6 +7548,10 @@ impl IdentityRuntime {
                                 kind: ResumeRejectionKind::AuditedEndpointDivergence,
                                 ..
                             } => ContinuityFailureKind::RepairRequired,
+                            BridgeError::ResumeRejected {
+                                kind: ResumeRejectionKind::RoleMigrationNotApplied,
+                                ..
+                            } => ContinuityFailureKind::RoleMigrationNotApplied,
                             _ => ContinuityFailureKind::ResumeRejected,
                         };
                         return Err(IdentityRuntimeError::EmbodimentRejected(Box::new(
