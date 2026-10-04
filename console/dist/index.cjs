@@ -32398,6 +32398,8 @@ function AccessPanel({
   const [previewAction, setPreviewAction] = import_react28.default.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = import_react28.default.useState("");
   const [previewResult, setPreviewResult] = import_react28.default.useState(null);
+  const previewSubjectInput = import_react28.default.useRef(null);
+  const inspectFocusPending = import_react28.default.useRef(false);
   const actions = status?.actions ?? [];
   const [saving, setSaving] = import_react28.default.useState(false);
   const [mutationError, setMutationError] = import_react28.default.useState(null);
@@ -32442,6 +32444,12 @@ function AccessPanel({
   import_react28.default.useEffect(() => () => {
     previewVersion.current += 1;
   }, []);
+  import_react28.default.useEffect(() => {
+    if (tab2 === "preview" && inspectFocusPending.current) {
+      previewSubjectInput.current?.focus();
+      inspectFocusPending.current = false;
+    }
+  }, [tab2]);
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
@@ -32463,6 +32471,16 @@ function AccessPanel({
     setEditingGroup(name2);
     setGroupNameDraft(name2);
     setGroupMembersDraft(formatListInput(members));
+  }
+  function inspectSubject(subject) {
+    if (!current || saving) return;
+    previewVersion.current += 1;
+    setPreviewResult(null);
+    setPreviewError(null);
+    setPreviewPending(false);
+    setPreviewSubject(subject);
+    inspectFocusPending.current = true;
+    setTab("preview");
   }
   function submitGroup() {
     const name2 = groupNameDraft.trim();
@@ -32540,7 +32558,7 @@ function AccessPanel({
       )),
       /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "gating__tab", onClick: onRefresh, "data-testid": "access-refresh", children: "Refresh" })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("fieldset", { className: "gating__list access-panel__body", disabled: tab2 === "preview" ? !current : !canEdit, style: { border: 0, margin: 0, minWidth: 0 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("fieldset", { className: "gating__list access-panel__body", disabled: tab2 === "preview" ? !current : tab2 === "groups" ? !current || saving : !canEdit, style: { border: 0, margin: 0, minWidth: 0 }, children: [
       tab2 === "overview" ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__policies", children: [
         /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": enabled ? "active" : "paused", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy__head", children: [
@@ -32606,7 +32624,19 @@ function AccessPanel({
           ([name2, group]) => editingGroup === name2 ? null : /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": `access-group:${name2}`, children: [
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: name2 }) }),
             group.description ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__rule", children: group.description }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: member }, member)) }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "chip", style: { display: "inline-flex", alignItems: "center", gap: 6 }, children: [
+              member,
+              current && !saving ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+                "button",
+                {
+                  type: "button",
+                  style: { textDecoration: "underline" },
+                  "aria-label": `Inspect access for ${member}`,
+                  onClick: () => inspectSubject(member),
+                  children: "Inspect access"
+                }
+              ) : null
+            ] }, member)) }),
             canEdit ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy__stats", children: [
               /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
                 "button",
@@ -32872,6 +32902,7 @@ function AccessPanel({
               "input",
               {
                 "data-testid": "access-preview-subject",
+                ref: previewSubjectInput,
                 value: previewSubject,
                 onChange: (event) => setPreviewSubject(event.target.value),
                 placeholder: "alice@example.com"
