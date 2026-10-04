@@ -462,9 +462,17 @@ async function presentation(host) {
     await completed(fixture, "Investigation 11");
     await open(page, fixture, host, monitor);
     const viewport = transcript(page, host);
-    await viewport.locator("table").first().waitFor();
-    assert.equal(await viewport.locator('img[src*="example.com/tracker"]').count(), 0, "default Markdown cannot fetch external images");
-    assert(await viewport.locator('a[href="https://example.com"]').count() > 0);
+    // Read the reply to the accepted input, not whatever renders first: the
+    // mob's kickoff reply above it renders Markdown (a table and a link) too,
+    // and the stock transcript parks turns outside its window (hidden until
+    // found), so the first table can belong to a turn that never shows again.
+    // The stock turn carrying the accepted input frame holds its reply.
+    const reply = host === "stock"
+      ? viewport.locator("[data-conversation-turn-id]").filter({ has: page.locator(`[data-quote-message-id="${first.input_frame_id}"]`) })
+      : viewport;
+    await reply.locator("table").first().waitFor();
+    assert.equal(await reply.locator('img[src*="example.com/tracker"]').count(), 0, "default Markdown cannot fetch external images");
+    assert(await reply.locator('a[href="https://example.com"]').count() > 0);
     const initialPrompt = viewport.getByText(originalInstruction, { exact: true });
     await initialPrompt.waitFor();
     assert.equal(await initialPrompt.count(), 1, `${host} the original authored input is rendered exactly once`);
