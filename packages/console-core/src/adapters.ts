@@ -4252,7 +4252,8 @@ type LifecycleOwner = {
   context: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">;
   interactionId?: string;
   runIds: Set<string>;
-  openRuns: Map<string, number>;
+  openRuns: Set<string>;
+  runStartOrder: Map<string, number>;
   runPhases: Map<string, LifecyclePhase>;
   interactionOpen: boolean;
   unidentifiedRunOpen: boolean;
@@ -4321,8 +4322,9 @@ export class ConsoleActivityProjection {
     if (byInteraction && byRun && byInteraction !== byRun && !byRun.interactionId) {
       for (const key of ["runtimeKey", "identity", "sessionId"] as const) byInteraction.context[key] ??= byRun.context[key];
       for (const id of byRun.runIds) { byInteraction.runIds.add(id); this.index(this.runs, id, byInteraction); }
-      for (const [id, order] of byRun.openRuns) {
-        if (order > (byInteraction.openRuns.get(id) ?? -1)) byInteraction.openRuns.set(id, order);
+      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order] of byRun.runStartOrder) {
+        if (order < (byInteraction.runStartOrder.get(id) ?? Infinity)) byInteraction.runStartOrder.set(id, order);
       }
       for (const [id, phase] of byRun.runPhases) {
         if (phase.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase);
@@ -4339,7 +4341,7 @@ export class ConsoleActivityProjection {
     if (!interaction && !run) owner = this.matching(this.anonymous, frame);
     if (!owner) {
       owner = { context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
-        runIds: new Set(), openRuns: new Map(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
+        runIds: new Set(), openRuns: new Set(), runStartOrder: new Map(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
         inputOpen: false, auxiliaryOpen: false, ownerPhase: { phase: null, order: 0 }, phase: null, order: 0 };
       if (!interaction && !run) this.anonymous.push(owner);
     }
@@ -4437,6 +4439,12 @@ export class ConsoleActivityProjection {
     }
     const owner = this.owner(frame);
     if (!owner) return false;
+    // Replayed starts do not become current again after their run settles.
+    // History associations never populate these explicit start observations.
+    if (frame.event === "run_started" && frame.runId && owner.runStartOrder.has(frame.runId)) {
+      this.refreshOwner(owner, true);
+      return true;
+    }
     const order = ++this.order;
     let ownerPhaseEvent = !frame.runId;
     switch (frame.event) {
@@ -4448,17 +4456,19 @@ export class ConsoleActivityProjection {
       case "interaction_started": ownerPhaseEvent = true; owner.interactionOpen = true; break;
       case "run_started":
         if (frame.runId) {
-          if (!owner.openRuns.has(frame.runId)) owner.openRuns.set(frame.runId, order);
+          owner.runStartOrder.set(frame.runId, order);
+          owner.openRuns.add(frame.runId);
         } else owner.unidentifiedRunOpen = true;
         break;
       case "interaction_complete": case "interaction_failed":
         if (frame.runId) {
-          const started = owner.openRuns.get(frame.runId);
+          const started = owner.runStartOrder.get(frame.runId);
           const closesCurrent = started !== undefined
-            && [...owner.openRuns.values()].every(value => value <= started)
+            && [...owner.runStartOrder.values()].every(value => value <= started)
             && ![...owner.runPhases].some(([id, value]) => id !== frame.runId
-              && !owner.openRuns.has(id) && value.phase !== null && value.order > started);
-          owner.openRuns.delete(frame.runId); owner.runPhases.delete(frame.runId);
+              && !owner.runStartOrder.has(id) && value.phase !== null && value.order > started);
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
           // Native run terminals are emitted as interaction terminals with
           // both IDs. The latest explicit start identifies the current run;
           // its terminal closes the interaction, an older terminal does not.
@@ -4474,7 +4484,10 @@ export class ConsoleActivityProjection {
         owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
         owner.openRuns.clear(); owner.runPhases.clear(); break;
       case "run_completed": case "run_failed":
-        if (frame.runId) { owner.openRuns.delete(frame.runId); owner.runPhases.delete(frame.runId); }
+        if (frame.runId) {
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
+        }
         else owner.unidentifiedRunOpen = false;
         break;
       case "text_complete": case "text_delta": break;

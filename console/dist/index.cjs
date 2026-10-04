@@ -4326,8 +4326,9 @@ var ConsoleActivityProjection = class {
         byInteraction.runIds.add(id);
         this.index(this.runs, id, byInteraction);
       }
-      for (const [id, order2] of byRun.openRuns) {
-        if (order2 > (byInteraction.openRuns.get(id) ?? -1)) byInteraction.openRuns.set(id, order2);
+      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order2] of byRun.runStartOrder) {
+        if (order2 < (byInteraction.runStartOrder.get(id) ?? Infinity)) byInteraction.runStartOrder.set(id, order2);
       }
       for (const [id, phase2] of byRun.runPhases) {
         if (phase2.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase2);
@@ -4346,7 +4347,8 @@ var ConsoleActivityProjection = class {
       owner = {
         context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
         runIds: /* @__PURE__ */ new Set(),
-        openRuns: /* @__PURE__ */ new Map(),
+        openRuns: /* @__PURE__ */ new Set(),
+        runStartOrder: /* @__PURE__ */ new Map(),
         runPhases: /* @__PURE__ */ new Map(),
         interactionOpen: false,
         unidentifiedRunOpen: false,
@@ -4483,6 +4485,10 @@ var ConsoleActivityProjection = class {
     }
     const owner = this.owner(frame);
     if (!owner) return false;
+    if (frame.event === "run_started" && frame.runId && owner.runStartOrder.has(frame.runId)) {
+      this.refreshOwner(owner, true);
+      return true;
+    }
     const order2 = ++this.order;
     let ownerPhaseEvent = !frame.runId;
     switch (frame.event) {
@@ -4497,16 +4503,17 @@ var ConsoleActivityProjection = class {
         break;
       case "run_started":
         if (frame.runId) {
-          if (!owner.openRuns.has(frame.runId)) owner.openRuns.set(frame.runId, order2);
+          owner.runStartOrder.set(frame.runId, order2);
+          owner.openRuns.add(frame.runId);
         } else owner.unidentifiedRunOpen = true;
         break;
       case "interaction_complete":
       case "interaction_failed":
         if (frame.runId) {
-          const started = owner.openRuns.get(frame.runId);
-          const closesCurrent = started !== void 0 && [...owner.openRuns.values()].every((value) => value <= started) && ![...owner.runPhases].some(([id, value]) => id !== frame.runId && !owner.openRuns.has(id) && value.phase !== null && value.order > started);
+          const started = owner.runStartOrder.get(frame.runId);
+          const closesCurrent = started !== void 0 && [...owner.runStartOrder.values()].every((value) => value <= started) && ![...owner.runPhases].some(([id, value]) => id !== frame.runId && !owner.runStartOrder.has(id) && value.phase !== null && value.order > started);
           owner.openRuns.delete(frame.runId);
-          owner.runPhases.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
           if (!closesCurrent && (owner.openRuns.size || owner.unidentifiedRunOpen || [...owner.runPhases.values()].some((value) => value.phase !== null))) break;
         }
       // A run-less terminal settles the interaction, as does its last run.
@@ -4522,7 +4529,7 @@ var ConsoleActivityProjection = class {
       case "run_failed":
         if (frame.runId) {
           owner.openRuns.delete(frame.runId);
-          owner.runPhases.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
         } else owner.unidentifiedRunOpen = false;
         break;
       case "text_complete":

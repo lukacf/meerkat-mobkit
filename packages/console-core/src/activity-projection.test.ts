@@ -378,6 +378,54 @@ test("an older retained start cannot close a newer observed run whose start is m
   assert.equal(projection.busy, false);
 });
 
+for (const event of ["interaction_complete", "run_completed"]) {
+  test(`a later ${event} retains an already-cleared run's barrier over the owner fallback`, () => {
+    const projection = new ConsoleActivityProjection();
+    const live = { sourceKind: "console_event" as const, interactionId: "input" };
+    projection.fold(frame("text_delta", { ...live, runId: "current-run" }));
+    projection.fold(frame("tool_execution_started", live));
+    projection.fold(frame("text_delta", { ...live, runId: "old-run" }));
+    projection.fold(frame("text_complete", { ...live, runId: "old-run" }));
+    assert.equal(projection.phase, "generating");
+    projection.fold(frame(event, { ...live, runId: "old-run" }));
+    assert.equal(projection.phase, "generating", "settlement cannot restore the invalidated owner fallback");
+    projection.fold(frame("interaction_complete", { ...live, runId: "current-run" }));
+    assert.equal(projection.phase, null);
+    assert.equal(projection.busy, false);
+  });
+}
+
+test("replaying an already-settled old start cannot replace the current run", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const, interactionId: "input" };
+  projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+  projection.fold(frame("run_started", { ...live, runId: "current-run" }));
+  projection.fold(frame("text_delta", { ...live, runId: "current-run" }));
+  projection.fold(frame("interaction_complete", { ...live, runId: "old-run" }));
+  projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+  assert.equal(projection.phase, "generating", "replay cannot replace the current phase before another terminal arrives");
+  projection.fold(frame("interaction_complete", { ...live, runId: "old-run" }));
+  assert.equal(projection.phase, "generating");
+  assert.equal(projection.busy, true);
+  projection.fold(frame("interaction_complete", { ...live, runId: "current-run" }));
+  assert.equal(projection.phase, null);
+  assert.equal(projection.busy, false);
+});
+
+test("a repeated start may supply an exact ID association without reopening or losing observed work", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const };
+  projection.fold(frame("interaction_started", { ...live, interactionId: "input" }));
+  projection.fold(frame("run_started", { ...live, runId: "run" }));
+  projection.fold(frame("text_delta", { ...live, runId: "run" }));
+  projection.fold(frame("run_started", { ...live, runId: "run", interactionId: "input" }));
+  assert.equal(projection.phase, "generating");
+  assert.equal(projection.runOpen, true, "the exact association retains the already-open run");
+  assert.equal(projection.interactionOpen, true);
+  projection.fold(frame("interaction_complete", { ...live, interactionId: "input" }));
+  assert.equal(projection.busy, false);
+});
+
 test("history alone cannot override supplied current phases", () => {
   for (const event of auxiliaryEvents) {
     const saved = frame(event);
