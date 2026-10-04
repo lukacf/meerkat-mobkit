@@ -627,7 +627,11 @@ primitive; absent or lost ownership refuses without discarding the registration.
 Converge the definition-derived edge policy over the live roster and return
 `{desired_edges, wired_edges, unwired_edges, retained_edges,
 preexisting_edges, skipped_missing_members, pruned_stale_managed_edges,
-failures}`. The reconciler only unwires edges it wired itself. It is needed
+failures}`. The definition-policy reconciler only unwires edges it wired
+itself. In an identity-first runtime with a host `TopologyProvider`, the
+provider owns identity edges: an identity edge that neither the provider nor
+the definition's wiring declares is unwired, including an edge wired before a
+restart (see [Roster](/concepts/roster)). It is needed
 after `mobkit/reconcile_identity` or an identity-first gateway boot when the
 definition declares wiring, because neither of those converges definition
 edges after materialization; without declared wiring the report is empty.

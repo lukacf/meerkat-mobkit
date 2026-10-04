@@ -1522,6 +1522,9 @@ impl IdentityFirstRuntimeContext {
             Some(roster_provider.clone()),
             mob_definition.clone(),
         );
+        runtime.set_identity_edge_ownership(IdentityEdgeOwnership::for_topology_provider(
+            topology_provider.is_some(),
+        ));
         Self {
             runtime,
             roster_provider,
@@ -2536,6 +2539,37 @@ impl Drop for IdentityEntriesWriteGuard<'_> {
     }
 }
 
+/// Who owns the live peer edges between a runtime's identities.
+///
+/// Its identities' wiring custody is external-managed: meerkat's identity
+/// reconciler abstains and the topology layer is the desired-state owner.
+/// What that layer can claim depends on whether a topology provider declares
+/// the topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityEdgeOwnership {
+    /// No topology provider: the desired set covers only what was declared
+    /// to this runtime, and other edges (for example the mob definition's
+    /// spawn-time wiring) are not its to remove. A reconcile unwires only the
+    /// edges this process wired.
+    WiredByThisProcess,
+    /// A topology provider declares the whole desired topology: every live
+    /// edge between two identities is the topology's, including one wired
+    /// before a restart (the mob's wiring is durable and replays, while the
+    /// managed-edge set is this process's memory). A reconcile unwires every
+    /// live identity edge that is no longer desired.
+    TopologyProvider,
+}
+
+impl IdentityEdgeOwnership {
+    pub(crate) fn for_topology_provider(present: bool) -> Self {
+        if present {
+            Self::TopologyProvider
+        } else {
+            Self::WiredByThisProcess
+        }
+    }
+}
+
 pub struct IdentityRuntime {
     entries: IdentityEntries,
     event_channels: RwLock<BTreeMap<AgentIdentity, broadcast::Sender<IdentityEvent>>>,
@@ -2548,6 +2582,9 @@ pub struct IdentityRuntime {
     reset_roster_source: StdRwLock<Option<ResetRosterSource>>,
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
+    /// Who owns the live edges between this runtime's identities; see
+    /// [`IdentityEdgeOwnership`].
+    identity_edge_ownership: StdRwLock<IdentityEdgeOwnership>,
     managed_peer_reconcile_lock: Mutex<()>,
     /// Managed edges whose wire or unwire call timed out: the reply was
     /// dropped, but the mob command may still be queued in the actor, and
@@ -3041,6 +3078,7 @@ impl IdentityRuntime {
             reset_roster_source: StdRwLock::new(None),
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
+            identity_edge_ownership: StdRwLock::new(IdentityEdgeOwnership::WiredByThisProcess),
             managed_peer_reconcile_lock: Mutex::new(()),
             unsettled_peer_wiring: RwLock::new(BTreeSet::new()),
             peer_hydrations_in_flight: StdMutex::new(PeerHydrations::default()),
@@ -4390,6 +4428,65 @@ impl IdentityRuntime {
             .collect())
     }
 
+    pub(crate) fn identity_edge_ownership(&self) -> IdentityEdgeOwnership {
+        *self
+            .identity_edge_ownership
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Identity edges the mob definition's wiring declares over this
+    /// runtime's identities (`auto_wire_orchestrator` / `role_wiring`, an
+    /// identity's profile as its role). They are the definition's: its
+    /// spawn-time wiring and edge reconciler own them, so the topology never
+    /// prunes them.
+    pub(crate) async fn definition_declared_identity_edges(
+        &self,
+    ) -> BTreeSet<(AgentIdentity, AgentIdentity)> {
+        let definition = self
+            .reset_roster_source
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|source| source.mob_definition.clone());
+        let Some(policy) = definition.as_ref().and_then(
+            crate::unified_runtime::edge_reconcile::DefinitionWiringEdgeDiscovery::from_definition,
+        ) else {
+            return BTreeSet::new();
+        };
+        let members: Vec<crate::unified_runtime::edge_types::EdgeMemberView> = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .map(
+                |(identity, entry)| crate::unified_runtime::edge_types::EdgeMemberView {
+                    agent_identity: identity.as_str().to_string(),
+                    role: entry.spec.profile.to_string(),
+                    wired_to: BTreeSet::new(),
+                    labels: BTreeMap::new(),
+                },
+            )
+            .collect();
+        policy
+            .desired_edges(&members)
+            .into_iter()
+            .filter_map(|edge| {
+                let (a, b) = edge.endpoints();
+                let a = AgentIdentity::parse(a).ok()?;
+                let b = AgentIdentity::parse(b).ok()?;
+                Some(if a <= b { (a, b) } else { (b, a) })
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_identity_edge_ownership(&self, ownership: IdentityEdgeOwnership) {
+        *self
+            .identity_edge_ownership
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ownership;
+    }
+
     pub(crate) async fn managed_peer_edges_snapshot(
         &self,
     ) -> BTreeSet<(AgentIdentity, AgentIdentity)> {
@@ -4874,11 +4971,40 @@ impl IdentityRuntime {
             })
             .collect();
 
+        // Stale: a managed edge that is no longer desired and, when a
+        // topology provider owns the topology, every live edge between two of
+        // this runtime's identities that no declared owner wants (neither the
+        // desired set nor the mob definition's wiring). The managed
+        // set is this process's memory and starts empty, while the mob's
+        // wiring is durable and replays on recovery, so an edge wired before
+        // a restart is live but unmanaged (see `IdentityEdgeOwnership`). An
+        // edge to a member that is not one of this runtime's identities never
+        // appears here.
+        // A live edge the mob definition's wiring declares has its own
+        // owner; it is never the topology's to prune.
+        let live_owned_edges: BTreeSet<(AgentIdentity, AgentIdentity)> = match (
+            self.identity_edge_ownership(),
+            current_logical_edges.as_ref(),
+        ) {
+            (IdentityEdgeOwnership::TopologyProvider, Some(live)) => {
+                let definition_declared = self.definition_declared_identity_edges().await;
+                live.iter()
+                    .filter(|edge| in_scope(edge))
+                    .filter(|edge| !definition_declared.contains(*edge))
+                    .cloned()
+                    .collect()
+            }
+            (IdentityEdgeOwnership::TopologyProvider, None)
+            | (IdentityEdgeOwnership::WiredByThisProcess, _) => BTreeSet::new(),
+        };
         let stale: Vec<(AgentIdentity, AgentIdentity)> = managed_snapshot
             .iter()
+            .chain(live_owned_edges.iter())
             .filter(|edge| !desired.contains(*edge))
             .filter(|edge| !unsettled.contains(*edge))
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         // No longer desired and unsettled: an ordered, tolerant unwire,
         // issued whatever inspection says (it queues behind a pending wire).
@@ -20162,12 +20288,24 @@ mod admission_first_topology_tests {
         identity: &AgentIdentity,
         generation: u64,
     ) -> Result<AgentRuntimeId, Box<dyn std::error::Error + Send + Sync>> {
+        register_active_as(runtime, bridge, spec(identity), generation).await
+    }
+
+    /// [`register_active`] with an explicit spec (for example a profile).
+    async fn register_active_as(
+        runtime: &IdentityRuntime,
+        bridge: &WedgeableTopologyBridge,
+        spec: DurableAgentSpec,
+        generation: u64,
+    ) -> Result<AgentRuntimeId, Box<dyn std::error::Error + Send + Sync>> {
+        let identity = spec.identity.clone();
+        let identity = &identity;
         let runtime_id = AgentRuntimeId::parse(&format!("rt:{}:{generation}", identity.as_str()))?;
         let session_id = SessionId::new();
         bridge.bind_session(&runtime_id, &session_id);
         runtime
             .register(
-                spec(identity),
+                spec,
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
                     identity: identity.clone(),
@@ -20546,6 +20684,174 @@ mod admission_first_topology_tests {
         );
         assert!(runtime.unsettled_peer_wiring_snapshot().await.is_empty());
         assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+        Ok(())
+    }
+
+    /// HomeCore privacy rule: children's agents must not keep reaching the
+    /// parents'. `managed_peer_edges` is this process's memory and starts
+    /// empty, while the mob's wiring is durable and replays on recovery. An
+    /// edge between two of this runtime's identities that the topology no
+    /// longer wants must be unwired after a restart, even though this
+    /// process never wired it. An edge to a member that is not one of this
+    /// runtime's identities is left alone.
+    #[tokio::test]
+    async fn an_edge_no_longer_desired_is_unwired_after_a_restart()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let parent = AgentIdentity::parse("identity:parent-1")?;
+        let child = AgentIdentity::parse("identity:child-1")?;
+        let sibling = AgentIdentity::parse("identity:child-2")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        // The process after the restart: nothing in its managed set. A
+        // topology provider owns the topology.
+        let runtime = runtime_with(bridge.clone(), "edge-prune-after-restart")?;
+        runtime.set_identity_edge_ownership(IdentityEdgeOwnership::TopologyProvider);
+        let parent_rt = register_active(&runtime, &bridge, &parent, 0).await?;
+        let child_rt = register_active(&runtime, &bridge, &child, 0).await?;
+        let sibling_rt = register_active(&runtime, &bridge, &sibling, 0).await?;
+        let delegate_rt = AgentRuntimeId::parse("rt:delegate:0")?;
+        // The previous process wired these; the mob replayed them.
+        bridge.land_wire(&parent_rt, &child_rt);
+        bridge.land_wire(&child_rt, &sibling_rt);
+        bridge.land_wire(&child_rt, &delegate_rt);
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+
+        // The topology now keeps the children together and away from the
+        // parent.
+        let kept = ManagedPeerEdge::new(child.clone(), sibling.clone())?;
+        runtime
+            .reconcile_managed_peer_edges(std::slice::from_ref(&kept))
+            .await?;
+
+        let unwired = bridge.unwire_calls();
+        let unwired_pair = |x: &AgentRuntimeId, y: &AgentRuntimeId| {
+            unwired
+                .iter()
+                .any(|(a, b)| (a == x && b == y) || (a == y && b == x))
+        };
+        assert!(
+            unwired_pair(&parent_rt, &child_rt),
+            "the edge the topology no longer wants is unwired: {unwired:?}"
+        );
+        assert!(
+            !unwired_pair(&child_rt, &sibling_rt),
+            "the desired edge is kept: {unwired:?}"
+        );
+        assert!(
+            !unwired_pair(&child_rt, &delegate_rt),
+            "an edge to a member that is not one of this runtime's identities is left alone: \
+             {unwired:?}"
+        );
+        let live = runtime.logical_peer_edges().await?;
+        let stale = ManagedPeerEdge::new(parent.clone(), child.clone())?;
+        assert!(
+            live.contains(&kept),
+            "the desired edge stays wired: {live:?}"
+        );
+        assert!(!live.contains(&stale), "the stale edge is gone: {live:?}");
+        Ok(())
+    }
+
+    /// With a topology provider, a live identity edge the mob definition's
+    /// wiring declares (here `role_wiring` kid-helper) is the definition's,
+    /// so the topology never prunes it, even though its desired set does not
+    /// contain it. An edge that no declared owner wants is pruned.
+    #[tokio::test]
+    async fn a_definition_declared_edge_is_not_the_topologys_to_prune()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let parent = AgentIdentity::parse("identity:parent")?;
+        let kid = AgentIdentity::parse("identity:kid")?;
+        let helper = AgentIdentity::parse("identity:helper")?;
+        let as_profile = |identity: &AgentIdentity, profile: &str| {
+            let mut spec = spec(identity);
+            spec.profile = meerkat_mob::ProfileName::from(profile);
+            spec
+        };
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        let runtime = runtime_with(bridge.clone(), "edge-prune-definition-owned")?;
+        runtime.set_identity_edge_ownership(IdentityEdgeOwnership::TopologyProvider);
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "edge-prune-definition-owned"
+
+[[wiring.role_wiring]]
+a = "kid"
+b = "helper"
+
+[profiles.parent]
+model = "gpt-5.5"
+
+[profiles.kid]
+model = "gpt-5.5"
+
+[profiles.helper]
+model = "gpt-5.5"
+"#,
+        )?;
+        runtime.set_reset_roster_provider_context(
+            Some(Arc::new(super::super::MutableRosterProvider::new(
+                Vec::new(),
+            ))),
+            Some(definition),
+        );
+        let parent_rt =
+            register_active_as(&runtime, &bridge, as_profile(&parent, "parent"), 0).await?;
+        let kid_rt = register_active_as(&runtime, &bridge, as_profile(&kid, "kid"), 0).await?;
+        let helper_rt =
+            register_active_as(&runtime, &bridge, as_profile(&helper, "helper"), 0).await?;
+        bridge.land_wire(&parent_rt, &kid_rt);
+        bridge.land_wire(&kid_rt, &helper_rt);
+
+        runtime.reconcile_managed_peer_edges(&[]).await?;
+
+        let unwired = bridge.unwire_calls();
+        let unwired_pair = |x: &AgentRuntimeId, y: &AgentRuntimeId| {
+            unwired
+                .iter()
+                .any(|(a, b)| (a == x && b == y) || (a == y && b == x))
+        };
+        assert!(
+            unwired_pair(&parent_rt, &kid_rt),
+            "the edge no declared owner wants is pruned: {unwired:?}"
+        );
+        assert!(
+            !unwired_pair(&kid_rt, &helper_rt),
+            "the definition-declared edge is kept: {unwired:?}"
+        );
+        Ok(())
+    }
+
+    /// Without a topology provider the desired set covers only what was
+    /// declared to this runtime: a live edge it did not wire (for example the
+    /// mob definition's spawn-time wiring) is not its to remove, after a
+    /// restart as before one.
+    #[tokio::test]
+    async fn without_a_topology_provider_an_unmanaged_edge_is_left_alone()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let lead = AgentIdentity::parse("identity:lead")?;
+        let member = AgentIdentity::parse("identity:member")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        let runtime = runtime_with(bridge.clone(), "edge-prune-no-provider")?;
+        assert_eq!(
+            runtime.identity_edge_ownership(),
+            IdentityEdgeOwnership::WiredByThisProcess
+        );
+        let lead_rt = register_active(&runtime, &bridge, &lead, 0).await?;
+        let member_rt = register_active(&runtime, &bridge, &member, 0).await?;
+        bridge.land_wire(&lead_rt, &member_rt);
+
+        runtime.reconcile_managed_peer_edges(&[]).await?;
+
+        assert!(
+            bridge.unwire_calls().is_empty(),
+            "an edge this runtime did not wire is left alone: {:?}",
+            bridge.unwire_calls()
+        );
+        let edge = ManagedPeerEdge::new(lead.clone(), member.clone())?;
+        assert!(runtime.logical_peer_edges().await?.contains(&edge));
         Ok(())
     }
 

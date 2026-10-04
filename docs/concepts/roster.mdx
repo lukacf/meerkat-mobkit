@@ -105,8 +105,13 @@ policy and converges it with `mobkit/reconcile_edges` (Python
   `reconcile_edges` once after boot and after each `runtime.reconcile()`.
 - Without declared wiring there is no definition edge policy; the call returns
   an empty report. Edges from a host `TopologyProvider` converge on every
-  identity restore and reconcile on their own, and the reconciler never unwires
-  an edge it did not wire itself.
+  identity restore and reconcile on their own.
+- With a `TopologyProvider`, the provider (plus operator topology intent) owns
+  the identities' edges: reconcile unwires every live edge between two
+  identities that neither the provider nor the definition's wiring declares,
+  including one wired before a restart. Declare an edge in your provider to
+  keep it. Without a provider, reconcile unwires only the edges it wired
+  itself.
 
 ## Roster operations
 
