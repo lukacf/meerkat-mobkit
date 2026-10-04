@@ -95,6 +95,26 @@ describe("owner activity refresh", () => {
 });
 
 describe("stock durable queue integration", () => {
+  it("sends new work after loading saved tool results beyond the snapshot observation", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-terminal", cursor: "console:39", event: "interaction_complete", sourceKind: "console_event",
+        interactionId: "old-input", runId: "old-run", timestampMs: 1, data: { text: "Saved work finished" } },
+      { ...scope, id: "saved-tool-result", cursor: "console:40", event: "tool_execution_completed", sourceKind: "session_history",
+        timestampMs: 2, data: { id: "old-tool", result: "Saved tool output" } },
+      { ...scope, id: "history-snapshot", cursor: "console:43", event: "assistant_history_snapshot", sourceKind: "session_history",
+        timestampMs: 3, data: { session_id: scope.sessionId, complete: true, observed_through: "console:39", assistant_message_ids: ["saved-answer"] } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Saved work finished", { selector: "p" });
+    await compose("new work after history reload");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("new work after history reload");
+    expect(screen.queryByText("Agent busy")).toBeNull();
+  });
+
   it("persists default embedded drafts and legacy queues in the server-owned scope", async () => {
     const send = vi.fn(async (input) => ({ interaction_id: "accepted", identity: input.identity }));
     const fake = transport(send);

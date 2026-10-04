@@ -33,7 +33,6 @@ import {
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
-  settledHistoryActivity,
   ConsoleActivityProjection,
   topologyMutationIntent,
 } from "@console-core";
@@ -1457,12 +1456,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const log = getOrCreateLog(identity);
     const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const frames = sortedEvents(log);
-    const coveredHistory = settledHistoryActivity(frames);
-    const ordered = frames
-      // A committed tool row remains transcript evidence. Once the same
-      // session's settled observation covers it, it cannot reopen the queue.
-      .filter((frame) => !coveredHistory.has(frame))
+    const ordered = sortedEvents(log)
       .sort((a, b) => {
         const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
         if (timeDelta !== 0) return timeDelta;
@@ -2231,9 +2225,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
   // Helper: update phase for ALL panels showing a given identity
   function updatePhaseForIdentity(identity: string, frame: ConsoleFrame): boolean {
-    // Replayed history can arrive after the settled observation that covers
-    // it. Reconcile the complete evidence instead of animating that old work
-    // as a new live operation. In-place updates may change the same scope.
+    // Replayed history can arrive after live events. Reconcile the retained
+    // lifecycle evidence without animating saved auxiliary rows as new work.
+    // In-place updates may change the same scope.
     if (frame.sourceKind === "session_history" || frame.event === "assistant_history_snapshot"
       || frame.event === "frame_updated") {
       return recomputePhaseForIdentity(identity);

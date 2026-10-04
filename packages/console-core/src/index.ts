@@ -2,7 +2,6 @@ export { realtimeMessageOrigin, hasRealtimeMessageOriginCarrier, isRealtimeHisto
 export { conversationPresentationRows } from "./assistant-presentation";
 export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
 export type { AssistantHistorySnapshot } from "./assistant-message-identity";
-export { settledHistoryActivity } from "./settled-history-activity";
 export type {
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,

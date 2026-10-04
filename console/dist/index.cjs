@@ -797,53 +797,6 @@ function parseAssistantHistorySnapshot(frame) {
   return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
 }
 
-// ../packages/console-core/src/settled-history-activity.ts
-var LEGACY_ACTIVITY = /* @__PURE__ */ new Set([
-  "reasoning_delta",
-  "reasoning_complete",
-  "tool_call_requested",
-  "tool_call",
-  "tool_execution_started",
-  "tool_result_received",
-  "tool_execution_completed",
-  "server_tool_content"
-]);
-function exactScope(frame) {
-  const fields = [frame.runtimeKey, frame.identity, frame.sessionId];
-  return fields.every((value) => typeof value === "string" && value.trim()) ? JSON.stringify(fields) : void 0;
-}
-function settledHistoryActivity(frames) {
-  const observations = /* @__PURE__ */ new Map();
-  for (const frame of frames) {
-    const snapshot = assistantHistorySnapshot(frame);
-    const scope = exactScope(frame);
-    const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (!snapshot || !scope || cursor === void 0) continue;
-    const previous3 = observations.get(scope);
-    if (!previous3 || cursor > previous3.cursor) {
-      observations.set(scope, {
-        cursor,
-        through: snapshot.observedThrough,
-        ids: snapshot.assistantMessageIds,
-        conflict: false
-      });
-    } else if (cursor === previous3.cursor && (snapshot.observedThrough !== previous3.through || snapshot.assistantMessageIds.size !== previous3.ids.size || [...snapshot.assistantMessageIds].some((id) => !previous3.ids.has(id)))) {
-      previous3.conflict = true;
-    }
-  }
-  const covered = /* @__PURE__ */ new Set();
-  for (const frame of frames) {
-    if (frame.sourceKind !== "session_history" || !LEGACY_ACTIVITY.has(frame.event)) continue;
-    const scope = exactScope(frame);
-    const observation = scope && observations.get(scope);
-    const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (observation && !observation.conflict && cursor !== void 0 && cursor <= observation.through) {
-      covered.add(frame);
-    }
-  }
-  return covered;
-}
-
 // ../packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
   const record6 = value && typeof value === "object" ? value : null;
@@ -4303,6 +4256,16 @@ function isIntermediateHistoryAssistantStep(frame) {
   const message = data.message && typeof data.message === "object" ? data.message : {};
   return message.role === "block_assistant" && message.stop_reason === "tool_use";
 }
+var HISTORICAL_AUXILIARY_EVENTS = /* @__PURE__ */ new Set([
+  "reasoning_delta",
+  "reasoning_complete",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
+  "server_tool_content"
+]);
 var ConsoleActivityProjection = class {
   constructor(fallback = null) {
     __publicField(this, "interactions", /* @__PURE__ */ new Map());
@@ -4399,6 +4362,7 @@ var ConsoleActivityProjection = class {
     return owner;
   }
   fold(frame) {
+    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) return false;
     if (isIntermediateHistoryAssistantStep(frame)) return false;
     const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
     let phase2;
@@ -4526,9 +4490,8 @@ var ConsoleActivityProjection = class {
   }
 };
 function inferResponsePhaseFromFrames(frames, fallback = null) {
-  const coveredHistory = settledHistoryActivity(frames);
   const projection = new ConsoleActivityProjection(fallback);
-  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  for (const frame of frames) projection.fold(frame);
   return projection.phase;
 }
 function isTerminalUserInputStatus(status) {
@@ -4548,9 +4511,8 @@ function resolvePanelResponsePhase(args) {
   return args.serverPhase ?? null;
 }
 function latestRoutableFrameIsTerminal(frames) {
-  const coveredHistory = settledHistoryActivity(frames);
   const projection = new ConsoleActivityProjection();
-  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  for (const frame of frames) projection.fold(frame);
   return projection.terminal;
 }
 
@@ -44525,9 +44487,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const log = getOrCreateLog(identity);
     const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const frames = sortedEvents(log);
-    const coveredHistory = settledHistoryActivity(frames);
-    const ordered = frames.filter((frame) => !coveredHistory.has(frame)).sort((a, b) => {
+    const ordered = sortedEvents(log).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);

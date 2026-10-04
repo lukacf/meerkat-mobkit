@@ -7,7 +7,6 @@ import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } f
 import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import { parseConsoleContextMessage } from "./context-record";
-import { settledHistoryActivity } from "./settled-history-activity";
 import {
   decodeMemberAlias,
   entryOriginFromFrameData,
@@ -4260,6 +4259,11 @@ type LifecycleOwner = {
   order: number;
 };
 
+const HISTORICAL_AUXILIARY_EVENTS = new Set([
+  "reasoning_delta", "reasoning_complete", "tool_call_requested", "tool_call",
+  "tool_execution_started", "tool_result_received", "tool_execution_completed", "server_tool_content",
+]);
+
 // Display projection of supplied lifecycle IDs, not execution authority.
 export class ConsoleActivityProjection {
   private interactions = new Map<string, LifecycleOwner[]>();
@@ -4332,6 +4336,10 @@ export class ConsoleActivityProjection {
     return owner;
   }
   fold(frame: ConsoleFrame): boolean {
+    // Saved tool and reasoning rows describe transcript content. Their append
+    // cursors, message IDs and arrival order do not reserve current work.
+    // Explicit lifecycle events and current live activity retain their owners.
+    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) return false;
     if (isIntermediateHistoryAssistantStep(frame)) return false;
     const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
     let phase: ResponsePhase | undefined;
@@ -4409,9 +4417,8 @@ export class ConsoleActivityProjection {
 }
 
 export function inferResponsePhaseFromFrames(frames: ConsoleFrame[], fallback: ResponsePhase = null): ResponsePhase {
-  const coveredHistory = settledHistoryActivity(frames);
   const projection = new ConsoleActivityProjection(fallback);
-  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  for (const frame of frames) projection.fold(frame);
   return projection.phase;
 }
 
@@ -4439,9 +4446,8 @@ export function resolvePanelResponsePhase(args: {
 }
 
 function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
-  const coveredHistory = settledHistoryActivity(frames);
   const projection = new ConsoleActivityProjection();
-  for (const frame of frames) if (!coveredHistory.has(frame)) projection.fold(frame);
+  for (const frame of frames) projection.fold(frame);
   return projection.terminal;
 }
 
