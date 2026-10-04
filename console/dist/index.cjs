@@ -46117,14 +46117,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return true;
     } catch (submitError) {
       const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
-      if (lifetimeRef.current.active) {
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
         optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
           (url) => URL.revokeObjectURL(url)
         );
         delete optimisticUserByPanelKeyRef.current[panelKey];
-        commitPanelPhase(panelKey, null);
-        identityBusyRef.current[identity] = false;
         commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+        recomputeBusyStateFromLog(identity);
+        recomputePhaseForIdentity(identity);
       }
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
         if (pendingAttempt && attemptNamespace) {

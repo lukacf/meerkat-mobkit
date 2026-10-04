@@ -544,6 +544,40 @@ describe("stock durable queue integration", () => {
     expect(JSON.parse(saved[0].envelopeJson).handling_mode).toBe("steer");
   });
 
+  it("keeps the active owner run busy after a refused steer", async () => {
+    const refused = Object.assign(new Error("send access denied"), {
+      httpStatus: 403,
+      responseRpcError: { code: -32030, message: "send access denied", data: { kind: "access_denied" } },
+    });
+    const send = vi.fn(async input => ({ interaction_id: "next-owner-turn", identity: input.identity }))
+      .mockRejectedValueOnce(refused);
+    const fake = transport(send);
+    const startedAt = Date.now();
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { id: "owner-interaction", event: "interaction_started", identity, interactionId: "active-owner-turn", timestampMs: startedAt, data: { content: "Owner work is still running" } },
+      { id: "owner-run", event: "run_started", identity, interactionId: "active-owner-turn", runId: "active-owner-run", timestampMs: startedAt + 1, data: {} },
+    ] });
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("refused steer");
+    expect(await screen.findByText("Agent busy")).toBeVisible();
+    fireEvent.click(screen.getByTestId(/^pending-steer:/));
+    const row = await screen.findByTestId(/^pending-item:/);
+    await waitFor(() => expect(within(row).getByText("Not sent")).toBeVisible());
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(screen.queryByText("Agent idle")).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Discard", exact: true }));
+    await compose("wait for the active owner turn");
+    expect(await screen.findByTestId("pending-stack")).toHaveTextContent("wait for the active owner turn");
+    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => { receive?.({ id: "owner-terminal", event: "interaction_complete", identity,
+      interactionId: "active-owner-turn", runId: "active-owner-run", timestampMs: startedAt + 2, data: { text: "Owner work completed" } } as never); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls[1][0].content).toBe("wait for the active owner turn");
+  });
+
   it("shows a connection failure (e.g. a lost acknowledgement) as acceptance unknown, never as not sent", async () => {
     const send = vi.fn(async () => { throw Object.assign(new TypeError("Failed to fetch"), { transportFailure: "connection_failed" }); });
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
