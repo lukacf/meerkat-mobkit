@@ -671,7 +671,9 @@ class MobKitRuntime:
         rid = _next_request_id("mobkit/init")
         request = _rpc_request(rid, "mobkit/init", params)
         try:
-            response = await transport.send_async(request)
+            response = await transport.send_async(
+                request, timeout=self._config.gateway_init_timeout
+            )
         except TransportReaderFailedError as exc:
             raise InitOutcomeUnknownError(init_id, watch.last_phase, str(exc)) from exc
         except RuntimeError as exc:

@@ -722,9 +722,13 @@ settles it `ready` or `failed`. The SDK has **no built-in total deadline** for
 that wait. Startup legitimately includes provider callbacks (each bounded at
 130 s by the gateway) and native persisted-authority prewarm, which is
 deliberately unbounded and can run for minutes on a large roster. Any fixed
-SDK timer would sooner or later abort a healthy restore. The transport's 60 s request
-timeout still bounds the wait for the `accepted` answer, and for an older
-gateway's single init response.
+SDK timer would sooner or later abort a healthy restore. A 60 s timeout still
+bounds the wait for the `accepted` answer, and for an older gateway's single
+init response. A host whose gateway answers init late can raise it with
+`MobKit.builder().gateway_init_timeout(seconds)` (a positive finite number of
+seconds). That bounds a slow host startup; it does not fix one. It applies only
+to the `mobkit/init` request: ordinary RPCs and provider callback deadlines
+keep their own timeouts.
 
 The wait ends only when one of these happens:
 

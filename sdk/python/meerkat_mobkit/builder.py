@@ -43,6 +43,7 @@ class MobKitBuilderConfig:
     # settle. None waits until the gateway settles, exits, or the reader
     # fails. Running out raises InitOutcomeUnknownError.
     init_deadline: float | None = None
+    gateway_init_timeout: float = 60.0
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
     persistent_state: str | None = None
@@ -680,6 +681,30 @@ class MobKitBuilder:
 
     def gateway(self, bin_path: str) -> MobKitBuilder:
         self._config.gateway_bin = bin_path
+        return self
+
+    def gateway_init_timeout(self, seconds: float) -> MobKitBuilder:
+        """Cap how long ``connect()`` waits for the gateway to answer ``mobkit/init``.
+
+        The answer is the gateway's ``accepted`` acknowledgement, or an older
+        gateway's single final response. The default is 60 seconds, the
+        transport's request timeout. A host whose gateway answers late (slow
+        startup before init is accepted) can raise it: it bounds that wait,
+        it does not make the startup faster. Running out raises
+        ``InitOutcomeUnknownError`` and cleans the gateway up, as before.
+
+        It applies to that one request only. Ordinary RPCs and provider
+        callback deadlines keep their own timeouts, and the wait for an
+        accepted init to settle is :meth:`init_deadline`.
+        """
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError("gateway_init_timeout must be a positive finite number of seconds")
+        self._config.gateway_init_timeout = float(seconds)
         return self
 
     def init_deadline(self, seconds: float | None) -> MobKitBuilder:

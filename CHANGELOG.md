@@ -332,6 +332,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Python SDK: `MobKitBuilder.gateway_init_timeout(seconds)` sets how long
+  `connect()` waits for the gateway to answer `mobkit/init` (its `accepted`
+  acknowledgement, or an older gateway's single response). The default stays
+  60 s. It takes a positive finite number of seconds; booleans, NaN,
+  infinities, zero and negatives raise `ValueError`. It bounds a slow host
+  startup and does not fix one: running out still raises
+  `InitOutcomeUnknownError` and cleans the gateway up. Only the init request
+  uses it. Ordinary RPCs and provider callback deadlines keep their own
+  timeouts, and `init_deadline(seconds)` still bounds the wait for an
+  accepted init to settle.
+
 - `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
   `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
   host Rust tool bundles to meerkat-mob's `MobBuilder::register_tool_bundle`,
