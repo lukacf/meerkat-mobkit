@@ -95,6 +95,30 @@ describe("owner activity refresh", () => {
 });
 
 describe("stock durable queue integration", () => {
+  it.each(["live run", "server phase"])("keeps a send queued after history reload while current work is owned by %s", async (evidence) => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const experience = await fake.loadExperience();
+    if (evidence === "server phase") experience.agent_sidebar!.live_snapshot!.agents![0].response_phase = "waiting";
+    fake.loadExperience = async () => experience;
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-terminal", event: "interaction_complete", sourceKind: "console_event",
+        interactionId: "old-input", runId: "old-run", timestampMs: 1, data: { text: "Saved work finished" } },
+      ...(evidence === "live run" ? [{ ...scope, id: "current-run", event: "run_started", sourceKind: "console_event" as const,
+        interactionId: "current-input", runId: "current-run", timestampMs: 2, data: {} }] : []),
+      { ...scope, id: "saved-tool-result", event: "tool_execution_completed", sourceKind: "session_history",
+        timestampMs: 3, data: { id: "old-tool", result: "Saved tool output" } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Saved work finished", { selector: "p" });
+    await compose("queued work waits for the current owner");
+    const stack = await screen.findByTestId("pending-stack");
+    expect(within(stack).getByText("queued work waits for the current owner")).toBeVisible();
+    if (evidence === "live run") expect(within(stack).getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("sends new work after loading saved tool results beyond the snapshot observation", async () => {
     const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
     const fake = transport(send);

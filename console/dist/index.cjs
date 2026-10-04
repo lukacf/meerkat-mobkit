@@ -4327,6 +4327,9 @@ var ConsoleActivityProjection = class {
         this.index(this.runs, id, byInteraction);
       }
       for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      byInteraction.interactionOpen || (byInteraction.interactionOpen = byRun.interactionOpen);
+      byInteraction.unidentifiedRunOpen || (byInteraction.unidentifiedRunOpen = byRun.unidentifiedRunOpen);
+      byInteraction.inputOpen || (byInteraction.inputOpen = byRun.inputOpen);
       byInteraction.auxiliaryOpen || (byInteraction.auxiliaryOpen = byRun.auxiliaryOpen);
       if (byRun.order > byInteraction.order) {
         byInteraction.phase = byRun.phase;
@@ -4361,8 +4364,38 @@ var ConsoleActivityProjection = class {
     }
     return owner;
   }
+  refreshOwner(owner, retainAssociation = false) {
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (owner.interactionOpen) this.interactionsOpen.add(owner);
+    else this.interactionsOpen.delete(owner);
+    if (hasRun) this.runsOpen.add(owner);
+    else this.runsOpen.delete(owner);
+    if (open) this.busyOwners.add(owner);
+    else this.busyOwners.delete(owner);
+    if (open || owner.phase !== null) {
+      this.active.add(owner);
+      if (owner.phase !== null && (!this.phaseOwner || owner.order > this.phaseOwner.order)) this.phaseOwner = owner;
+    } else if (retainAssociation) this.active.delete(owner);
+    else this.forget(owner);
+    if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
+      this.phaseOwner = void 0;
+      for (const active of this.active) {
+        if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+      }
+    }
+    this.phase = this.phaseOwner?.phase ?? null;
+  }
   fold(frame) {
-    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) return false;
+    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) {
+      if (typeof frame.runId !== "string" || !frame.runId || typeof frame.interactionId !== "string" || !frame.interactionId) return false;
+      if (this.runs.get(frame.runId)?.some((owner3) => !ownerContextsConflict(owner3.context, frame) && owner3.interactionId && owner3.interactionId !== frame.interactionId)) return false;
+      const owner2 = this.owner(frame);
+      if (!owner2) return false;
+      this.refreshOwner(owner2, true);
+      this.terminal && (this.terminal = this.phase === null);
+      return true;
+    }
     if (isIntermediateHistoryAssistantStep(frame)) return false;
     const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
     let phase2;
@@ -4465,26 +4498,9 @@ var ConsoleActivityProjection = class {
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     if (frame.event === "text_complete" || frame.event === "turn_completed") phase2 = owner.interactionOpen || hasRun ? "waiting" : null;
     if (frame.event === "run_completed" || frame.event === "run_failed") phase2 = owner.interactionOpen ? "waiting" : null;
-    const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
-    if (owner.interactionOpen) this.interactionsOpen.add(owner);
-    else this.interactionsOpen.delete(owner);
-    if (hasRun) this.runsOpen.add(owner);
-    else this.runsOpen.delete(owner);
-    if (open) this.busyOwners.add(owner);
-    else this.busyOwners.delete(owner);
-    if (open || phase2 !== null) {
-      this.active.add(owner);
-      owner.phase = phase2 ?? null;
-      owner.order = ++this.order;
-      if (owner.phase !== null) this.phaseOwner = owner;
-    } else this.forget(owner);
-    if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
-      this.phaseOwner = void 0;
-      for (const active of this.active) {
-        if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
-      }
-    }
-    this.phase = this.phaseOwner?.phase ?? null;
+    owner.phase = phase2 ?? null;
+    owner.order = ++this.order;
+    this.refreshOwner(owner);
     this.terminal = terminal && this.phase === null;
     return true;
   }

@@ -65,6 +65,59 @@ test("explicit lifecycle observations remain active even when read from history"
   }
 });
 
+for (const interactionSeen of [false, true]) {
+ for (const historyFirst of [false, true]) {
+  test(`saved exact ID pairs link run ownership without reserving work (interaction seen: ${interactionSeen}, history first: ${historyFirst})`, () => {
+    const projection = new ConsoleActivityProjection();
+    const live = { sourceKind: "console_event" as const };
+    const association = frame("tool_call_requested", { runId: "active-run", interactionId: "active-input" });
+    if (historyFirst) {
+      projection.fold(association);
+      assert.equal(projection.busy, false);
+      assert.equal(projection.terminal, false);
+    }
+    if (interactionSeen) projection.fold(frame("interaction_started", { ...live, interactionId: "active-input" }));
+    projection.fold(frame("run_started", { ...live, runId: "active-run" }));
+    projection.fold(frame("run_started", { ...live, runId: "sibling-run", interactionId: "sibling-input" }));
+    projection.fold(frame("text_delta", { ...live, runId: "sibling-run", interactionId: "sibling-input" }));
+    if (!historyFirst) projection.fold(association);
+    assert.equal(projection.busy, true, "linking cannot release either current owner");
+    assert.equal(projection.phase, "generating", "saved association cannot replace the latest live phase");
+    projection.fold(frame("interaction_complete", { ...live, interactionId: "active-input" }));
+    assert.equal(projection.busy, true, "unrelated sibling remains open");
+    projection.fold(frame("interaction_complete", { ...live, interactionId: "sibling-input" }));
+    assert.equal(projection.busy, false, "the exact pair joins the run to its actual interaction terminal");
+    assert.equal(projection.phase, null);
+  });
+ }
+}
+
+test("saved ID pairs cannot reassign a run or link conflicting contexts", () => {
+  for (const extra of [{ runtimeKey: "other-runtime" }, { identity: "other-agent" }, { sessionId: "other-session" }, { interactionId: "wrong-input" }]) {
+    const projection = new ConsoleActivityProjection();
+    const live = { sourceKind: "console_event" as const };
+    projection.fold(frame("run_started", { ...live, runId: "active-run", interactionId: "active-input" }));
+    projection.fold(frame("tool_call_requested", { runId: "active-run", interactionId: "wrong-input", ...extra }));
+    projection.fold(frame("interaction_complete", { ...live, interactionId: "wrong-input" }));
+    assert.equal(projection.busy, true, "a historical pair cannot reassign a known run");
+    projection.fold(frame("interaction_complete", { ...live, interactionId: "active-input" }));
+    assert.equal(projection.busy, false);
+  }
+});
+
+test("an exact interaction may own several runs without a historical activity reservation", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const };
+  for (const runId of ["run-1", "run-2"]) {
+    projection.fold(frame("tool_call_requested", { runId, interactionId: "same-input" }));
+    projection.fold(frame("run_started", { ...live, runId }));
+  }
+  projection.fold(frame("run_completed", { ...live, runId: "run-1" }));
+  assert.equal(projection.busy, true, "the second run remains open");
+  projection.fold(frame("interaction_complete", { ...live, interactionId: "same-input" }));
+  assert.equal(projection.busy, false, "the actual interaction terminal settles its runs");
+});
+
 test("live tool-only work remains busy through text completion", () => {
   for (const sourceKind of ["console_event", undefined]) {
     const current = { sourceKind, runId: "active-run", interactionId: "active-input" };
