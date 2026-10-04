@@ -90,22 +90,30 @@ function assertStartupLineage(frames, historyPages) {
 
 // Member readiness and a live UI do not prove the requested reply committed.
 // Observe its exact terminal and durable owner under one deadline.
-async function waitForStartupLineage({ timeline, durableHistory, expectedInteractionId, expectedOwners, readRendered, onObservation = () => {}, timeoutMs = 20_000, pollIntervalMs = 50 }) {
+// `expiry`, when given, is the deadline itself: an AbortSignal that aborts
+// when the budget is spent, in place of `timeoutMs` of wall-clock time. Tests
+// use it to expire the deadline at a typed point instead of racing a timer.
+async function waitForStartupLineage({ timeline, durableHistory, expectedInteractionId, expectedOwners, readRendered, onObservation = () => {}, timeoutMs = 20_000, pollIntervalMs = 50, expiry }) {
   const controller = new AbortController();
   const { signal } = controller;
   const deadline = performance.now() + timeoutMs;
   let last;
   const timeoutError = () => new Error(`Timed out: startup Acceptance reply has completed with exact durable lineage${last ? `: ${last.message}` : ""}`);
+  const deadlinePassed = () => expiry ? expiry.aborted : performance.now() >= deadline;
   function checkDeadline() {
-    if (!signal.aborted && performance.now() >= deadline) controller.abort(timeoutError());
+    if (!signal.aborted && deadlinePassed()) controller.abort(timeoutError());
     signal.throwIfAborted();
   }
   let timer;
+  let expire;
   const expired = new Promise((_, reject) => {
-    timer = setTimeout(() => {
+    expire = () => {
       controller.abort(timeoutError());
       reject(signal.reason);
-    }, timeoutMs);
+    };
+    if (!expiry) timer = setTimeout(expire, timeoutMs);
+    else if (expiry.aborted) expire();
+    else expiry.addEventListener("abort", expire, { once: true });
   });
   async function observe() {
     while (true) {
@@ -143,7 +151,7 @@ async function waitForStartupLineage({ timeline, durableHistory, expectedInterac
         last = error;
         checkDeadline();
       }
-      await delay(Math.min(pollIntervalMs, Math.max(0, deadline - performance.now())), undefined, { signal });
+      await delay(expiry ? pollIntervalMs : Math.min(pollIntervalMs, Math.max(0, deadline - performance.now())), undefined, { signal });
     }
   }
   try {
@@ -154,6 +162,7 @@ async function waitForStartupLineage({ timeline, durableHistory, expectedInterac
     throw error;
   } finally {
     clearTimeout(timer);
+    expiry?.removeEventListener("abort", expire);
     // Cancel response bodies and sibling history reads as well as pending polls.
     controller.abort();
   }
@@ -186,10 +195,10 @@ async function observeStartupPhase(phase, { result, timeline, durableHistory, re
   return observation;
 }
 
-function startupLineageReaders({ baseUrl, backendUrl }) {
+function startupLineageReaders({ baseUrl, backendUrl, fetch: request = globalThis.fetch }) {
   return {
     async timeline({ signal } = {}) {
-      const response = await fetch(`${baseUrl}/console/timeline?identity=${encodeURIComponent(agentIdentity)}&mode=recent&limit=1000`, { signal });
+      const response = await request(`${baseUrl}/console/timeline?identity=${encodeURIComponent(agentIdentity)}&mode=recent&limit=1000`, { signal });
       assert.equal(response.status, 200);
       return response.json();
     },
@@ -197,7 +206,7 @@ function startupLineageReaders({ baseUrl, backendUrl }) {
       const sessions = [...new Set(frames.filter(frame => frame.identity === agentIdentity && frame.session_id).map(frame => frame.session_id))];
       assert(sessions.length > 0, "canonical runtime frames identify the actual session to read");
       return Promise.all(sessions.map(async sessionId => {
-        const response = await fetch(`${backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(sessionId)}`, { signal });
+        const response = await request(`${backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(sessionId)}`, { signal });
         assert.equal(response.status, 200, "fixture-only reader returns actual runtime session history");
         return response.json();
       }));
