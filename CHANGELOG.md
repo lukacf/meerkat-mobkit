@@ -332,8 +332,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- The console renders typed operation refusals and outcome-audit failures as
-  distinct, safe notices while preserving the actual tool result.
+- The console renders recognized current operation refusals, confinement
+  causes, pre-tool hook decisions/launch failures and outcome-audit failures as
+  distinct local feedback. Permitted sibling results and error status remain
+  visible; an outcome-audit notice does not change the action's actual result.
+  Unknown or malformed tool causes use the ordinary tool-result path, which may
+  display raw output, without a permission or mechanical-refusal classification.
+  Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`;
+  these projections do not configure native authorization or supply a grant editor.
 
 - Python SDK: `MobKitBuilder.gateway_init_timeout(seconds)` sets how long
   `connect()` waits for the gateway to answer `mobkit/init` (its `accepted`

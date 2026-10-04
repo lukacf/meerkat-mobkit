@@ -149,6 +149,12 @@ renders this metadata automatically. A custom renderer can display its `title`,
 verbatim. The shared projection classifies supported typed payloads, rather than
 interpreting arbitrary tool messages as decisions.
 
+Cards cover recognized current typed payloads. An unknown cause or malformed
+payload does not acquire a permission or confinement classification. Unrecognized
+tool results use the ordinary tool-result display and may show raw output; no
+dedicated fallback card is promised for every event. A missing card is not a permission decision or evidence
+of success. Preserve unfamiliar payloads in the host's authorized diagnostics.
+
 Keep run state attached to the controller's runtime lifecycle events. A local
 feedback card does not end a run. Rendering these cards does not configure
 native authorization, process confinement or durable audit; the host supplies
