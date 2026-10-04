@@ -20,7 +20,7 @@ const confinementDetails = {
   unsupported_requirement: "This backend does not support the required confinement.",
   backend_unavailable: "The required confinement backend is unavailable.",
   preparation_failed: "Confined process preparation failed.",
-} as const;
+} as const satisfies Record<NonNullable<Feedback["confinementRefusal"]>, string>;
 
 const hookReasons = {
   policy_violation: "Policy violation",
@@ -28,7 +28,7 @@ const hookReasons = {
   schema_violation: "Schema violation",
   timeout: "Timeout",
   runtime_error: "Runtime error",
-} as const;
+} as const satisfies Record<NonNullable<Feedback["hookReasonCode"]>, string>;
 
 function identifier(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
