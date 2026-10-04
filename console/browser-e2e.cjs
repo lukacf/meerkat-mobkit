@@ -1055,8 +1055,18 @@ async function runCanonicalSendBrowserProof() {
 
     await openSidebarAgentChat(page, /Legacy Router/i);
     await fillComposer(page, "legacy proof message");
-    await clickSend(page);
-    await page.waitForTimeout(100);
+    // Sending first awaits persistence and a fresh capability response.
+    // Observe this target's actual RPC response before reading the server log.
+    const memberSendResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      if (response.url() !== `${server.baseUrl}/console/rpc` || request.method() !== "POST") return false;
+      const payload = request.postDataJSON();
+      return payload?.method === "mobkit/console/send"
+        && payload.params?.identity === "legacy-router"
+        && payload.params?.content === "legacy proof message";
+    }, { timeout: 30_000 });
+    await page.getByTestId("chat-send:legacy-router").click();
+    await memberSendResponse;
 
     const sawIdentityLane = server.requests.some(
       (request) =>
