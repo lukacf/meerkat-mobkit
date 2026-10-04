@@ -4252,7 +4252,7 @@ type LifecycleOwner = {
   context: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">;
   interactionId?: string;
   runIds: Set<string>;
-  openRuns: Set<string>;
+  openRuns: Map<string, number>;
   runPhases: Map<string, LifecyclePhase>;
   interactionOpen: boolean;
   unidentifiedRunOpen: boolean;
@@ -4321,7 +4321,9 @@ export class ConsoleActivityProjection {
     if (byInteraction && byRun && byInteraction !== byRun && !byRun.interactionId) {
       for (const key of ["runtimeKey", "identity", "sessionId"] as const) byInteraction.context[key] ??= byRun.context[key];
       for (const id of byRun.runIds) { byInteraction.runIds.add(id); this.index(this.runs, id, byInteraction); }
-      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order] of byRun.openRuns) {
+        if (order > (byInteraction.openRuns.get(id) ?? -1)) byInteraction.openRuns.set(id, order);
+      }
       for (const [id, phase] of byRun.runPhases) {
         if (phase.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase);
       }
@@ -4337,7 +4339,7 @@ export class ConsoleActivityProjection {
     if (!interaction && !run) owner = this.matching(this.anonymous, frame);
     if (!owner) {
       owner = { context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
-        runIds: new Set(), openRuns: new Set(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
+        runIds: new Set(), openRuns: new Map(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
         inputOpen: false, auxiliaryOpen: false, ownerPhase: { phase: null, order: 0 }, phase: null, order: 0 };
       if (!interaction && !run) this.anonymous.push(owner);
     }
@@ -4348,12 +4350,17 @@ export class ConsoleActivityProjection {
   }
   private selectOwnerPhase(owner: LifecycleOwner): void {
     const previousOrder = owner.order;
-    let latest = owner.ownerPhase;
+    let runPhase: LifecyclePhase | undefined;
+    let clearedRunOrder = 0;
     for (const contribution of owner.runPhases.values()) {
-      // A newer cleared phase is still evidence; associations cannot revive
-      // an older contribution by treating that null as an absent observation.
-      if (contribution.phase !== null && contribution.order > latest.order) latest = contribution;
+      if (contribution.phase === null) clearedRunOrder = Math.max(clearedRunOrder, contribution.order);
+      else if ((owner.ownerPhase.phase !== null || contribution.order > owner.ownerPhase.order)
+        && (!runPhase || contribution.order > runPhase.order)) runPhase = contribution;
     }
+    // A run-local clear invalidates an older owner fallback, while another
+    // run's live contribution survives. An owner-wide clear covers older runs.
+    let latest = clearedRunOrder > owner.ownerPhase.order ? { phase: null, order: clearedRunOrder } : owner.ownerPhase;
+    if (runPhase && (latest.phase === null || runPhase.order > latest.order)) latest = runPhase;
     owner.phase = latest.phase;
     owner.order = latest.order;
     // A settled run can reveal an older phase. Let another owner's newer
@@ -4440,9 +4447,29 @@ export class ConsoleActivityProjection {
         break;
       case "interaction_started": ownerPhaseEvent = true; owner.interactionOpen = true; break;
       case "run_started":
-        if (frame.runId) owner.openRuns.add(frame.runId); else owner.unidentifiedRunOpen = true;
+        if (frame.runId) {
+          if (!owner.openRuns.has(frame.runId)) owner.openRuns.set(frame.runId, order);
+        } else owner.unidentifiedRunOpen = true;
         break;
-      case "interaction_complete": case "interaction_failed": case "message_delivery_failed": case "system_notice":
+      case "interaction_complete": case "interaction_failed":
+        if (frame.runId) {
+          const started = owner.openRuns.get(frame.runId);
+          const closesCurrent = started !== undefined
+            && [...owner.openRuns.values()].every(value => value <= started)
+            && ![...owner.runPhases].some(([id, value]) => id !== frame.runId
+              && !owner.openRuns.has(id) && value.phase !== null && value.order > started);
+          owner.openRuns.delete(frame.runId); owner.runPhases.delete(frame.runId);
+          // Native run terminals are emitted as interaction terminals with
+          // both IDs. The latest explicit start identifies the current run;
+          // its terminal closes the interaction, an older terminal does not.
+          // A partial history may omit a newer run's start: retain its observed
+          // phase without manufacturing an open-run reservation for it.
+          if (!closesCurrent && (owner.openRuns.size || owner.unidentifiedRunOpen
+            || [...owner.runPhases.values()].some(value => value.phase !== null))) break;
+        }
+        // A run-less terminal settles the interaction, as does its last run.
+        // falls through
+      case "message_delivery_failed": case "system_notice":
         ownerPhaseEvent = true;
         owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
         owner.openRuns.clear(); owner.runPhases.clear(); break;
@@ -4456,18 +4483,19 @@ export class ConsoleActivityProjection {
     }
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     if (frame.event === "text_complete" || frame.event === "turn_completed") phase = owner.interactionOpen || hasRun ? "waiting" : null;
-    if (frame.event === "run_completed" || frame.event === "run_failed") {
+    if (frame.event === "run_completed" || frame.event === "run_failed"
+      || ((frame.event === "interaction_complete" || frame.event === "interaction_failed") && !ownerPhaseEvent)) {
       // Observed run phases and explicit run starts are different facts. A
       // sibling's live text survives even when its start was not retained.
-      if ((!owner.runPhases.size && !owner.unidentifiedRunOpen) || !frame.runId) {
+      if ((!owner.openRuns.size && ![...owner.runPhases.values()].some(value => value.phase !== null)
+        && !owner.unidentifiedRunOpen) || !frame.runId) {
         owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order };
       }
       this.selectOwnerPhase(owner);
     } else {
       const contribution = { phase: phase ?? null, order };
       if (frame.runId && !ownerPhaseEvent) {
-        if (contribution.phase === null) owner.runPhases.delete(frame.runId);
-        else owner.runPhases.set(frame.runId, contribution);
+        owner.runPhases.set(frame.runId, contribution);
       } else owner.ownerPhase = contribution;
       if (contribution.phase === null) this.selectOwnerPhase(owner);
       else { owner.phase = contribution.phase; owner.order = contribution.order; }

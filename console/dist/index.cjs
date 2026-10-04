@@ -4326,7 +4326,9 @@ var ConsoleActivityProjection = class {
         byInteraction.runIds.add(id);
         this.index(this.runs, id, byInteraction);
       }
-      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order2] of byRun.openRuns) {
+        if (order2 > (byInteraction.openRuns.get(id) ?? -1)) byInteraction.openRuns.set(id, order2);
+      }
       for (const [id, phase2] of byRun.runPhases) {
         if (phase2.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase2);
       }
@@ -4344,7 +4346,7 @@ var ConsoleActivityProjection = class {
       owner = {
         context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
         runIds: /* @__PURE__ */ new Set(),
-        openRuns: /* @__PURE__ */ new Set(),
+        openRuns: /* @__PURE__ */ new Map(),
         runPhases: /* @__PURE__ */ new Map(),
         interactionOpen: false,
         unidentifiedRunOpen: false,
@@ -4369,10 +4371,14 @@ var ConsoleActivityProjection = class {
   }
   selectOwnerPhase(owner) {
     const previousOrder = owner.order;
-    let latest = owner.ownerPhase;
+    let runPhase;
+    let clearedRunOrder = 0;
     for (const contribution of owner.runPhases.values()) {
-      if (contribution.phase !== null && contribution.order > latest.order) latest = contribution;
+      if (contribution.phase === null) clearedRunOrder = Math.max(clearedRunOrder, contribution.order);
+      else if ((owner.ownerPhase.phase !== null || contribution.order > owner.ownerPhase.order) && (!runPhase || contribution.order > runPhase.order)) runPhase = contribution;
     }
+    let latest = clearedRunOrder > owner.ownerPhase.order ? { phase: null, order: clearedRunOrder } : owner.ownerPhase;
+    if (runPhase && (latest.phase === null || runPhase.order > latest.order)) latest = runPhase;
     owner.phase = latest.phase;
     owner.order = latest.order;
     if (this.phaseOwner === owner && owner.order < previousOrder) this.selectPhaseOwner();
@@ -4490,11 +4496,21 @@ var ConsoleActivityProjection = class {
         owner.interactionOpen = true;
         break;
       case "run_started":
-        if (frame.runId) owner.openRuns.add(frame.runId);
-        else owner.unidentifiedRunOpen = true;
+        if (frame.runId) {
+          if (!owner.openRuns.has(frame.runId)) owner.openRuns.set(frame.runId, order2);
+        } else owner.unidentifiedRunOpen = true;
         break;
       case "interaction_complete":
       case "interaction_failed":
+        if (frame.runId) {
+          const started = owner.openRuns.get(frame.runId);
+          const closesCurrent = started !== void 0 && [...owner.openRuns.values()].every((value) => value <= started) && ![...owner.runPhases].some(([id, value]) => id !== frame.runId && !owner.openRuns.has(id) && value.phase !== null && value.order > started);
+          owner.openRuns.delete(frame.runId);
+          owner.runPhases.delete(frame.runId);
+          if (!closesCurrent && (owner.openRuns.size || owner.unidentifiedRunOpen || [...owner.runPhases.values()].some((value) => value.phase !== null))) break;
+        }
+      // A run-less terminal settles the interaction, as does its last run.
+      // falls through
       case "message_delivery_failed":
       case "system_notice":
         ownerPhaseEvent = true;
@@ -4521,16 +4537,15 @@ var ConsoleActivityProjection = class {
     }
     const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
     if (frame.event === "text_complete" || frame.event === "turn_completed") phase2 = owner.interactionOpen || hasRun ? "waiting" : null;
-    if (frame.event === "run_completed" || frame.event === "run_failed") {
-      if (!owner.runPhases.size && !owner.unidentifiedRunOpen || !frame.runId) {
+    if (frame.event === "run_completed" || frame.event === "run_failed" || (frame.event === "interaction_complete" || frame.event === "interaction_failed") && !ownerPhaseEvent) {
+      if (!owner.openRuns.size && ![...owner.runPhases.values()].some((value) => value.phase !== null) && !owner.unidentifiedRunOpen || !frame.runId) {
         owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order: order2 };
       }
       this.selectOwnerPhase(owner);
     } else {
       const contribution = { phase: phase2 ?? null, order: order2 };
       if (frame.runId && !ownerPhaseEvent) {
-        if (contribution.phase === null) owner.runPhases.delete(frame.runId);
-        else owner.runPhases.set(frame.runId, contribution);
+        owner.runPhases.set(frame.runId, contribution);
       } else owner.ownerPhase = contribution;
       if (contribution.phase === null) this.selectOwnerPhase(owner);
       else {

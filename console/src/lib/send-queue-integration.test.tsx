@@ -95,6 +95,34 @@ describe("owner activity refresh", () => {
 });
 
 describe("stock durable queue integration", () => {
+  it.each(["interaction_complete", "interaction_failed"])("holds a queued send through an older run's %s and releases on the current run", async event => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session", interactionId: "input", sourceKind: "console_event" as const };
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-start", event: "run_started", runId: "old-run", timestampMs: 1, data: {} },
+      { ...scope, id: "current-start", event: "run_started", runId: "current-run", timestampMs: 2, data: {} },
+      { ...scope, id: "current-tool", event: "tool_execution_started", runId: "current-run", timestampMs: 3, data: { id: "tool", name: "working" } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("wait for current run");
+    await screen.findByTestId("pending-stack");
+    await act(async () => {
+      receive?.({ ...scope, id: "old-terminal", event, runId: "old-run", timestampMs: 4, data: {} } as never);
+      await new Promise(resolve => window.setTimeout(resolve, 20));
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(within(screen.getByTestId("pending-stack")).getByText("Agent busy")).toBeVisible();
+    await act(async () => {
+      receive?.({ ...scope, id: "current-terminal", event, runId: "current-run", timestampMs: 5, data: {} } as never);
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("wait for current run");
+  });
+
   it.each([
     ["live run", false], ["live run", true],
     ["server phase", false], ["server phase", true],

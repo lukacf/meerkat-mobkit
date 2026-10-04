@@ -259,6 +259,125 @@ test("live tool-only work remains busy through text completion", () => {
   }
 });
 
+for (const prefix of ["input", "tool"] as const) {
+  for (const event of ["text_complete", "turn_completed"]) {
+    test(`a run-scoped ${event} cannot revive an older ${prefix} phase`, () => {
+      const projection = new ConsoleActivityProjection();
+      const interaction = { sourceKind: "console_event" as const, interactionId: "input" };
+      const run = { ...interaction, runId: "run" };
+      projection.fold(frame(prefix === "input" ? "user_input" : "tool_execution_started", { ...interaction, status: "delivered" }));
+      if (prefix === "tool") projection.fold(frame("tool_execution_completed", run));
+      projection.fold(frame("text_delta", run));
+      projection.fold(frame(event, { ...run, data: { stop_reason: "end_turn" } }));
+      assert.equal(projection.phase, null, "cleared run phase is newer evidence than the previous owner phase");
+      assert.equal(projection.terminal, true);
+      projection.fold(frame("tool_call_requested", { runId: "run", interactionId: "input" }));
+      assert.equal(projection.phase, null, "saved association cannot revive the cleared phase either");
+    });
+  }
+}
+
+for (const event of ["interaction_complete", "interaction_failed"]) {
+  for (const sourceKind of ["console_event", "session_history"] as const) {
+    for (const retainedStarts of [false, true]) {
+      test(`late ${sourceKind} ${event} for an older run preserves its successor (starts retained: ${retainedStarts})`, () => {
+        const projection = new ConsoleActivityProjection();
+        const live = { sourceKind: "console_event" as const, interactionId: "input" };
+        for (const runId of ["old-run", "current-run"]) {
+          if (retainedStarts) projection.fold(frame("run_started", { ...live, runId }));
+          projection.fold(frame(runId === "old-run" ? "text_delta" : "tool_execution_started", { ...live, runId }));
+        }
+        projection.fold(frame(event, { ...live, sourceKind, runId: "old-run" }));
+        assert.equal(projection.phase, "tool-executing");
+        assert.equal(projection.busy, true, "the newer run's observed tool work still owns busy state");
+        assert.equal(projection.runOpen, retainedStarts, "tool evidence does not invent a missing run start");
+        assert.equal(projection.terminal, false);
+        projection.fold(frame(event, { ...live, runId: "current-run" }));
+        assert.equal(projection.phase, null);
+        assert.equal(projection.busy, false);
+        assert.equal(projection.runOpen, false);
+        assert.equal(projection.terminal, true);
+      });
+    }
+  }
+}
+
+test("an interaction-only steer terminal does not settle another interaction's named run", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const };
+  projection.fold(frame("run_started", { ...live, runId: "active-run", interactionId: "active-input" }));
+  projection.fold(frame("text_delta", { ...live, runId: "active-run", interactionId: "active-input" }));
+  projection.fold(frame("user_input", { ...live, interactionId: "steer-input", status: "delivered" }));
+  projection.fold(frame("interaction_complete", { ...live, interactionId: "steer-input" }));
+  assert.equal(projection.phase, "generating");
+  assert.equal(projection.busy, true);
+  projection.fold(frame("interaction_complete", { ...live, interactionId: "active-input" }));
+  assert.equal(projection.phase, null);
+  assert.equal(projection.busy, false);
+});
+
+test("run-local null evidence preserves a sibling phase and survives a later owner merge", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const };
+  projection.fold(frame("user_input", { ...live, interactionId: "input", status: "delivered" }));
+  projection.fold(frame("text_delta", { ...live, runId: "sibling", interactionId: "input" }));
+  projection.fold(frame("tool_execution_started", { ...live, runId: "completed" }));
+  projection.fold(frame("text_complete", { ...live, runId: "completed" }));
+  projection.fold(frame("tool_call_requested", { runId: "completed", interactionId: "input" }));
+  assert.equal(projection.phase, "generating", "the completed run cannot hide another run's live text");
+  projection.fold(frame("text_complete", { ...live, runId: "sibling", interactionId: "input" }));
+  assert.equal(projection.phase, null, "neither cleared run can revive the older input phase");
+  projection.fold(frame("interaction_complete", { ...live, interactionId: "input" }));
+  assert.equal(projection.busy, false);
+});
+
+for (const historyFirst of [false, true]) {
+  test(`the current run's projected terminal settles its interaction including older starts (history first: ${historyFirst})`, () => {
+    const projection = new ConsoleActivityProjection();
+    const live = { sourceKind: "console_event" as const };
+    const associations = ["current-run", "old-run"].map(runId => frame("tool_call_requested", { runId, interactionId: "input" }));
+    if (historyFirst) for (const row of associations) projection.fold(row);
+    projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+    projection.fold(frame("run_started", { ...live, runId: "current-run" }));
+    projection.fold(frame("text_delta", { ...live, runId: "current-run" }));
+    if (!historyFirst) for (const row of associations) projection.fold(row);
+    projection.fold(frame("interaction_complete", { ...live, runId: "current-run", interactionId: "input" }));
+    assert.equal(projection.phase, null, "the actual current run terminal closes the interaction");
+    assert.equal(projection.busy, false, "an older start cannot strand the queue after its successor completes");
+    projection.fold(frame("interaction_complete", { ...live, runId: "old-run", interactionId: "input" }));
+    assert.equal(projection.phase, null);
+    assert.equal(projection.busy, false);
+  });
+}
+
+test("a repeated old run start cannot promote its terminal over the current run", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const, interactionId: "input" };
+  projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+  projection.fold(frame("run_started", { ...live, runId: "current-run" }));
+  projection.fold(frame("text_delta", { ...live, runId: "current-run" }));
+  projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+  projection.fold(frame("interaction_complete", { ...live, runId: "old-run" }));
+  assert.equal(projection.phase, "generating");
+  assert.equal(projection.busy, true);
+  projection.fold(frame("interaction_complete", { ...live, runId: "current-run" }));
+  assert.equal(projection.busy, false);
+});
+
+test("an older retained start cannot close a newer observed run whose start is missing", () => {
+  const projection = new ConsoleActivityProjection();
+  const live = { sourceKind: "console_event" as const, interactionId: "input" };
+  projection.fold(frame("run_started", { ...live, runId: "old-run" }));
+  projection.fold(frame("tool_execution_started", { ...live, runId: "current-run" }));
+  projection.fold(frame("interaction_complete", { ...live, runId: "old-run" }));
+  assert.equal(projection.phase, "tool-executing");
+  assert.equal(projection.busy, true);
+  assert.equal(projection.runOpen, false, "observed tool work cannot invent the missing start");
+  projection.fold(frame("interaction_complete", { ...live, runId: "current-run" }));
+  assert.equal(projection.phase, null);
+  assert.equal(projection.busy, false);
+});
+
 test("history alone cannot override supplied current phases", () => {
   for (const event of auxiliaryEvents) {
     const saved = frame(event);
