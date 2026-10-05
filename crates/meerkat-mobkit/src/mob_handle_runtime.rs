@@ -21842,6 +21842,9 @@ comms = true
                 )
                 .expect("host-only descriptor"),
         );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
 
         let runtime = MobRuntime::bootstrap(spec).await.expect("root bootstrap");
         let final_state = runtime
@@ -21852,14 +21855,32 @@ comms = true
             !Arc::ptr_eq(&preliminary, &final_state),
             "child policy must exercise replacement of the preliminary state"
         );
+        let owner = meerkat_mob::AgentIdentity::from("document-owner");
+        Box::pin(
+            runtime
+                .handle()
+                .spawn_spec(SpawnMemberSpec::host_root("worker", owner.clone())),
+        )
+        .await
+        .expect("owner member");
+        let owner_session = runtime
+            .handle()
+            .resolve_bridge_session_id(&owner)
+            .await
+            .expect("owner bridge session");
         let child_definition = MobDefinition::from_toml(&format!(
             "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
             unique_test_mob_id()
         ))
         .expect("child definition");
-        let child_id = Box::pin(final_state.mob_create_definition(child_definition))
-            .await
-            .expect("child creation from final state");
+        let child_id = Box::pin(final_state.mob_create_definition_with_owner_bridge_session(
+            child_definition,
+            owner_session.clone(),
+            true,
+            false,
+        ))
+        .await
+        .expect("member-owned child creation from final state");
         let child = final_state
             .mob_handles_snapshot()
             .await
@@ -21867,6 +21888,11 @@ comms = true
             .into_iter()
             .find_map(|(id, handle)| (id == child_id).then_some(handle))
             .expect("created child");
+        let authority = child
+            .owner_bridge_session_lifecycle_authority()
+            .expect("persisted child authority");
+        assert_eq!(authority.bridge_session_id, owner_session);
+        assert!(authority.destroy_on_owner_archive);
         let profile = child.definition().profiles[&ProfileName::from("worker")]
             .as_inline()
             .expect("inline worker");
