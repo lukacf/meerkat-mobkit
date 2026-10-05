@@ -9803,6 +9803,7 @@ impl MobBootstrapSpec {
         Ok(spec)
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ephemeral_runtime_backed_inner(
         definition: MobDefinition,
@@ -9838,10 +9839,9 @@ impl MobBootstrapSpec {
         )
     }
 
-    /// [`ephemeral_runtime_backed_inner`](Self::ephemeral_runtime_backed_inner)
-    /// with the composite storage provider's meerkat-level bundle (M4b, the
-    /// scratch/ob3 shape): when present, runtime and workgraph authority
-    /// ride the provider's stores instead of process-local memory.
+    /// Build an ephemeral runtime with the optional composite storage provider's
+    /// meerkat-level bundle. When present, runtime and workgraph authority ride
+    /// the provider's stores instead of process-local memory.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ephemeral_runtime_backed_with_provider_stores(
         definition: MobDefinition,
