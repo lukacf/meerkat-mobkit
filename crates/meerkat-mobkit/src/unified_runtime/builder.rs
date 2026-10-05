@@ -93,8 +93,17 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
-    /// Named Rust tool bundles added to the resolved or supplied mob spec.
-    tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
+    /// Named Rust tool bundles added to the resolved or supplied mob spec,
+    /// each with its availability to child mobs.
+    tool_bundles: BTreeMap<
+        String,
+        (
+            Arc<dyn meerkat_core::AgentToolDispatcher>,
+            meerkat_mob_mcp::ChildToolBundleAvailability,
+        ),
+    >,
+    /// Child mob application tool policy added to the mob spec.
+    child_application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -372,17 +381,47 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Register a named Rust tool bundle for profiles' `tools.rust_bundles`.
-    /// It is added to the mob spec this builder resolves or is given; see
-    /// [`MobBootstrapSpec::register_tool_bundle`]. A name that the supplied
-    /// spec already registers is refused at build.
+    /// Register a named host-only Rust tool bundle for profiles'
+    /// `tools.rust_bundles`. It is added to the mob spec this builder resolves
+    /// or is given; see [`MobBootstrapSpec::register_tool_bundle`]. A name that
+    /// the supplied spec already registers is refused at build.
     #[must_use]
     pub fn register_tool_bundle(
-        mut self,
+        self,
         name: impl Into<String>,
         dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
     ) -> Self {
-        self.tool_bundles.insert(name.into(), dispatcher);
+        self.register_tool_bundle_with_availability(
+            name,
+            dispatcher,
+            meerkat_mob_mcp::ChildToolBundleAvailability::HostOnly,
+        )
+    }
+
+    /// Register a named Rust tool bundle with its availability to child
+    /// mobs; see [`MobBootstrapSpec::register_tool_bundle_with_availability`].
+    /// A name that the supplied spec already registers is refused at build.
+    #[must_use]
+    pub fn register_tool_bundle_with_availability(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        availability: meerkat_mob_mcp::ChildToolBundleAvailability,
+    ) -> Self {
+        self.tool_bundles
+            .insert(name.into(), (dispatcher, availability));
+        self
+    }
+
+    /// The application tool policy child mob members are built with; see
+    /// [`MobBootstrapSpec::with_child_application_tool_policy`]. A supplied
+    /// spec that already sets one is refused at build.
+    #[must_use]
+    pub fn child_application_tool_policy(
+        mut self,
+        binding: meerkat_core::ApplicationToolPolicyBinding,
+    ) -> Self {
+        self.child_application_tool_policy = Some(binding);
         self
     }
 
@@ -1076,7 +1115,7 @@ impl UnifiedRuntimeBuilder {
             summary.slots.extend(provider_census);
         }
 
-        for (name, dispatcher) in std::mem::take(&mut self.tool_bundles) {
+        for (name, (dispatcher, availability)) in std::mem::take(&mut self.tool_bundles) {
             if mob_spec.tool_bundles.contains_key(&name) {
                 return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                     format!(
@@ -1085,7 +1124,20 @@ impl UnifiedRuntimeBuilder {
                     ),
                 ));
             }
-            mob_spec.tool_bundles.insert(name, dispatcher);
+            mob_spec.tool_bundles.insert(name.clone(), dispatcher);
+            mob_spec
+                .child_tool_bundle_availability
+                .insert(name, availability);
+        }
+        if let Some(binding) = self.child_application_tool_policy.take() {
+            if mob_spec.child_application_tool_policy.is_some() {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    "a child application tool policy is set on both the builder and the \
+                     supplied MobBootstrapSpec"
+                        .to_string(),
+                ));
+            }
+            mob_spec.child_application_tool_policy = Some(binding);
         }
 
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {

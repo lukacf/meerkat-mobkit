@@ -179,6 +179,7 @@ pub use live_contracts::{
     validate_experimental_live_open_surface, validate_experimental_live_target_surface,
 };
 pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
+pub use meerkat_mob_mcp::ChildToolBundleAvailability;
 pub use memory::{
     CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DispatchTaintSlot,
     DistillCause, DistillerConfig, DistillerEngine, DreamOutcome, DreamRun, HygieneCause,

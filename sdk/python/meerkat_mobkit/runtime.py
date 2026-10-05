@@ -830,6 +830,10 @@ class MobKitRuntime:
             params["application_tool_policies"] = list(
                 self._config.application_tool_policies
             )
+        if self._config.child_application_tool_policy is not None:
+            params["child_application_tool_policy"] = dict(
+                self._config.child_application_tool_policy
+            )
         if self._config.continuity_store is not None:
             params["has_continuity_store"] = True
         if self._config.lease_provider is not None:
