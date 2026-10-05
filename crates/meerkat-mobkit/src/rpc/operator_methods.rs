@@ -35,6 +35,28 @@
 //! neighboring destructive verbs (`mobkit/respawn`, `mobkit/reset`,
 //! `mobkit/retire`) use, so identities the gateway does not own are refused
 //! at resolution.
+//!
+//! A third pair, the member's standing instructions (a restored member
+//! otherwise keeps running the prompt minted with its session after its
+//! skills changed, because resume authors nothing):
+//!
+//! - `mobkit/member_activate_instruction` appends one keyed, immutable
+//!   instruction activation to the member's CURRENT session through Meerkat's
+//!   member-level door, `MobHandle::activate_member_instruction`. It holds the
+//!   session's runtime turn-finalization boundary and applies the shared
+//!   runtime admission. History is never rewritten: the activation is a new
+//!   transcript row, and re-applying the effective activation is a typed
+//!   `duplicate`. A call made mid-turn BLOCKS until that turn finalizes (it
+//!   can wait for a whole turn) and applies at the boundary, never inside the
+//!   turn. If work is still queued at the boundary, or there is no session or
+//!   an open live channel, the refusal goes back to the host as a typed
+//!   admission class. No read deadline wraps this mutation, and nothing
+//!   retries here.
+//! - `mobkit/member_instruction_activations` reads the durable activation
+//!   records of the member's current session.
+//!
+//! All of these are host verbs: they exist only on the gateway's host
+//! JSON-RPC surface and its SDKs, never in an agent tool catalog.
 
 use super::*;
 use crate::identity_first::AgentIdentity;
@@ -205,6 +227,229 @@ async fn read_transcript_facts(
         Err(err) => return Err(err),
     };
     Ok((page.messages.len(), head_revision, last_reason))
+}
+
+/// JSON-RPC code for a member instruction activation refused at its safe
+/// boundary (runtime work still queued, open live channel, no materialized
+/// session, a fenced store asking for backoff). The host retries at its own
+/// next boundary.
+pub const MEMBER_INSTRUCTION_REFUSED_CODE: i64 = OPERATOR_SESSION_BUSY_CODE;
+
+/// The audit actor for host-invoked instruction activations.
+const INSTRUCTION_ACTIVATION_ACTOR: &str = "host";
+
+/// Typed JSON-RPC error for a `MemberInstructionActivationError`. The four
+/// classes stay distinct in `data.class`; an admission refusal also carries
+/// Meerkat's stable `instruction_activation_code`, and a session refusal the
+/// session error's stable code plus, when the owner refused the request
+/// itself, its typed `InstructionActivationErrorCode`. No class is retried
+/// here.
+fn member_instruction_error_response(
+    response_id: Value,
+    error: meerkat_mob::MemberInstructionActivationError,
+) -> JsonRpcResponse {
+    use meerkat_core::InstructionActivationAdmissionErrorCode as Code;
+    use meerkat_core::InstructionActivationErrorCode as RefusalCode;
+    use meerkat_mob::MemberInstructionActivationError as Error;
+    #[derive(serde::Deserialize)]
+    struct ActivationRefusal {
+        instruction_activation_code: RefusalCode,
+    }
+    let message = error.to_string();
+    let (code, data) = match &error {
+        Error::Admission { code, .. } => {
+            let rpc_code = match code {
+                Code::UnsupportedCurrentLowering => -32602,
+                Code::DurabilityUnavailable => -32603,
+                Code::TargetNotMaterialized
+                | Code::LiveChannelOpen
+                | Code::SessionBusy
+                | Code::ExternalWriteFenceConflict
+                | Code::ExternalWriteFenceBackoff => MEMBER_INSTRUCTION_REFUSED_CODE,
+            };
+            (
+                rpc_code,
+                serde_json::json!({
+                    "class": "admission",
+                    "instruction_activation_code": code,
+                }),
+            )
+        }
+        Error::Session(session_error) => {
+            // The session owner reports a refused request as
+            // `FailedWithData` carrying its typed `InstructionActivationErrorCode`;
+            // that payload is deserialized, never read out of the message.
+            let activation_code = match session_error {
+                SessionError::FailedWithData { data, .. } => {
+                    serde_json::from_value::<ActivationRefusal>(data.clone())
+                        .ok()
+                        .map(|refusal| refusal.instruction_activation_code)
+                }
+                _ => None,
+            };
+            let rpc_code = match (session_error, activation_code) {
+                (SessionError::Busy { .. }, _) => MEMBER_INSTRUCTION_REFUSED_CODE,
+                (_, Some(RefusalCode::MalformedActivationHistory) | None) => -32603,
+                // The request itself is wrong for the member's current
+                // activation state: the host fixes it, nothing retries.
+                (_, Some(_)) => -32602,
+            };
+            let mut data = serde_json::json!({
+                "class": "session",
+                "session_error_code": session_error.code(),
+            });
+            if let Some(activation_code) = activation_code {
+                data["instruction_activation_error_code"] = serde_json::json!(activation_code);
+            }
+            (rpc_code, data)
+        }
+        Error::Runtime(_) => (-32603, serde_json::json!({ "class": "runtime" })),
+        Error::OwnerTask(_) => (-32603, serde_json::json!({ "class": "owner_task" })),
+        // `#[non_exhaustive]`: a class this build does not know is still a
+        // typed failure, never a success.
+        _ => (-32603, serde_json::json!({ "class": "unknown" })),
+    };
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message,
+            data: Some(data),
+        }),
+    }
+}
+
+/// `mobkit/member_activate_instruction`: append one keyed instruction
+/// activation to the member's current session at a safe boundary.
+///
+/// Params: `identity` (the member, resolved through the operator gate) and
+/// `activation`, Meerkat's `InstructionActivationRequest` verbatim. The result
+/// is `{identity, receipt}` with Meerkat's `InstructionActivationReceipt`
+/// (`disposition` is `applied` or `duplicate`).
+pub(super) async fn handle_member_activate_instruction(
+    runtime: &UnifiedRuntime,
+    ctx: &IdentityFirstContext,
+    params: &Value,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let activation: meerkat_core::InstructionActivationRequest =
+        match params.get("activation").cloned() {
+            Some(value) => match serde_json::from_value(value) {
+                Ok(activation) => activation,
+                Err(error) => {
+                    return rpc_error(response_id, -32602, format!("invalid activation: {error}"));
+                }
+            },
+            None => {
+                return rpc_error(response_id, -32602, "activation is required".to_string());
+            }
+        };
+    let target = match resolve_operator_target(runtime, &ctx.runtime, params, &response_id).await {
+        Ok(target) => target,
+        Err(response) => return *response,
+    };
+    let member = crate::member_comms_id::mob_member_id(target.identity.as_str());
+    let namespace = activation.revision.namespace.clone();
+    let key = activation.revision.key.clone();
+    let activation_id = activation.activation_id.clone();
+    match runtime
+        .mob_handle()
+        .activate_member_instruction(&member, activation)
+        .await
+    {
+        Ok(receipt) => {
+            tracing::info!(
+                actor = INSTRUCTION_ACTIVATION_ACTOR,
+                identity = %target.identity,
+                namespace = %namespace,
+                key = %key,
+                activation_id = %activation_id,
+                disposition = ?receipt.disposition,
+                session_id = %receipt.record.session_id,
+                transcript_revision = %receipt.record.projection_witness.transcript_revision,
+                "host activated a member instruction"
+            );
+            match serde_json::to_value(&receipt) {
+                Ok(receipt) => rpc_result(
+                    response_id,
+                    serde_json::json!({
+                        "identity": target.identity.as_str(),
+                        "receipt": receipt,
+                    }),
+                ),
+                Err(error) => rpc_error(
+                    response_id,
+                    -32603,
+                    format!("failed to serialize the activation receipt: {error}"),
+                ),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                actor = INSTRUCTION_ACTIVATION_ACTOR,
+                identity = %target.identity,
+                namespace = %namespace,
+                key = %key,
+                activation_id = %activation_id,
+                admission_code = ?error.admission_code(),
+                error = %error,
+                "host member instruction activation refused"
+            );
+            member_instruction_error_response(response_id, error)
+        }
+    }
+}
+
+/// `mobkit/member_instruction_activations`: read the durable instruction
+/// activation records of the member's current session.
+///
+/// Params: `identity`, plus Meerkat's read query fields `namespace`, `key`,
+/// `offset` and `limit` (default 100). The result is `{identity, page}` with
+/// Meerkat's `InstructionActivationReadPage`.
+pub(super) async fn handle_member_instruction_activations(
+    runtime: &UnifiedRuntime,
+    ctx: &IdentityFirstContext,
+    params: &Value,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let mut query_fields = serde_json::Map::new();
+    for field in ["namespace", "key", "offset", "limit"] {
+        if let Some(value) = params.get(field).filter(|value| !value.is_null()) {
+            query_fields.insert(field.to_string(), value.clone());
+        }
+    }
+    let query: meerkat_core::InstructionActivationReadQuery =
+        match serde_json::from_value(Value::Object(query_fields)) {
+            Ok(query) => query,
+            Err(error) => {
+                return rpc_error(response_id, -32602, format!("invalid query: {error}"));
+            }
+        };
+    let target = match resolve_operator_target(runtime, &ctx.runtime, params, &response_id).await {
+        Ok(target) => target,
+        Err(response) => return *response,
+    };
+    let member = crate::member_comms_id::mob_member_id(target.identity.as_str());
+    match runtime
+        .mob_handle()
+        .read_member_instruction_activations(&member, query)
+        .await
+    {
+        Ok(page) => match serde_json::to_value(&page) {
+            Ok(page) => rpc_result(
+                response_id,
+                serde_json::json!({ "identity": target.identity.as_str(), "page": page }),
+            ),
+            Err(error) => rpc_error(
+                response_id,
+                -32603,
+                format!("failed to serialize the activation page: {error}"),
+            ),
+        },
+        Err(error) => member_instruction_error_response(response_id, error),
+    }
 }
 
 /// `mobkit/compact_member`: force one compaction on a member's next turn via
@@ -1179,6 +1424,9 @@ mod tests {
         input_tokens: u64,
         gate_armed: Arc<AtomicBool>,
         in_call: Arc<AtomicBool>,
+        /// Fired (one stored permit) when a gated call parks at the gate: a
+        /// typed "the turn is mid-LLM-call" signal for tests that need it.
+        entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         maintenance_only: Arc<AtomicBool>,
         fail_maintenance: Arc<AtomicBool>,
@@ -1210,13 +1458,20 @@ mod tests {
                 && (!self.maintenance_only.load(Ordering::SeqCst) || maintenance);
             let fail = maintenance && self.fail_maintenance.load(Ordering::SeqCst);
             let in_call = Arc::clone(&self.in_call);
+            let entered = Arc::clone(&self.entered);
             let release = Arc::clone(&self.release);
             let input_tokens = self.input_tokens;
             Box::pin(
                 futures::stream::once(async move {
                     if gate_armed {
+                        // Register for the release BEFORE announcing entry, so
+                        // a release sent right after `entered` cannot be lost.
+                        let released = release.notified();
+                        tokio::pin!(released);
+                        released.as_mut().enable();
                         in_call.store(true, Ordering::SeqCst);
-                        release.notified().await;
+                        entered.notify_one();
+                        released.await;
                     }
                     in_call.store(false, Ordering::SeqCst);
                     if fail {
@@ -1279,6 +1534,7 @@ mod tests {
         member_alias: String,
         gate_armed: Arc<AtomicBool>,
         in_call: Arc<AtomicBool>,
+        entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         maintenance_only: Arc<AtomicBool>,
         fail_maintenance: Arc<AtomicBool>,
@@ -1572,6 +1828,7 @@ mod tests {
 
         let gate_armed = Arc::new(AtomicBool::new(false));
         let in_call = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let maintenance_only = Arc::new(AtomicBool::new(false));
         let fail_maintenance = Arc::new(AtomicBool::new(false));
@@ -1601,6 +1858,7 @@ comms = true
                 input_tokens: 5_000,
                 gate_armed: Arc::clone(&gate_armed),
                 in_call: Arc::clone(&in_call),
+                entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
                 maintenance_only: Arc::clone(&maintenance_only),
                 fail_maintenance: Arc::clone(&fail_maintenance),
@@ -1746,6 +2004,7 @@ comms = true
             member_alias: public_member_alias,
             gate_armed,
             in_call,
+            entered,
             release,
             maintenance_only,
             fail_maintenance,
@@ -2734,6 +2993,434 @@ comms = true
             "the straddled tool pair must survive whole"
         );
 
+        harness.teardown().await;
+    }
+
+    fn instruction_activation(
+        revision_id: &str,
+        activation_id: &str,
+        expectation: Value,
+        supersedes: Option<&str>,
+        body: &str,
+    ) -> Value {
+        let mut activation = serde_json::json!({
+            "revision": {
+                "namespace": "host",
+                "key": "persona",
+                "revision_id": revision_id,
+                "content_sha256": meerkat_core::InstructionContentDigest::for_body(body).as_str(),
+            },
+            "activation_id": activation_id,
+            "expectation": expectation,
+            "body": body,
+        });
+        if let Some(supersedes) = supersedes {
+            activation["supersedes"] = serde_json::json!(supersedes);
+        }
+        activation
+    }
+
+    async fn whole_history(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Vec<Value> {
+        service
+            .read_history(
+                session_id,
+                meerkat_core::service::SessionHistoryQuery {
+                    offset: 0,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("read history")
+            .messages
+            .iter()
+            .map(|message| serde_json::to_value(message).expect("message json"))
+            .collect()
+    }
+
+    /// `mobkit/member_activate_instruction` appends forward: the transcript
+    /// before the activation is unchanged and one activation row follows it.
+    /// Re-applying the effective activation is a typed `duplicate` with no
+    /// second row, and the read verb returns the one durable record.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn member_activate_instruction_appends_forward_and_reapply_is_duplicate() {
+        let harness = operator_verb_harness("worker:main", "operator-instruction-verb").await;
+        let service: Arc<dyn crate::memory::hygienist::TranscriptEditSessionService> =
+            Arc::clone(&harness.concrete) as _;
+        const SEED_TURN: &str = "seed one committed turn";
+        harness.run_turn(SEED_TURN.to_string()).await;
+        let session_id = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("identity status")
+            .session_id
+            .expect("identity session");
+        wait_for_durable_turn(&service, &session_id, SEED_TURN).await;
+        let before = whole_history(&service, &session_id).await;
+
+        const BODY: &str = "Use the tools you were granted; your skills changed.";
+        let activation = instruction_activation(
+            "r1",
+            "a1",
+            serde_json::json!({"kind": "absent"}),
+            None,
+            BODY,
+        );
+        let params = serde_json::json!({
+            "identity": harness.member_alias,
+            "activation": activation,
+        });
+        let response = rpc(
+            &harness,
+            "mobkit/member_activate_instruction",
+            params.clone(),
+        )
+        .await;
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            response["result"]["receipt"]["disposition"],
+            serde_json::json!("applied"),
+            "{response:#?}"
+        );
+
+        let after = whole_history(&service, &session_id).await;
+        assert_eq!(after.len(), before.len() + 1, "exactly one row is appended");
+        assert_eq!(
+            after[..before.len()],
+            before[..],
+            "the transcript before the activation is not rewritten"
+        );
+        assert!(
+            after[before.len()].to_string().contains(BODY),
+            "the appended row carries the instruction: {}",
+            after[before.len()]
+        );
+
+        let again = rpc(&harness, "mobkit/member_activate_instruction", params).await;
+        assert!(again["error"].is_null(), "{again:#?}");
+        assert_eq!(
+            again["result"]["receipt"]["disposition"],
+            serde_json::json!("duplicate"),
+            "{again:#?}"
+        );
+        assert_eq!(
+            whole_history(&service, &session_id).await.len(),
+            after.len(),
+            "a duplicate appends nothing"
+        );
+
+        // The owner's own refusals stay typed and append nothing: a body that
+        // does not match its declared digest, and a stale expectation (the
+        // host believed no activation was effective).
+        let mut mismatched = instruction_activation(
+            "r2",
+            "a2",
+            serde_json::json!({"kind": "effective", "activation_id": "a1"}),
+            Some("a1"),
+            "the second body",
+        );
+        mismatched["body"] = serde_json::json!("a different body");
+        let stale = instruction_activation(
+            "r2",
+            "a2",
+            serde_json::json!({"kind": "absent"}),
+            None,
+            "the second body",
+        );
+        for (activation, refusal) in [
+            (mismatched, "digest_mismatch"),
+            (stale, "effective_activation_conflict"),
+        ] {
+            let refused = rpc(
+                &harness,
+                "mobkit/member_activate_instruction",
+                serde_json::json!({"identity": harness.member_alias, "activation": activation}),
+            )
+            .await;
+            assert_eq!(
+                refused["error"]["code"],
+                serde_json::json!(-32602),
+                "{refused:#?}"
+            );
+            assert_eq!(
+                refused["error"]["data"]["class"],
+                serde_json::json!("session"),
+                "{refused:#?}"
+            );
+            assert_eq!(
+                refused["error"]["data"]["instruction_activation_error_code"],
+                serde_json::json!(refusal),
+                "{refused:#?}"
+            );
+        }
+        assert_eq!(
+            whole_history(&service, &session_id).await.len(),
+            after.len(),
+            "a refused activation appends nothing"
+        );
+
+        let page = rpc(
+            &harness,
+            "mobkit/member_instruction_activations",
+            serde_json::json!({
+                "identity": harness.member_alias,
+                "namespace": "host",
+                "key": "persona",
+            }),
+        )
+        .await;
+        assert!(page["error"].is_null(), "{page:#?}");
+        let records = page["result"]["page"]["records"]
+            .as_array()
+            .expect("records array");
+        assert_eq!(records.len(), 1, "{page:#?}");
+        assert_eq!(
+            records[0]["identity"]["activation_id"],
+            serde_json::json!("a1"),
+            "{page:#?}"
+        );
+
+        harness.teardown().await;
+    }
+
+    /// Mid-turn the activation never interleaves with the running turn:
+    /// Meerkat's member door waits at the turn-finalization boundary and
+    /// applies there, so the activation lands after the held turn's reply.
+    /// Nothing in MobKit waits, polls or retries; a refusal at that boundary
+    /// (work still queued) is the typed `session_busy` admission class
+    /// asserted in the mapping test below.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn member_activate_instruction_mid_turn_applies_at_the_turn_boundary() {
+        let harness =
+            Arc::new(operator_verb_harness("worker:main", "operator-instruction-busy").await);
+        let service: Arc<dyn crate::memory::hygienist::TranscriptEditSessionService> =
+            Arc::clone(&harness.concrete) as _;
+        harness
+            .run_turn("seed one committed turn".to_string())
+            .await;
+        harness.gate_armed.store(true, Ordering::SeqCst);
+        const HELD_TURN: &str = "held turn";
+        let admission = harness
+            .identity_runtime
+            .send_admission_tracked(
+                &harness.identity,
+                None,
+                &meerkat_core::ContentInput::Text(HELD_TURN.to_string()),
+                meerkat_core::types::HandlingMode::Queue,
+                None,
+            )
+            .await
+            .expect("held turn admitted");
+        // Typed: the gated LLM client fires `entered` once the turn is parked
+        // inside the model call. The timeout is only a hang guard.
+        tokio::time::timeout(Duration::from_mins(1), harness.entered.notified())
+            .await
+            .expect("the held turn never reached the LLM call");
+
+        let caller = Arc::clone(&harness);
+        let activation = tokio::spawn(async move {
+            rpc(
+                &caller,
+                "mobkit/member_activate_instruction",
+                serde_json::json!({
+                    "identity": caller.member_alias,
+                    "activation": instruction_activation(
+                        "r1",
+                        "a1",
+                        serde_json::json!({"kind": "absent"}),
+                        None,
+                        "issued while a turn runs",
+                    ),
+                }),
+            )
+            .await
+        });
+        harness.gate_armed.store(false, Ordering::SeqCst);
+        harness.release.notify_waiters();
+        let response = tokio::time::timeout(Duration::from_mins(1), activation)
+            .await
+            .expect("the activation never returned")
+            .expect("activation task");
+        harness
+            .identity_runtime
+            .wait_for_completion(
+                &harness.identity,
+                admission.completion_baseline,
+                Duration::from_mins(1),
+            )
+            .await
+            .expect("held turn completes after release");
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            response["result"]["receipt"]["disposition"],
+            serde_json::json!("applied"),
+            "{response:#?}"
+        );
+        let session_id = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("identity status")
+            .session_id
+            .expect("identity session");
+        let history = whole_history(&service, &session_id).await;
+        let held_input = history
+            .iter()
+            .position(|message| message.to_string().contains(HELD_TURN))
+            .expect("the held turn's input is in the transcript");
+        let activation_index =
+            response["result"]["receipt"]["record"]["projection_witness"]["message_index"]
+                .as_u64()
+                .and_then(|index| usize::try_from(index).ok())
+                .expect("projection witness message index");
+        assert!(
+            activation_index > held_input + 1,
+            "the activation must land after the held turn's reply, not inside it: \
+             activation at {activation_index}, held input at {held_input}: {history:#?}"
+        );
+        harness.teardown().await;
+    }
+
+    /// Every activation failure class keeps its own typed shape: admission
+    /// codes, session refusals (with the owner's typed activation code),
+    /// runtime authority and owner-task failures never collapse into one.
+    #[test]
+    fn member_instruction_errors_map_per_class() {
+        use meerkat_core::InstructionActivationAdmissionErrorCode as Code;
+        use meerkat_mob::MemberInstructionActivationError as Error;
+        let map = |error: Error| {
+            let response = member_instruction_error_response(serde_json::json!(1), error);
+            let error = response.error.expect("an error response");
+            (error.code, error.data.expect("typed data"))
+        };
+        for (code, rpc_code, wire) in [
+            (
+                Code::TargetNotMaterialized,
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                "target_not_materialized",
+            ),
+            (
+                Code::SessionBusy,
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                "session_busy",
+            ),
+            (
+                Code::LiveChannelOpen,
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                "live_channel_open",
+            ),
+            (
+                Code::ExternalWriteFenceConflict,
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                "external_write_fence_conflict",
+            ),
+            (
+                Code::ExternalWriteFenceBackoff,
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                "external_write_fence_backoff",
+            ),
+            (
+                Code::UnsupportedCurrentLowering,
+                -32602,
+                "unsupported_current_lowering",
+            ),
+            (
+                Code::DurabilityUnavailable,
+                -32603,
+                "durability_unavailable",
+            ),
+        ] {
+            assert_eq!(
+                map(Error::Admission {
+                    code,
+                    message: "refused".to_string(),
+                }),
+                (
+                    rpc_code,
+                    serde_json::json!({"class": "admission", "instruction_activation_code": wire}),
+                ),
+                "{code:?}"
+            );
+        }
+        let session_id = meerkat_core::types::SessionId::new();
+        assert_eq!(
+            map(Error::Session(SessionError::Busy { id: session_id })),
+            (
+                MEMBER_INSTRUCTION_REFUSED_CODE,
+                serde_json::json!({"class": "session", "session_error_code": "SESSION_BUSY"}),
+            )
+        );
+        let refused = |code: meerkat_core::InstructionActivationErrorCode| {
+            Error::Session(SessionError::FailedWithData {
+                message: "refused".to_string(),
+                data: serde_json::json!({"instruction_activation_code": code}),
+            })
+        };
+        let (rpc_code, data) = map(refused(
+            meerkat_core::InstructionActivationErrorCode::DigestMismatch,
+        ));
+        assert_eq!(rpc_code, -32602);
+        assert_eq!(data["class"], serde_json::json!("session"));
+        assert_eq!(
+            data["instruction_activation_error_code"],
+            serde_json::json!("digest_mismatch")
+        );
+        let (rpc_code, data) = map(refused(
+            meerkat_core::InstructionActivationErrorCode::MalformedActivationHistory,
+        ));
+        assert_eq!(rpc_code, -32603);
+        assert_eq!(
+            data["instruction_activation_error_code"],
+            serde_json::json!("malformed_activation_history")
+        );
+        assert_eq!(
+            map(Error::Runtime(
+                meerkat_runtime::RuntimeDriverError::Destroyed
+            )),
+            (-32603, serde_json::json!({"class": "runtime"}))
+        );
+        assert_eq!(
+            map(Error::OwnerTask("owner task panicked".to_string())),
+            (-32603, serde_json::json!({"class": "owner_task"}))
+        );
+    }
+
+    /// An identity with no member session is refused typed: Meerkat's
+    /// `target_not_materialized` admission class, with nothing appended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn member_activate_instruction_refuses_unknown_identities_typed() {
+        let harness = operator_verb_harness("worker:main", "operator-instruction-unknown").await;
+        let response = rpc(
+            &harness,
+            "mobkit/member_activate_instruction",
+            serde_json::json!({
+                "identity": "worker:nobody",
+                "activation": instruction_activation(
+                    "r1",
+                    "a1",
+                    serde_json::json!({"kind": "absent"}),
+                    None,
+                    "body",
+                ),
+            }),
+        )
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!(MEMBER_INSTRUCTION_REFUSED_CODE),
+            "{response:#?}"
+        );
+        assert_eq!(
+            response["error"]["data"],
+            serde_json::json!({
+                "class": "admission",
+                "instruction_activation_code": "target_not_materialized",
+            }),
+            "{response:#?}"
+        );
         harness.teardown().await;
     }
 

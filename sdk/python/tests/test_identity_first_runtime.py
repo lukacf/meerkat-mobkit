@@ -485,6 +485,43 @@ class TestLifecycleMethods:
         assert transport.calls[0]["params"]["identity"] == "agent:1"
 
     @pytest.mark.asyncio
+    async def test_activate_member_instruction_rpc(self):
+        receipt = {"record": {"session_id": "s"}, "disposition": "applied"}
+        rt, transport = _make_runtime(result={"identity": "agent:1", "receipt": receipt})
+        activation = {
+            "revision": {
+                "namespace": "host",
+                "key": "persona",
+                "revision_id": "r2",
+                "content_sha256": "0" * 64,
+            },
+            "activation_id": "a2",
+            "expectation": {"kind": "absent"},
+            "body": "Use your granted tools.",
+        }
+        result = await rt.activate_member_instruction("agent:1", activation)
+        assert transport.calls[0]["method"] == "mobkit/member_activate_instruction"
+        assert transport.calls[0]["params"] == {"identity": "agent:1", "activation": activation}
+        assert result["receipt"]["disposition"] == "applied"
+        # Default: the transport's own request timeout.
+        assert transport.async_timeouts[0] is None
+        # A mid-turn call can block for a whole turn; the caller can widen
+        # this call's reply timeout without touching the transport.
+        await rt.activate_member_instruction("agent:1", activation, transport_timeout=600.0)
+        assert transport.async_timeouts[1] == 600.0
+
+    @pytest.mark.asyncio
+    async def test_member_instruction_activations_rpc(self):
+        rt, transport = _make_runtime(result={"identity": "agent:1", "page": {"records": []}})
+        await rt.member_instruction_activations("agent:1", namespace="host", key="persona")
+        assert transport.calls[0]["method"] == "mobkit/member_instruction_activations"
+        assert transport.calls[0]["params"] == {
+            "identity": "agent:1",
+            "namespace": "host",
+            "key": "persona",
+        }
+
+    @pytest.mark.asyncio
     async def test_reset_rpc(self):
         rt, transport = _make_runtime(result={"accepted": True})
         await rt.reset("agent:1")
