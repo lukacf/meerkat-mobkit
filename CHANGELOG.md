@@ -638,6 +638,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Python and TypeScript SDK callbacks retain their originating gateway process
+  across reconnect. Late results, errors and deadline/cancellation responses
+  cannot answer reused callback IDs on a replacement process, and retired
+  readers cannot fail its pending requests.
+
 - A declared role migration is applied on the boot path, or refused typed;
   it is never silently dropped (HomeCore: children declared
   `role_migrations` to a restricted profile but kept their old role and

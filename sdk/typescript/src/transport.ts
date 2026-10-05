@@ -369,6 +369,13 @@ export class PersistentTransport {
       return;
     }
 
+    if (this._process !== null) {
+      // Process exit can precede stdout EOF. Retire its waiters before a new
+      // child can reuse request ids, and clear their old request timers.
+      this._onReaderClosed("the previous gateway process exited", this._process);
+      this._initWatch = null;
+    }
+
     // Capabilities are process-scoped and must be renegotiated on init after
     // a child restart.
     this._supportsShutdownHandshake = false;
@@ -385,11 +392,12 @@ export class PersistentTransport {
     // Background reader on stdout
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
-      rl.on("line", (line: string) => this._handleLine(line));
-      rl.on("close", () => this._onReaderClosed("the gateway closed its stdout"));
+      rl.on("line", (line: string) => this._handleLine(line, child));
+      rl.on("close", () => this._onReaderClosed("the gateway closed its stdout", child));
     }
 
     child.on("error", () => {
+      if (this._process !== child) return;
       // Process spawn error — fail all pending
       for (const [id, pending] of this._pending) {
         this._pending.delete(id);
@@ -399,7 +407,8 @@ export class PersistentTransport {
   }
 
   /** Handle one stdout line. A line that is not a JSON object is skipped. */
-  private _handleLine(line: string): void {
+  private _handleLine(line: string, child = this._process): void {
+    if (this._process !== child) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -425,7 +434,7 @@ export class PersistentTransport {
         }
         return;
       }
-      this._handleCallback(msg);
+      this._handleCallback(msg, child);
     } else if ("id" in msg) {
       const msgId = String(msg.id);
       const pending = this._pending.get(msgId);
@@ -437,7 +446,8 @@ export class PersistentTransport {
   }
 
   /** No response can arrive any more: fail every waiter, typed. */
-  private _onReaderClosed(reason: string): void {
+  private _onReaderClosed(reason: string, child = this._process): void {
+    if (this._process !== child) return;
     const failure = new TransportReaderFailedError(reason);
     this._readerFailure = failure;
     for (const [id, pending] of this._pending) {
@@ -447,14 +457,17 @@ export class PersistentTransport {
     this._initWatch?.fail(failure);
   }
 
-  private _handleCallback(msg: Record<string, unknown>): void {
+  private _handleCallback(msg: Record<string, unknown>, child = this._process): void {
+    // Callback ids and host deadlines belong to this exact child, even when
+    // the transport starts another child before the handler finishes.
+    const respond = (response: Record<string, unknown>): void => this._writeLine(response, child);
     const handler = this._callbackHandler;
     const method = String(msg.method ?? "");
     if (!handler) {
       // Answer now: the gateway would otherwise wait out its full callback
       // deadline for a response that never comes.
       if (msg.id !== undefined) {
-        this._writeLine({
+        respond({
           jsonrpc: "2.0",
           id: String(msg.id),
           error: {
@@ -484,7 +497,7 @@ export class PersistentTransport {
       );
       controller.abort(error);
       if (callbackId !== null) {
-        this._writeLine({
+        respond({
           jsonrpc: "2.0",
           id: callbackId,
           error: { code: -32000, message: error.message },
@@ -494,10 +507,13 @@ export class PersistentTransport {
     timer.unref?.();
 
     Promise.resolve()
-      .then(() => handler(method, params, {
-        signal: controller.signal,
-        deadlineMs,
-      }))
+      .then(() => {
+        if (this._process !== child) return;
+        return handler(method, params, {
+          signal: controller.signal,
+          deadlineMs,
+        });
+      })
       .then((result) => {
         if (completed) return;
         completed = true;
@@ -507,7 +523,7 @@ export class PersistentTransport {
         if (containsNonFinite(sanitized)) {
           // JSON has no NaN or Infinity; JSON.stringify would silently turn
           // them into null and change the provider's answer. Refuse it.
-          this._writeLine({
+          respond({
             jsonrpc: "2.0",
             id: callbackId,
             error: {
@@ -518,7 +534,7 @@ export class PersistentTransport {
           });
           return;
         }
-        this._writeLine({
+        respond({
           jsonrpc: "2.0",
           id: callbackId,
           result: sanitized,
@@ -529,7 +545,7 @@ export class PersistentTransport {
         completed = true;
         clearTimeout(timer);
         if (callbackId === null) return;
-        this._writeLine({
+        respond({
           jsonrpc: "2.0",
           id: callbackId,
           error: { code: -32000, message: String(err instanceof Error ? err.message : err) },
@@ -537,9 +553,9 @@ export class PersistentTransport {
       });
   }
 
-  private _writeLine(obj: Record<string, unknown>): void {
-    if (this._process?.stdin?.writable) {
-      this._process.stdin.write(JSON.stringify(obj) + "\n");
+  private _writeLine(obj: Record<string, unknown>, child = this._process): void {
+    if (this._process === child && child?.stdin?.writable) {
+      child.stdin.write(JSON.stringify(obj) + "\n");
     }
   }
 
