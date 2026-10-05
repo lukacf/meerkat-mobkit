@@ -1959,7 +1959,6 @@ impl UnifiedRuntimeBuilder {
             self.continuity_store.clone(),
             self.access_controller.clone(),
         );
-        let mut child_bundles = meerkat_mob_mcp::ChildToolBundles::new();
         let mut namespaces = std::collections::BTreeSet::new();
         for (name, (requirements, factory)) in std::mem::take(&mut self.tool_bundle_factories) {
             if spec.tool_bundles.contains_key(&name)
@@ -2002,27 +2001,15 @@ impl UnifiedRuntimeBuilder {
                     ),
                 ));
             }
-            child_bundles = child_bundles.register(
+            spec.child_tool_bundle_availability.insert(
                 name.clone(),
-                Arc::clone(&dispatcher),
                 meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable,
             );
             spec.tool_bundles.insert(name, dispatcher);
         }
-        let callback = registry.before_activation();
-        if let Some(state) = &spec.agent_mob_mcp_state {
-            state
-                .set_before_activation(Arc::clone(&callback))
-                .map_err(|error| {
-                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
-                })?;
-            state
-                .set_additional_child_tool_bundles(child_bundles)
-                .map_err(|error| {
-                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
-                })?;
-        }
-        spec.before_activation = Some(callback);
+        // Bootstrap installs this on the final agent mob-tool state, after
+        // composing its child policy and the bundles registered above.
+        spec.before_activation = Some(registry.before_activation());
         Ok(Some(registry))
     }
 

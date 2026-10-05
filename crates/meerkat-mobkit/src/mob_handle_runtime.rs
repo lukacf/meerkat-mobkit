@@ -10609,6 +10609,13 @@ impl MobRuntime {
         // Before anything reads the agent mob-tool state: child mobs get the
         // host's final application tool policy and child bundles.
         spec.apply_agent_mob_child_policy();
+        #[cfg(feature = "extension-state")]
+        if let (Some(state), Some(callback)) = (&spec.agent_mob_mcp_state, &spec.before_activation)
+        {
+            state
+                .set_before_activation(Arc::clone(callback))
+                .map_err(|error| MobRuntimeError::InvalidConfig(error.to_string()))?;
+        }
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();

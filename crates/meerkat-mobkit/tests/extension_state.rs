@@ -245,6 +245,10 @@ async fn harness_with_client(
     let spec = MobBootstrapSpec::persistent(definition, storage, path.to_path_buf(), 16, sessions)
         .unwrap()
         .with_mob_storage_provenance(provenance)
+        // Force final child-policy installation so delegate/fork coverage
+        // also proves extension bundles and authority survive replacement
+        // of the preliminary agent mob-tool state.
+        .with_child_application_tool_policy(meerkat_core::ApplicationToolPolicyBinding::Unmanaged)
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: false,
             notify_orchestrator_on_resume: false,
