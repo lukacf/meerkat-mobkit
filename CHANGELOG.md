@@ -835,6 +835,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The gateway now builds one runtime delivery inbox and shares it between
+  the shell job projector and the detached-job delivery runtime. Before,
+  each built its own `RuntimeDeliveryInbox` over the same runtime store. An
+  inbox's commit signal is per instance (clones share it), so a delivery
+  committed through one path never woke subscribers of the other. Both
+  instances still read the same rows, so backlog counts agreed and hid the
+  split. Waking on commits, rather than on the gateway's timer, depends on
+  this.
+
 - The published `meerkat-mobkit` crate package now includes the license texts
   its manifest declares (`LICENSE-MIT`, `LICENSE-APACHE`). Cargo packages only
   files under the crate directory, so earlier releases published the crate
