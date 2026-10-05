@@ -112,6 +112,35 @@ Each agent row shows:
 
 Non-addressable agents (e.g., Gate, Health Monitor) appear dimmed and cannot be messaged.
 
+### Approvals
+
+Open **Approvals** from the sidebar or **Needs you** to inspect current requests.
+Expand **Complete request details** before deciding. Stale or unavailable approval
+data does not mean there are no pending requests; use **Refresh approvals** to
+reload it. Read-only consoles cannot submit decisions.
+
+| Tab | What it shows |
+| --- | --- |
+| Pending | Current requests with Approve, Reject, and Escalate controls when decisions are available. |
+| Auto | Recorded `evaluated` events whose outcome is `allowed` or `allowed_with_audit`. |
+| Audit | Read-only records with the requesting actor, event, decision, approver, and outcome when supplied. |
+| Policies | A placeholder; policy details and editing are not available in this console. |
+
+Audit tiers display the recorded `r0`, `r1`, `r2`, or `r3`; missing or unrecognized
+tiers display as unknown. The current MobKit R2 path normally allows with audit.
+It does not run the proposed native model reviewer. An approval record does not
+confirm execution: the caller remains responsible for enforcing the returned
+outcome and carrying out any permitted action. See [Gating](/concepts/gating) for
+current tier, timeout, and decision behavior.
+
+The stock console submits decisions with `approver_id: "console-ops-lead"`. There
+is no approver selector in this inbox. A request pinned to a different approver
+needs a host-provided approval surface that authenticates and maps the approver.
+
+Configure action tiers through the host's gating configuration. For SDK-launched
+stdio gateways, see [`gating_config_path`](/reference/configuration#sdk-and-gateway-runtime-options).
+That option does not configure unrelated HTTP or library entrypoints.
+
 ### Dock — Chat panels
 
 The center area is a multi-panel tabbed workspace. Each panel contains a `ConversationPane` with a `ConsoleComposer`.
