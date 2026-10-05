@@ -647,6 +647,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The published `meerkat-mobkit` crate package now includes the license texts
+  its manifest declares (`LICENSE-MIT`, `LICENSE-APACHE`). Cargo packages only
+  files under the crate directory, so earlier releases published the crate
+  without them. The crate directory now carries symlinks to the root files,
+  which `cargo package` follows, and `scripts/verify-crate-package-files.py`
+  fails CI when a published crate's `cargo package --list` lacks either one.
+- Removed an inaccurate third-party attribution from the console scroll
+  geometry, its notices files and the embedded console bundles; the code is
+  original.
 - Python and TypeScript SDK callbacks retain their originating gateway process
   across reconnect. Late results, errors and deadline/cancellation responses
   cannot answer reused callback IDs on a replacement process, and retired
