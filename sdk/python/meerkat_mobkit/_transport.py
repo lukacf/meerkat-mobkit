@@ -16,6 +16,7 @@ from uuid import uuid4
 from .errors import TransportReaderFailedError
 
 _log = logging.getLogger("meerkat_mobkit")
+_CURRENT_TRANSPORT = object()
 
 # Provider operations are publicly required to finish within 120 seconds.
 # Python gives their event-loop coroutine another five seconds of host
@@ -196,17 +197,11 @@ class PersistentTransport:
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
-        # Transport capabilities belong to one gateway process. A restarted
-        # child must negotiate them again through mobkit/init.
-        self._supports_shutdown_handshake = False
-        self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
-        # A new process gets a new reader.
-        self._reader_failure = None
         # Capture event loop for async callback dispatch
         try:
-            self._loop = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._loop = None
+            loop = None
         # Default: the child gateway INHERITS this process's stderr (None).
         # The old DEVNULL default silently discarded tracing, panic hooks,
         # and migration progress — a week of panic lines went to /dev/null in
@@ -215,42 +210,75 @@ class PersistentTransport:
         # MOBKIT_GATEWAY_STDERR=devnull, or redirect to a file with
         # MOBKIT_GATEWAY_STDERR_FILE=<path>.
         stderr_target: Any = None
+        stderr_file = None
         stderr_path = self._env.get("MOBKIT_GATEWAY_STDERR_FILE", "").strip()
         if stderr_path:
-            self._stderr_file = open(stderr_path, "ab", buffering=0)
-            stderr_target = self._stderr_file
+            stderr_file = open(stderr_path, "ab", buffering=0)
+            stderr_target = stderr_file
         elif self._env.get("MOBKIT_GATEWAY_STDERR", "").strip().lower() == "devnull":
             stderr_target = subprocess.DEVNULL
 
-        self._process = subprocess.Popen(
+        process = subprocess.Popen(
             [self.gateway_bin, "--persistent"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr_target,
             env=self._env,
         )
+        failure = TransportReaderFailedError("the gateway process was replaced")
+        events = []
+        watch = None
+        with self._pending_lock:
+            # A caller may restart an exited child before its reader sees EOF.
+            # Finish old waiters against their own maps before publishing the
+            # replacement. Already received replies keep their exact outcome.
+            if self._process is not None or self._reader_failure is not None:
+                for msg_id in self._pending:
+                    self._results.setdefault(msg_id, failure)
+                events = list(self._pending.values())
+                watch = self._init_watch
+                self._pending = {}
+                self._results = {}
+                self._init_watch = None
+            self._process = process
+            self._stderr_file = stderr_file
+            self._loop = loop
+            self._reader_failure = None
+            # Capabilities and streams belong to this exact child.
+            self._supports_shutdown_handshake = False
+            self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+        for event in events:
+            event.set()
+        if watch is not None:
+            watch._fail(failure)
         self._reader_thread = threading.Thread(
-            target=self._reader_loop, daemon=True, name="mobkit-reader"
+            target=self._reader_loop, args=(process,), daemon=True, name="mobkit-reader"
         )
         self._reader_thread.start()
 
-    def _reader_loop(self) -> None:
-        assert self._process is not None and self._process.stdout is not None
+    def _reader_loop(self, process=_CURRENT_TRANSPORT) -> None:
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
+        assert process is not None and process.stdout is not None
         reason = "the gateway closed its stdout"
         try:
             while True:
-                line = self._process.stdout.readline()
-                if not line:
+                line = process.stdout.readline()
+                if not line or process is not self._process:
                     break
-                self._read_line(line)
+                self._read_line(line, process=process)
         except Exception as exc:  # noqa: BLE001 - every exit must fail waiters
             reason = f"reader failed: {exc!r}"
             _log.error("transport: reader stopped: %s", reason, exc_info=True)
         finally:
-            self._fail_pending_after_reader_exit(reason)
+            self._fail_pending_after_reader_exit(reason, process=process)
 
-    def _read_line(self, line: bytes) -> None:
+    def _read_line(self, line: bytes, *, process=_CURRENT_TRANSPORT) -> None:
         """Handle one stdout line. A bad line is skipped, never fatal."""
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
+        if process is not self._process:
+            return
         try:
             msg = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -265,14 +293,16 @@ class PersistentTransport:
         if "method" in msg:
             method = msg.get("method")
             if "id" not in msg and method in (_INIT_PROGRESS_METHOD, _INIT_SETTLED_METHOD):
-                self._deliver_init_event(method, msg.get("params"))
+                self._deliver_init_event(method, msg.get("params"), process=process)
                 return
             # Callback or notification FROM Rust
-            self._handle_callback(msg)
+            self._handle_callback(msg, process=process)
         elif "id" in msg:
             # Response to a pending request
             msg_id = str(msg["id"])
             with self._pending_lock:
+                if process is not self._process:
+                    return
                 event = self._pending.get(msg_id)
                 if event is not None:
                     self._results[msg_id] = msg
@@ -291,11 +321,15 @@ class PersistentTransport:
                 str(msg)[:200],
             )
 
-    def _deliver_init_event(self, method: str, params: Any) -> None:
+    def _deliver_init_event(self, method: str, params: Any, *, process=_CURRENT_TRANSPORT) -> None:
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
         if not isinstance(params, dict):
             _log.warning("transport: %s without object params; ignored", method)
             return
         with self._pending_lock:
+            if process is not self._process:
+                return
             watch = self._init_watch
         if watch is None or params.get("init_id") != watch.init_id:
             # Not the init this process is running (a late or foreign line).
@@ -303,16 +337,22 @@ class PersistentTransport:
             return
         watch._deliver(method, params)
 
-    def _fail_pending_after_reader_exit(self, reason: str) -> None:
+    def _fail_pending_after_reader_exit(self, reason: str, *, process=_CURRENT_TRANSPORT) -> None:
         """No response can arrive any more: fail every waiter, typed.
 
         A response that arrived before the reader stopped (for example a
         fail-closed init error written just before the gateway exits) is
         kept for its waiter.
         """
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
         failure = TransportReaderFailedError(reason)
         with self._pending_lock:
+            if process is not self._process:
+                return
             self._reader_failure = failure
+            for msg_id in self._pending:
+                self._results.setdefault(msg_id, failure)
             events = list(self._pending.values())
             watch = getattr(self, "_init_watch", None)
         for event in events:
@@ -320,9 +360,15 @@ class PersistentTransport:
         if watch is not None:
             watch._fail(failure)
 
-    def _handle_callback(self, msg: dict) -> None:
+    def _handle_callback(self, msg: dict, *, process=_CURRENT_TRANSPORT) -> None:
         """Dispatch callback in a separate thread so the reader loop is not blocked."""
-        if self._callback_handler is None:
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
+        with self._pending_lock:
+            if process is not self._process:
+                return
+            handler, loop = self._callback_handler, self._loop
+        if handler is None:
             method = msg.get("method")
             _log.warning(
                 "transport: received callback but no handler registered: %s",
@@ -347,6 +393,7 @@ class PersistentTransport:
                             },
                         },
                         callback_response=True,
+                        process=process,
                     )
                 except Exception:
                     _log.error(
@@ -356,18 +403,37 @@ class PersistentTransport:
         # Dispatch in a daemon thread to avoid blocking the reader loop
         t = threading.Thread(
             target=self._dispatch_callback, args=(msg,), daemon=True,
+            kwargs={"process": process, "handler": handler, "loop": loop},
             name="mobkit-callback",
         )
         t.start()
 
-    def _dispatch_callback(self, msg: dict) -> None:
+    def _dispatch_callback(
+        self, msg: dict, *, process=_CURRENT_TRANSPORT,
+        handler=_CURRENT_TRANSPORT, loop=_CURRENT_TRANSPORT,
+    ) -> None:
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
+        if handler is _CURRENT_TRANSPORT:
+            handler = self._callback_handler
+        if loop is _CURRENT_TRANSPORT:
+            loop = self._loop
+        if process is not self._process:
+            return
         method = msg.get("method", "")
         params = msg.get("params", {})
         callback_id = msg.get("id")  # None for notifications
         try:
-            if self._loop is not None and self._loop.is_running():
+            if loop is not None and loop.is_running():
+                async def invoke_current_handler():
+                    # Scheduling on the captured loop can outlive the child.
+                    # Check again before any host handler body starts.
+                    if process is not self._process:
+                        return None
+                    return await handler(method, params)
+
                 future = asyncio.run_coroutine_threadsafe(
-                    self._callback_handler(method, params), self._loop
+                    invoke_current_handler(), loop
                 )
                 try:
                     result = future.result(
@@ -418,9 +484,10 @@ class PersistentTransport:
                         },
                     },
                     callback_response=True,
+                    process=process,
                 )
                 return
-            self._write_line(response, callback_response=True)
+            self._write_line(response, callback_response=True, process=process)
         except Exception as exc:
             # Notifications: log only, don't try to send error response
             if callback_id is None:
@@ -433,11 +500,14 @@ class PersistentTransport:
                 "error": {"code": -32000, "message": str(exc)},
             }
             try:
-                self._write_line(error_response, callback_response=True)
+                self._write_line(error_response, callback_response=True, process=process)
             except Exception:
                 _log.error("failed to send callback error response for id=%s", callback_id)
 
-    def _write_line(self, obj: dict, *, callback_response: bool = False) -> None:
+    def _write_line(
+        self, obj: dict, *, callback_response: bool = False,
+        process=_CURRENT_TRANSPORT,
+    ) -> None:
         """Write one JSON line to the gateway's stdin.
 
         Lines never interleave. A callback response (``callback_response``)
@@ -445,6 +515,8 @@ class PersistentTransport:
         until no callback response is waiting. One pipe cannot do better: a
         line already being written must finish first.
         """
+        if process is _CURRENT_TRANSPORT:
+            process = self._process
         # Strict JSON, encoded before taking a turn: the gateway cannot parse
         # NaN/Infinity tokens, and a refusal must not hold the pipe.
         data = (json.dumps(obj, allow_nan=False) + "\n").encode("utf-8")
@@ -461,9 +533,13 @@ class PersistentTransport:
                     self._priority_writers_waiting -= 1
             self._writing = True
         try:
-            if self._process and self._process.stdin:
-                self._process.stdin.write(data)
-                self._process.stdin.flush()
+            # A callback may finish, or wait for the writer, across restart.
+            # Its reply belongs only to the child that issued the invocation.
+            if process is not self._process:
+                return
+            if process and process.stdin:
+                process.stdin.write(data)
+                process.stdin.flush()
         finally:
             with self._write_cond:
                 self._writing = False
@@ -476,22 +552,28 @@ class PersistentTransport:
         timeout: float | None = None,
     ) -> Any:
         self._ensure_running()
-        response = self._send_sync_running(request, timeout=timeout)
+        with self._pending_lock:
+            process = self._process
+        response = self._send_sync_running(request, timeout=timeout, process=process)
         if request.get("method") == "mobkit/init":
             result = response.get("result") if isinstance(response, dict) else None
-            self._supports_shutdown_handshake = bool(
+            supports_shutdown_handshake = bool(
                 isinstance(result, dict)
                 and result.get("stdio_shutdown_handshake") is True
             )
-            self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
-            if self._supports_shutdown_handshake and isinstance(result, dict):
+            shutdown_horizon = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+            if supports_shutdown_handshake and isinstance(result, dict):
                 horizon_ms = result.get("stdio_shutdown_horizon_ms")
                 if (
                     isinstance(horizon_ms, int)
                     and not isinstance(horizon_ms, bool)
                     and 0 < horizon_ms <= _MAX_GATEWAY_SHUTDOWN_HORIZON_MS
                 ):
-                    self._shutdown_horizon_seconds = horizon_ms / 1000.0
+                    shutdown_horizon = horizon_ms / 1000.0
+            with self._pending_lock:
+                if process is self._process:
+                    self._supports_shutdown_handshake = supports_shutdown_handshake
+                    self._shutdown_horizon_seconds = shutdown_horizon
         return response
 
     def _send_sync_running(
@@ -499,6 +581,7 @@ class PersistentTransport:
         request: dict[str, Any],
         *,
         timeout: float | None = None,
+        process=_CURRENT_TRANSPORT,
     ) -> Any:
         """Send on the current child without starting a replacement process."""
         request_timeout = self._timeout if timeout is None else timeout
@@ -527,33 +610,37 @@ class PersistentTransport:
         msg_id = str(raw_id)
         event = threading.Event()
         with self._pending_lock:
+            if process is _CURRENT_TRANSPORT:
+                process = self._process
+            elif process is not self._process:
+                raise TransportReaderFailedError("the gateway process was replaced")
             reader_failure = getattr(self, "_reader_failure", None)
             if reader_failure is not None:
                 raise reader_failure
-            if msg_id in self._pending:
+            pending, results = self._pending, self._results
+            if msg_id in pending:
                 raise ValueError(
                     f"persistent transport: request id {msg_id!r} is already "
                     f"in flight; concurrent callers must use distinct ids"
                 )
-            self._pending[msg_id] = event
-        # Write request (lock only for write, release before wait)
-        self._write_line(request)
-        # Wait for response — no locks held
-        if not event.wait(timeout=request_timeout):
+            pending[msg_id] = event
+        try:
+            # Admission, write, response and cleanup belong to this child.
+            self._write_line(request, process=process)
+            if not event.wait(timeout=request_timeout):
+                raise RuntimeError(
+                    f"persistent transport: timeout after {request_timeout}s "
+                    "waiting for response"
+                )
             with self._pending_lock:
-                self._pending.pop(msg_id, None)
-                self._results.pop(msg_id, None)
-            raise RuntimeError(
-                f"persistent transport: timeout after {request_timeout}s "
-                "waiting for response"
-            )
-        with self._pending_lock:
-            self._pending.pop(msg_id, None)
-            result = self._results.pop(msg_id, None)
-            failure = getattr(self, "_reader_failure", None)
+                result = results.get(msg_id)
+        finally:
+            with self._pending_lock:
+                pending.pop(msg_id, None)
+                results.pop(msg_id, None)
+        if isinstance(result, TransportReaderFailedError):
+            raise result
         if result is None:
-            if failure is not None:
-                raise failure
             raise RuntimeError("persistent transport: subprocess closed stdout")
         return result
 
@@ -574,6 +661,7 @@ class PersistentTransport:
                 "params": {},
             },
             timeout=timeout,
+            process=process,
         )
         if not isinstance(response, dict):
             raise RuntimeError("gateway shutdown returned a malformed response")
@@ -600,14 +688,17 @@ class PersistentTransport:
         return await asyncio.to_thread(self.send_sync, request, timeout=timeout)
 
     def stop(self) -> None:
-        process = getattr(self, "_process", None)
+        with self._pending_lock:
+            process = getattr(self, "_process", None)
+            stderr_file = getattr(self, "_stderr_file", None)
+            supports_shutdown_handshake = getattr(self, "_supports_shutdown_handshake", False)
+            shutdown_horizon = getattr(
+                self,
+                "_shutdown_horizon_seconds",
+                _GATEWAY_SHUTDOWN_GRACE_SECONDS,
+            )
         if process is None:
             return
-        shutdown_horizon = getattr(
-            self,
-            "_shutdown_horizon_seconds",
-            _GATEWAY_SHUTDOWN_GRACE_SECONDS,
-        )
         shutdown_error: Exception | None = None
         process_reaped = False
         reap_error: Exception | None = None
@@ -617,7 +708,7 @@ class PersistentTransport:
             # callbacks while UnifiedRuntime shuts down. Keep stdin open until
             # a capable gateway acknowledges that cleanup is complete. Older
             # or custom gateways stay on the EOF protocol below.
-            if getattr(self, "_supports_shutdown_handshake", False):
+            if supports_shutdown_handshake:
                 try:
                     self._request_gateway_shutdown(
                         process,
@@ -678,11 +769,16 @@ class PersistentTransport:
                                     reap_error = exc
         finally:
             if process_reaped:
-                self._process = None
-                stderr_file = getattr(self, "_stderr_file", None)
+                self._fail_pending_after_reader_exit(
+                    "the gateway process stopped", process=process,
+                )
+                with self._pending_lock:
+                    if self._process is process:
+                        self._process = None
+                    if self._stderr_file is stderr_file:
+                        self._stderr_file = None
                 if stderr_file is not None:
                     stderr_file.close()
-                    self._stderr_file = None
         if reap_error is not None:
             raise RuntimeError(
                 "persistent transport: gateway process did not terminate after bounded cleanup"

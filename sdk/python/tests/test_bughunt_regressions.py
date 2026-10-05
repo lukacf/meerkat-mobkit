@@ -177,6 +177,7 @@ def test_provider_callback_uses_dedicated_completion_deadline(request_timeout):
             "result": {"released": True},
         },
         callback_response=True,
+        process=None,
     )
 
 
@@ -404,7 +405,8 @@ def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
     transport._shutdown_horizon_seconds = 321.0
     gate = threading.Barrier(2)
 
-    def answer_shutdown(request, *, timeout):
+    def answer_shutdown(request, *, timeout, process):
+        assert process is transport._process
         process.stdin.close.assert_not_called()
         assert request["method"] == "mobkit/shutdown"
         assert request["id"].startswith("mobkit-shutdown-")
