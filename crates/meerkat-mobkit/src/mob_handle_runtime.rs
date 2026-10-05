@@ -21793,7 +21793,7 @@ comms = true
     async fn document_mcp_child_supply_uses_final_policy_state() {
         let dir = tempfile::tempdir().expect("temporary store");
         let definition = MobDefinition::from_toml(&format!(
-            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
             unique_test_mob_id()
         ))
         .expect("root definition");
@@ -21869,7 +21869,7 @@ comms = true
             .await
             .expect("owner bridge session");
         let child_definition = MobDefinition::from_toml(&format!(
-            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
             unique_test_mob_id()
         ))
         .expect("child definition");
