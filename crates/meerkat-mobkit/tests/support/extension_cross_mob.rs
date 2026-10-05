@@ -557,7 +557,7 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
     let sessions = state.session_service();
     assert!(
         sessions
-            .load_session_metadata(&helper_session)
+            .load_persisted_session_metadata(&helper_session)
             .await
             .unwrap()
             .is_none()
