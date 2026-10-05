@@ -1181,6 +1181,75 @@ class MobKitRuntime:
         """Destructive continuity reset for an identity."""
         return await self._rpc("mobkit/reset", {"identity": identity})
 
+    async def activate_member_instruction(
+        self,
+        identity: str,
+        activation: dict[str, Any],
+        *,
+        transport_timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Append one keyed instruction activation to a member's current session.
+
+        Host-only. ``activation`` is Meerkat's ``InstructionActivationRequest``
+        (``revision``, ``activation_id``, ``expectation``, optional
+        ``supersedes``, ``body``). The activation is a new transcript row that
+        the member's next turn sees; history is never rewritten. Returns
+        ``{"identity", "receipt"}``, where ``receipt["disposition"]`` is
+        ``"applied"`` or ``"duplicate"``.
+
+        A refusal raises ``RpcError`` with ``data["class"]`` set to
+        ``"admission"`` (plus ``data["instruction_activation_code"]``, for
+        example ``"session_busy"`` or ``"live_channel_open"``), ``"session"``
+        (plus ``data["session_error_code"]`` and, when the request itself was
+        refused, ``data["instruction_activation_error_code"]`` such as
+        ``"digest_mismatch"`` or ``"effective_activation_conflict"``),
+        ``"runtime"`` or ``"owner_task"``. Nothing is retried: on a
+        ``session_busy`` or ``live_channel_open`` refusal, retry at your own
+        next boundary.
+
+        A call made while the member is mid-turn BLOCKS until that turn
+        finalizes, so it can wait for a whole turn. It then applies at the
+        boundary, never inside the turn, or raises ``session_busy`` if more
+        runtime work is already queued there. ``transport_timeout`` (seconds)
+        sets how long this call waits for the reply; it defaults to the
+        transport's request timeout, so raise it for members with long turns.
+        If the wait times out, the activation may still apply at the boundary:
+        re-send the identical activation, which answers ``applied``,
+        ``duplicate`` or the typed refusal.
+        """
+        raw = await self._rpc(
+            "mobkit/member_activate_instruction",
+            {"identity": identity, "activation": activation},
+            transport_timeout=transport_timeout,
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def member_instruction_activations(
+        self,
+        identity: str,
+        *,
+        namespace: str | None = None,
+        key: str | None = None,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Read the durable instruction activations of a member's current session.
+
+        Host-only. Returns ``{"identity", "page"}`` with Meerkat's
+        ``InstructionActivationReadPage``.
+        """
+        params: dict[str, Any] = {"identity": identity}
+        for name, value in (
+            ("namespace", namespace),
+            ("key", key),
+            ("offset", offset),
+            ("limit", limit),
+        ):
+            if value is not None:
+                params[name] = value
+        raw = await self._rpc("mobkit/member_instruction_activations", params)
+        return raw if isinstance(raw, dict) else {}
+
     async def reconcile(self) -> Any:
         """Re-run restore_flow with fresh roster from the provider.
 

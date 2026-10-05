@@ -2107,6 +2107,8 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/wait_for_turn",
                     "mobkit/compact_member",
                     "mobkit/bound_member_transcript",
+                    "mobkit/member_activate_instruction",
+                    "mobkit/member_instruction_activations",
                     "mobkit/reconcile_identity",
                     "mobkit/request_continuity_repair",
                     "mobkit/status_identity_bootstrap",
@@ -5182,6 +5184,32 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e) => identity_error_response(response_id, &e),
             }
+        }
+        "mobkit/member_activate_instruction" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_member_activate_instruction(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
+        }
+        "mobkit/member_instruction_activations" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_member_instruction_activations(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
         }
         "mobkit/compact_member" => {
             let ctx = match identity_ctx {

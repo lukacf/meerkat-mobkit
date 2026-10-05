@@ -438,6 +438,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Host-only `mobkit/member_activate_instruction` and
+  `mobkit/member_instruction_activations` (Python
+  `activate_member_instruction` / `member_instruction_activations`,
+  TypeScript `activateMemberInstruction` / `memberInstructionActivations`).
+  A host can change a member's standing instructions after its session was
+  minted. Resume authors nothing, so a restored member otherwise keeps its
+  creation-time prompt, for example after its skills changed.
+  - The verb appends one keyed, immutable instruction activation to the
+    member's current session through Meerkat's
+    `MobHandle::activate_member_instruction`. It is forward-only, survives
+    resume, and re-applying it is a typed `duplicate`.
+  - A call made mid-turn blocks until that turn finalizes, so it can wait
+    for a whole turn, and applies at the boundary. The SDK methods take an
+    optional per-call reply timeout (`transport_timeout` /
+    `transportTimeoutMs`) for members with long turns. Refusals stay typed per
+    Meerkat class in `data.class`, and nothing retries in the gateway:
+    - `admission` with `instruction_activation_code`; `session_busy`,
+      `live_channel_open` and `target_not_materialized` answer `-32015`;
+    - `session` with `session_error_code` and, for a refused request, the
+      typed `instruction_activation_error_code`, such as `digest_mismatch`
+      or `effective_activation_conflict`, answering `-32602`;
+    - `runtime`;
+    - `owner_task`.
+  - The read verb returns the member's durable activation records and, for
+    one exact key, its `key_state`.
+  - Neither verb is an agent tool. The audit actor is `host`.
+
 - The console renders recognized current operation refusals, confinement
   causes, pre-tool hook decisions/launch failures and outcome-audit failures as
   distinct local feedback. Permitted sibling results and error status remain
@@ -800,6 +827,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   console did not write (wheel, scrollbar, touch, or a gesture chained out
   of a code block) now leaves the live edge at once; following resumes on
   the way down, within the live-edge band or at the end.
+- MobKit's session-service decorators forward
+  `SessionServiceHistoryExt::read_instruction_activation_records`. Without the
+  forward, the defaulted method answered `Unsupported` through MobKit.
+  `verify-session-service-decorators` now also checks the base
+  `SessionService` and `SessionServiceHistoryExt` traits, so a decorator
+  missing a defaulted base method fails the gate.
 - Python and TypeScript SDK callbacks retain their originating gateway process
   across reconnect. Late results, errors and deadline/cancellation responses
   cannot answer reused callback IDs on a replacement process, and retired

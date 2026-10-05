@@ -6447,6 +6447,15 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::service::SessionTranscriptRevisionList, SessionError> {
                 self.inner.list_transcript_revisions(id, query).await
             }
+            // The trait default is a typed `Unsupported`: unforwarded, the
+            // member instruction read refuses through this decorator.
+            async fn read_instruction_activation_records(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                query: meerkat_core::InstructionActivationReadQuery,
+            ) -> Result<meerkat_core::InstructionActivationReadPage, SessionError> {
+                self.inner.read_instruction_activation_records(id, query).await
+            }
         }
 
         #[async_trait]
@@ -7633,6 +7642,15 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
         query: meerkat_core::service::SessionTranscriptRevisionListQuery,
     ) -> Result<meerkat_core::service::SessionTranscriptRevisionList, SessionError> {
         self.inner.list_transcript_revisions(id, query).await
+    }
+    async fn read_instruction_activation_records(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        query: meerkat_core::InstructionActivationReadQuery,
+    ) -> Result<meerkat_core::InstructionActivationReadPage, SessionError> {
+        self.inner
+            .read_instruction_activation_records(id, query)
+            .await
     }
 }
 
