@@ -749,10 +749,58 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
         .await;
     scenario.revoke.add_permits(2);
     expect_events(&mut events, &["helper:revoked-hold", "fork:revoked-hold"]).await;
-    // Finish the fork first so helper retirement cannot cancel its final
-    // model request before it observes the denial and completes its turn.
+    // The inherited helper profile keeps its fork private. Observe the
+    // existing native job's exact terminal receipt instead of submitting an
+    // external turn. Keep the helper alive until its fork actually finishes.
+    let fork_identity = AgentIdentity::from("cross-mob-fork");
+    let fork_job = child
+        .get_member(&fork_identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .fork_job
+        .expect("native fork_off records its detached job");
+    assert_eq!(fork_job.owner_session_id, helper_session);
+    let delivery = fork_job
+        .turn_delivery
+        .as_ref()
+        .expect("runtime-backed fork job has its exact admitted delivery identity");
+    let result_spec =
+        meerkat_mob::BoundedResultSpec::new(fork_job.result_label, fork_job.max_text_bytes)
+            .unwrap();
     scenario.finish_fork.add_permits(1);
-    run_member_turn(&child, "cross-mob-fork", ROOT_BARRIER).await;
+    let report = child
+        .wait_bounded_work_for_identity_with_delivery_identity(
+            &fork_identity,
+            delivery,
+            &result_spec,
+            meerkat_core::time_compat::Instant::now() + Duration::from_secs(45),
+        )
+        .await
+        .unwrap();
+    let meerkat_mob::runtime::DeliveryTerminalWait::Terminal(record) = report.work() else {
+        panic!(
+            "native fork job did not become terminal: {:?}",
+            report.work()
+        );
+    };
+    let meerkat_mob::runtime::DeliveryTerminalResolution::Receipt {
+        runtime_run_id: Some(_),
+        result: Ok(result),
+        ..
+    } = record.resolution()
+    else {
+        panic!(
+            "native fork job did not complete successfully: {:?}",
+            record.resolution()
+        );
+    };
+    assert_eq!(result.session_id(), &fork_session);
+    assert_eq!(result.result().text(), "done");
+    assert_eq!(
+        result.result().status(),
+        meerkat_mob::BoundedHelperResultStatus::Completed
+    );
     scenario.finish.add_permits(1);
     tokio::time::timeout(Duration::from_mins(1), owner_turn.turn.wait())
         .await

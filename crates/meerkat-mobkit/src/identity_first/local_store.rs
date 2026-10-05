@@ -411,6 +411,9 @@ fn migration_0002_head_canonical_sessions(
 /// The history is owned by the continuity domain: every trigger target
 /// exists in its empty-database oracle. Backfill and the v3 compatibility
 /// barrier commit together, or both roll back on conflicting exact bindings.
+/// An outer UPSERT can override a trigger's OR IGNORE conflict policy. Skip
+/// only an existing exact pair before inserting instead; a different owner
+/// still reaches the immutable-binding trigger and aborts the outer write.
 fn migration_0003_identity_history(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     tx.execute_batch(
         "CREATE TABLE continuity_identity_history(session_id TEXT PRIMARY KEY, identity TEXT NOT NULL);
@@ -420,17 +423,41 @@ fn migration_0003_identity_history(tx: &Transaction<'_>) -> Result<(), rusqlite:
          WHEN EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity<>NEW.identity)
          BEGIN SELECT RAISE(ABORT, 'conflicting historical identity binding'); END;
          CREATE TRIGGER continuity_identity_history_insert AFTER INSERT ON continuity_records
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          CREATE TRIGGER continuity_identity_history_update AFTER UPDATE OF session_id,identity ON continuity_records
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          CREATE TRIGGER continuity_identity_snapshot_insert AFTER INSERT ON session_snapshots
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          CREATE TRIGGER continuity_identity_snapshot_update AFTER UPDATE OF session_id,identity ON session_snapshots
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          CREATE TRIGGER continuity_identity_head_insert AFTER INSERT ON continuity_session_heads
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          CREATE TRIGGER continuity_identity_head_update AFTER UPDATE OF session_id,identity ON continuity_session_heads
-         BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
+         BEGIN
+             INSERT INTO continuity_identity_history(session_id,identity)
+             SELECT NEW.session_id,NEW.identity
+             WHERE NOT EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity=NEW.identity);
+         END;
          INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM continuity_records;
          INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM session_snapshots;
          INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM continuity_session_heads;",
@@ -4133,6 +4160,130 @@ mod tests {
             .execute_batch("DROP TRIGGER continuity_identity_history_insert")
             .unwrap();
         assert!(LocalContinuityStore::open(&path).is_err());
+    }
+
+    #[test]
+    fn extension_history_trigger_retries_and_conflicts_under_outer_upsert() {
+        // Exercise both INSERT and UPDATE triggers on each producer. In
+        // particular, an outer DO UPDATE overrides an inner OR IGNORE, so
+        // duplicate history must be skipped without invoking a constraint.
+        for (table, upsert) in [
+            (
+                "continuity_records",
+                "INSERT INTO continuity_records(session_id,identity,agent_runtime_id,generation,checkpoint_version,fencing_token)
+                 VALUES(?1,?2,'runtime',0,1,1)
+                 ON CONFLICT(identity) DO UPDATE SET session_id=excluded.session_id,identity=excluded.identity,checkpoint_version=excluded.checkpoint_version",
+            ),
+            (
+                "session_snapshots",
+                "INSERT INTO session_snapshots(session_id,identity,generation,checkpoint_version,fencing_token,data)
+                 VALUES(?1,?2,0,1,1,X'00')
+                 ON CONFLICT(session_id) DO UPDATE SET session_id=excluded.session_id,identity=excluded.identity,checkpoint_version=excluded.checkpoint_version",
+            ),
+            (
+                "continuity_session_heads",
+                "INSERT INTO continuity_session_heads(session_id,identity,generation,checkpoint_version,fencing_token,head_revision,message_count,rewrite_count,head_json,cas_token)
+                 VALUES(?1,?2,0,1,1,'revision',0,0,X'00','token')
+                 ON CONFLICT(session_id) DO UPDATE SET session_id=excluded.session_id,identity=excluded.identity,checkpoint_version=excluded.checkpoint_version",
+            ),
+        ] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            meerkat_sqlite::apply_domain_migrations(&mut connection, &MOBKIT_CONTINUITY_DOMAIN)
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO continuity_identity_history(session_id,identity) VALUES('first','owner'),('reserved','reserved-owner')",
+                    [],
+                )
+                .unwrap();
+            // Identical retained binding, first through AFTER INSERT and
+            // then through AFTER UPDATE, must be idempotent.
+            for _ in 0..2 {
+                connection.execute(upsert, ["first", "owner"]).unwrap();
+            }
+            let read_producer = || {
+                connection
+                    .prepare(&format!(
+                        "SELECT session_id,identity,checkpoint_version FROM {table} ORDER BY session_id"
+                    ))
+                    .unwrap()
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u64>(2)?,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            let expected = vec![("first".to_owned(), "owner".to_owned(), 1)];
+            assert_eq!(read_producer(), expected);
+            let conflicting_update = if table == "continuity_records" {
+                ["reserved", "owner"]
+            } else {
+                ["first", "update-impostor"]
+            };
+            for binding in [["reserved", "insert-impostor"], conflicting_update] {
+                let error = connection.execute(upsert, binding).unwrap_err();
+                assert_eq!(
+                    error.sqlite_error().unwrap().extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER,
+                    "{table}: {error}"
+                );
+                assert_eq!(read_producer(), expected, "{table} rolled back");
+            }
+            assert_eq!(
+                connection
+                    .prepare("SELECT session_id,identity FROM continuity_identity_history ORDER BY session_id")
+                    .unwrap()
+                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
+                vec![("first".into(), "owner".into()), ("reserved".into(), "reserved-owner".into())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_history_record_retry_and_session_revisit_are_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("continuity.sqlite3");
+        let store = LocalContinuityStore::open(&path).unwrap();
+        let identity = AgentIdentity::parse("retry-owner").unwrap();
+        let original = meerkat_core::SessionId::new();
+        let successor = meerkat_core::SessionId::new();
+        let token = FencingToken::new(1);
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            meerkat_sqlite::apply_domain_migrations(&mut connection, &MOBKIT_CONTINUITY_DOMAIN)
+                .unwrap();
+        }
+        for session in [&original, &original, &successor, &successor, &original] {
+            store
+                .upsert_continuity_record(&record(&identity, session), token)
+                .await
+                .unwrap();
+        }
+        drop(store);
+        let reopened = LocalContinuityStore::open(&path).unwrap();
+        reopened
+            .upsert_continuity_record(&record(&identity, &original), token)
+            .await
+            .unwrap();
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM continuity_identity_history",
+                    [],
+                    |row| row.get::<_, u64>(0)
+                )
+                .unwrap(),
+            2
+        );
     }
 
     #[cfg(feature = "extension-state")]

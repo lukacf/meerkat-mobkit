@@ -639,7 +639,8 @@ fn subprocess_phase(path: &std::path::Path, phase: &str) {
             child.kill().unwrap();
             let output = child.wait_with_output().unwrap();
             panic!(
-                "restart phase {phase} timed out: {}",
+                "restart phase {phase} timed out:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -965,14 +966,31 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
     runtime.shutdown().await;
 }
 
+async fn late_birth_step<T>(
+    phase: &str,
+    step: &str,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    eprintln!("{phase}: starting {step}");
+    let result = tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("{phase}: {step} exceeded 30 seconds"));
+    eprintln!("{phase}: completed {step}");
+    result
+}
+
 async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
     use meerkat_mobkit::identity_first::{
         AgentIdentity as StableIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
         ContinuityRecord, LeaseAcquireResult,
     };
-    let (runtime, context, _) = stable_harness(
-        path,
-        meerkat_mobkit::access::AccessController::new(Default::default()).unwrap(),
+    let (runtime, context, _) = late_birth_step(
+        phase,
+        "stable host bootstrap",
+        stable_harness(
+            path,
+            meerkat_mobkit::access::AccessController::new(Default::default()).unwrap(),
+        ),
     )
     .await;
     let identity = StableIdentity::parse("durable:late").unwrap();
@@ -980,11 +998,15 @@ async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
     let evidence = path.join("late-session.json");
     let session = if phase == "late-create" {
         let identity_runtime = runtime.identity_runtime().unwrap();
-        let mut grants = identity_runtime
-            .lease_provider()
-            .acquire_leases(std::slice::from_ref(&identity), "late-test")
-            .await
-            .unwrap();
+        let mut grants = late_birth_step(
+            phase,
+            "acquire provisional identity lease",
+            identity_runtime
+                .lease_provider()
+                .acquire_leases(std::slice::from_ref(&identity), "late-test"),
+        )
+        .await
+        .unwrap();
         let LeaseAcquireResult::Acquired(grant) = grants.remove(&identity).unwrap() else {
             panic!("fresh identity lease");
         };
@@ -995,11 +1017,15 @@ async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
             generation: ContinuityGeneration::new(0),
             checkpoint_version: CheckpointVersion::new(0),
         };
-        identity_runtime
-            .continuity_store()
-            .upsert_continuity_record(&provisional, grant.fencing_token)
-            .await
-            .unwrap();
+        late_birth_step(
+            phase,
+            "retain provisional identity intent",
+            identity_runtime
+                .continuity_store()
+                .upsert_continuity_record(&provisional, grant.fencing_token),
+        )
+        .await
+        .unwrap();
         let publication = identity_runtime
             .bridge()
             .unwrap()
@@ -1010,12 +1036,21 @@ async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
         // This is the authoritative outcome of a submitted native spawn that
         // commits after its materialization caller has been canceled. The
         // exact actual binding was never published into continuity.
-        runtime
-            .mob_handle()
-            .spawn_spec(SpawnMemberSpec::host_root("worker", target.clone()))
-            .await
-            .unwrap();
-        let session = member_session(&runtime, &target).await;
+        late_birth_step(
+            phase,
+            "commit native late birth",
+            runtime
+                .mob_handle()
+                .spawn_spec(SpawnMemberSpec::host_root("worker", target.clone())),
+        )
+        .await
+        .unwrap();
+        let session = late_birth_step(
+            phase,
+            "read native late birth session",
+            member_session(&runtime, &target),
+        )
+        .await;
         assert!(
             identity_runtime
                 .continuity_store()
@@ -1024,22 +1059,37 @@ async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
                 .unwrap()
                 .is_none()
         );
-        identity_runtime
-            .continuity_store()
-            .delete_continuity_record(&identity, grant.fencing_token)
-            .await
-            .unwrap();
-        identity_runtime
-            .lease_provider()
-            .release_leases(&[grant])
-            .await
-            .unwrap();
+        late_birth_step(
+            phase,
+            "delete provisional continuity record",
+            identity_runtime
+                .continuity_store()
+                .delete_continuity_record(&identity, grant.fencing_token),
+        )
+        .await
+        .unwrap();
+        late_birth_step(
+            phase,
+            "release provisional identity lease",
+            identity_runtime.lease_provider().release_leases(&[grant]),
+        )
+        .await
+        .unwrap();
         std::fs::write(&evidence, serde_json::to_vec(&session).unwrap()).unwrap();
         session
     } else {
         serde_json::from_slice(&std::fs::read(&evidence).unwrap()).unwrap()
     };
-    assert_eq!(member_session(&runtime, &target).await, session);
+    assert_eq!(
+        late_birth_step(
+            phase,
+            "verify retained late birth session",
+            member_session(&runtime, &target),
+        )
+        .await,
+        session
+    );
+    eprintln!("{phase}: resolving unpublished late birth");
     assert!(matches!(
         tokio::time::timeout(
             Duration::from_secs(2),
@@ -1052,23 +1102,30 @@ async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
         .unwrap(),
         Err(Error::AuthorityUnavailable)
     ));
+    eprintln!("{phase}: refused unpublished late birth");
     // An unrelated worker target still gets a fresh immutable worker identity.
-    let worker_member = runtime
-        .spawn(worker(if phase == "late-create" {
+    let worker_member = late_birth_step(
+        phase,
+        "spawn unrelated worker",
+        runtime.spawn(worker(if phase == "late-create" {
             "unreserved-before"
         } else {
             "unreserved-after"
-        }))
-        .await
-        .unwrap();
+        })),
+    )
+    .await
+    .unwrap();
     assert!(matches!(
-        caller(
-            &context,
-            &member_session(&runtime, &worker_member.agent_identity).await
-        )
+        late_birth_step(phase, "resolve unrelated worker", async {
+            caller(
+                &context,
+                &member_session(&runtime, &worker_member.agent_identity).await,
+            )
+            .await
+        })
         .await
         .principal(),
         Principal::Worker { .. }
     ));
-    runtime.shutdown().await;
+    late_birth_step(phase, "shutdown stable host", runtime.shutdown()).await;
 }
