@@ -2376,7 +2376,84 @@ default_binding = "local"
             Arc::new(meerkat::MemoryDetachedJobStore::new()),
             blobs,
         )
-        .with_runtime_delivery_store(runtime_store)
+        .with_runtime_delivery(&GatewayRuntimeDelivery::new(runtime_store))
+    }
+
+    /// The shell job projector and the detached-job delivery runtime share
+    /// one inbox: a delivery projected through the shell path wakes the
+    /// delivery runtime's commit signal and is in its backlog. Two inboxes
+    /// constructed separately over the same store agree on the backlog but
+    /// never see each other's commits, which is what this pins.
+    #[tokio::test]
+    async fn a_shell_projected_delivery_wakes_the_delivery_runtime() {
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let job_store = Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let delivery = GatewayRuntimeDelivery::new(runtime_store);
+        let projector = delivery.shell_job_projector(job_store.clone());
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
+        let runtime = DetachedCallbackJobRuntime::new(
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            job_store.clone(),
+            blobs,
+        )
+        .with_runtime_delivery(&delivery);
+        let commits = runtime
+            .runtime_inbox
+            .as_ref()
+            .expect("the delivery runtime holds the gateway inbox")
+            .subscribe_commits();
+
+        let jobs = meerkat::DetachedJobService::new(job_store);
+        let receipt = jobs
+            .submit(meerkat::JobSpec::new(
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                meerkat_core::SessionId::new(),
+                meerkat::ExecutionIntentId::new(),
+                meerkat::InteractionLineageId::new(),
+                meerkat::ToolIdentity::new("shell", "1").expect("tool"),
+                meerkat::RunnerIdentity::new("durable-shell", "1").expect("runner"),
+                meerkat::RestartClass::Adoptable,
+                meerkat::CanonicalArgumentsHash::new("hash-shared-inbox").expect("hash"),
+                meerkat::JobSubmissionKey::new("shared-inbox").expect("submission key"),
+            ))
+            .await
+            .expect("submit");
+        let claim = jobs
+            .claim_attempt(
+                &receipt.job_id,
+                meerkat::AttemptClaim::new(
+                    meerkat::WorkerId::new("worker").expect("worker"),
+                    1,
+                    100,
+                    meerkat::RunnerHandleRef::new("runner-handle").expect("handle"),
+                ),
+            )
+            .await
+            .expect("claim");
+        jobs.complete_attempt(
+            &receipt.job_id,
+            (&claim).into(),
+            2,
+            Some(meerkat::JobResultRef::new("result").expect("result")),
+        )
+        .await
+        .expect("complete");
+
+        let pass = projector.project_pending(16).await.expect("project");
+        assert!(
+            !pass.projected.is_empty(),
+            "the terminal is projected: {pass:?}"
+        );
+        assert!(
+            commits.has_changed().expect("the inbox is alive"),
+            "the shell path's commit must wake the delivery runtime's subscribers"
+        );
+        assert_eq!(
+            runtime.runtime_inbox_backlog_count().await,
+            Ok(u64::try_from(pass.projected.len()).expect("small"))
+        );
     }
 
     #[derive(Clone, Default)]
@@ -9419,6 +9496,43 @@ fn classify_runtime_inbox_backlog(
     }
 }
 
+/// The gateway's one runtime delivery inbox over its runtime store.
+///
+/// `RuntimeDeliveryInbox`'s commit signal is per instance: clones share it,
+/// separately constructed instances over the same store do not. The shell job
+/// projector and the detached-job delivery runtime therefore both take clones
+/// of this one inbox, so a delivery committed through either path wakes every
+/// subscriber of the other. Build it once per gateway.
+struct GatewayRuntimeDelivery {
+    inbox: meerkat_runtime::RuntimeDeliveryInbox,
+}
+
+impl GatewayRuntimeDelivery {
+    fn new(runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>) -> Self {
+        Self {
+            inbox: meerkat_runtime::RuntimeDeliveryInbox::new(runtime_store),
+        }
+    }
+
+    /// A clone sharing the commit signal.
+    fn inbox(&self) -> meerkat_runtime::RuntimeDeliveryInbox {
+        self.inbox.clone()
+    }
+
+    /// The default shell job projector over this inbox. Per-session builds
+    /// rebind its realm (`bound_to_realm`); the inbox stays this one.
+    fn shell_job_projector(
+        &self,
+        job_store: Arc<dyn meerkat::DetachedJobStore>,
+    ) -> meerkat::JobOutboxProjector {
+        meerkat::JobOutboxProjector::new_for_realm(
+            job_store,
+            self.inbox(),
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+        )
+    }
+}
+
 #[derive(Clone)]
 struct DetachedCallbackJobRuntime {
     realm_id: String,
@@ -9460,11 +9574,8 @@ impl DetachedCallbackJobRuntime {
         }
     }
 
-    fn with_runtime_delivery_store(
-        mut self,
-        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
-    ) -> Self {
-        self.runtime_inbox = Some(meerkat_runtime::RuntimeDeliveryInbox::new(runtime_store));
+    fn with_runtime_delivery(mut self, delivery: &GatewayRuntimeDelivery) -> Self {
+        self.runtime_inbox = Some(delivery.inbox());
         self
     }
 
@@ -13036,17 +13147,16 @@ external_addressable = true
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
         inner_builder.default_detached_job_store = callback_job_store.clone();
+        // One inbox for every delivery consumer in this gateway, so each sees
+        // the others' commits ([`GatewayRuntimeDelivery`]).
+        let runtime_delivery = GatewayRuntimeDelivery::new(Arc::clone(&runtime_store));
         if let Some(job_store) = callback_job_store.as_ref() {
             // meerkat 0.8.22 (F4): the projector slot is a Clone value, not a
             // shared Arc - per-session builds rebind its realm authority via
             // bound_to_realm so mob members project under mob.<mob_id>, never
             // a service-lifetime realm frozen at gateway construction.
             inner_builder.default_shell_job_delivery_projector =
-                Some(meerkat::JobOutboxProjector::new_for_realm(
-                    Arc::clone(job_store),
-                    meerkat_runtime::RuntimeDeliveryInbox::new(Arc::clone(&runtime_store)),
-                    meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
-                ));
+                Some(runtime_delivery.shell_job_projector(Arc::clone(job_store)));
         }
         // Attach meerkat's per-session schedule tools so SDK-hosted members whose
         // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
@@ -13151,7 +13261,7 @@ external_addressable = true
                 Arc::clone(store),
                 blob_store.clone(),
             )
-            .with_runtime_delivery_store(Arc::clone(&runtime_store))
+            .with_runtime_delivery(&runtime_delivery)
             .with_monitor_shell(
                 state_path
                     .parent()
