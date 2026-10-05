@@ -249,7 +249,7 @@ impl Scenario {
             _ => None,
         };
         if let Some(gate) = gate {
-            tokio::time::timeout(Duration::from_secs(60), gate.acquire())
+            tokio::time::timeout(Duration::from_mins(1), gate.acquire())
                 .await
                 .expect("test did not release the native probe barrier")
                 .unwrap()
@@ -626,10 +626,10 @@ impl LlmClient for CrossMobClient {
         }));
         events.push(Ok(LlmEvent::Done {
             outcome: LlmDoneOutcome::Success {
-                stop_reason: if !calls.is_empty() {
-                    StopReason::ToolUse
-                } else {
+                stop_reason: if calls.is_empty() {
                     StopReason::EndTurn
+                } else {
+                    StopReason::ToolUse
                 },
             },
         }));
@@ -641,7 +641,7 @@ async fn expect_events(receiver: &mut mpsc::UnboundedReceiver<String>, expected:
     let mut expected: std::collections::BTreeSet<String> =
         expected.iter().map(|event| (*event).to_owned()).collect();
     while !expected.is_empty() {
-        let event = tokio::time::timeout(Duration::from_secs(60), receiver.recv())
+        let event = tokio::time::timeout(Duration::from_mins(1), receiver.recv())
             .await
             .unwrap_or_else(|_| panic!("waiting for native probe events: {expected:?}"))
             .expect("native probe channel closed");
@@ -754,7 +754,7 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
     scenario.finish_fork.add_permits(1);
     run_member_turn(&child, "cross-mob-fork", ROOT_BARRIER).await;
     scenario.finish.add_permits(1);
-    tokio::time::timeout(Duration::from_secs(60), owner_turn.turn.wait())
+    tokio::time::timeout(Duration::from_mins(1), owner_turn.turn.wait())
         .await
         .unwrap()
         .unwrap();
@@ -868,7 +868,7 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
         )
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(60), owner_turn.turn.wait())
+    tokio::time::timeout(Duration::from_mins(1), owner_turn.turn.wait())
         .await
         .unwrap()
         .unwrap();
@@ -892,7 +892,7 @@ async fn run_member_turn(handle: &MobHandle, identity: &str, task: &str) {
         )
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(60), turn.wait())
+    tokio::time::timeout(Duration::from_mins(1), turn.wait())
         .await
         .unwrap()
         .unwrap();
@@ -924,7 +924,7 @@ async fn extension_native_root_fork_off_document_access_survives_restart() {
         .await
         .unwrap();
     expect_events(&mut events, &["owner:create", "fork:editor-initial"]).await;
-    tokio::time::timeout(Duration::from_secs(60), owner_turn.turn.wait())
+    tokio::time::timeout(Duration::from_mins(1), owner_turn.turn.wait())
         .await
         .unwrap()
         .unwrap();
