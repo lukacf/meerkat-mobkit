@@ -143,6 +143,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
+  `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
+  (actions/runner-images#14748). The move to 26 will be validated
+  separately (meerkat#1767) instead of being inherited.
 - Behaviour change (identity-first runtimes with a topology provider): with
   a topology provider, reconcile unwires identity edges that neither the
   provider nor the definition's wiring declares, including edges wired
