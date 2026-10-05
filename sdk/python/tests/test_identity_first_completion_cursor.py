@@ -13,6 +13,7 @@ import warnings
 
 import pytest
 
+from meerkat_mobkit.errors import CompletionCursorUnavailableError
 from meerkat_mobkit.identity_first_models import (
     CompletionCursor,
     CompletionProgress,
@@ -831,3 +832,85 @@ class TestPerIdentityCorrelation:
             quiet_cursor.progress_since(CompletionCursor(epoch=4, turns=1))
             is CompletionProgress.PENDING
         ), "the busy neighbour's 7 turns must not register as progress here"
+
+
+# ---------------------------------------------------------------------------
+# Output waits are event-driven: no client-side polling
+# ---------------------------------------------------------------------------
+
+
+class TestOutputWaitsAreEventDriven:
+    """``wait_for_output`` (bare) and ``wait_for_output_containing`` read the
+    member once, then once per completion, each completion waited for
+    server-side. A client-side ``inspect`` + ``sleep`` loop would show one
+    inspect per poll interval and fail these counts."""
+
+    @pytest.mark.asyncio
+    async def test_bare_wait_reads_then_waits_for_the_first_completion(self):
+        transport = ScriptedTransport(
+            inspections=[
+                _inspection("triage:main", None, epoch=4, turns=0),
+                _inspection("triage:main", "hello", epoch=4, turns=1),
+            ],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        output = await handle.wait_for_output(timeout=5, poll_interval=0.001)
+
+        assert output == "hello"
+        assert transport.wait_calls == 1, "one server-side wait"
+        assert transport.inspect_calls == 2, "one read before, one at the completion"
+
+    @pytest.mark.asyncio
+    async def test_containing_reads_once_per_completion(self):
+        transport = ScriptedTransport(
+            inspections=[
+                _inspection("triage:main", "working", epoch=4, turns=1),
+                _inspection("triage:main", "still working", epoch=4, turns=2),
+                _inspection("triage:main", "all DONE", epoch=4, turns=3),
+            ],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        output = await handle.wait_for_output_containing(
+            "DONE", timeout=5, poll_interval=0.001
+        )
+
+        assert output == "all DONE"
+        assert transport.wait_calls == 2
+        assert transport.inspect_calls == 3
+
+    @pytest.mark.asyncio
+    async def test_no_completion_means_a_single_read_until_the_deadline(self):
+        transport = ScriptedTransport(
+            inspections=[_inspection("triage:main", "working", epoch=4, turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        with pytest.raises(TimeoutError, match="containing 'DONE'"):
+            await handle.wait_for_output_containing(
+                "DONE", timeout=0.05, poll_interval=0.001
+            )
+
+        assert transport.inspect_calls == 1, "no inspect polling while nothing completes"
+        assert transport.wait_calls >= 1
+
+    @pytest.mark.asyncio
+    async def test_a_live_alias_without_a_cursor_is_refused_typed(self):
+        transport = ScriptedTransport(
+            inspections=[
+                {
+                    "identity": "live:alias",
+                    "output_preview": None,
+                    "is_final": False,
+                    "peer_reachable_count": 0,
+                }
+            ],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "live:alias")
+
+        with pytest.raises(CompletionCursorUnavailableError, match="no completion cursor") as raised:
+            await handle.wait_for_output(timeout=5, poll_interval=0.001)
+        assert raised.value.identity == "live:alias"
+        assert isinstance(raised.value, RuntimeError), "callers catching RuntimeError still do"
+        assert transport.inspect_calls == 1
