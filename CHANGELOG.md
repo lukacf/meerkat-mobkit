@@ -143,6 +143,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `wait_for_output` and `wait_for_output_containing` no longer poll.
+  - **Rust:** the `IdentityRuntime` methods read the member once, then again
+    only when the identity table signals a change. A completion, a
+    registration and a lease change all signal it. Before, the methods
+    re-read every 500 ms. The caller's timeout is the only timer.
+  - **Python:** a bare `IdentityAgentHandle.wait_for_output()`, the
+    deprecated `baseline=` form and `wait_for_output_containing()` read the
+    member, then wait server-side (`mobkit/wait_for_completion`) for the next
+    completion past the cursor that read saw. Before, they called
+    `mobkit/inspect_identity` every 1.5 s. `poll_interval` now applies only
+    to gateways that predate the server-side wait.
+  - **Behavior change:** a bare `wait_for_output()` or
+    `wait_for_output_containing()` on a live alias with no completion cursor
+    now raises the typed `CompletionCursorUnavailableError` (exported from
+    `meerkat_mobkit`, carrying `identity`) at once. Before, it polled
+    `inspect_identity` until its timeout. **Migration:** a live alias has no
+    completion to wait for, so wait on its turn instead: send or dispatch
+    with `track_turn=True` and pass the ticket as `wait_for_output(turn=...)`
+    or `wait_for_turn(...)`. Identity-first handles are unaffected.
+    `baseline=` is not a migration path, because it now waits on completions
+    too. The cursor waits that already refused a live alias (`after=`,
+    `wait_for_completion`) now raise the same class.
+    `CompletionCursorUnavailableError` subclasses `RuntimeError`, which
+    those waits raised before.
+
 - Behaviour change (identity-first runtimes with a topology provider): with
   a topology provider, reconcile unwires identity edges that neither the
   provider nor the definition's wiring declares, including edges wired

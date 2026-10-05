@@ -14,7 +14,7 @@ import uuid
 import warnings
 from pathlib import Path
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
@@ -23,6 +23,7 @@ _log = logging.getLogger("meerkat_mobkit")
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .errors import (
     CAPABILITY_UNAVAILABLE_CODE,
+    CompletionCursorUnavailableError,
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
@@ -1635,9 +1636,8 @@ class IdentityAgentHandle:
             if outcome == "completed" and cursor is not None:
                 return cursor
             if cursor is None or outcome == "untracked":
-                raise RuntimeError(
-                    f"identity {self._identity!r} reports no completion cursor; "
-                    "this is a live alias with no identity authority"
+                raise CompletionCursorUnavailableError(
+                    self._identity, "this is a live alias with no identity authority"
                 )
             if outcome == "incarnation_changed":
                 raise RuntimeError(
@@ -1665,10 +1665,10 @@ class IdentityAgentHandle:
         while True:
             cursor = await self.completion_cursor()
             if cursor is None:
-                raise RuntimeError(
-                    f"identity {self._identity!r} reports no completion cursor; "
+                raise CompletionCursorUnavailableError(
+                    self._identity,
                     "the gateway predates the completion contract or this is a "
-                    "live alias with no identity authority"
+                    "live alias with no identity authority",
                 )
             progress = cursor.progress_since(baseline)
             if progress is CompletionProgress.COMPLETED:
@@ -2095,7 +2095,14 @@ class IdentityAgentHandle:
         baseline: str | None = None,
         turn: str | None = None,
     ) -> str:
-        """Poll until this identity produces an output_preview.
+        """Wait until this identity produces an output_preview.
+
+        No client-side polling: the member is read, then the call waits
+        server-side (``mobkit/wait_for_completion``) for the next completion
+        past the cursor that read saw, and reads again. Output only changes
+        when a turn commits, so nothing is missed between reads.
+        ``poll_interval`` applies only to gateways that predate the
+        server-side wait.
 
         Pass ``turn`` (the ``turn_ticket`` of a send/dispatch made with
         ``track_turn=True``) to wait for that exact turn and return ITS
@@ -2155,30 +2162,20 @@ class IdentityAgentHandle:
                 stacklevel=2,
             )
         deadline = time.monotonic() + timeout
-        if after is not None:
-            # Server-side waits, one per completion past ``after``; the member
-            # is inspected for its output only once a turn has completed.
-            cursor = after
-            while True:
-                try:
-                    cursor = await self._await_cursor_past(
-                        cursor, deadline - time.monotonic(), poll_interval
-                    )
-                except TimeoutError:
-                    break
-                inspection = await self.inspect()
-                if inspection.output_preview:
-                    return inspection.output_preview
-        while after is None and time.monotonic() < deadline:
-            inspection = await self.inspect()
-            if inspection.output_preview and (
-                baseline is None or inspection.output_preview != baseline
-            ):
-                return inspection.output_preview
-            await asyncio.sleep(poll_interval)
-        raise TimeoutError(
-            f"identity {self._identity!r} did not produce output within {timeout}s"
+        if baseline is not None:
+            def accept(preview: str) -> bool:
+                return preview != baseline
+        else:
+            def accept(preview: str) -> bool:
+                return True
+        output = await self._wait_for_output_where(
+            accept, deadline=deadline, poll_interval=poll_interval, after=after
         )
+        if output is None:
+            raise TimeoutError(
+                f"identity {self._identity!r} did not produce output within {timeout}s"
+            )
+        return output
 
     async def wait_for_output_containing(
         self,
@@ -2187,18 +2184,70 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 1.5,
     ) -> str:
-        """Poll until output_preview contains the given substring."""
+        """Wait until output_preview contains the given substring.
+
+        Event-driven, as :meth:`wait_for_output`: each completion is waited
+        for server-side and the member is read once per completion.
+        ``poll_interval`` applies only to gateways that predate the
+        server-side wait.
+        """
         import time
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            inspection = await self.inspect()
-            if inspection.output_preview and needle in inspection.output_preview:
-                return inspection.output_preview
-            await asyncio.sleep(poll_interval)
-        raise TimeoutError(
-            f"identity {self._identity!r} did not produce output "
-            f"containing {needle!r} within {timeout}s"
+        output = await self._wait_for_output_where(
+            lambda preview: needle in preview,
+            deadline=deadline,
+            poll_interval=poll_interval,
         )
+        if output is None:
+            raise TimeoutError(
+                f"identity {self._identity!r} did not produce output "
+                f"containing {needle!r} within {timeout}s"
+            )
+        return output
+
+    async def _wait_for_output_where(
+        self,
+        accept: Callable[[str], bool],
+        *,
+        deadline: float,
+        poll_interval: float,
+        after: CompletionCursor | None = None,
+    ) -> str | None:
+        """Read the member's output whenever it can have changed: now
+        (unless ``after`` is given), then once per completion, each waited
+        for server-side. Returns the first accepted output, or ``None`` at
+        ``deadline``."""
+        import time
+        cursor = after
+        if cursor is None:
+            inspection = await self.inspect()
+            if inspection.output_preview and accept(inspection.output_preview):
+                return inspection.output_preview
+            cursor = inspection.completion_cursor
+            if cursor is None:
+                raise CompletionCursorUnavailableError(
+                    self._identity,
+                    "this is a live alias with no identity authority, so there "
+                    "is no completion to wait for",
+                )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                cursor = await self._await_cursor_past(cursor, remaining, poll_interval)
+            except TimeoutError:
+                return None
+            inspection = await self.inspect()
+            if inspection.output_preview and accept(inspection.output_preview):
+                return inspection.output_preview
+            observed = inspection.completion_cursor
+            if (
+                observed is not None
+                and observed.progress_since(cursor) is CompletionProgress.COMPLETED
+            ):
+                # The read already reflects a later turn; wait past that one.
+                cursor = observed
 
     async def subscribe(self) -> Any:
         return await self._runtime.subscribe(self._identity)
