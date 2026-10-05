@@ -33,7 +33,7 @@ import {
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
-  settledHistoryActivity,
+  ConsoleActivityProjection,
   topologyMutationIntent,
 } from "@console-core";
 
@@ -213,6 +213,8 @@ interface ConsoleAppProps {
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
 type AccessPanelData = {
+  scope: string;
+  loading: boolean;
   status: ConsoleAccessStatus | null;
   config: ConsoleAccessConfig | null;
   error: string | null;
@@ -276,7 +278,7 @@ interface IdentityLog extends IdentityLogCore {
   /// Incrementally folded busy lifecycle, valid while `busyFoldedThrough`
   /// tracks the newest lifecycle frame seen in timestamp order. An older
   /// lifecycle frame arriving late invalidates it and forces one replay.
-  busyLifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean };
+  busyLifecycle: ConsoleActivityProjection;
   busyFoldedThroughMs: number;
   busyFoldValid: boolean;
   /// `null` while we haven't asked the server yet; `true` if the
@@ -804,6 +806,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     audit: [],
   });
   const [accessData, setAccessData] = React.useState<AccessPanelData>({
+    scope: "", loading: false,
     status: null,
     config: null,
     error: null,
@@ -843,7 +846,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
     capturedAt: null,
@@ -1176,7 +1179,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
         byKey: new Map(),
@@ -1324,6 +1327,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         merged.previous.runtimeKey !== merged.next.runtimeKey ||
         merged.previous.identity !== merged.next.identity ||
         merged.previous.sessionId !== merged.next.sessionId ||
+        merged.previous.interactionId !== merged.next.interactionId ||
+        merged.previous.runId !== merged.next.runId ||
+        merged.previous.status !== merged.next.status ||
+        merged.previous.data !== merged.next.data ||
         merged.previous.cursor !== merged.next.cursor ||
         merged.previous.event === "assistant_history_snapshot" ||
         merged.next.event === "assistant_history_snapshot" ||
@@ -1414,53 +1421,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
   }
 
-  /// Fold one lifecycle frame into `lifecycle`. Mirrors the replay switch in
-  /// `recomputeBusyStateFromLog` exactly; both must stay in step.
-  function foldBusyFrame(
-    lifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean },
-    frame: ConsoleFrame,
-  ): void {
-    switch (frame.event) {
-      case "interaction_started":
-        lifecycle.interactionOpen = true;
-        break;
-      case "run_started":
-        lifecycle.runOpen = true;
-        break;
-      case "run_completed":
-      case "run_failed":
-        lifecycle.runOpen = false;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        lifecycle.interactionOpen = false;
-        lifecycle.runOpen = false;
-        lifecycle.legacyBusy = false;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) {
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          lifecycle.legacyBusy = false;
-        }
-        break;
-      default: {
-        const transition = busyTransitionForFrame(frame);
-        if (transition !== null) lifecycle.legacyBusy = transition;
-        break;
-      }
-    }
-  }
-
-  function busyFromLifecycle(lifecycle: {
-    interactionOpen: boolean;
-    runOpen: boolean;
-    legacyBusy: boolean;
-  }): boolean {
-    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
-  }
-
   /// Live path: fold the frame in place when it is not older than the newest
   /// lifecycle frame already folded. Frames arrive in order almost always,
   /// so this is O(1) per frame; a late frame (older timestamp) invalidates
@@ -1475,19 +1435,18 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       recomputeBusyStateFromLog(identity);
       return;
     }
-    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
     if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    foldBusyFrame(log.busyLifecycle, frame);
+    if (!log.busyLifecycle.fold(frame)) return;
     log.busyFoldedThroughMs = ts;
     identityLifecycleRef.current[identity] = {
       interactionOpen: log.busyLifecycle.interactionOpen,
       runOpen: log.busyLifecycle.runOpen,
     };
-    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
+    applyBusyState(identity, log.busyLifecycle.busy);
   }
 
   /// Full replay over the transcript-ordered lifecycle frames. Used for the
@@ -1495,14 +1454,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   /// the ordinary live path never pays for it.
   function recomputeBusyStateFromLog(identity: string): void {
     const log = getOrCreateLog(identity);
-    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const frames = sortedEvents(log);
-    const coveredHistory = settledHistoryActivity(frames);
-    const ordered = frames
-      // A committed tool row remains transcript evidence. Once the same
-      // session's settled observation covers it, it cannot reopen the queue.
-      .filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame))
+    const ordered = sortedEvents(log)
       .sort((a, b) => {
         const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
         if (timeDelta !== 0) return timeDelta;
@@ -1511,7 +1465,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
       });
     for (const frame of ordered) {
-      foldBusyFrame(lifecycle, frame);
+      lifecycle.fold(frame);
       if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
         foldedThrough = frame.timestampMs;
       }
@@ -1523,7 +1477,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       interactionOpen: lifecycle.interactionOpen,
       runOpen: lifecycle.runOpen,
     };
-    applyBusyState(identity, busyFromLifecycle(lifecycle));
+    applyBusyState(identity, lifecycle.busy);
   }
 
   /// Reconcile a server-history fetch into the identity log. Frames
@@ -1660,7 +1614,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (inFlight) {
       return inFlight.then(() => {
         if (options.clearPhase) {
-          clearPhaseForIdentity(normalized);
+          recomputePhaseForIdentity(normalized);
           forceRender();
         }
       });
@@ -1675,7 +1629,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         limit: 200,
       });
       reconcileServerLog(normalized, page.frames, page.available);
-      if (options.clearPhase) clearPhaseForIdentity(normalized);
+      if (options.clearPhase) recomputePhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
@@ -2183,15 +2137,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function updatePanelPhaseFromFrame(
     panelKey: string,
     frame: ConsoleFrame,
-    lifecycleBusy = false,
+    projectedPhase: "waiting" | "tool-executing" | "generating" | null = null,
   ): boolean {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) return commitPanelPhase(panelKey, null);
+        if (isTerminalUserInputStatus(frame.status)) return commitPanelPhase(panelKey, projectedPhase);
         return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
+      case "run_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
@@ -2236,23 +2191,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "interaction_complete":
       case "interaction_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, null);
+        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, projectedPhase);
         return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) {
-          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+          return commitPanelPhase(panelKey, projectedPhase);
         }
         return false;
       case "message_delivery_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       default:
         return false;
     }
@@ -2270,15 +2225,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
   // Helper: update phase for ALL panels showing a given identity
   function updatePhaseForIdentity(identity: string, frame: ConsoleFrame): boolean {
-    // Replayed history can arrive after the settled observation that covers
-    // it. Reconcile the complete evidence instead of animating that old work
-    // as a new live operation. In-place updates may change the same scope.
+    // Replayed history can arrive after live events. Reconcile the retained
+    // lifecycle evidence without animating saved auxiliary rows as new work.
+    // In-place updates may change the same scope.
     if (frame.sourceKind === "session_history" || frame.event === "assistant_history_snapshot"
       || frame.event === "frame_updated") {
       return recomputePhaseForIdentity(identity);
     }
     let changed = false;
-    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
@@ -2286,7 +2240,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey(panel.id, target),
         frame,
-        lifecycleBusy,
+        getOrCreateLog(identity).busyLifecycle.phase,
       )) changed = true;
     }
     return changed;
@@ -2696,28 +2650,46 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       .map((panel) => panel.target)
       .filter(Boolean) as MobKitDockTarget[];
   }, [dock.viewState.panels, dock.viewState.tabs, dock.viewState.activeTabId]);
+  const accessScope = JSON.stringify([baseUrl, storageNamespace, experience?.runtime_id, experience?.access?.subject]);
+  const accessScopeRef = React.useRef(accessScope);
+  accessScopeRef.current = accessScope;
+  const accessRefreshVersion = React.useRef(0);
+  const visibleAccessData = accessData.scope === accessScope ? accessData : null;
+  React.useEffect(() => {
+    accessRefreshVersion.current += 1;
+    setAccessData({ scope: accessScope, loading: false, status: null, config: null, error: null });
+  }, [accessScope, experience?.access?.can_administer]);
   const refreshAccessData = React.useCallback(() => panelRefreshFlight("access", async () => {
+    if (accessScope !== accessScopeRef.current) return;
+    const version = ++accessRefreshVersion.current;
+    const isCurrent = () => version === accessRefreshVersion.current && accessScope === accessScopeRef.current;
     const accessTarget = controlWorkbenchTarget("access");
+    setAccessData(current => ({
+      scope: accessScope, loading: true, error: null,
+      status: current.scope === accessScope ? current.status : null,
+      config: current.scope === accessScope ? current.config : null,
+    }));
+    let status: ConsoleAccessStatus | null = null;
     try {
-      const status =
-        ((await executeHeadlessCommand(
-          CONSOLE_COMMAND_NAMES.accessStatus,
-          accessTarget,
-        )) as ConsoleAccessStatus | null) || null;
+      status = ((await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.accessStatus, accessTarget)) as ConsoleAccessStatus | null) || null;
+      if (!isCurrent()) return;
       let config: ConsoleAccessConfig | null = null;
       if (status?.available && status?.can_administer) {
-        const result = (await executeHeadlessCommand(
-          CONSOLE_COMMAND_NAMES.getAccessConfig,
-          accessTarget,
-        )) as { config?: ConsoleAccessConfig } | null;
+        const result = (await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.getAccessConfig, accessTarget)) as { config?: ConsoleAccessConfig; revision?: number } | null;
         config = result?.config || null;
+        if (result?.revision !== undefined) status = { ...status, revision: result.revision };
       }
-      setAccessData({ status, config, error: null });
+      if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
-      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      if (!isCurrent()) return;
+      const failure = classifyConsoleSendFailure(err);
+      const forbidden = failure.kind === "access_denied" || failure.kind === "unauthenticated";
+      setAccessData(current => ({ ...current, loading: false, error: errorMessage(err),
+        ...(forbidden ? { status: null, config: null } : {}),
+      }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [panelRefreshFlight, baseUrl]);
+  }), [panelRefreshFlight, baseUrl, accessScope]);
 
   const refreshMemoryData = React.useCallback(() => panelRefreshFlight("memory", async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
@@ -3051,18 +3023,27 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         | typeof CONSOLE_COMMAND_NAMES.deleteAccessGroup,
       params: Record<string, unknown>,
     ) => {
+      if (accessData.scope !== accessScope || accessData.loading || accessData.error
+          || accessData.status?.available !== true || accessData.status.can_administer !== true
+          || experience?.access?.can_administer !== true || frontendReadOnly
+          || experience?.console_policy?.read_only === true) return false;
+      let mutationError: string | null = null;
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
-        setAccessData((current) => ({ ...current, error: null }));
       } catch (err) {
-        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+        mutationError = errorMessage(err);
       }
+      if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
-      // Enforcement may have changed what this caller can see.
+      if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {});
+      if (mutationError && accessScope === accessScopeRef.current) {
+        setAccessData(current => ({ ...current, error: mutationError }));
+      }
+      return mutationError === null;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, refreshAccessData, loadExperience],
+    [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only],
   );
 
   const refreshTopologyData = React.useCallback(() => panelRefreshFlight("topology", async () => {
@@ -3137,11 +3118,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
   const refreshPanelDataRef = React.useRef(refreshPanelData);
   refreshPanelDataRef.current = refreshPanelData;
-  // Refresh what becomes visible (mount, panel changes, tab switches).
+  // Refresh visible panels when their layout or access owner changes.
   const visiblePanelKey = JSON.stringify(visiblePanelTargets);
   React.useEffect(() => {
     void refreshPanelDataRef.current().catch(() => {});
-  }, [visiblePanelKey]);
+  }, [visiblePanelKey, accessScope, experience?.access?.can_administer]);
 
   const scheduleExperienceRefresh = React.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
@@ -3168,7 +3149,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         // No event log on this runtime — SSE is the canonical source,
         // there's nothing to backfill.
         if (log.hasServerLog === false) {
-          clearPhaseForIdentity(identity);
+          recomputePhaseForIdentity(identity);
           forceRender();
           return;
         }
@@ -3655,19 +3636,19 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // touch the current view's rows. The saved attempt still belongs to
       // its own namespace, so settle it there with the typed failure rather
       // than leaving it "Awaiting acceptance" behind a dead request.
-      // Undo this send's optimistic busy/phase/topology marks first, in any
-      // scope: they were set by this attempt alone on this live view, so a
-      // failed request must never leave the agent looking busy ("Agent
-      // busy", later sends diverted into the queue). Only a dead lifetime
-      // has no view left to undo.
-      if (lifetimeRef.current.active) {
+      // Remove this send's optimistic marks only while it owns the active
+      // view. A failed send does not finish an existing owner interaction;
+      // derive busy state and phase from the current owner events, including
+      // any terminal that arrived while this request was in flight.
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current
+          && dispatchController === sendControllerRef.current) {
         optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
           (url) => URL.revokeObjectURL(url),
         );
         delete optimisticUserByPanelKeyRef.current[panelKey];
-        commitPanelPhase(panelKey, null);
-        identityBusyRef.current[identity] = false;
         commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+        recomputeBusyStateFromLog(identity);
+        recomputePhaseForIdentity(identity);
       }
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
         if (pendingAttempt && attemptNamespace) {
@@ -5112,9 +5093,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (target.kind === "access")
       return (
         <AccessPanel
-          status={accessData.status}
-          config={accessData.config}
-          error={accessData.error}
+          key={accessScope}
+          status={experience?.access?.can_administer === true ? visibleAccessData?.status ?? null : null}
+          config={visibleAccessData?.config ?? null}
+          error={visibleAccessData?.error}
+          loading={visibleAccessData?.loading ?? true}
           readOnly={frontendReadOnly || experience?.console_policy?.read_only === true}
           agents={agents.map((agent) => ({
             identity: agent.identity || agent.member_id,
@@ -5122,41 +5105,34 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           }))}
           onRefresh={() => void refreshAccessData()}
           onSetEnabled={(enabled) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
           }
           onSaveAdmins={(admins) => {
             const config = {
               ...(accessData.config || {}),
               admins,
             };
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
+            return runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
           }}
           onUpsertRule={(rule) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
           }
           onDeleteRule={(id) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
           }
           onSaveGroup={(name, group) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
           }
           onDeleteGroup={(name) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
           }
-          onPreview={async (subject, action, identity) => {
-            try {
-              return (
-                ((await executeHeadlessCommand(
-                  CONSOLE_COMMAND_NAMES.previewAccess,
-                  controlWorkbenchTarget("access"),
-                  identity ? { subject, action, identity } : { subject, action },
-                )) as AccessPreviewResult | null) || null
-              );
-            } catch (err) {
-              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
-              return null;
-            }
-          }}
+          onPreview={async (subject, action, identity) =>
+            ((await executeHeadlessCommand(
+              CONSOLE_COMMAND_NAMES.previewAccess,
+              controlWorkbenchTarget("access"),
+              identity ? { subject, action, identity } : { subject, action },
+            )) as AccessPreviewResult | null) || null
+          }
         />
       );
     if (target.kind === "memory")

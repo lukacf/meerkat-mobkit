@@ -797,65 +797,18 @@ function parseAssistantHistorySnapshot(frame) {
   return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
 }
 
-// ../packages/console-core/src/settled-history-activity.ts
-var LEGACY_ACTIVITY = /* @__PURE__ */ new Set([
-  "reasoning_delta",
-  "reasoning_complete",
-  "tool_call_requested",
-  "tool_call",
-  "tool_execution_started",
-  "tool_result_received",
-  "tool_execution_completed",
-  "server_tool_content"
-]);
-function exactScope(frame) {
-  const fields = [frame.runtimeKey, frame.identity, frame.sessionId];
-  return fields.every((value) => typeof value === "string" && value.trim()) ? JSON.stringify(fields) : void 0;
-}
-function settledHistoryActivity(frames) {
-  const observations = /* @__PURE__ */ new Map();
-  for (const frame of frames) {
-    const snapshot = assistantHistorySnapshot(frame);
-    const scope = exactScope(frame);
-    const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (!snapshot || !scope || cursor === void 0) continue;
-    const previous3 = observations.get(scope);
-    if (!previous3 || cursor > previous3.cursor) {
-      observations.set(scope, {
-        cursor,
-        through: snapshot.observedThrough,
-        ids: snapshot.assistantMessageIds,
-        conflict: false
-      });
-    } else if (cursor === previous3.cursor && (snapshot.observedThrough !== previous3.through || snapshot.assistantMessageIds.size !== previous3.ids.size || [...snapshot.assistantMessageIds].some((id) => !previous3.ids.has(id)))) {
-      previous3.conflict = true;
-    }
-  }
-  const covered = /* @__PURE__ */ new Set();
-  for (const frame of frames) {
-    if (frame.sourceKind !== "session_history" || !LEGACY_ACTIVITY.has(frame.event)) continue;
-    const scope = exactScope(frame);
-    const observation = scope && observations.get(scope);
-    const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (observation && !observation.conflict && cursor !== void 0 && cursor <= observation.through) {
-      covered.add(frame);
-    }
-  }
-  return covered;
-}
-
 // ../packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
   return {
-    run_state: typeof record5.run_state === "string" && record5.run_state ? record5.run_state : "unknown",
-    in_flight_work: typeof record5.in_flight_work === "number" && Number.isFinite(record5.in_flight_work) ? record5.in_flight_work : 0,
-    last_progress_at_ms: typeof record5.last_progress_at_ms === "number" && Number.isFinite(record5.last_progress_at_ms) ? record5.last_progress_at_ms : 0,
-    last_progress_event: typeof record5.last_progress_event === "string" && record5.last_progress_event ? record5.last_progress_event : "unchanged",
-    health: typeof record5.health === "string" && record5.health ? record5.health : "unknown"
+    run_state: typeof record6.run_state === "string" && record6.run_state ? record6.run_state : "unknown",
+    in_flight_work: typeof record6.in_flight_work === "number" && Number.isFinite(record6.in_flight_work) ? record6.in_flight_work : 0,
+    last_progress_at_ms: typeof record6.last_progress_at_ms === "number" && Number.isFinite(record6.last_progress_at_ms) ? record6.last_progress_at_ms : 0,
+    last_progress_event: typeof record6.last_progress_event === "string" && record6.last_progress_event ? record6.last_progress_event : "unchanged",
+    health: typeof record6.health === "string" && record6.health ? record6.health : "unknown"
   };
 }
 var IDENTITY_STATE_NEEDS_REPAIR_LABEL = "needs repair";
@@ -905,32 +858,32 @@ function normalizeStringArray(value) {
   return normalized.length > 0 ? normalized : void 0;
 }
 function normalizeSidebarWatchFields(value) {
-  const record5 = value && typeof value === "object" ? value : {};
+  const record6 = value && typeof value === "object" ? value : {};
   const normalized = {};
-  if (typeof record5.watched === "boolean") {
-    normalized.watched = record5.watched;
+  if (typeof record6.watched === "boolean") {
+    normalized.watched = record6.watched;
   }
-  if (record5.alertLevel === "elevated" || record5.alertLevel === "critical" || record5.alertLevel === null) {
-    normalized.alertLevel = record5.alertLevel;
+  if (record6.alertLevel === "elevated" || record6.alertLevel === "critical" || record6.alertLevel === null) {
+    normalized.alertLevel = record6.alertLevel;
   }
-  if (typeof record5.degraded === "boolean") {
-    normalized.degraded = record5.degraded;
+  if (typeof record6.degraded === "boolean") {
+    normalized.degraded = record6.degraded;
   }
-  const degradedReason = trimString(record5.degradedReason);
+  const degradedReason = trimString(record6.degradedReason);
   if (degradedReason) {
     normalized.degradedReason = degradedReason;
   }
   return normalized;
 }
 function normalizeIdentitySessionRepair(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
-  const session_id = trimString(record5.session_id);
-  const hold = trimString(record5.hold);
-  const diagnose_command = trimString(record5.diagnose_command);
-  const apply_command = trimString(record5.apply_command);
+  const session_id = trimString(record6.session_id);
+  const hold = trimString(record6.hold);
+  const diagnose_command = trimString(record6.diagnose_command);
+  const apply_command = trimString(record6.apply_command);
   if (!session_id || !hold || !diagnose_command || !apply_command) {
     return null;
   }
@@ -939,20 +892,20 @@ function normalizeIdentitySessionRepair(value) {
     hold,
     diagnose_command,
     apply_command,
-    detail: trimString(record5.detail) ?? ""
+    detail: trimString(record6.detail) ?? ""
   };
 }
 function normalizeIdentityStatusRow(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
-  const identity = trimString(record5.identity);
-  const state = trimString(record5.state);
+  const identity = trimString(record6.identity);
+  const state = trimString(record6.state);
   if (!identity || !state) {
     return null;
   }
-  const addressability = record5.addressability === "internal_only" ? "internal_only" : record5.addressability === "addressable" ? "addressable" : null;
+  const addressability = record6.addressability === "internal_only" ? "internal_only" : record6.addressability === "addressable" ? "addressable" : null;
   if (!addressability) {
     return null;
   }
@@ -960,30 +913,30 @@ function normalizeIdentityStatusRow(value) {
     identity,
     state,
     addressability,
-    labels: stringRecord(record5.labels),
-    ...trimString(record5.display_name) ? { display_name: trimString(record5.display_name) } : {},
-    ...trimString(record5.role) ? { role: trimString(record5.role) } : {},
-    ...typeof record5.generation === "number" && Number.isFinite(record5.generation) ? { generation: record5.generation } : {},
-    ...typeof record5.checkpoint_version === "number" && Number.isFinite(record5.checkpoint_version) ? { checkpoint_version: record5.checkpoint_version } : {},
-    ...typeof record5.lease_healthy === "boolean" ? { lease_healthy: record5.lease_healthy } : {},
+    labels: stringRecord(record6.labels),
+    ...trimString(record6.display_name) ? { display_name: trimString(record6.display_name) } : {},
+    ...trimString(record6.role) ? { role: trimString(record6.role) } : {},
+    ...typeof record6.generation === "number" && Number.isFinite(record6.generation) ? { generation: record6.generation } : {},
+    ...typeof record6.checkpoint_version === "number" && Number.isFinite(record6.checkpoint_version) ? { checkpoint_version: record6.checkpoint_version } : {},
+    ...typeof record6.lease_healthy === "boolean" ? { lease_healthy: record6.lease_healthy } : {},
     ...(() => {
-      const progress = normalizeMemberProgress(record5.progress);
+      const progress = normalizeMemberProgress(record6.progress);
       return progress ? { progress } : {};
     })(),
     ...(() => {
-      const session_repair = normalizeIdentitySessionRepair(record5.session_repair);
+      const session_repair = normalizeIdentitySessionRepair(record6.session_repair);
       return session_repair ? { session_repair } : {};
     })()
   };
 }
 function normalizeIdentityInspectViewState(value) {
-  const record5 = value && typeof value === "object" ? value : null;
+  const record6 = value && typeof value === "object" ? value : null;
   const statusRow = normalizeIdentityStatusRow(value);
-  if (!record5 || !statusRow) {
+  if (!record6 || !statusRow) {
     return null;
   }
-  const continuityRecord = record5.continuity && typeof record5.continuity === "object" ? record5.continuity : {};
-  const leaseRecord = record5.lease && typeof record5.lease === "object" ? record5.lease : record5.lease === null ? null : void 0;
+  const continuityRecord = record6.continuity && typeof record6.continuity === "object" ? record6.continuity : {};
+  const leaseRecord = record6.lease && typeof record6.lease === "object" ? record6.lease : record6.lease === null ? null : void 0;
   return {
     ...statusRow,
     continuity: {
@@ -999,49 +952,49 @@ function normalizeIdentityInspectViewState(value) {
         healthy: leaseRecord.healthy
       }
     } : {},
-    ...trimString(record5.output_preview) !== void 0 ? { output_preview: trimString(record5.output_preview) ?? null } : {},
-    ...typeof record5.is_final === "boolean" || record5.is_final === null ? { is_final: record5.is_final } : {},
-    ...normalizeFiniteNumber(record5.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record5.peer_reachable_count) } : record5.peer_reachable_count === null ? { peer_reachable_count: null } : {},
-    ...normalizeStringArray(record5.topology_peers) ? { topology_peers: normalizeStringArray(record5.topology_peers) } : {},
-    ...Array.isArray(record5.recent_tool_calls) ? { recent_tool_calls: record5.recent_tool_calls } : {},
-    ...normalizeFiniteNumber(record5.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record5.last_activity_ms) } : record5.last_activity_ms === null ? { last_activity_ms: null } : {}
+    ...trimString(record6.output_preview) !== void 0 ? { output_preview: trimString(record6.output_preview) ?? null } : {},
+    ...typeof record6.is_final === "boolean" || record6.is_final === null ? { is_final: record6.is_final } : {},
+    ...normalizeFiniteNumber(record6.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record6.peer_reachable_count) } : record6.peer_reachable_count === null ? { peer_reachable_count: null } : {},
+    ...normalizeStringArray(record6.topology_peers) ? { topology_peers: normalizeStringArray(record6.topology_peers) } : {},
+    ...Array.isArray(record6.recent_tool_calls) ? { recent_tool_calls: record6.recent_tool_calls } : {},
+    ...normalizeFiniteNumber(record6.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record6.last_activity_ms) } : record6.last_activity_ms === null ? { last_activity_ms: null } : {}
   };
 }
 function normalizeGatingActionResult(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
-  const pendingId = trimString(record5.pending_id);
-  const actionId = trimString(record5.action_id);
-  const approverId = trimString(record5.approver_id);
-  const decidedAt = normalizeFiniteNumber(record5.decided_at_ms);
+  const pendingId = trimString(record6.pending_id);
+  const actionId = trimString(record6.action_id);
+  const approverId = trimString(record6.approver_id);
+  const decidedAt = normalizeFiniteNumber(record6.decided_at_ms);
   if (!pendingId || !actionId || !approverId || decidedAt === void 0) {
     return null;
   }
-  if (record5.decision !== "approve" && record5.decision !== "reject" && record5.decision !== "escalate") {
+  if (record6.decision !== "approve" && record6.decision !== "reject" && record6.decision !== "escalate") {
     return null;
   }
-  if (record5.outcome !== "allowed" && record5.outcome !== "safe_draft" && record5.outcome !== "pending_approval") {
+  if (record6.outcome !== "allowed" && record6.outcome !== "safe_draft" && record6.outcome !== "pending_approval") {
     return null;
   }
   return {
     pending_id: pendingId,
     action_id: actionId,
     approver_id: approverId,
-    decision: record5.decision,
-    outcome: record5.outcome,
+    decision: record6.decision,
+    outcome: record6.outcome,
     decided_at_ms: decidedAt,
-    ...trimString(record5.reason) ? { reason: trimString(record5.reason) } : {},
-    ...trimString(record5.next_pending_id) ? { next_pending_id: trimString(record5.next_pending_id) } : {}
+    ...trimString(record6.reason) ? { reason: trimString(record6.reason) } : {},
+    ...trimString(record6.next_pending_id) ? { next_pending_id: trimString(record6.next_pending_id) } : {}
   };
 }
 function normalizeRoutingSectionView(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
-  const routes = Array.isArray(record5.routes) ? record5.routes.map((entry) => {
+  const routes = Array.isArray(record6.routes) ? record6.routes.map((entry) => {
     const route = entry && typeof entry === "object" ? entry : null;
     if (!route) {
       return null;
@@ -1064,7 +1017,7 @@ function normalizeRoutingSectionView(value) {
       ...normalizeFiniteNumber(route.rate_limit_per_minute) !== void 0 ? { rate_limit_per_minute: normalizeFiniteNumber(route.rate_limit_per_minute) } : {}
     };
   }).filter((entry) => Boolean(entry)) : [];
-  const deliveries = Array.isArray(record5.deliveries) ? record5.deliveries.map((entry) => {
+  const deliveries = Array.isArray(record6.deliveries) ? record6.deliveries.map((entry) => {
     const delivery = entry && typeof entry === "object" ? entry : null;
     if (!delivery) {
       return null;
@@ -1114,13 +1067,13 @@ function normalizeRoutingSectionView(value) {
   return { routes, deliveries };
 }
 function normalizeReplayUnavailableError(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5 || record5.error !== "replay_unavailable" && record5.type !== "replay_unavailable") {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6 || record6.error !== "replay_unavailable" && record6.type !== "replay_unavailable") {
     return null;
   }
-  const explicitStream = record5.stream === "identity" || record5.stream === "all_events" || record5.stream === "timeline" ? record5.stream : null;
-  const requested = trimString(record5.requested_last_event_id) || trimString(record5.requested_cursor);
-  const latest = trimString(record5.latest_event_id) || trimString(record5.latest_cursor);
+  const explicitStream = record6.stream === "identity" || record6.stream === "all_events" || record6.stream === "timeline" ? record6.stream : null;
+  const requested = trimString(record6.requested_last_event_id) || trimString(record6.requested_cursor);
+  const latest = trimString(record6.latest_event_id) || trimString(record6.latest_cursor);
   const stream = explicitStream || (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
@@ -1133,12 +1086,12 @@ function normalizeReplayUnavailableError(value) {
   };
 }
 function normalizeConsoleInteractionRejectedError(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) {
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) {
     return null;
   }
-  const code4 = record5.code;
-  const message = trimString(record5.message);
+  const code4 = record6.code;
+  const message = trimString(record6.message);
   if (code4 !== -32001 && code4 !== -32002 && code4 !== -32003 && code4 !== -32004 && code4 !== -32602 && code4 !== -32603) {
     return null;
   }
@@ -1930,25 +1883,25 @@ function trimmedString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 function runtimeEventFromFrame(eventType, data) {
-  const record5 = recordOf(data);
-  const peerRecord = recordOf(record5?.peer);
+  const record6 = recordOf(data);
+  const peerRecord = recordOf(record6?.peer);
   const peer = peerRecord ? {
     id: trimmedString(peerRecord.id),
     displayName: trimmedString(peerRecord.display_name)
   } : null;
   return {
     eventType,
-    kind: trimmedString(record5?.kind),
+    kind: trimmedString(record6?.kind),
     peer: peer && (peer.id || peer.displayName) ? peer : null,
-    senderTaint: trimmedString(record5?.sender_taint),
+    senderTaint: trimmedString(record6?.sender_taint),
     payload: data
   };
 }
 function entryOriginFromFrameData(data) {
-  const record5 = recordOf(data);
-  const sendOrigin = trimmedString(record5?.origin);
-  const originKind = trimmedString(record5?.origin_kind);
-  const renderMetadata = recordOf(recordOf(record5?.message)?.render_metadata);
+  const record6 = recordOf(data);
+  const sendOrigin = trimmedString(record6?.origin);
+  const originKind = trimmedString(record6?.origin_kind);
+  const renderMetadata = recordOf(recordOf(record6?.message)?.render_metadata);
   const renderClass = trimmedString(renderMetadata?.class);
   if (!sendOrigin && !originKind && !renderClass) return null;
   return {
@@ -1961,8 +1914,8 @@ function runtimeEventText(event, options = {}) {
   if (event.peer) {
     return describeRuntimeEvent(event, null, options).sentence || "";
   }
-  const record5 = recordOf(event.payload);
-  const detail = trimmedString(record5?.message) || trimmedString(record5?.error) || trimmedString(record5?.reason) || trimmedString(record5?.text) || trimmedString(record5?.result) || trimmedString(record5?.delta);
+  const record6 = recordOf(event.payload);
+  const detail = trimmedString(record6?.message) || trimmedString(record6?.error) || trimmedString(record6?.reason) || trimmedString(record6?.text) || trimmedString(record6?.result) || trimmedString(record6?.delta);
   const title = humanizeRuntimeEventType(event.eventType);
   return detail ? `${title}: ${detail}` : `${title}.`;
 }
@@ -3237,6 +3190,112 @@ function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
 }
 
+// ../packages/console-core/src/operation-feedback.ts
+function record2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+var refused = () => ({
+  kind: "permission-refused",
+  title: "Permission denied",
+  detail: "This action is not permitted for this request. The agent can continue with permitted work."
+});
+var confinementDetails = {
+  invalid_requirement: "The confinement requirement is invalid.",
+  invalid_launch: "The confined process launch is invalid.",
+  unsupported_requirement: "This backend does not support the required confinement.",
+  backend_unavailable: "The required confinement backend is unavailable.",
+  preparation_failed: "Confined process preparation failed."
+};
+var hookReasons = {
+  policy_violation: "Policy violation",
+  safety_violation: "Safety violation",
+  schema_violation: "Schema violation",
+  timeout: "Timeout",
+  runtime_error: "Runtime error"
+};
+function identifier2(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+function confinementFeedback(value, toolCallId) {
+  if (typeof value !== "string" || !Object.hasOwn(confinementDetails, value)) return null;
+  const refusal = value;
+  return {
+    kind: "confinement-refused",
+    title: "Action could not start",
+    detail: `${confinementDetails[refusal]} This action did not run. The agent can continue with other work.`,
+    toolCallId,
+    confinementRefusal: refusal
+  };
+}
+function operationFeedbackFromFrame(frame) {
+  const data = record2(frame.data);
+  if (!data) return null;
+  if (frame.event === "hook_launch_refused" && data.point === "pre_tool_execution") {
+    const toolCallId = identifier2(data.tool_use_id);
+    const hookId = identifier2(data.hook_id);
+    const reason = record2(data.reason);
+    if (!toolCallId || !hookId || !reason) return null;
+    if (reason.reason_code === "confinement_refused") {
+      return confinementFeedback(reason.refusal, toolCallId);
+    }
+    if (reason.reason_code === "execution_failed" && typeof reason.message === "string") {
+      return {
+        kind: "hook-launch-failed",
+        title: "Hook could not start",
+        detail: "The hook could not start, so this action did not run. The agent can continue with other work.",
+        toolCallId,
+        hookId
+      };
+    }
+    return null;
+  }
+  if (frame.event === "operation_observation_failed" && data.phase === "outcome" && typeof data.operation_id === "string" && data.operation_id.length > 0 && data.operation_id.length <= 256) {
+    return {
+      kind: "audit-unavailable",
+      title: "Audit update unavailable",
+      detail: "The action's outcome could not be recorded. Its actual result is unchanged; do not repeat it based on this notice.",
+      operationId: data.operation_id
+    };
+  }
+  if (frame.event === "system_notice") {
+    const message = record2(data.message) ?? data;
+    if (Array.isArray(message.blocks) && message.blocks.some((value) => {
+      const block = record2(value);
+      return block?.type === "runtime_notice" && block.category === "operation_refused" && record2(block.payload)?.code === "operation_refused";
+    })) return refused();
+  }
+  if ((frame.event === "tool_result_received" || frame.event === "tool_execution_completed") && data.is_error === true && Array.isArray(data.content) && data.content.length === 1) {
+    const block = record2(data.content[0]);
+    if (block?.type !== "text" || typeof block.text !== "string") return null;
+    try {
+      const payload = record2(JSON.parse(block.text));
+      if (payload?.error === "operation_refused") return refused();
+      const toolCallId = identifier2(data.tool_call_id ?? data.id);
+      if (!toolCallId) return null;
+      const detail = record2(payload?.data);
+      if (payload?.error === "confinement_refused") {
+        return confinementFeedback(detail?.refusal, toolCallId);
+      }
+      if (payload?.error === "hook_denied" && detail?.point === "pre_tool_execution") {
+        const hookId = identifier2(detail.hook_id);
+        const reason = detail.reason_code;
+        if (!hookId || typeof reason !== "string" || !Object.hasOwn(hookReasons, reason)) return null;
+        const hookReasonCode = reason;
+        return {
+          kind: "hook-denied",
+          title: "Action blocked by hook",
+          detail: `A hook denied this action (${hookReasons[hookReasonCode]}). The agent can continue with other work.`,
+          toolCallId,
+          hookId,
+          hookReasonCode
+        };
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+
 // ../packages/console-core/src/user-message-identity.ts
 var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function userMessageRenderKey(frame) {
@@ -3417,10 +3476,10 @@ function reconcileAssistantMessageFrames(frames) {
 }
 
 // ../packages/console-core/src/runtime-append-projection.ts
-function record2(value) {
+function record3(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-function identifier2(value) {
+function identifier3(value) {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
 }
 function ordinal(value) {
@@ -3437,7 +3496,7 @@ var optionalStrings = (value, keys2) => keys2.every((key) => optional(value[key]
 var operation = (value) => oneOf(value, ["add", "remove", "reload"]);
 var phase = (value) => oneOf(value, ["pending", "applied", "draining", "forced", "failed"]);
 function contentBlock(value) {
-  const block = record2(value);
+  const block = record3(value);
   if (!block) return false;
   switch (block.type) {
     case "text":
@@ -3449,7 +3508,7 @@ function contentBlock(value) {
     case "structured":
       return Object.hasOwn(block, "data");
     case "skill_context": {
-      const key = record2(block.skill_key);
+      const key = record3(block.skill_key);
       return string(block.text) && !!key && uuid(key.source_uuid) && string(key.skill_name) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key.skill_name);
     }
     default:
@@ -3457,7 +3516,7 @@ function contentBlock(value) {
   }
 }
 function toolConfigStatus(value) {
-  const status = record2(value);
+  const status = record3(value);
   if (!status) return false;
   switch (status.kind) {
     case "boundary_applied":
@@ -3473,20 +3532,20 @@ function toolConfigStatus(value) {
   }
 }
 function toolConfig(value) {
-  const payload = record2(value);
+  const payload = record3(value);
   return !!payload && operation(payload.operation) && string(payload.target) && boolean(payload.persisted) && toolConfigStatus(payload.status_info) && optional(payload.applied_at_turn, (value2) => ordinal(value2) && value2 <= 4294967295) && optional(payload.domain, (value2) => oneOf(value2, ["tool_scope", "deferred_catalog"])) && optional(payload.deferred_catalog_delta, (value2) => {
-    const delta = record2(value2);
+    const delta = record3(value2);
     return !!delta && ["added_hidden_names", "removed_hidden_names", "pending_sources"].every((key) => defaulted(delta[key], strings));
   });
 }
 function noticeBlock(value) {
-  const block = record2(value);
+  const block = record3(value);
   if (!block || !string(block.type)) return false;
   const content3 = (value2) => Array.isArray(value2) && value2.every(contentBlock);
   switch (block.type) {
     case "comms":
       return string(block.kind) && oneOf(block.direction, ["incoming", "outgoing", "internal"]) && optional(block.peer, (value2) => {
-        const peer = record2(value2);
+        const peer = record3(value2);
         return !!peer && uuid(peer.id) && optional(peer.display_name, string);
       }) && optional(block.sender_taint, (value2) => oneOf(value2, ["clean", "tainted"])) && optionalStrings(block, ["request_id", "intent", "status", "summary"]) && defaulted(block.content, content3);
     case "external_event":
@@ -3526,16 +3585,16 @@ function consoleCursor(value) {
   return ordinal(cursor) ? cursor : null;
 }
 function originOf(message) {
-  const origin = record2(message?.runtime_origin);
-  return origin && identifier2(origin.session_id) && identifier2(origin.run_id) && identifier2(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
+  const origin = record3(message?.runtime_origin);
+  return origin && identifier3(origin.session_id) && identifier3(origin.run_id) && identifier3(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
 }
 function scopeOf(frame) {
-  return identifier2(frame.runtimeKey) && identifier2(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
+  return identifier3(frame.runtimeKey) && identifier3(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
 }
 function sequenceScopeOf(frame) {
   const scope = scopeOf(frame);
-  const epoch = record2(frame.data)?.source_epoch;
-  return scope && identifier2(epoch) ? JSON.stringify([frame.runtimeKey, frame.sessionId, epoch]) : scope;
+  const epoch = record3(frame.data)?.source_epoch;
+  return scope && identifier3(epoch) ? JSON.stringify([frame.runtimeKey, frame.sessionId, epoch]) : scope;
 }
 function logicalKey(frame, origin) {
   return `runtime-notice:${JSON.stringify([
@@ -3548,20 +3607,20 @@ function logicalKey(frame, origin) {
 }
 function runtimeAppendNoticeKey(frame) {
   if (frame.event !== "system_notice" || !scopeOf(frame)) return null;
-  const origin = originOf(record2(record2(frame.data)?.message));
+  const origin = originOf(record3(record3(frame.data)?.message));
   return origin ? logicalKey(frame, origin) : null;
 }
 function attemptKey(scope, runId, inputId) {
   return JSON.stringify([scope, runId, inputId]);
 }
 function noticeSnapshot(frame) {
-  const data = record2(frame.data), scope = scopeOf(frame);
+  const data = record3(frame.data), scope = scopeOf(frame);
   const cursor = consoleCursor(frame.cursor), observedThrough = consoleCursor(data?.observed_through);
   if (frame.event !== "runtime_notice_snapshot" || frame.sourceKind !== "session_history" || !scope || data?.session_id !== frame.sessionId || data.complete !== true || cursor === null || observedThrough === null || observedThrough >= cursor || !Array.isArray(data.notices) || !Array.isArray(data.settled_attempts)) return null;
   const notices = [];
   const offsets = /* @__PURE__ */ new Set(), identities = /* @__PURE__ */ new Set();
   for (const value of data.notices) {
-    const row = record2(value), message = record2(row?.message), origin = originOf(message);
+    const row = record3(value), message = record3(row?.message), origin = originOf(message);
     if (!row || !ordinal(row.offset) || !message || !origin || !canonicalNotice(message)) return null;
     const key = logicalKey(frame, origin);
     if (offsets.has(row.offset) || identities.has(key)) return null;
@@ -3571,8 +3630,8 @@ function noticeSnapshot(frame) {
   }
   const settled = /* @__PURE__ */ new Set();
   for (const value of data.settled_attempts) {
-    const attempt = record2(value);
-    if (!attempt || !identifier2(attempt.run_id) || !identifier2(attempt.input_id)) return null;
+    const attempt = record3(value);
+    if (!attempt || !identifier3(attempt.run_id) || !identifier3(attempt.input_id)) return null;
     settled.add(attemptKey(scope, attempt.run_id, attempt.input_id));
   }
   let historyPositions;
@@ -3580,9 +3639,9 @@ function noticeSnapshot(frame) {
     if (!Array.isArray(data.history_positions)) return null;
     historyPositions = /* @__PURE__ */ new Map();
     for (const value of data.history_positions) {
-      const row = record2(value);
+      const row = record3(value);
       const position3 = positionFromCursor(frame.sessionId, row?.source_cursor);
-      if (!row || !identifier2(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
+      if (!row || !identifier3(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
       historyPositions.set(row.frame_id, position3);
     }
   }
@@ -3592,7 +3651,7 @@ function noticeSnapshot(frame) {
   if (sparseHistoryPositions) {
     if (!historyPositions || !Array.isArray(data.removed_history_frame_ids)) return null;
     for (const id of data.removed_history_frame_ids) {
-      if (!identifier2(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
+      if (!identifier3(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
       removedHistoryFrameIds.add(id);
     }
   } else if (data.removed_history_frame_ids !== void 0) return null;
@@ -3676,7 +3735,7 @@ function reconcileAssistantHistoryPositions(frames) {
   );
   return frames.filter((frame) => {
     if (frame.sourceKind !== "session_history") return true;
-    const message = record2(record2(frame.data)?.message);
+    const message = record3(record3(frame.data)?.message);
     if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
     const key = scope(frame), assistant = assistants.get(key);
     const cursor = assistantMessageCursorSequence(frame.cursor);
@@ -3693,10 +3752,10 @@ function positionFromCursor(sessionId, sourceCursor) {
   return parts.map((part) => /^\d+$/.test(part) ? Number(part) : part);
 }
 function canonicalPosition(frame) {
-  return frame.sourceKind === "session_history" && identifier2(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
+  return frame.sourceKind === "session_history" && identifier3(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
 }
 function sourceSequence(frame) {
-  const value = record2(frame.data)?.source_sequence;
+  const value = record3(frame.data)?.source_sequence;
   return frame.sourceKind === "console_event" && ordinal(value) ? value : void 0;
 }
 function comparePosition(left, right) {
@@ -3733,9 +3792,9 @@ function toolCounterpartKey(item) {
   const call = ["tool_call_requested", "tool_call", "tool_execution_started"].includes(item.frame.event);
   const result = ["tool_result_received", "tool_execution_completed"].includes(item.frame.event);
   if (!call && !result) return null;
-  const data = record2(item.frame.data);
+  const data = record3(item.frame.data);
   const id = data?.tool_call_id ?? data?.id;
-  return identifier2(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
+  return identifier3(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
 }
 function userCounterpartKey(item) {
   const id = item.frame.interactionId;
@@ -3835,9 +3894,9 @@ function reconcileRuntimeAppendFrames(frames) {
   const discarded = /* @__PURE__ */ new Set();
   for (const frame of frames) {
     if (frame.event !== "boundary_appends_discarded" || frame.sourceKind !== "console_event") continue;
-    const data = record2(frame.data), scope = scopeOf(frame);
-    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier2(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
-    for (const input of data.input_ids) if (identifier2(input)) discarded.add(attemptKey(scope, data.run_id, input));
+    const data = record3(frame.data), scope = scopeOf(frame);
+    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier3(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
+    for (const input of data.input_ids) if (identifier3(input)) discarded.add(attemptKey(scope, data.run_id, input));
   }
   const nodes = [];
   const candidates = /* @__PURE__ */ new Map();
@@ -3851,15 +3910,15 @@ function reconcileRuntimeAppendFrames(frames) {
   };
   for (const frame of frames) {
     if (frame.event === "boundary_appends_discarded" || frame.event === "runtime_notice_snapshot") continue;
-    const data = record2(frame.data), scope = scopeOf(frame);
+    const data = record3(frame.data), scope = scopeOf(frame);
     const snapshot = scope ? snapshots.get(scope) : void 0;
     const cursor = consoleCursor(frame.cursor);
     const observed = snapshot && cursor !== null && cursor <= snapshot.observedThrough;
     if (frame.event === "boundary_append_applied") {
       if (!Array.isArray(data?.notices) || !data.notices.length) continue;
-      if (frame.sourceKind !== "console_event" || !scope || !identifier2(frame.runId) || data.run_id !== frame.runId || !identifier2(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
+      if (frame.sourceKind !== "console_event" || !scope || !identifier3(frame.runId) || data.run_id !== frame.runId || !identifier3(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
       for (const value of data.notices) {
-        const message = record2(value), origin = originOf(message);
+        const message = record3(value), origin = originOf(message);
         if (!message || !origin || origin.session_id !== frame.sessionId || origin.run_id !== frame.runId || origin.input_id !== data.input_id || origin.append_ordinal >= data.append_count || !ordinal(data.transcript_start + origin.append_ordinal)) continue;
         const timestamp = typeof message.created_at === "string" ? Date.parse(message.created_at) : NaN;
         const noticeFrame = {
@@ -3887,7 +3946,7 @@ function reconcileRuntimeAppendFrames(frames) {
       if (position3) node2.position = position3.position;
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
-      const message = record2(data?.message), origin = originOf(message);
+      const message = record3(data?.message), origin = originOf(message);
       if (origin) {
         if (observed) continue;
         node2.origin = origin;
@@ -3970,12 +4029,12 @@ var byteLength = (text8) => new TextEncoder().encode(text8).length;
 function validateConsoleContexts(records) {
   if (records.length > MAX_CONSOLE_CONTEXTS) throw new Error("A message can include at most 8 quotes.");
   const ids = /* @__PURE__ */ new Set();
-  for (const record5 of records) {
-    if (record5.version !== 1 || typeof record5.id !== "string" || !record5.id || ids.has(record5.id) || typeof record5.sourceScope !== "string" || !record5.sourceScope || typeof record5.sourceIdentity !== "string" || !record5.sourceIdentity || typeof record5.messageId !== "string" || !record5.messageId || typeof record5.quote !== "string" || !record5.quote || typeof record5.label !== "string" || !record5.label || record5.conversationId !== void 0 && typeof record5.conversationId !== "string") {
+  for (const record6 of records) {
+    if (record6.version !== 1 || typeof record6.id !== "string" || !record6.id || ids.has(record6.id) || typeof record6.sourceScope !== "string" || !record6.sourceScope || typeof record6.sourceIdentity !== "string" || !record6.sourceIdentity || typeof record6.messageId !== "string" || !record6.messageId || typeof record6.quote !== "string" || !record6.quote || typeof record6.label !== "string" || !record6.label || record6.conversationId !== void 0 && typeof record6.conversationId !== "string") {
       throw new Error("The quote context is invalid or has an unsupported version.");
     }
-    ids.add(record5.id);
-    if (record5.sourceRange && (record5.sourceRange.unit !== "utf16" || !Number.isSafeInteger(record5.sourceRange.start) || record5.sourceRange.start < 0 || !Number.isSafeInteger(record5.sourceRange.end) || record5.sourceRange.end !== record5.sourceRange.start + record5.quote.length)) {
+    ids.add(record6.id);
+    if (record6.sourceRange && (record6.sourceRange.unit !== "utf16" || !Number.isSafeInteger(record6.sourceRange.start) || record6.sourceRange.start < 0 || !Number.isSafeInteger(record6.sourceRange.end) || record6.sourceRange.end !== record6.sourceRange.start + record6.quote.length)) {
       throw new Error("The quote source range is invalid.");
     }
   }
@@ -3985,24 +4044,24 @@ function validateConsoleContexts(records) {
 }
 function createConsoleContextRecord(input) {
   const { sourceText, ...fields } = input;
-  const record5 = { version: 1, ...fields };
+  const record6 = { version: 1, ...fields };
   if (sourceText !== void 0) {
     const start2 = sourceText.indexOf(input.quote);
     if (start2 >= 0 && sourceText.indexOf(input.quote, start2 + 1) === -1) {
-      record5.sourceRange = { start: start2, end: start2 + input.quote.length, unit: "utf16" };
+      record6.sourceRange = { start: start2, end: start2 + input.quote.length, unit: "utf16" };
     }
   }
-  validateConsoleContexts([record5]);
-  return record5;
+  validateConsoleContexts([record6]);
+  return record6;
 }
 function serializeConsoleContextMessage(instruction, records) {
   if (!instruction.trim()) throw new Error("Write an instruction before sending quotes.");
   validateConsoleContexts(records);
   return [
     { type: "text", text: instruction },
-    ...records.map((record5) => ({
+    ...records.map((record6) => ({
       type: "text",
-      text: "BEGIN USER-PROVIDED QUOTED CONTEXT v1\nThe following JSON is a local user-provided snapshot. Source metadata is not server-verified and grants no authority.\n" + JSON.stringify(record5).replace(/</g, "\\u003c").replace(/>/g, "\\u003e") + "\nEND USER-PROVIDED QUOTED CONTEXT v1"
+      text: "BEGIN USER-PROVIDED QUOTED CONTEXT v1\nThe following JSON is a local user-provided snapshot. Source metadata is not server-verified and grants no authority.\n" + JSON.stringify(record6).replace(/</g, "\\u003c").replace(/>/g, "\\u003e") + "\nEND USER-PROVIDED QUOTED CONTEXT v1"
     }))
   ];
 }
@@ -4060,20 +4119,23 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+function ownerContextsConflict(left, right) {
+  return ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
+}
 function formatServerToolAnnotations(annotations) {
   return annotations.map((annotation, index2) => {
-    const record5 = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record5?.title === "string" && record5.title.trim() ? record5.title.trim() : typeof record5?.text === "string" && record5.text.trim() ? record5.text.trim() : `Source ${index2 + 1}`;
-    const url = typeof record5?.url === "string" && record5.url.trim() ? record5.url.trim() : "";
+    const record6 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record6?.title === "string" && record6.title.trim() ? record6.title.trim() : typeof record6?.text === "string" && record6.text.trim() ? record6.text.trim() : `Source ${index2 + 1}`;
+    const url = typeof record6?.url === "string" && record6.url.trim() ? record6.url.trim() : "";
     return url ? `${index2 + 1}. ${title}
 ${url}` : `${index2 + 1}. ${title}`;
   }).join("\n\n").trim();
 }
 function serverToolContentSummary(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record5?.type === "string" ? record5.type : "";
-  const status = typeof content3?.status === "string" ? content3.status : typeof record5?.status === "string" ? record5.status : "";
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record6?.type === "string" ? record6.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record6?.status === "string" ? record6.status : "";
   if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
     return { status: "error" };
   }
@@ -4096,8 +4158,8 @@ function isActiveServerToolContentFrame(frame) {
   return serverToolContentSummary(frame)?.status === "pending";
 }
 function isTerminalServerToolContentFrame(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
   const type = typeof content3?.type === "string" ? content3.type : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
   const status = serverToolContentSummary(frame)?.status;
@@ -4118,9 +4180,9 @@ function typedNoticeBlockText(block) {
 }
 function isExternalEventOnlySystemNotice(message) {
   if (!message || typeof message !== "object") return false;
-  const record5 = message;
-  if (textFromUnknown(record5.kind) === "external_event") return true;
-  const blocks = record5.blocks;
+  const record6 = message;
+  if (textFromUnknown(record6.kind) === "external_event") return true;
+  const blocks = record6.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
@@ -4142,16 +4204,16 @@ function systemNoticeMessageRecord(frame) {
   }
   return data;
 }
-function systemNoticeBlockRecords(record5) {
-  const blocks = record5.blocks;
+function systemNoticeBlockRecords(record6) {
+  const blocks = record6.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates(record5) {
+function legacyPeerNoticeTextCandidates(record6) {
   const candidates = [];
-  const body = textFromUnknown(record5.body).trim();
+  const body = textFromUnknown(record6.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords(record5)) {
+  for (const block of systemNoticeBlockRecords(record6)) {
     const blockText = typedNoticeBlockText(block).trim();
     if (blockText) candidates.push(blockText);
     const content3 = block.content;
@@ -4173,20 +4235,20 @@ function legacyPeerNoticeTextCandidates(record5) {
 function isLegacyPeerNoticeText(text8) {
   return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text8.trim());
 }
-function canUseLegacyPeerNoticeText(record5) {
-  const kind = textFromUnknown(record5.kind);
+function canUseLegacyPeerNoticeText(record6) {
+  const kind = textFromUnknown(record6.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords(record5).map((block) => textFromUnknown(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords(record6).map((block) => textFromUnknown(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState(frame) {
-  const record5 = systemNoticeMessageRecord(frame);
-  if (!record5 || isExternalEventOnlySystemNotice(record5)) return false;
-  if (textFromUnknown(record5.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords(record5);
+  const record6 = systemNoticeMessageRecord(frame);
+  if (!record6 || isExternalEventOnlySystemNotice(record6)) return false;
+  if (textFromUnknown(record6.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record6);
   if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText(record5)) return false;
-  return legacyPeerNoticeTextCandidates(record5).some(isLegacyPeerNoticeText);
+  if (!canUseLegacyPeerNoticeText(record6)) return false;
+  return legacyPeerNoticeTextCandidates(record6).some(isLegacyPeerNoticeText);
 }
 function isIntermediateHistoryAssistantStep(frame) {
   if (frame.sourceKind !== "session_history" || frame.event !== "text_complete" && frame.event !== "interaction_complete") return false;
@@ -4194,24 +4256,181 @@ function isIntermediateHistoryAssistantStep(frame) {
   const message = data.message && typeof data.message === "object" ? data.message : {};
   return message.role === "block_assistant" && message.stop_reason === "tool_use";
 }
-function inferResponsePhaseFromFrames(frames, fallback = null) {
-  const coveredHistory = settledHistoryActivity(frames);
-  let phase2 = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+var HISTORICAL_AUXILIARY_EVENTS = /* @__PURE__ */ new Set([
+  "reasoning_delta",
+  "reasoning_complete",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
+  "server_tool_content"
+]);
+var ConsoleActivityProjection = class {
+  constructor(fallback = null) {
+    __publicField(this, "interactions", /* @__PURE__ */ new Map());
+    __publicField(this, "runs", /* @__PURE__ */ new Map());
+    __publicField(this, "anonymous", []);
+    __publicField(this, "active", /* @__PURE__ */ new Set());
+    __publicField(this, "busyOwners", /* @__PURE__ */ new Set());
+    __publicField(this, "interactionsOpen", /* @__PURE__ */ new Set());
+    __publicField(this, "runsOpen", /* @__PURE__ */ new Set());
+    __publicField(this, "phaseOwner");
+    __publicField(this, "order", 0);
+    __publicField(this, "phase");
+    __publicField(this, "terminal", false);
+    this.phase = fallback;
+  }
+  get busy() {
+    return this.busyOwners.size > 0;
+  }
+  get interactionOpen() {
+    return this.interactionsOpen.size > 0;
+  }
+  get runOpen() {
+    return this.runsOpen.size > 0;
+  }
+  matching(owners, frame) {
+    const matches = owners?.filter((owner) => !ownerContextsConflict(owner.context, frame) && !(owner.interactionId && frame.interactionId && owner.interactionId !== frame.interactionId));
+    return matches?.length === 1 ? matches[0] : void 0;
+  }
+  index(map3, key, owner) {
+    const owners = map3.get(key) ?? [];
+    if (!owners.includes(owner)) map3.set(key, [...owners, owner]);
+  }
+  forget(owner) {
+    const remove = (map3, key) => {
+      const remaining = map3.get(key)?.filter((value) => value !== owner) ?? [];
+      if (remaining.length) map3.set(key, remaining);
+      else map3.delete(key);
+    };
+    if (owner.interactionId) remove(this.interactions, owner.interactionId);
+    for (const id of owner.runIds) remove(this.runs, id);
+    this.anonymous = this.anonymous.filter((value) => value !== owner);
+    this.active.delete(owner);
+    this.busyOwners.delete(owner);
+    this.interactionsOpen.delete(owner);
+    this.runsOpen.delete(owner);
+  }
+  owner(frame) {
+    var _a, _b;
+    const interaction = typeof frame.interactionId === "string" && frame.interactionId.length ? frame.interactionId : void 0;
+    const run = typeof frame.runId === "string" && frame.runId.length ? frame.runId : void 0;
+    const byInteraction = interaction ? this.matching(this.interactions.get(interaction), frame) : void 0;
+    const byRun = run ? this.matching(this.runs.get(run), frame) : void 0;
+    if (byInteraction && byRun && ownerContextsConflict(byInteraction.context, byRun.context)) return void 0;
+    let owner = byInteraction ?? byRun;
+    if (byInteraction && byRun && byInteraction !== byRun && !byRun.interactionId) {
+      for (const key of ["runtimeKey", "identity", "sessionId"]) (_a = byInteraction.context)[key] ?? (_a[key] = byRun.context[key]);
+      for (const id of byRun.runIds) {
+        byInteraction.runIds.add(id);
+        this.index(this.runs, id, byInteraction);
+      }
+      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order2] of byRun.runStartOrder) {
+        if (order2 < (byInteraction.runStartOrder.get(id) ?? Infinity)) byInteraction.runStartOrder.set(id, order2);
+      }
+      for (const [id, phase2] of byRun.runPhases) {
+        if (phase2.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase2);
+      }
+      byInteraction.interactionOpen || (byInteraction.interactionOpen = byRun.interactionOpen);
+      byInteraction.unidentifiedRunOpen || (byInteraction.unidentifiedRunOpen = byRun.unidentifiedRunOpen);
+      byInteraction.inputOpen || (byInteraction.inputOpen = byRun.inputOpen);
+      byInteraction.auxiliaryOpen || (byInteraction.auxiliaryOpen = byRun.auxiliaryOpen);
+      if (byRun.ownerPhase.order > byInteraction.ownerPhase.order) byInteraction.ownerPhase = byRun.ownerPhase;
+      this.selectOwnerPhase(byInteraction);
+      this.forget(byRun);
+      owner = byInteraction;
+    }
+    if (!interaction && !run) owner = this.matching(this.anonymous, frame);
+    if (!owner) {
+      owner = {
+        context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
+        runIds: /* @__PURE__ */ new Set(),
+        openRuns: /* @__PURE__ */ new Set(),
+        runStartOrder: /* @__PURE__ */ new Map(),
+        runPhases: /* @__PURE__ */ new Map(),
+        interactionOpen: false,
+        unidentifiedRunOpen: false,
+        inputOpen: false,
+        auxiliaryOpen: false,
+        ownerPhase: { phase: null, order: 0 },
+        phase: null,
+        order: 0
+      };
+      if (!interaction && !run) this.anonymous.push(owner);
+    }
+    for (const key of ["runtimeKey", "identity", "sessionId"]) (_b = owner.context)[key] ?? (_b[key] = frame[key]);
+    if (interaction) {
+      owner.interactionId = interaction;
+      this.index(this.interactions, interaction, owner);
+    }
+    if (run) {
+      owner.runIds.add(run);
+      this.index(this.runs, run, owner);
+    }
+    return owner;
+  }
+  selectOwnerPhase(owner) {
+    const previousOrder = owner.order;
+    let runPhase;
+    let clearedRunOrder = 0;
+    for (const contribution of owner.runPhases.values()) {
+      if (contribution.phase === null) clearedRunOrder = Math.max(clearedRunOrder, contribution.order);
+      else if ((owner.ownerPhase.phase !== null || contribution.order > owner.ownerPhase.order) && (!runPhase || contribution.order > runPhase.order)) runPhase = contribution;
+    }
+    let latest = clearedRunOrder > owner.ownerPhase.order ? { phase: null, order: clearedRunOrder } : owner.ownerPhase;
+    if (runPhase && (latest.phase === null || runPhase.order > latest.order)) latest = runPhase;
+    owner.phase = latest.phase;
+    owner.order = latest.order;
+    if (this.phaseOwner === owner && owner.order < previousOrder) this.selectPhaseOwner();
+  }
+  selectPhaseOwner() {
+    this.phaseOwner = void 0;
+    for (const active of this.active) {
+      if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+    }
+  }
+  refreshOwner(owner, retainAssociation = false) {
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (retainAssociation && !open && owner.phase === null) return;
+    if (owner.interactionOpen) this.interactionsOpen.add(owner);
+    else this.interactionsOpen.delete(owner);
+    if (hasRun) this.runsOpen.add(owner);
+    else this.runsOpen.delete(owner);
+    if (open) this.busyOwners.add(owner);
+    else this.busyOwners.delete(owner);
+    if (open || owner.phase !== null) {
+      this.active.add(owner);
+      if (owner.phase !== null && (!this.phaseOwner || owner.order > this.phaseOwner.order)) this.phaseOwner = owner;
+    } else this.forget(owner);
+    if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
+      this.selectPhaseOwner();
+    }
+    this.phase = this.phaseOwner?.phase ?? null;
+  }
+  fold(frame) {
+    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) {
+      if (typeof frame.runId !== "string" || !frame.runId || typeof frame.interactionId !== "string" || !frame.interactionId) return false;
+      if (this.runs.get(frame.runId)?.some((owner3) => !ownerContextsConflict(owner3.context, frame) && owner3.interactionId && owner3.interactionId !== frame.interactionId)) return false;
+      const owner2 = this.owner(frame);
+      if (!owner2) return false;
+      this.refreshOwner(owner2, true);
+      this.terminal && (this.terminal = this.phase === null);
+      return true;
+    }
+    if (isIntermediateHistoryAssistantStep(frame)) return false;
+    const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
+    let phase2;
+    let terminal = false;
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
-        else phase2 = "waiting";
+        phase2 = terminalUser ? null : "waiting";
+        terminal = terminalUser;
         break;
       case "interaction_started":
-        interactionOpen = true;
-        phase2 = "waiting";
-        break;
       case "run_started":
-        runOpen = true;
         phase2 = "waiting";
         break;
       case "tool_call_requested":
@@ -4222,50 +4441,134 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
       case "server_tool_content":
         if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
         else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
+        else return false;
         break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase2 = "waiting";
-        break;
-      case "reasoning_delta":
-        phase2 = "generating";
-        break;
       case "reasoning_complete":
         phase2 = "waiting";
         break;
+      case "reasoning_delta":
       case "text_delta":
         phase2 = "generating";
         break;
       case "text_complete":
-        phase2 = interactionOpen || runOpen ? "waiting" : null;
-        break;
       case "interaction_complete":
       case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase2 = null;
-        break;
       case "run_completed":
       case "run_failed":
-        runOpen = false;
-        phase2 = interactionOpen ? "waiting" : null;
+      case "message_delivery_failed":
+        phase2 = null;
+        terminal = true;
         break;
       case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) phase2 = null;
+        if (!systemNoticeClearsBusyState(frame)) {
+          this.terminal = false;
+          return false;
+        }
+        phase2 = null;
+        terminal = true;
         break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase2 = interactionOpen || runOpen ? "waiting" : null;
+        const reason = data.stop_reason ?? data.stopReason;
+        if (reason === "tool_use") {
+          this.terminal = false;
+          return false;
         }
+        phase2 = null;
+        terminal = true;
         break;
       }
       default:
+        return false;
+    }
+    const owner = this.owner(frame);
+    if (!owner) return false;
+    if (frame.event === "run_started" && frame.runId && owner.runStartOrder.has(frame.runId)) {
+      this.refreshOwner(owner, true);
+      return true;
+    }
+    const order2 = ++this.order;
+    let ownerPhaseEvent = !frame.runId;
+    switch (frame.event) {
+      case "user_input":
+        ownerPhaseEvent = true;
+        owner.inputOpen = !terminalUser;
+        if (terminalUser) owner.auxiliaryOpen = false;
+        break;
+      case "interaction_started":
+        ownerPhaseEvent = true;
+        owner.interactionOpen = true;
+        break;
+      case "run_started":
+        if (frame.runId) {
+          owner.runStartOrder.set(frame.runId, order2);
+          owner.openRuns.add(frame.runId);
+        } else owner.unidentifiedRunOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        if (frame.runId) {
+          const started = owner.runStartOrder.get(frame.runId);
+          const closesCurrent = started !== void 0 && [...owner.runStartOrder.values()].every((value) => value <= started) && ![...owner.runPhases].some(([id, value]) => id !== frame.runId && !owner.runStartOrder.has(id) && value.phase !== null && value.order > started);
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
+          if (!closesCurrent && (owner.openRuns.size || owner.unidentifiedRunOpen || [...owner.runPhases.values()].some((value) => value.phase !== null))) break;
+        }
+      // A run-less terminal settles the interaction, as does its last run.
+      // falls through
+      case "message_delivery_failed":
+      case "system_notice":
+        ownerPhaseEvent = true;
+        owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
+        owner.openRuns.clear();
+        owner.runPhases.clear();
+        break;
+      case "run_completed":
+      case "run_failed":
+        if (frame.runId) {
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
+        } else owner.unidentifiedRunOpen = false;
+        break;
+      case "text_complete":
+      case "text_delta":
+        break;
+      case "turn_completed":
+        owner.inputOpen = owner.auxiliaryOpen = false;
+        break;
+      default:
+        owner.auxiliaryOpen = true;
         break;
     }
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    if (frame.event === "text_complete" || frame.event === "turn_completed") phase2 = owner.interactionOpen || hasRun ? "waiting" : null;
+    if (frame.event === "run_completed" || frame.event === "run_failed" || (frame.event === "interaction_complete" || frame.event === "interaction_failed") && !ownerPhaseEvent) {
+      if (!owner.openRuns.size && ![...owner.runPhases.values()].some((value) => value.phase !== null) && !owner.unidentifiedRunOpen || !frame.runId) {
+        owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order: order2 };
+      }
+      this.selectOwnerPhase(owner);
+    } else {
+      const contribution = { phase: phase2 ?? null, order: order2 };
+      if (frame.runId && !ownerPhaseEvent) {
+        owner.runPhases.set(frame.runId, contribution);
+      } else owner.ownerPhase = contribution;
+      if (contribution.phase === null) this.selectOwnerPhase(owner);
+      else {
+        owner.phase = contribution.phase;
+        owner.order = contribution.order;
+      }
+    }
+    this.refreshOwner(owner);
+    this.terminal = terminal && this.phase === null;
+    return true;
   }
-  return phase2;
+};
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  const projection = new ConsoleActivityProjection(fallback);
+  for (const frame of frames) projection.fold(frame);
+  return projection.phase;
 }
 function isTerminalUserInputStatus(status) {
   return status === "completed" || status === "delivery_failed" || status === "failed";
@@ -4284,75 +4587,9 @@ function resolvePanelResponsePhase(args) {
   return args.serverPhase ?? null;
 }
 function latestRoutableFrameIsTerminal(frames) {
-  const coveredHistory = settledHistoryActivity(frames);
-  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
-    const frame = frames[index2];
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index2);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-function hasOpenLifecycleBefore(frames, beforeIndex) {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
-    switch (frames[index2].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
+  const projection = new ConsoleActivityProjection();
+  for (const frame of frames) projection.fold(frame);
+  return projection.terminal;
 }
 
 // ../packages/console-core/src/contract.ts
@@ -5260,8 +5497,8 @@ function normalizePendingApproval(value) {
   const pendingId = text(raw.pending_id);
   if (!pendingId) return null;
   if (raw.status !== void 0 && raw.status !== "pending" && raw.status !== "settled" && raw.status !== "expired") return null;
-  const record5 = raw.origin && typeof raw.origin === "object" ? raw.origin : void 0;
-  const identity = text(record5?.identity);
+  const record6 = raw.origin && typeof raw.origin === "object" ? raw.origin : void 0;
+  const identity = text(record6?.identity);
   const actions = Array.isArray(raw.supported_actions) ? APPROVAL_ACTIONS.filter((action) => raw.supported_actions.includes(action)) : APPROVAL_ACTIONS;
   return {
     pendingId,
@@ -5274,7 +5511,7 @@ function normalizePendingApproval(value) {
     actions,
     createdAtMs: millis(raw.created_at_ms),
     deadlineAtMs: millis(raw.deadline_at_ms),
-    ...identity ? { origin: { identity, conversationId: text(record5?.conversation_id), interactionId: text(record5?.interaction_id) } } : {},
+    ...identity ? { origin: { identity, conversationId: text(record6?.conversation_id), interactionId: text(record6?.interaction_id) } } : {},
     raw
   };
 }
@@ -5301,12 +5538,12 @@ function browserEnvironment() {
 }
 var errorText = (error) => error instanceof Error ? error.message : String(error);
 function unavailableCapability(error) {
-  const record5 = error;
-  return record5?.kind === "console-capability-unavailable" && typeof record5.method === "string" && Array.isArray(record5.availableMethods) && record5.availableMethods.every((method) => typeof method === "string") ? { method: record5.method, availableMethods: record5.availableMethods } : null;
+  const record6 = error;
+  return record6?.kind === "console-capability-unavailable" && typeof record6.method === "string" && Array.isArray(record6.availableMethods) && record6.availableMethods.every((method) => typeof method === "string") ? { method: record6.method, availableMethods: record6.availableMethods } : null;
 }
 var isDenied = (error) => {
-  const record5 = error;
-  return record5?.httpStatus === 401 || record5?.httpStatus === 403 || record5?.rpcError?.code === -32030 || record5?.rpcError?.data?.kind === "access_denied";
+  const record6 = error;
+  return record6?.httpStatus === 401 || record6?.httpStatus === 403 || record6?.rpcError?.code === -32030 || record6?.rpcError?.data?.kind === "access_denied";
 };
 function createPendingApprovalResource(input) {
   const env2 = input.environment || browserEnvironment();
@@ -5784,10 +6021,10 @@ function describeConsoleCheckFailure(error, names) {
 
 // ../packages/console-core/src/context-edit.ts
 function editConsoleContextQuote(records, id, quote) {
-  if (!records.some((record5) => record5.id === id)) throw new Error("This quote is no longer in the draft.");
-  const next = records.map((record5) => {
-    if (record5.id !== id || record5.quote === quote) return record5;
-    const { sourceRange: _sourceRange, ...snapshot } = record5;
+  if (!records.some((record6) => record6.id === id)) throw new Error("This quote is no longer in the draft.");
+  const next = records.map((record6) => {
+    if (record6.id !== id || record6.quote === quote) return record6;
+    const { sourceRange: _sourceRange, ...snapshot } = record6;
     return { ...snapshot, quote };
   });
   validateConsoleContexts(next);
@@ -6491,9 +6728,9 @@ function useConversationScrollController(options) {
     const touchesRows = (nodes) => Array.from(nodes).some((node2) => node2 instanceof Element && (node2.matches(ROW_SELECTOR) || node2.querySelector(ROW_SELECTOR) !== null));
     const outsideRows = (node2) => !(node2 instanceof Element ? node2 : node2.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      const rowsChanged = records.some((record5) => record5.type === "childList" && (touchesRows(record5.addedNodes) || touchesRows(record5.removedNodes)));
+      const rowsChanged = records.some((record6) => record6.type === "childList" && (touchesRows(record6.addedNodes) || touchesRows(record6.removedNodes)));
       if (rowsChanged) observeRows();
-      const moved = rowsChanged || records.some((record5) => outsideRows(record5.target));
+      const moved = rowsChanged || records.some((record6) => outsideRows(record6.target));
       const session = sessionRef.current;
       if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
@@ -12462,7 +12699,7 @@ var titleBefore = {
 };
 function tokenizeDefinition(effects, ok3, nok) {
   const self2 = this;
-  let identifier3;
+  let identifier4;
   return start2;
   function start2(code4) {
     effects.enter("definition");
@@ -12481,7 +12718,7 @@ function tokenizeDefinition(effects, ok3, nok) {
     )(code4);
   }
   function labelAfter(code4) {
-    identifier3 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
+    identifier4 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
     if (code4 === 58) {
       effects.enter("definitionMarker");
       effects.consume(code4);
@@ -12515,7 +12752,7 @@ function tokenizeDefinition(effects, ok3, nok) {
   function afterWhitespace(code4) {
     if (code4 === null || markdownLineEnding(code4)) {
       effects.exit("definition");
-      self2.parser.defined.push(identifier3);
+      self2.parser.defined.push(identifier4);
       return ok3(code4);
     }
     return nok(code4);
@@ -20568,7 +20805,7 @@ function tokenizeGfmFootnoteCall(effects, ok3, nok) {
 function tokenizeDefinitionStart(effects, ok3, nok) {
   const self2 = this;
   const defined = self2.parser.gfmFootnotes || (self2.parser.gfmFootnotes = []);
-  let identifier3;
+  let identifier4;
   let size = 0;
   let data;
   return start2;
@@ -20604,7 +20841,7 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
     if (code4 === 93) {
       effects.exit("chunkString");
       const token = effects.exit("gfmFootnoteDefinitionLabelString");
-      identifier3 = normalizeIdentifier(self2.sliceSerialize(token));
+      identifier4 = normalizeIdentifier(self2.sliceSerialize(token));
       effects.enter("gfmFootnoteDefinitionLabelMarker");
       effects.consume(code4);
       effects.exit("gfmFootnoteDefinitionLabelMarker");
@@ -20631,8 +20868,8 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
       effects.enter("definitionMarker");
       effects.consume(code4);
       effects.exit("definitionMarker");
-      if (!defined.includes(identifier3)) {
-        defined.push(identifier3);
+      if (!defined.includes(identifier4)) {
+        defined.push(identifier4);
       }
       return factorySpace(effects, whitespaceAfter, "gfmFootnoteDefinitionWhitespace");
     }
@@ -22171,19 +22408,19 @@ function QuoteCopyIcon({ name: name2 }) {
 function DeliveredContextMessage({ message }) {
   return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "cc-delivered-context", children: [
     /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("p", { className: "cc-delivered-context__instruction", children: message.instruction }),
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-delivered-context__sources", "aria-label": "Quoted context", children: message.records.map((record5) => /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figure", { className: "cc-delivered-context__source", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-delivered-context__sources", "aria-label": "Quoted context", children: message.records.map((record6) => /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figure", { className: "cc-delivered-context__source", children: [
       /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figcaption", { className: "cc-delivered-context__caption", children: [
         /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("span", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("strong", { children: [
             "Quoted from ",
-            record5.label
+            record6.label
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("small", { children: "User-provided snapshot" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record5.quote, label: `Copy quote from ${record5.label}`, copiedLabel: "Copied quote" })
+        /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record6.quote, label: `Copy quote from ${record6.label}`, copiedLabel: "Copied quote" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("blockquote", { className: "cc-delivered-context__quote", children: record5.quote })
-    ] }, record5.id)) })
+      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("blockquote", { className: "cc-delivered-context__quote", children: record6.quote })
+    ] }, record6.id)) })
   ] });
 }
 
@@ -22756,6 +22993,46 @@ function WorkGraphCard({
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_jsx_runtime21 = require("react/jsx-runtime");
+function OperationFeedbackView({ feedback, createdAt }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
+    "article",
+    {
+      className: "cc-operation-feedback",
+      "data-feedback-kind": feedback.kind,
+      "aria-label": feedback.title,
+      role: "status",
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "cc-operation-feedback__heading", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("strong", { children: feedback.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(EntryTime, { iso: createdAt })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: feedback.detail }),
+        feedback.operationId ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "cc-operation-feedback__reference", children: [
+          "Operation ",
+          feedback.operationId
+        ] }) : null,
+        feedback.toolCallId ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "cc-operation-feedback__reference", children: [
+          "Call ",
+          feedback.toolCallId
+        ] }) : null
+      ]
+    }
+  );
+}
+function formatEntryTime(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (value) => String(value).padStart(2, "0");
+  const short = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const full = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${short}:${pad(date.getSeconds())}`;
+  return { short, full };
+}
+function EntryTime({ iso }) {
+  const time = formatEntryTime(iso);
+  if (!time) return null;
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("time", { className: "cc-message__time", dateTime: iso, title: time.full, children: time.short });
+}
 
 // ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime22 = require("react/jsx-runtime");
@@ -23374,11 +23651,11 @@ function commsBlocksFromFrameData(data) {
   const blocks = [];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
-    const record5 = candidate;
-    const recordKind = textFromUnknown3(record5.kind);
-    if (recordKind === "comms") blocks.push(record5);
-    if (!Array.isArray(record5.blocks)) continue;
-    for (const block of record5.blocks) {
+    const record6 = candidate;
+    const recordKind = textFromUnknown3(record6.kind);
+    if (recordKind === "comms") blocks.push(record6);
+    if (!Array.isArray(record6.blocks)) continue;
+    for (const block of record6.blocks) {
       if (!block || typeof block !== "object") continue;
       const blockRecord = block;
       if (textFromUnknown3(blockRecord.type) === "comms") blocks.push(blockRecord);
@@ -25169,9 +25446,9 @@ function QuoteActionIcon({ action }) {
     /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "m10.8 5.2 4 4" })
   ] }) : action === "remove" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "m5 5 10 10M15 5 5 15" }) : action === "up" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "M10 16V4m-5 5 5-5 5 5" }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "M10 4v12m-5-5 5 5 5-5" }) });
 }
-function QuoteContextChip({ record: record5, index: index2, records, onEdit, onRemove, onReorder }) {
+function QuoteContextChip({ record: record6, index: index2, records, onEdit, onRemove, onReorder }) {
   const [editing, setEditing] = (0, import_react25.useState)(false);
-  const [draft, setDraft] = (0, import_react25.useState)(record5.quote);
+  const [draft, setDraft] = (0, import_react25.useState)(record6.quote);
   const [saving, setSaving] = (0, import_react25.useState)(false);
   const [error, setError] = (0, import_react25.useState)("");
   const editorRef = (0, import_react25.useRef)(null);
@@ -25199,10 +25476,10 @@ function QuoteContextChip({ record: record5, index: index2, records, onEdit, onR
   async function save() {
     if (!onEdit || saving) return;
     try {
-      editConsoleContextQuote(records, record5.id, draft);
+      editConsoleContextQuote(records, record6.id, draft);
       setSaving(true);
       setError("");
-      await onEdit(record5.id, draft);
+      await onEdit(record6.id, draft);
       cancel();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -25212,12 +25489,12 @@ function QuoteContextChip({ record: record5, index: index2, records, onEdit, onR
   }
   return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("li", { className: `cc-context-chip${editing && onEdit ? " cc-context-chip--editing" : ""}`, children: editing && onEdit ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "cc-context-chip__editor", children: [
     /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("label", { children: [
-      record5.label,
+      record6.label,
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
         "textarea",
         {
           ref: editorRef,
-          "aria-label": `Quote from ${record5.label}`,
+          "aria-label": `Quote from ${record6.label}`,
           value: draft,
           rows: 4,
           "aria-invalid": !!error,
@@ -25243,25 +25520,25 @@ function QuoteContextChip({ record: record5, index: index2, records, onEdit, onR
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: cancel, disabled: saving, "aria-label": "Cancel quote edit", children: "Cancel" })
     ] })
   ] }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(RowDetails, { part: `quote:${record5.id}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("summary", { children: record5.label }),
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("blockquote", { children: record5.quote }),
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(RowDetails, { part: `quote:${record6.id}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("summary", { children: record6.label }),
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("blockquote", { children: record6.quote }),
       /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("small", { children: [
         "User-provided snapshot",
-        record5.sourceRange ? "" : "; original source range unavailable"
+        record6.sourceRange ? "" : "; original source range unavailable"
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "cc-context-chip__actions", children: [
       onReorder ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record5.id, "up"), "aria-label": `Move quote from ${record5.label} earlier`, title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "up" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record5.id, "down"), "aria-label": `Move quote from ${record5.label} later`, title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "down" }) })
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record6.id, "up"), "aria-label": `Move quote from ${record6.label} earlier`, title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "up" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record6.id, "down"), "aria-label": `Move quote from ${record6.label} later`, title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "down" }) })
       ] }) : null,
       onEdit ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", ref: editButtonRef, onClick: () => {
-        setDraft(record5.quote);
+        setDraft(record6.quote);
         setError("");
         setEditing(true);
-      }, "aria-label": `Edit quote from ${record5.label}`, title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
-      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: () => onRemove(record5.id), "aria-label": `Remove quote from ${record5.label}`, title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
+      }, "aria-label": `Edit quote from ${record6.label}`, title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
+      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: () => onRemove(record6.id), "aria-label": `Remove quote from ${record6.label}`, title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
     ] })
   ] }) });
 }
@@ -25272,7 +25549,7 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
       "Quoted context for ",
       destinationLabel
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("ul", { children: records.map((record5, index2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteContextChip, { record: record5, index: index2, records, ...actions }, record5.id)) })
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("ul", { children: records.map((record6, index2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteContextChip, { record: record6, index: index2, records, ...actions }, record6.id)) })
   ] });
 }
 
@@ -25296,8 +25573,8 @@ function canonicalConsoleIdentityFromMap(identity, aliases) {
   return aliases.get(normalized) ?? normalized;
 }
 function normalizeModelCapabilities(entry) {
-  const record5 = entry && typeof entry === "object" ? entry : {};
-  const caps = record5.model_capabilities && typeof record5.model_capabilities === "object" ? record5.model_capabilities : {};
+  const record6 = entry && typeof entry === "object" ? entry : {};
+  const caps = record6.model_capabilities && typeof record6.model_capabilities === "object" ? record6.model_capabilities : {};
   return { image_input: caps.image_input === true };
 }
 function normalizeAgents(experience, modules) {
@@ -25434,16 +25711,16 @@ function asNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 function frameToolName(frame) {
-  const record5 = asRecord(frame.data);
-  if (!record5) return void 0;
-  return asString(record5.name) || asString(record5.tool_name);
+  const record6 = asRecord(frame.data);
+  if (!record6) return void 0;
+  return asString(record6.name) || asString(record6.tool_name);
 }
 function isCouncilToolFrame(frame) {
   if (!COUNCIL_TOOL_EVENTS.has(frame.event)) return false;
   return frameToolName(frame) === COUNCIL_TOOL_NAME;
 }
-function parseResultPayload(record5) {
-  const raw = record5.result;
+function parseResultPayload(record6) {
+  const raw = record6.result;
   if (typeof raw === "string") {
     try {
       return asRecord(JSON.parse(raw));
@@ -25453,15 +25730,15 @@ function parseResultPayload(record5) {
   }
   return asRecord(raw);
 }
-function parseArgsPayload(record5) {
-  if (typeof record5.arguments === "string") {
+function parseArgsPayload(record6) {
+  if (typeof record6.arguments === "string") {
     try {
-      return asRecord(JSON.parse(record5.arguments));
+      return asRecord(JSON.parse(record6.arguments));
     } catch {
       return null;
     }
   }
-  return asRecord(record5.arguments) || asRecord(record5.args);
+  return asRecord(record6.arguments) || asRecord(record6.args);
 }
 function councilStatusFromExitReason(reason) {
   if (!reason) return "pending";
@@ -25538,16 +25815,16 @@ function artifactClaimRows(merge2) {
   });
 }
 function councilEntryFromFrame(frame, identity, argsByCallId) {
-  const record5 = asRecord(frame.data);
-  if (!record5) return null;
-  const payload = parseResultPayload(record5);
+  const record6 = asRecord(frame.data);
+  if (!record6) return null;
+  const payload = parseResultPayload(record6);
   if (!payload) return null;
   const result = asRecord(payload.result);
   if (!result) return null;
   const councilId = asString(result.council_id);
   if (!councilId) return null;
-  const callId = asString(record5.tool_call_id) || asString(record5.id);
-  const args = parseArgsPayload(record5) || (callId ? argsByCallId?.get(callId) ?? null : null);
+  const callId = asString(record6.tool_call_id) || asString(record6.id);
+  const args = parseArgsPayload(record6) || (callId ? argsByCallId?.get(callId) ?? null : null);
   const exit3 = asRecord(result.exit_reason);
   const exitReason = exit3 ? asString(exit3.reason) : void 0;
   const merge2 = asRecord(result.merge);
@@ -25597,11 +25874,11 @@ function councilArgsByCallId(frames) {
   const out = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (!isCouncilToolFrame(frame)) continue;
-    const record5 = asRecord(frame.data);
-    if (!record5) continue;
-    const callId = asString(record5.tool_call_id) || asString(record5.id);
+    const record6 = asRecord(frame.data);
+    if (!record6) continue;
+    const callId = asString(record6.tool_call_id) || asString(record6.id);
     if (!callId) continue;
-    const args = parseArgsPayload(record5);
+    const args = parseArgsPayload(record6);
     if (args && !out.has(callId)) out.set(callId, args);
   }
   return out;
@@ -25615,12 +25892,12 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value : "";
 }
 function summarizeFailureData(data) {
-  const record5 = recordOf2(data);
-  if (!record5) return { message: "", reasonType: "" };
-  const report = recordOf2(record5.error_report);
-  const reason = recordOf2(report?.reason) ?? recordOf2(record5.reason);
-  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record5.reason) || nonEmptyString(reason?.kind);
-  const message = nonEmptyString(report?.message) || nonEmptyString(record5.error) || nonEmptyString(record5.message);
+  const record6 = recordOf2(data);
+  if (!record6) return { message: "", reasonType: "" };
+  const report = recordOf2(record6.error_report);
+  const reason = recordOf2(report?.reason) ?? recordOf2(record6.reason);
+  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record6.reason) || nonEmptyString(reason?.kind);
+  const message = nonEmptyString(report?.message) || nonEmptyString(record6.error) || nonEmptyString(record6.message);
   return { message, reasonType };
 }
 function describeFailure(data, fallback = "error") {
@@ -25808,15 +26085,15 @@ function summarizeFrameData(data) {
     return data;
   }
   if (typeof data === "object" && data !== null) {
-    const record5 = data;
-    if (typeof record5.delta === "string") return record5.delta;
-    if (typeof record5.text === "string" && record5.text.trim()) return record5.text;
-    if (typeof record5.result === "string") return record5.result;
-    if (typeof record5.message === "string" && record5.message.trim()) return record5.message;
-    if (typeof record5.error === "string" && record5.error.trim()) return record5.error;
-    if (typeof record5.reason === "string" && record5.reason.trim()) return record5.reason;
-    if (typeof record5.kind === "string" && typeof record5.event_type === "string") return "";
-    return JSON.stringify(record5);
+    const record6 = data;
+    if (typeof record6.delta === "string") return record6.delta;
+    if (typeof record6.text === "string" && record6.text.trim()) return record6.text;
+    if (typeof record6.result === "string") return record6.result;
+    if (typeof record6.message === "string" && record6.message.trim()) return record6.message;
+    if (typeof record6.error === "string" && record6.error.trim()) return record6.error;
+    if (typeof record6.reason === "string" && record6.reason.trim()) return record6.reason;
+    if (typeof record6.kind === "string" && typeof record6.event_type === "string") return "";
+    return JSON.stringify(record6);
   }
   return String(data ?? "");
 }
@@ -25865,9 +26142,9 @@ function describeMemoryTimelineEvent2(event, data) {
     case "memory.quarantine.release_blocked": {
       const verdict = memoryString(data, "verdict");
       const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
-      const record5 = memoryString(data, "record_id");
+      const record6 = memoryString(data, "record_id");
       const cls = memoryString(data, "class");
-      return `Quarantine ${action} blocked${record5 ? ` for ${record5}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
+      return `Quarantine ${action} blocked${record6 ? ` for ${record6}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
     }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
@@ -25932,8 +26209,8 @@ function describeMemoryTimelineEvent2(event, data) {
 function isSteerDeliveryTerminalFrame(frame) {
   if (frame.event !== "interaction_complete") return false;
   if (!frame.data || typeof frame.data !== "object") return false;
-  const record5 = frame.data;
-  return record5.reason === "steer_delivered";
+  const record6 = frame.data;
+  return record6.reason === "steer_delivered";
 }
 function eventSortRank(event) {
   switch (event) {
@@ -25981,7 +26258,7 @@ function cursorSeq(cursor) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 function transcriptSourceOrder(left, right) {
-  if (ownerContextsConflict(left, right)) return null;
+  if (ownerContextsConflict2(left, right)) return null;
   const sameSession = Boolean(left.runtimeKey && left.runtimeKey === right.runtimeKey && left.sessionId && left.sessionId === right.sessionId);
   if (sameSession && left.sourceKind === "console_event" && right.sourceKind === "console_event") {
     const sequence = (frame) => {
@@ -26090,12 +26367,12 @@ function textFromReasoningValue(value) {
     return value.map((item) => textFromReasoningValue(item)).filter(Boolean).join("\n\n").trim();
   }
   if (!value || typeof value !== "object") return "";
-  const record5 = value;
+  const record6 = value;
   const parts = [];
-  appendDistinctText(parts, textFromReasoningValue(record5.summary));
-  appendDistinctText(parts, textFromReasoningValue(record5.text));
-  appendDistinctText(parts, textFromReasoningValue(record5.content));
-  appendDistinctText(parts, textFromReasoningValue(record5.delta));
+  appendDistinctText(parts, textFromReasoningValue(record6.summary));
+  appendDistinctText(parts, textFromReasoningValue(record6.text));
+  appendDistinctText(parts, textFromReasoningValue(record6.content));
+  appendDistinctText(parts, textFromReasoningValue(record6.delta));
   return parts.join("\n\n").trim();
 }
 function reasoningBlockText(block) {
@@ -26141,42 +26418,42 @@ function isoFromTimestampMs(timestampMs) {
   return new Date(timestampMs).toISOString();
 }
 function parseToolCallId(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
+    const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
     const type = typeof content3?.type === "string" ? content3.type : "";
     const isAnnotationPayload = type === "message_annotations" || Array.isArray(content3?.annotations);
-    const id2 = isAnnotationPayload ? content3?.item_id ?? record5?.item_id ?? record5?.tool_call_id : content3?.item_id ?? content3?.id ?? record5?.item_id ?? record5?.tool_call_id ?? record5?.id;
+    const id2 = isAnnotationPayload ? content3?.item_id ?? record6?.item_id ?? record6?.tool_call_id : content3?.item_id ?? content3?.id ?? record6?.item_id ?? record6?.tool_call_id ?? record6?.id;
     return typeof id2 === "string" && id2.trim() ? id2.trim() : null;
   }
-  const id = record5?.tool_call_id ?? record5?.id;
+  const id = record6?.tool_call_id ?? record6?.id;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 function parseToolName(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
-    const name2 = content3?.name ?? record5?.tool_name ?? record5?.name ?? record5?.kind;
+    const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
+    const name2 = content3?.name ?? record6?.tool_name ?? record6?.name ?? record6?.kind;
     return typeof name2 === "string" && name2.trim() ? name2.trim() : "tool";
   }
-  return typeof record5?.name === "string" && record5.name.trim() ? record5.name : "tool";
+  return typeof record6?.name === "string" && record6.name.trim() ? record6.name : "tool";
 }
 function parseToolArguments(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
+    const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
     const action = content3?.action && typeof content3.action === "object" ? content3.action : null;
     const queries = Array.isArray(action?.queries) ? action.queries.filter((query2) => typeof query2 === "string" && query2.trim().length > 0) : [];
     const query = queries.length > 0 ? queries.join("\n") : content3?.query ?? content3?.input ?? action?.query;
     return typeof query === "string" && query.trim() ? query.trim() : "";
   }
-  if (typeof record5?.arguments === "string" && record5.arguments.trim()) {
-    return record5.arguments;
+  if (typeof record6?.arguments === "string" && record6.arguments.trim()) {
+    return record6.arguments;
   }
-  if ("args" in (record5 || {}) && record5?.args !== void 0) {
-    return JSON.stringify(record5.args);
+  if ("args" in (record6 || {}) && record6?.args !== void 0) {
+    return JSON.stringify(record6.args);
   }
-  return JSON.stringify(record5 || {});
+  return JSON.stringify(record6 || {});
 }
 function normalizeToolArgumentsForSignature(argumentsText) {
   const trimmed = (argumentsText || "").trim();
@@ -26269,16 +26546,16 @@ function summarizePeerPayload(value) {
     return parts.length ? parts.join(" ") : void 0;
   }
   if (value && typeof value === "object") {
-    const record5 = value;
-    const type = typeof record5.type === "string" ? record5.type : "";
+    const record6 = value;
+    const type = typeof record6.type === "string" ? record6.type : "";
     if (type === "image" || type === "image_ref" || type === "image_upload") {
-      return typeof record5.alt === "string" && record5.alt.trim() ? record5.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
+      return typeof record6.alt === "string" && record6.alt.trim() ? record6.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
     }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
-      const summary = summarizePeerPayload(record5[key]);
+      const summary = summarizePeerPayload(record6[key]);
       if (summary) return summary;
     }
-    return JSON.stringify(record5);
+    return JSON.stringify(record6);
   }
   return void 0;
 }
@@ -26312,11 +26589,12 @@ function peerTargetFromArgs(argsRecord, peerRegistry) {
   return registryName ? peerLastSegment2(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? peerLastSegment2(argsRecord.display_name.trim()) : typeof argsRecord?.to === "string" && argsRecord.to.trim() ? peerLastSegment2(argsRecord.to.trim()) : peerId ? peerId.slice(0, 8) : void 0;
 }
 function parseToolResult(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
   const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
   const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
-  const raw = record5?.result ?? record5?.content;
-  const result = toolResultTextFromContent(raw);
+  const raw = record6?.result ?? record6?.content;
+  const feedback = operationFeedbackFromFrame(frame);
+  const result = feedback ? feedback.detail : toolResultTextFromContent(raw);
   return { ...result !== void 0 ? { result } : {}, status, completionEvidence };
 }
 function buildToolBlocks(frames, cardToolCallIds) {
@@ -26499,7 +26777,7 @@ function workGraphToolNameOf(frame, namesByCallId) {
 function workGraphString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
-function workGraphOwnerLabel(record5) {
+function workGraphOwnerLabel(record6) {
   const fromOwner = (value) => {
     if (!value || typeof value !== "object") return void 0;
     const owner = value;
@@ -26508,14 +26786,14 @@ function workGraphOwnerLabel(record5) {
     const key = owner.key && typeof owner.key === "object" ? owner.key : null;
     return workGraphString(key?.id);
   };
-  const direct = fromOwner(record5.owner);
+  const direct = fromOwner(record6.owner);
   if (direct) return direct;
-  const claim = record5.claim && typeof record5.claim === "object" ? record5.claim : null;
+  const claim = record6.claim && typeof record6.claim === "object" ? record6.claim : null;
   return fromOwner(claim?.owner);
 }
-function workGraphEvidenceLines(record5) {
-  if (!Array.isArray(record5.evidence_refs) || record5.evidence_refs.length === 0) return void 0;
-  const lines = record5.evidence_refs.map((value) => {
+function workGraphEvidenceLines(record6) {
+  if (!Array.isArray(record6.evidence_refs) || record6.evidence_refs.length === 0) return void 0;
+  const lines = record6.evidence_refs.map((value) => {
     if (!value || typeof value !== "object") return "";
     const evidence = value;
     const label = workGraphString(evidence.label) || workGraphString(evidence.summary);
@@ -26528,10 +26806,10 @@ function workGraphEvidenceLines(record5) {
 }
 function foldWorkGraphItem(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record5 = value;
-  const itemId2 = workGraphString(record5.id);
+  const record6 = value;
+  const itemId2 = workGraphString(record6.id);
   if (!itemId2) return null;
-  const revision = typeof record5.revision === "number" ? record5.revision : void 0;
+  const revision = typeof record6.revision === "number" ? record6.revision : void 0;
   const existing = state.items.get(itemId2);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     if (frameIso) existing.lastEventAt = frameIso;
@@ -26539,26 +26817,26 @@ function foldWorkGraphItem(state, value, frameIso) {
   }
   state.items.set(itemId2, {
     itemId: itemId2,
-    title: workGraphString(record5.title) || itemId2,
-    status: workGraphString(record5.status) || "open",
-    priority: workGraphString(record5.priority),
-    ownerLabel: workGraphOwnerLabel(record5),
+    title: workGraphString(record6.title) || itemId2,
+    status: workGraphString(record6.status) || "open",
+    priority: workGraphString(record6.priority),
+    ownerLabel: workGraphOwnerLabel(record6),
     revision,
-    dueAt: workGraphString(record5.due_at),
-    description: workGraphString(record5.description),
-    labels: Array.isArray(record5.labels) ? record5.labels.filter((label) => typeof label === "string") : void 0,
-    evidence: workGraphEvidenceLines(record5),
-    createdAt: workGraphString(record5.created_at),
-    updatedAt: workGraphString(record5.updated_at),
+    dueAt: workGraphString(record6.due_at),
+    description: workGraphString(record6.description),
+    labels: Array.isArray(record6.labels) ? record6.labels.filter((label) => typeof label === "string") : void 0,
+    evidence: workGraphEvidenceLines(record6),
+    createdAt: workGraphString(record6.created_at),
+    updatedAt: workGraphString(record6.updated_at),
     lastEventAt: frameIso || existing?.lastEventAt
   });
   return itemId2;
 }
 function workGraphBindingStatus(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  const state = workGraphString(record5?.state) || "active";
+  const record6 = value && typeof value === "object" ? value : null;
+  const state = workGraphString(record6?.state) || "active";
   if (state === "paused") {
-    const until = formatWorkGraphTimestamp(workGraphString(record5?.until), { date: true });
+    const until = formatWorkGraphTimestamp(workGraphString(record6?.until), { date: true });
     return {
       label: until ? `paused until ${until}` : "paused",
       active: false
@@ -26567,11 +26845,11 @@ function workGraphBindingStatus(value) {
   return { label: state, active: state === "active" };
 }
 function workGraphTargetLabel(value) {
-  const record5 = value && typeof value === "object" ? value : null;
-  if (!record5) return void 0;
-  const sessionId = workGraphString(record5.session_id);
+  const record6 = value && typeof value === "object" ? value : null;
+  if (!record6) return void 0;
+  const sessionId = workGraphString(record6.session_id);
   if (sessionId) return sessionId;
-  const ownerKey = record5.owner_key && typeof record5.owner_key === "object" ? record5.owner_key : null;
+  const ownerKey = record6.owner_key && typeof record6.owner_key === "object" ? record6.owner_key : null;
   if (ownerKey) {
     const kind = workGraphString(ownerKey.kind);
     const id = workGraphString(ownerKey.id);
@@ -26581,35 +26859,35 @@ function workGraphTargetLabel(value) {
 }
 function foldWorkGraphBinding(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record5 = value;
-  const bindingId = workGraphString(record5.binding_id);
+  const record6 = value;
+  const bindingId = workGraphString(record6.binding_id);
   if (!bindingId) return null;
-  const machineState = record5.machine_state && typeof record5.machine_state === "object" ? record5.machine_state : null;
+  const machineState = record6.machine_state && typeof record6.machine_state === "object" ? record6.machine_state : null;
   const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
   const existing = state.bindings.get(bindingId);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     return bindingId;
   }
-  const workRef = record5.work_ref && typeof record5.work_ref === "object" ? record5.work_ref : null;
-  const status = workGraphBindingStatus(record5.status);
+  const workRef = record6.work_ref && typeof record6.work_ref === "object" ? record6.work_ref : null;
+  const status = workGraphBindingStatus(record6.status);
   state.bindings.set(bindingId, {
     bindingId,
-    mode: workGraphString(record5.mode) || "pursue",
+    mode: workGraphString(record6.mode) || "pursue",
     statusLabel: status.label,
     active: status.active,
-    targetLabel: workGraphTargetLabel(record5.target),
+    targetLabel: workGraphTargetLabel(record6.target),
     revision,
     itemId: workGraphString(workRef?.item_id) || existing?.itemId,
-    updatedAt: workGraphString(record5.updated_at) || frameIso
+    updatedAt: workGraphString(record6.updated_at) || frameIso
   });
   return bindingId;
 }
 function foldWorkGraphEdge(state, value) {
   if (!value || typeof value !== "object") return;
-  const record5 = value;
-  if (workGraphString(record5.kind) !== "parent") return;
-  const child = workGraphString(record5.from_id);
-  const parent = workGraphString(record5.to_id);
+  const record6 = value;
+  if (workGraphString(record6.kind) !== "parent") return;
+  const child = workGraphString(record6.from_id);
+  const parent = workGraphString(record6.to_id);
   if (!child || !parent || child === parent) return;
   const first = state.parents.get(child);
   if (first === void 0) {
@@ -26623,13 +26901,13 @@ function foldWorkGraphEdge(state, value) {
 }
 function foldWorkGraphEvent(state, value) {
   if (!value || typeof value !== "object") return;
-  const record5 = value;
-  const kind = workGraphString(record5.kind);
+  const record6 = value;
+  const kind = workGraphString(record6.kind);
   if (!kind) return;
-  let dedupeKey = typeof record5.seq === "number" ? `seq:${record5.seq}` : "";
+  let dedupeKey = typeof record6.seq === "number" ? `seq:${record6.seq}` : "";
   if (!dedupeKey) {
     try {
-      dedupeKey = `content:${JSON.stringify(record5)}`;
+      dedupeKey = `content:${JSON.stringify(record6)}`;
     } catch {
       dedupeKey = "";
     }
@@ -26638,11 +26916,11 @@ function foldWorkGraphEvent(state, value) {
     if (state.seenEventKeys.has(dedupeKey)) return;
     state.seenEventKeys.add(dedupeKey);
   }
-  const at = workGraphString(record5.at);
+  const at = workGraphString(record6.at);
   const clock = formatWorkGraphTimestamp(at);
   state.events.push({
     at,
-    itemId: workGraphString(record5.item_id),
+    itemId: workGraphString(record6.item_id),
     text: [kind.replace(/_/g, " "), clock].filter(Boolean).join(" \xB7 ")
   });
 }
@@ -26652,8 +26930,8 @@ function workGraphFailureLine(name2, raw) {
   if (typeof raw === "string") {
     message = raw.trim();
   } else if (raw && typeof raw === "object") {
-    const record5 = raw;
-    message = workGraphString(record5.message) || workGraphString(record5.detail) || workGraphString(record5.error) || "";
+    const record6 = raw;
+    message = workGraphString(record6.message) || workGraphString(record6.detail) || workGraphString(record6.error) || "";
     if (!message) {
       try {
         message = JSON.stringify(raw);
@@ -26670,9 +26948,9 @@ function workGraphFailureLine(name2, raw) {
 var parsedWorkGraphResultCache = /* @__PURE__ */ new Map();
 var PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4e3;
 function parseWorkGraphResult(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  if (!record5 || record5.is_error === true) return null;
-  const raw = record5.result;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (!record6 || record6.is_error === true) return null;
+  const raw = record6.result;
   if (raw && typeof raw === "object") return raw;
   if (typeof raw !== "string") return null;
   const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
@@ -26841,8 +27119,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       bindingIds: [],
       outcome: void 0
     };
-    const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-    const args = record5?.args && typeof record5.args === "object" ? record5.args : null;
+    const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    const args = record6?.args && typeof record6.args === "object" ? record6.args : null;
     const toolCallId = parseToolCallId(frame);
     let argItemId = workGraphString(args?.id);
     let argBindingId = workGraphString(args?.binding_id);
@@ -26857,8 +27135,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     if (argBindingId) contribution.bindingIds.push(argBindingId);
     const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
-      const failed = record5?.is_error === true;
-      const isRefresh = record5?.refresh === true;
+      const failed = record6?.is_error === true;
+      const isRefresh = record6?.refresh === true;
       if (!isRefresh) {
         contribution.outcome = failed ? "error" : "ok";
       }
@@ -26869,8 +27147,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
           interactionId: contribution.interactionId,
           text: workGraphFailureLine(
-            isOperatorResult ? workGraphOperatorDisplayName(record5?.method) : workGraphToolNameOf(frame, namesByCallId),
-            record5?.result ?? record5?.content
+            isOperatorResult ? workGraphOperatorDisplayName(record6?.method) : workGraphToolNameOf(frame, namesByCallId),
+            record6?.result ?? record6?.content
           )
         });
       }
@@ -26908,8 +27186,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
           if (toolCallId) {
             eventItemIdsByCallId.set(toolCallId, result.events.map((event) => {
-              const record6 = event && typeof event === "object" ? event : null;
-              return workGraphString(record6?.kind) ? workGraphString(record6?.item_id) : void 0;
+              const record7 = event && typeof event === "object" ? event : null;
+              return workGraphString(record7?.kind) ? workGraphString(record7?.item_id) : void 0;
             }));
           }
         }
@@ -27219,20 +27497,20 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "", textMode 
 function terminalFrameVisibleText(frame) {
   if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
-    const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-    if (typeof record5?.content === "string") return record5.content;
-    if (typeof record5?.text === "string") return record5.text;
+    const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    if (typeof record6?.content === "string") return record6.content;
+    if (typeof record6?.text === "string") return record6.text;
   }
   if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete") {
     return summarizeFrameData(frame.data);
   }
   return "";
 }
-function ownerContextsConflict(left, right) {
+function ownerContextsConflict2(left, right) {
   return ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
 }
 function sameAssistantRunOwner(left, right) {
-  if (ownerContextsConflict(left, right)) return false;
+  if (ownerContextsConflict2(left, right)) return false;
   const leftRun = left.runId?.trim() || "";
   const rightRun = right.runId?.trim() || "";
   const leftInteraction = left.interactionId?.trim() || "";
@@ -27248,9 +27526,9 @@ function sameTextStreamOwner(left, right) {
   }
   if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
     const key = assistantMessageKey(left);
-    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
+    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict2(left, right));
   }
-  return Boolean(left && !ownerContextsConflict(left, right) && (left.runId?.trim() || "") === (right.runId?.trim() || "") && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
+  return Boolean(left && !ownerContextsConflict2(left, right) && (left.runId?.trim() || "") === (right.runId?.trim() || "") && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
 }
 function assistantOwnerKey(frame) {
   const messageKey = assistantMessageKey(frame);
@@ -27262,18 +27540,18 @@ function assistantOwnerKey(frame) {
 }
 function canonicalHistoryAssistantText(frame) {
   if (frame.sourceKind !== "session_history") return void 0;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record5.message && typeof record5.message === "object" ? record5.message : {};
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record6.message && typeof record6.message === "object" ? record6.message : {};
   if (message.role !== "assistant" && message.role !== "block_assistant") return void 0;
-  if (typeof record5.text === "string") return record5.text;
-  if (typeof record5.result === "string") return record5.result;
+  if (typeof record6.text === "string") return record6.text;
+  if (typeof record6.result === "string") return record6.result;
   return void 0;
 }
 function historyAssistantSource(frame) {
   const canonical = canonicalHistoryAssistantText(frame);
   if (canonical !== void 0) return canonical;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const parsed = historyMessageText(record5.message);
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const parsed = historyMessageText(record6.message);
   return parsed.role === "assistant" ? parsed.text : terminalFrameVisibleText(frame);
 }
 function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
@@ -27368,8 +27646,8 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
   };
 }
 function historyHasAssistantSiblings(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record5.message && typeof record5.message === "object" ? record5.message : {};
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record6.message && typeof record6.message === "object" ? record6.message : {};
   return message.role === "block_assistant" && Array.isArray(message.blocks) && message.blocks.some((block) => {
     if (!block || typeof block !== "object") return false;
     const item = block;
@@ -27478,11 +27756,11 @@ function conversationEntryVisibleText(entry) {
   if (!("blocks" in entry) || !Array.isArray(entry.blocks)) return "";
   return entry.blocks.map((block) => {
     if (!block || typeof block !== "object") return "";
-    const record5 = block;
-    if (record5.type === "thinking") return "";
-    if (record5.type === "markdown" && typeof record5.source === "string") return record5.source;
-    if (typeof record5.text === "string") return record5.text;
-    if (typeof record5.peerBody === "string") return record5.peerBody;
+    const record6 = block;
+    if (record6.type === "thinking") return "";
+    if (record6.type === "markdown" && typeof record6.source === "string") return record6.source;
+    if (typeof record6.text === "string") return record6.text;
+    if (typeof record6.peerBody === "string") return record6.peerBody;
     return "";
   }).filter(Boolean).join("\n");
 }
@@ -27533,9 +27811,9 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
   if (typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
-  const record5 = frame.data;
-  const content3 = record5.content;
-  const origin = entryOriginFromFrameData(record5);
+  const record6 = frame.data;
+  const content3 = record6.content;
+  const origin = entryOriginFromFrameData(record6);
   const realtimeOrigin = realtimeMessageOrigin(frame);
   if (Array.isArray(content3)) {
     const contextMessage = parseConsoleContextMessage(content3);
@@ -27620,10 +27898,10 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
-  const record5 = frame.data;
+  const record6 = frame.data;
   const textMode = options.textMode ?? "markdown";
-  const promptBlocks = contentToUserBlocks(record5.prompt, options.blobBaseUrl, textMode);
-  const source = extractPromptText(record5.prompt);
+  const promptBlocks = contentToUserBlocks(record6.prompt, options.blobBaseUrl, textMode);
+  const source = extractPromptText(record6.prompt);
   const prompt = textMode === "markdown" ? source : source.trim();
   if (!prompt) {
     return [];
@@ -27676,9 +27954,9 @@ function extractTextFromContentBlocks(blocks) {
   return blocks.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record5 = block;
-    if (typeof record5.text === "string") return record5.text;
-    if (typeof record5.content === "string") return record5.content;
+    const record6 = block;
+    if (typeof record6.text === "string") return record6.text;
+    if (typeof record6.content === "string") return record6.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("");
 }
@@ -27688,9 +27966,9 @@ function extractPromptText(prompt) {
   return prompt.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record5 = block;
-    if (typeof record5.text === "string") return record5.text;
-    if (typeof record5.content === "string") return record5.content;
+    const record6 = block;
+    if (typeof record6.text === "string") return record6.text;
+    if (typeof record6.content === "string") return record6.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("\n");
 }
@@ -27708,18 +27986,18 @@ function contentToUserBlocks(content3, blobBaseUrl, textMode = "markdown") {
       continue;
     }
     if (!block || typeof block !== "object") continue;
-    const record5 = block;
-    const type = typeof record5.type === "string" ? record5.type : "";
+    const record6 = block;
+    const type = typeof record6.type === "string" ? record6.type : "";
     if (type === "text") {
-      const text8 = typeof record5.text === "string" ? record5.text : typeof record5.content === "string" ? record5.content : "";
+      const text8 = typeof record6.text === "string" ? record6.text : typeof record6.content === "string" ? record6.content : "";
       blocks.push(...messageTextBlocks(text8, textMode));
       continue;
     }
     if (type === "image" || type === "image_ref") {
-      const image3 = record5.image && typeof record5.image === "object" ? record5.image : record5;
+      const image3 = record6.image && typeof record6.image === "object" ? record6.image : record6;
       const blobRef = image3.blob_ref && typeof image3.blob_ref === "object" ? image3.blob_ref : image3.blobRef && typeof image3.blobRef === "object" ? image3.blobRef : null;
       const source = typeof image3.source === "string" ? image3.source : "";
-      const blobId = typeof record5.blob_id === "string" ? record5.blob_id : typeof image3.blob_id === "string" ? image3.blob_id : typeof record5.blobId === "string" ? record5.blobId : typeof image3.blobId === "string" ? image3.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
+      const blobId = typeof record6.blob_id === "string" ? record6.blob_id : typeof image3.blob_id === "string" ? image3.blob_id : typeof record6.blobId === "string" ? record6.blobId : typeof image3.blobId === "string" ? image3.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
       const mediaType = typeof image3.media_type === "string" ? image3.media_type : typeof image3.mediaType === "string" ? image3.mediaType : typeof blobRef?.media_type === "string" ? blobRef.media_type : typeof blobRef?.mediaType === "string" ? blobRef.mediaType : "image/png";
       const inlineData = typeof image3.data === "string" ? image3.data : typeof image3.base64 === "string" ? image3.base64 : "";
       const directSrc = typeof image3.src === "string" && image3.src.trim() ? image3.src.trim() : typeof image3.url === "string" && image3.url.trim() ? image3.url.trim() : "";
@@ -27758,8 +28036,8 @@ function summarizePeersResult(result) {
   const preview = [];
   for (const peer of peers) {
     if (!peer || typeof peer !== "object") continue;
-    const record5 = peer;
-    const rawName = typeof record5.name === "string" && record5.name.trim() ? record5.name.trim() : typeof record5.address?.endpoint === "string" ? String(record5.address.endpoint).trim() : typeof record5.peer_id === "string" ? record5.peer_id.trim() : "";
+    const record6 = peer;
+    const rawName = typeof record6.name === "string" && record6.name.trim() ? record6.name.trim() : typeof record6.address?.endpoint === "string" ? String(record6.address.endpoint).trim() : typeof record6.peer_id === "string" ? record6.peer_id.trim() : "";
     if (!rawName) continue;
     const parts = rawName.split("/").filter(Boolean);
     const role = parts.length >= 2 ? parts[parts.length - 2] : "peer";
@@ -27782,18 +28060,18 @@ function summarizeToolResultForDisplay(toolName2, result) {
 }
 function formatServerToolAnnotations2(annotations) {
   return annotations.map((annotation, index2) => {
-    const record5 = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record5?.title === "string" && record5.title.trim() ? record5.title.trim() : typeof record5?.text === "string" && record5.text.trim() ? record5.text.trim() : `Source ${index2 + 1}`;
-    const url = typeof record5?.url === "string" && record5.url.trim() ? record5.url.trim() : "";
+    const record6 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record6?.title === "string" && record6.title.trim() ? record6.title.trim() : typeof record6?.text === "string" && record6.text.trim() ? record6.text.trim() : `Source ${index2 + 1}`;
+    const url = typeof record6?.url === "string" && record6.url.trim() ? record6.url.trim() : "";
     return url ? `${index2 + 1}. ${title}
 ${url}` : `${index2 + 1}. ${title}`;
   }).join("\n\n").trim();
 }
 function serverToolContentSummary2(frame) {
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record5?.type === "string" ? record5.type : "";
-  const status = typeof content3?.status === "string" ? content3.status : typeof record5?.status === "string" ? record5.status : "";
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record6?.type === "string" ? record6.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record6?.status === "string" ? record6.status : "";
   if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
     return { status: "error" };
   }
@@ -27817,8 +28095,8 @@ function toolResultTextFromContent(content3) {
   if (content3 === void 0 || content3 === null) return void 0;
   if (Array.isArray(content3) && content3.length > 0 && content3.every((block) => {
     if (!block || typeof block !== "object") return false;
-    const record5 = block;
-    return record5.type === "text" && typeof record5.text === "string" && Object.keys(record5).every((key) => key === "type" || key === "text");
+    const record6 = block;
+    return record6.type === "text" && typeof record6.text === "string" && Object.keys(record6).every((key) => key === "type" || key === "text");
   })) {
     return content3.map((block) => block.text).join("");
   }
@@ -27835,7 +28113,8 @@ function historyToolResults(frames, cardToolCallIds, includeLive = false) {
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim() ? data.tool_call_id.trim() : typeof data?.id === "string" && data.id.trim() ? data.id.trim() : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = toolResultTextFromContent(rawResult);
+    const feedback = operationFeedbackFromFrame(frame);
+    const result = feedback ? feedback.detail : toolResultTextFromContent(rawResult);
     const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
     const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
@@ -27994,9 +28273,9 @@ function stripBareCommsIntentBodyPrefix(text8) {
 }
 function isExternalEventOnlySystemNotice2(message) {
   if (!message || typeof message !== "object") return false;
-  const record5 = message;
-  if (textFromUnknown4(record5.kind) === "external_event") return true;
-  const blocks = record5.blocks;
+  const record6 = message;
+  if (textFromUnknown4(record6.kind) === "external_event") return true;
+  const blocks = record6.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
@@ -28029,19 +28308,19 @@ function commsNoticeMessageRecord(frame) {
   }
   const message = frame.data.message;
   if (!message || typeof message !== "object") return null;
-  const record5 = message;
-  return textFromUnknown4(record5.role) === "system_notice" ? record5 : null;
+  const record6 = message;
+  return textFromUnknown4(record6.role) === "system_notice" ? record6 : null;
 }
-function systemNoticeBlockRecords2(record5) {
-  const blocks = record5.blocks;
+function systemNoticeBlockRecords2(record6) {
+  const blocks = record6.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates2(record5) {
+function legacyPeerNoticeTextCandidates2(record6) {
   const candidates = [];
-  const body = textFromUnknown4(record5.body).trim();
+  const body = textFromUnknown4(record6.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords2(record5)) {
+  for (const block of systemNoticeBlockRecords2(record6)) {
     const blockText = typedNoticeBlockText2(block).trim();
     if (blockText) candidates.push(blockText);
     const content3 = block.content;
@@ -28182,9 +28461,9 @@ function commsKindFromText(text8) {
   return match?.[1]?.toLowerCase() || "";
 }
 function systemNoticeCommsSignatures(frame) {
-  const record5 = commsNoticeMessageRecord(frame);
-  if (!record5 || isExternalEventOnlySystemNotice2(record5)) return [];
-  const isCommsNotice = textFromUnknown4(record5.kind) === "comms" || systemNoticeBlockRecords2(record5).some((block) => textFromUnknown4(block.type) === "comms") || canUseLegacyPeerNoticeText2(record5) && legacyPeerNoticeTextCandidates2(record5).some(isLegacyPeerNoticeText2);
+  const record6 = commsNoticeMessageRecord(frame);
+  if (!record6 || isExternalEventOnlySystemNotice2(record6)) return [];
+  const isCommsNotice = textFromUnknown4(record6.kind) === "comms" || systemNoticeBlockRecords2(record6).some((block) => textFromUnknown4(block.type) === "comms") || canUseLegacyPeerNoticeText2(record6) && legacyPeerNoticeTextCandidates2(record6).some(isLegacyPeerNoticeText2);
   if (!isCommsNotice) return [];
   const signatures = [];
   const seenSignatures = /* @__PURE__ */ new Set();
@@ -28214,15 +28493,15 @@ function systemNoticeCommsSignatures(frame) {
       sourceKind: frame.sourceKind
     });
   };
-  const noticeOccurrenceId = textFromUnknown4(record5.request_id) || textFromUnknown4(record5.correlation_id) || textFromUnknown4(record5.id);
-  const noticeBlocks = systemNoticeBlockRecords2(record5);
+  const noticeOccurrenceId = textFromUnknown4(record6.request_id) || textFromUnknown4(record6.correlation_id) || textFromUnknown4(record6.id);
+  const noticeBlocks = systemNoticeBlockRecords2(record6);
   const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown4(block.type) === "comms");
   if (!typedCommsBlocks.length) {
-    for (const candidate of legacyPeerNoticeTextCandidates2(record5)) {
+    for (const candidate of legacyPeerNoticeTextCandidates2(record6)) {
       pushCandidate(candidate, [], noticeOccurrenceId);
     }
   }
-  const body = textFromUnknown4(record5.body);
+  const body = textFromUnknown4(record6.body);
   if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
   for (let index2 = 0; index2 < typedCommsBlocks.length; index2++) {
     const block = typedCommsBlocks[index2];
@@ -28368,8 +28647,8 @@ function commsNoticeDuplicateKey(key, frame, emitted) {
 function markCommsNoticeDedupeKey(key, frame, emitted) {
   emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
 }
-function commsNoticeDedupeKeysFromBlock(record5, fallbackBody, index2) {
-  const type = textFromUnknown4(record5.type);
+function commsNoticeDedupeKeysFromBlock(record6, fallbackBody, index2) {
+  const type = textFromUnknown4(record6.type);
   const keys2 = [];
   const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
     const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
@@ -28387,29 +28666,29 @@ function commsNoticeDedupeKeysFromBlock(record5, fallbackBody, index2) {
     if (!keys2.includes(key)) keys2.push(key);
   };
   if (type === "comms") {
-    const peer = record5.peer && typeof record5.peer === "object" ? record5.peer : {};
+    const peer = record6.peer && typeof record6.peer === "object" ? record6.peer : {};
     const peerAliases = normalizedPeerAliases(
       textFromUnknown4(peer.display_name),
       textFromUnknown4(peer.id)
     );
-    const contentText = typedNoticeContentBlocks(record5.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
-    const stableBodyText = typedCommsStableBodyText(record5);
-    const occurrenceId = textFromUnknown4(record5.request_id) || textFromUnknown4(record5.correlation_id) || textFromUnknown4(record5.id) || `${index2}`;
+    const contentText = typedNoticeContentBlocks(record6.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
+    const stableBodyText = typedCommsStableBodyText(record6);
+    const occurrenceId = textFromUnknown4(record6.request_id) || textFromUnknown4(record6.correlation_id) || textFromUnknown4(record6.id) || `${index2}`;
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
       occurrenceId,
-      textFromUnknown4(record5.kind) || "message",
-      textFromUnknown4(record5.direction) || "incoming"
+      textFromUnknown4(record6.kind) || "message",
+      textFromUnknown4(record6.direction) || "incoming"
     );
     return keys2;
   }
   if (type && type !== "text") return keys2;
-  const blockText = typedNoticeBlockText2(record5).trim();
+  const blockText = typedNoticeBlockText2(record6).trim();
   if (blockText && isLegacyPeerNoticeText2(blockText)) {
     pushKey(blockText);
   }
-  const content3 = record5.content;
+  const content3 = record6.content;
   if (Array.isArray(content3)) {
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
@@ -28447,8 +28726,8 @@ function shouldSuppressDuplicateCommsNotice(frame, emitted) {
   if (duplicateCount === keys2.length) {
     return true;
   }
-  const record5 = systemNoticeMessageRecord2(frame);
-  const hasBlockLevelComms = record5 ? systemNoticeBlockRecords2(record5).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown4(record5.body), index2).length > 0) : false;
+  const record6 = systemNoticeMessageRecord2(frame);
+  const hasBlockLevelComms = record6 ? systemNoticeBlockRecords2(record6).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown4(record6.body), index2).length > 0) : false;
   if (!hasBlockLevelComms) {
     for (const key of keys2) {
       markCommsNoticeDedupeKey(key, frame, emitted);
@@ -28462,20 +28741,20 @@ function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
   }
   return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
-function canUseLegacyPeerNoticeText2(record5) {
-  const kind = textFromUnknown4(record5.kind);
+function canUseLegacyPeerNoticeText2(record6) {
+  const kind = textFromUnknown4(record6.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords2(record5).map((block) => textFromUnknown4(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords2(record6).map((block) => textFromUnknown4(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState2(frame) {
-  const record5 = systemNoticeMessageRecord2(frame);
-  if (!record5 || isExternalEventOnlySystemNotice2(record5)) return false;
-  if (textFromUnknown4(record5.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords2(record5);
+  const record6 = systemNoticeMessageRecord2(frame);
+  if (!record6 || isExternalEventOnlySystemNotice2(record6)) return false;
+  if (textFromUnknown4(record6.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords2(record6);
   if (blocks.some((block) => textFromUnknown4(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText2(record5)) return false;
-  return legacyPeerNoticeTextCandidates2(record5).some(isLegacyPeerNoticeText2);
+  if (!canUseLegacyPeerNoticeText2(record6)) return false;
+  return legacyPeerNoticeTextCandidates2(record6).some(isLegacyPeerNoticeText2);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock, textMode = "legacy") {
   const rich = [];
@@ -28488,41 +28767,41 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
   for (let index2 = 0; index2 < blocks.length; index2++) {
     const block = blocks[index2];
     if (!block || typeof block !== "object") continue;
-    const record5 = block;
-    const type = textFromUnknown4(record5.type);
+    const record6 = block;
+    const type = textFromUnknown4(record6.type);
     if (type === "comms") {
-      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record5, bodyText, index2);
+      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record6, bodyText, index2);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
         consumedDuplicateCommsBlock = true;
         continue;
       }
-      const peer = record5.peer && typeof record5.peer === "object" ? record5.peer : {};
+      const peer = record6.peer && typeof record6.peer === "object" ? record6.peer : {};
       const peerLabel = peerLastSegment2(textFromUnknown4(peer.display_name) || textFromUnknown4(peer.id) || "peer");
       const peerAliases = normalizedPeerAliases(
         textFromUnknown4(peer.display_name),
         textFromUnknown4(peer.id)
       );
-      const kind = textFromUnknown4(record5.kind) || "message";
-      const direction = textFromUnknown4(record5.direction);
-      const intent = textFromUnknown4(record5.intent);
-      const requestId = textFromUnknown4(record5.request_id) || `typed-comms:${peerLabel}:${kind}`;
-      const contentBlocks2 = typedNoticeContentBlocks(record5.content, blobBaseUrl);
+      const kind = textFromUnknown4(record6.kind) || "message";
+      const direction = textFromUnknown4(record6.direction);
+      const intent = textFromUnknown4(record6.intent);
+      const requestId = textFromUnknown4(record6.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const contentBlocks2 = typedNoticeContentBlocks(record6.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
       const runtimeNotice = kind === "lifecycle" || kind === "request" && intent.startsWith("mob.kickoff_");
-      const displayBodySource = (runtimeNotice ? "" : stripPeerTransportScaffold(contentText)) || stripPeerTransportScaffold(typedCommsStableBodyText(record5)) || stripPeerTransportScaffold(bodyText);
+      const displayBodySource = (runtimeNotice ? "" : stripPeerTransportScaffold(contentText)) || stripPeerTransportScaffold(typedCommsStableBodyText(record6)) || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases
       );
-      const ownerContentText = typeof record5.content === "string" ? record5.content : Array.isArray(record5.content) ? record5.content.map((part) => {
+      const ownerContentText = typeof record6.content === "string" ? record6.content : Array.isArray(record6.content) ? record6.content.map((part) => {
         if (typeof part === "string") return part;
         if (!part || typeof part !== "object") return "";
         const textPart = part;
         if (textPart.type !== "text") return "";
         return typeof textPart.text === "string" ? textPart.text : typeof textPart.content === "string" ? textPart.content : "";
       }).join("") : "";
-      const exactDisplayBody = !runtimeNotice && ownerContentText || [record5.summary, record5.body, record5.detail].filter((part) => typeof part === "string").join("\n") || (typeof body === "string" ? body : "");
+      const exactDisplayBody = !runtimeNotice && ownerContentText || [record6.summary, record6.body, record6.detail].filter((part) => typeof part === "string").join("\n") || (typeof body === "string" ? body : "");
       const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
         displayBodySource,
         preserveStructuredContentEnvelope ? [] : peerAliases
@@ -28531,7 +28810,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         type: "tool-call",
         toolCallId: requestId,
         name: `peer_${kind}`,
-        arguments: JSON.stringify(record5.payload ?? {}, null, 2),
+        arguments: JSON.stringify(record6.payload ?? {}, null, 2),
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
@@ -28544,7 +28823,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       });
       continue;
     }
-    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record5, bodyText, index2);
+    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record6, bodyText, index2);
     if (consumeCommsNoticeBlockDedupeKeys(legacyDedupeKeys, consumeDuplicateCommsBlock)) {
       consumedDuplicateCommsBlock = true;
       continue;
@@ -28553,34 +28832,34 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
-      const payload = record5.payload && typeof record5.payload === "object" ? record5.payload : record5;
+      const payload = record6.payload && typeof record6.payload === "object" ? record6.payload : record6;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text8 = bodyText || typedNoticeBlockText2(payload) || typedNoticeBlockText2(record5) || label;
+      const text8 = bodyText || typedNoticeBlockText2(payload) || typedNoticeBlockText2(record6) || label;
       rich.push({ type: "divider", text: text8 });
       continue;
     }
-    if (type === "background_job" && typeof record5.job_id === "string" && record5.job_id.trim() && typeof record5.status === "string" && record5.status.trim()) {
+    if (type === "background_job" && typeof record6.job_id === "string" && record6.job_id.trim() && typeof record6.status === "string" && record6.status.trim()) {
       rich.push({
         type: "background-job",
-        jobId: record5.job_id,
-        status: record5.status,
-        ...typeof record5.display_name === "string" ? { displayName: record5.display_name } : {},
-        detail: typeof record5.detail === "string" ? record5.detail : "",
-        copyText: typedNoticeBlockText2(record5) || bodyText
+        jobId: record6.job_id,
+        status: record6.status,
+        ...typeof record6.display_name === "string" ? { displayName: record6.display_name } : {},
+        detail: typeof record6.detail === "string" ? record6.detail : "",
+        copyText: typedNoticeBlockText2(record6) || bodyText
       });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
-      const text8 = typedNoticeBlockText2(record5) || type.replace(/_/g, " ");
+      const text8 = typedNoticeBlockText2(record6) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text: text8 });
       continue;
     }
-    const contentBlocks = typedNoticeContentBlocks(record5.content, blobBaseUrl);
+    const contentBlocks = typedNoticeContentBlocks(record6.content, blobBaseUrl);
     if (contentBlocks.length > 0) {
       rich.push(...contentBlocks);
       continue;
     }
-    rich.push({ type: "divider", text: typedNoticeBlockText2(record5) || "Runtime metadata" });
+    rich.push({ type: "divider", text: typedNoticeBlockText2(record6) || "Runtime metadata" });
   }
   if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
     rich.push({ type: "paragraph", text: bodyText });
@@ -28591,36 +28870,36 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
-  const record5 = message;
-  const role = typeof record5.role === "string" ? record5.role : null;
+  const record6 = message;
+  const role = typeof record6.role === "string" ? record6.role : null;
   switch (role) {
     case "user": {
-      const text8 = extractTextFromContentBlocks(record5.content);
+      const text8 = extractTextFromContentBlocks(record6.content);
       return { role: "user", text: text8 };
     }
     case "system_notice": {
       const blocks = typedSystemNoticeBlocksToRich(
-        record5.blocks,
-        record5.body,
+        record6.blocks,
+        record6.body,
         blobBaseUrl,
         sourceKind,
         consumeDuplicateCommsBlock,
         textMode
       );
       const duplicateCommsConsumed = Boolean(
-        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords2(record5).some((block, index2) => commsNoticeDedupeKeysFromBlock(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords2(record6).some((block, index2) => commsNoticeDedupeKeysFromBlock(
           block,
-          textFromUnknown4(record5.body),
+          textFromUnknown4(record6.body),
           index2
         ).length > 0)
       );
-      const text8 = duplicateCommsConsumed ? "" : typeof record5.body === "string" ? record5.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      const text8 = duplicateCommsConsumed ? "" : typeof record6.body === "string" ? record6.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
       return { role: "meta", text: text8, ...blocks.length > 0 ? { blocks } : {} };
     }
     case "assistant":
-      return { role: "assistant", text: typeof record5.content === "string" ? record5.content : "" };
+      return { role: "assistant", text: typeof record6.content === "string" ? record6.content : "" };
     case "block_assistant": {
-      const blocks = Array.isArray(record5.blocks) ? record5.blocks : [];
+      const blocks = Array.isArray(record6.blocks) ? record6.blocks : [];
       const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode, blobBaseUrl);
       const text8 = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
@@ -28636,15 +28915,15 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
       return { role: "assistant", text: text8, ...richBlocks.length > 0 ? { blocks: richBlocks } : {} };
     }
     case "system":
-      return { role: "system", text: typeof record5.content === "string" ? record5.content : "" };
+      return { role: "system", text: typeof record6.content === "string" ? record6.content : "" };
     default:
       return { role: null, text: "" };
   }
 }
 function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = {}) {
   if (frame.sourceKind !== "session_history") return null;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record5.message && typeof record5.message === "object" ? record5.message : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record6.message && typeof record6.message === "object" ? record6.message : null;
   const projectedMessage = message?.role === "block_assistant" ? { ...message, blocks: Array.isArray(message.blocks) ? message.blocks.filter((block) => {
     if (!block || typeof block !== "object") return true;
     const item = block;
@@ -28652,7 +28931,7 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     if (kind === "text" && options.suppressAssistantText) return false;
     if (kind === "reasoning" && options.consumeDuplicateReasoningBlock?.(reasoningBlockText(item))) return false;
     return true;
-  }) : [] } : options.suppressAssistantText && message?.role === "assistant" ? { ...message, content: "" } : record5.message;
+  }) : [] } : options.suppressAssistantText && message?.role === "assistant" ? { ...message, content: "" } : record6.message;
   const parsed = historyMessageText(
     projectedMessage,
     options.peerRegistry,
@@ -28709,14 +28988,14 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
 }
 function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const rawMessage = record5.message && typeof record5.message === "object" ? record5.message : null;
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const rawMessage = record6.message && typeof record6.message === "object" ? record6.message : null;
   const message = rawMessage ? textFromUnknown4(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
-    kind: record5.kind,
-    render_class: record5.render_class,
-    body: record5.body,
-    blocks: record5.blocks
+    kind: record6.kind,
+    render_class: record6.render_class,
+    body: record6.body,
+    blocks: record6.blocks
   };
   if (isExternalEventOnlySystemNotice2(message)) return null;
   const parsed = historyMessageText(
@@ -28969,6 +29248,7 @@ function createTimelineFold(agent, frames, options) {
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
   const emittedCouncilIds = /* @__PURE__ */ new Set();
+  const emittedOperationFeedback = /* @__PURE__ */ new Set();
   const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -28979,7 +29259,7 @@ function createTimelineFold(agent, frames, options) {
     const scope = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId]);
     let result = occurrenceToolResults.get(scope);
     if (!result) {
-      const matching = orderedFrames.filter((other) => !ownerContextsConflict(frame, other));
+      const matching = orderedFrames.filter((other) => !ownerContextsConflict2(frame, other));
       matching.sort((left, right) => Number(left.sourceKind === "session_history") - Number(right.sourceKind === "session_history"));
       result = historyToolResults(matching, cardToolCallIds, true);
       occurrenceToolResults.set(scope, result);
@@ -29133,6 +29413,35 @@ function createTimelineFold(agent, frames, options) {
     if (frame.runId?.trim() && frame.sourceKind !== "session_history" && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out" || frame.event === "turn_completed" || frame.event === "turn_started")) {
       if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
       completeOwnedStream(frame);
+    }
+    const operationFeedback = operationFeedbackFromFrame(frame);
+    if (operationFeedback) {
+      flushPendingReasoning(true);
+      flushPendingText();
+      const key = JSON.stringify([
+        frame.runtimeKey,
+        frame.identity,
+        frame.sessionId,
+        frame.runId,
+        frame.interactionId,
+        operationFeedback.kind,
+        operationFeedback.operationId ?? operationFeedback.toolCallId ?? parseToolCallId(frame) ?? entryId
+      ]);
+      if (!emittedOperationFeedback.has(key)) {
+        emittedOperationFeedback.add(key);
+        entries.push({
+          kind: "message",
+          id: entryId,
+          identity: SYSTEM_IDENTITY,
+          variant: "meta",
+          createdAt: isoFromTimestampMs(frame.timestampMs),
+          runId: frame.runId,
+          interactionId: frame.interactionId,
+          text: operationFeedback.detail,
+          operationFeedback
+        });
+      }
+      return;
     }
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
@@ -29616,25 +29925,25 @@ function createSingleFlight() {
 // src/lib/conversation-visibility.ts
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
-  const record5 = block;
-  if (record5.type === "background-job") {
-    return typeof record5.jobId === "string" && record5.jobId.trim().length > 0 && typeof record5.status === "string" && record5.status.trim().length > 0;
+  const record6 = block;
+  if (record6.type === "background-job") {
+    return typeof record6.jobId === "string" && record6.jobId.trim().length > 0 && typeof record6.status === "string" && record6.status.trim().length > 0;
   }
-  if (record5.type === "markdown") return typeof record5.source === "string" && record5.source.trim().length > 0;
+  if (record6.type === "markdown") return typeof record6.source === "string" && record6.source.trim().length > 0;
   const scalarText = [
-    typeof record5.text === "string" ? record5.text : "",
-    typeof record5.label === "string" ? record5.label : "",
-    typeof record5.result === "string" ? record5.result : "",
-    typeof record5.body === "string" ? record5.body : "",
-    typeof record5.title === "string" ? record5.title : "",
-    typeof record5.name === "string" ? record5.name : ""
+    typeof record6.text === "string" ? record6.text : "",
+    typeof record6.label === "string" ? record6.label : "",
+    typeof record6.result === "string" ? record6.result : "",
+    typeof record6.body === "string" ? record6.body : "",
+    typeof record6.title === "string" ? record6.title : "",
+    typeof record6.name === "string" ? record6.name : ""
   ].join(" ").trim();
   if (scalarText.length > 0) return true;
-  if (record5.type === "image" && (typeof record5.src === "string" || typeof record5.blobId === "string"))
+  if (record6.type === "image" && (typeof record6.src === "string" || typeof record6.blobId === "string"))
     return true;
-  if (Array.isArray(record5.headers) && record5.headers.some((v) => String(v || "").trim().length > 0))
+  if (Array.isArray(record6.headers) && record6.headers.some((v) => String(v || "").trim().length > 0))
     return true;
-  if (Array.isArray(record5.rows) && record5.rows.some(
+  if (Array.isArray(record6.rows) && record6.rows.some(
     (row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0)
   ))
     return true;
@@ -29738,9 +30047,9 @@ function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
     return { data };
   }
-  const record5 = data;
-  if (typeof record5.type === "string" && "frame" in record5) {
-    const frame = timelineFrameToConsoleFrame(record5.frame);
+  const record6 = data;
+  if (typeof record6.type === "string" && "frame" in record6) {
+    const frame = timelineFrameToConsoleFrame(record6.frame);
     const isUpdateEnvelope = eventName === "frame_updated";
     return {
       id: frame.id,
@@ -29767,47 +30076,47 @@ function timelineFrameToConsoleFrame(raw) {
   if (!raw || typeof raw !== "object") {
     return { id: "", event: "event", data: raw };
   }
-  const record5 = raw;
-  const cursor = typeof record5.cursor === "string" ? record5.cursor : void 0;
-  const payload = "payload" in record5 ? record5.payload : record5;
-  const source = record5.source && typeof record5.source === "object" ? record5.source : null;
-  if (record5.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
+  const record6 = raw;
+  const cursor = typeof record6.cursor === "string" ? record6.cursor : void 0;
+  const payload = "payload" in record6 ? record6.payload : record6;
+  const source = record6.source && typeof record6.source === "object" ? record6.source : null;
+  if (record6.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
     const updated = timelineFrameToConsoleFrame(payload.frame);
     return {
-      id: String(record5.id || cursor || ""),
+      id: String(record6.id || cursor || ""),
       event: "frame_updated",
-      identity: typeof record5.identity === "string" ? record5.identity : updated.identity,
-      interactionId: typeof record5.interaction_id === "string" ? record5.interaction_id : updated.interactionId,
-      timestampMs: typeof record5.timestamp_ms === "number" ? record5.timestamp_ms : void 0,
+      identity: typeof record6.identity === "string" ? record6.identity : updated.identity,
+      interactionId: typeof record6.interaction_id === "string" ? record6.interaction_id : updated.interactionId,
+      timestampMs: typeof record6.timestamp_ms === "number" ? record6.timestamp_ms : void 0,
       cursor,
-      runtimeKey: typeof record5.runtime_key === "string" ? record5.runtime_key : updated.runtimeKey,
-      sessionId: typeof record5.session_id === "string" ? record5.session_id : updated.sessionId,
-      status: typeof record5.status === "string" ? record5.status : updated.status,
+      runtimeKey: typeof record6.runtime_key === "string" ? record6.runtime_key : updated.runtimeKey,
+      sessionId: typeof record6.session_id === "string" ? record6.session_id : updated.sessionId,
+      status: typeof record6.status === "string" ? record6.status : updated.status,
       sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
       sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : updated.sourceCursor,
-      frameVersion: typeof record5.frame_version === "number" ? record5.frame_version : updated.frameVersion,
-      updatedAtMs: typeof record5.updated_at_ms === "number" ? record5.updated_at_ms : updated.updatedAtMs,
-      turnId: typeof record5.turn_id === "string" ? record5.turn_id : updated.turnId,
-      runId: typeof record5.run_id === "string" ? record5.run_id : updated.runId,
+      frameVersion: typeof record6.frame_version === "number" ? record6.frame_version : updated.frameVersion,
+      updatedAtMs: typeof record6.updated_at_ms === "number" ? record6.updated_at_ms : updated.updatedAtMs,
+      turnId: typeof record6.turn_id === "string" ? record6.turn_id : updated.turnId,
+      runId: typeof record6.run_id === "string" ? record6.run_id : updated.runId,
       data: { frame: updated }
     };
   }
   return {
-    id: String(record5.id || cursor || ""),
-    event: String(record5.kind || "event"),
-    identity: typeof record5.identity === "string" ? record5.identity : void 0,
-    interactionId: typeof record5.interaction_id === "string" ? record5.interaction_id : void 0,
-    timestampMs: typeof record5.timestamp_ms === "number" ? record5.timestamp_ms : void 0,
+    id: String(record6.id || cursor || ""),
+    event: String(record6.kind || "event"),
+    identity: typeof record6.identity === "string" ? record6.identity : void 0,
+    interactionId: typeof record6.interaction_id === "string" ? record6.interaction_id : void 0,
+    timestampMs: typeof record6.timestamp_ms === "number" ? record6.timestamp_ms : void 0,
     cursor,
-    runtimeKey: typeof record5.runtime_key === "string" ? record5.runtime_key : void 0,
-    sessionId: typeof record5.session_id === "string" ? record5.session_id : void 0,
-    status: typeof record5.status === "string" ? record5.status : void 0,
+    runtimeKey: typeof record6.runtime_key === "string" ? record6.runtime_key : void 0,
+    sessionId: typeof record6.session_id === "string" ? record6.session_id : void 0,
+    status: typeof record6.status === "string" ? record6.status : void 0,
     sourceKind: source && typeof source.kind === "string" ? source.kind : void 0,
     sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : void 0,
-    frameVersion: typeof record5.frame_version === "number" ? record5.frame_version : void 0,
-    updatedAtMs: typeof record5.updated_at_ms === "number" ? record5.updated_at_ms : void 0,
-    turnId: typeof record5.turn_id === "string" ? record5.turn_id : void 0,
-    runId: typeof record5.run_id === "string" ? record5.run_id : void 0,
+    frameVersion: typeof record6.frame_version === "number" ? record6.frame_version : void 0,
+    updatedAtMs: typeof record6.updated_at_ms === "number" ? record6.updated_at_ms : void 0,
+    turnId: typeof record6.turn_id === "string" ? record6.turn_id : void 0,
+    runId: typeof record6.run_id === "string" ? record6.run_id : void 0,
     data: payload
   };
 }
@@ -29942,9 +30251,9 @@ function responseTextErrorPreview(text8) {
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object") {
-      const record5 = parsed;
-      const message = typeof record5.message === "string" ? record5.message : void 0;
-      const error = record5.error && typeof record5.error === "object" ? record5.error : null;
+      const record6 = parsed;
+      const message = typeof record6.message === "string" ? record6.message : void 0;
+      const error = record6.error && typeof record6.error === "object" ? record6.error : null;
       const errorMessage2 = error && typeof error.message === "string" ? error.message : void 0;
       const errorCode = error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : void 0;
       const selected = [
@@ -30111,14 +30420,14 @@ async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_C
   if (result.error) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-  const record5 = result.result && typeof result.result === "object" ? result.result : {};
-  const blobId = typeof record5.blob_id === "string" ? record5.blob_id : "";
+  const record6 = result.result && typeof result.result === "object" ? result.result : {};
+  const blobId = typeof record6.blob_id === "string" ? record6.blob_id : "";
   if (!blobId) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} returned an invalid blob payload`);
   }
   return {
     blob_id: blobId,
-    url: typeof record5.url === "string" ? record5.url : void 0
+    url: typeof record6.url === "string" ? record6.url : void 0
   };
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
@@ -30135,9 +30444,9 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   if (candidate === null || typeof candidate !== "object") {
     return allowUnscoped;
   }
-  const record5 = candidate;
-  const sessionId = record5.session_id ?? record5.sessionId;
-  const interactionId = record5.interaction_id ?? record5.interactionId;
+  const record6 = candidate;
+  const sessionId = record6.session_id ?? record6.sessionId;
+  const interactionId = record6.interaction_id ?? record6.interactionId;
   const hasScopedField = sessionId !== void 0 || interactionId !== void 0;
   if (!hasScopedField) {
     return allowUnscoped;
@@ -30151,8 +30460,8 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   return false;
 }
 function isTerminalTurnCompletedData(data) {
-  const record5 = data && typeof data === "object" ? data : {};
-  const stopReason = record5.stop_reason ?? record5.stopReason;
+  const record6 = data && typeof data === "object" ? data : {};
+  const stopReason = record6.stop_reason ?? record6.stopReason;
   return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 function isTerminalSseFrame(frame) {
@@ -30208,14 +30517,14 @@ async function queryTimeline2(baseUrl, target, limit = 400, timeoutMs = DEFAULT_
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
-  const record5 = result;
-  const rawFrames = Array.isArray(record5.frames) ? record5.frames : [];
+  const record6 = result;
+  const rawFrames = Array.isArray(record6.frames) ? record6.frames : [];
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
-    nextCursor: typeof record5.next_cursor === "string" ? record5.next_cursor : void 0,
-    latestCursor: typeof record5.latest_cursor === "string" ? record5.latest_cursor : void 0,
-    exhausted: record5.exhausted === true,
-    available: record5.available !== false
+    nextCursor: typeof record6.next_cursor === "string" ? record6.next_cursor : void 0,
+    latestCursor: typeof record6.latest_cursor === "string" ? record6.latest_cursor : void 0,
+    exhausted: record6.exhausted === true,
+    available: record6.available !== false
   };
 }
 async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey, handlingMode = "queue", timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
@@ -30231,22 +30540,22 @@ async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey,
   if (!accepted || typeof accepted !== "object") {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
-  const record5 = accepted;
-  return normalizeConsoleTimelineAccepted(record5);
+  const record6 = accepted;
+  return normalizeConsoleTimelineAccepted(record6);
 }
 function normalizeConsoleTimelineAccepted(accepted) {
-  const record5 = accepted && typeof accepted === "object" ? accepted : {};
-  if (typeof record5.interaction_id !== "string" || !record5.interaction_id.trim() || typeof record5.identity !== "string" || !record5.identity.trim() || "input_frame_id" in record5 && record5.input_frame_id != null && (typeof record5.input_frame_id !== "string" || !record5.input_frame_id.trim())) {
+  const record6 = accepted && typeof accepted === "object" ? accepted : {};
+  if (typeof record6.interaction_id !== "string" || !record6.interaction_id.trim() || typeof record6.identity !== "string" || !record6.identity.trim() || "input_frame_id" in record6 && record6.input_frame_id != null && (typeof record6.input_frame_id !== "string" || !record6.input_frame_id.trim())) {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
   return {
-    interaction_id: record5.interaction_id,
-    identity: record5.identity,
-    conversation_id: typeof record5.conversation_id === "string" ? record5.conversation_id : void 0,
-    session_id: typeof record5.session_id === "string" ? record5.session_id : void 0,
-    input_frame_id: typeof record5.input_frame_id === "string" ? record5.input_frame_id : void 0,
-    cursor: typeof record5.cursor === "string" ? record5.cursor : void 0,
-    status: typeof record5.status === "string" ? record5.status : void 0
+    interaction_id: record6.interaction_id,
+    identity: record6.identity,
+    conversation_id: typeof record6.conversation_id === "string" ? record6.conversation_id : void 0,
+    session_id: typeof record6.session_id === "string" ? record6.session_id : void 0,
+    input_frame_id: typeof record6.input_frame_id === "string" ? record6.input_frame_id : void 0,
+    cursor: typeof record6.cursor === "string" ? record6.cursor : void 0,
+    status: typeof record6.status === "string" ? record6.status : void 0
   };
 }
 async function callConsoleRpc2(baseUrl, method, params = {}, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2, signal) {
@@ -30735,15 +31044,15 @@ function createFactFactory() {
   };
 }
 function normalizeCapabilities(value) {
-  const record5 = value && typeof value === "object" ? value : {};
-  const methods = Array.isArray(record5.methods) ? Array.from(new Set(record5.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
+  const record6 = value && typeof value === "object" ? value : {};
+  const methods = Array.isArray(record6.methods) ? Array.from(new Set(record6.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
   return {
     methods,
-    version: typeof record5.version === "string" ? record5.version : void 0,
-    ...typeof record5.read_only === "boolean" ? { readOnly: record5.read_only } : {},
-    runtime_capabilities: record5.runtime_capabilities,
-    method_capabilities: record5.method_capabilities,
-    ...record5.topology_control && typeof record5.topology_control === "object" ? { topologyControl: record5.topology_control } : {}
+    version: typeof record6.version === "string" ? record6.version : void 0,
+    ...typeof record6.read_only === "boolean" ? { readOnly: record6.read_only } : {},
+    runtime_capabilities: record6.runtime_capabilities,
+    method_capabilities: record6.method_capabilities,
+    ...record6.topology_control && typeof record6.topology_control === "object" ? { topologyControl: record6.topology_control } : {}
   };
 }
 var ConsoleCapabilityUnavailableError2 = class extends Error {
@@ -31486,13 +31795,13 @@ function parseRunStopResult(result) {
   if (!receipt || typeof receipt !== "object") {
     throw new Error("invalid mobkit/stop_member_run result: missing receipt");
   }
-  const record5 = receipt;
-  if (typeof record5.run_id !== "string") {
+  const record6 = receipt;
+  if (typeof record6.run_id !== "string") {
     throw new Error("invalid mobkit/stop_member_run receipt: missing run_id");
   }
-  switch (record5.outcome) {
+  switch (record6.outcome) {
     case "stopped":
-      if (!Array.isArray(record5.contributors) || !record5.contributors.every(
+      if (!Array.isArray(record6.contributors) || !record6.contributors.every(
         (row) => !!row && typeof row === "object" && typeof row.input_id === "string" && typeof row.completion === "string"
       )) {
         throw new Error("invalid mobkit/stop_member_run receipt: malformed contributors");
@@ -31501,12 +31810,12 @@ function parseRunStopResult(result) {
     case "not_current":
       break;
     case "not_stoppable":
-      if (typeof record5.state !== "string") {
+      if (typeof record6.state !== "string") {
         throw new Error("invalid mobkit/stop_member_run receipt: missing state");
       }
       break;
     default:
-      throw new Error(`invalid mobkit/stop_member_run receipt outcome: ${String(record5.outcome)}`);
+      throw new Error(`invalid mobkit/stop_member_run receipt outcome: ${String(record6.outcome)}`);
   }
   return receipt;
 }
@@ -32114,19 +32423,6 @@ function GatingInboxPanel({
 // src/panels/AccessPanel.tsx
 var import_react28 = __toESM(require("react"));
 var import_jsx_runtime42 = require("react/jsx-runtime");
-var DEFAULT_ACTIONS = [
-  "agent.view",
-  "agent.send",
-  "agent.spawn",
-  "agent.respawn",
-  "agent.retire",
-  "agent.reset",
-  "gating.view",
-  "gating.decide",
-  "mob.observe",
-  "runtime.admin",
-  "access.admin"
-];
 function parseListInput(raw) {
   return raw.split(/[,\n]/).map((token) => token.trim()).filter((token) => token.length > 0);
 }
@@ -32168,7 +32464,7 @@ function emptyRuleDraft() {
     effect: "allow",
     subjects: "",
     groups: "",
-    actions: ["agent.view"],
+    actions: [],
     agents: "",
     roles: "",
     matchLabels: ""
@@ -32211,6 +32507,7 @@ function AccessPanel({
   status,
   config,
   error,
+  loading = false,
   readOnly = false,
   agents,
   onRefresh,
@@ -32232,37 +32529,130 @@ function AccessPanel({
   const [previewAction, setPreviewAction] = import_react28.default.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = import_react28.default.useState("");
   const [previewResult, setPreviewResult] = import_react28.default.useState(null);
-  const actions = status?.actions?.length ? status.actions : DEFAULT_ACTIONS;
+  const previewSubjectInput = import_react28.default.useRef(null);
+  const inspectFocusPending = import_react28.default.useRef(false);
+  const actions = status?.actions ?? [];
+  const [saving, setSaving] = import_react28.default.useState(false);
+  const [mutationError, setMutationError] = import_react28.default.useState(null);
+  const [previewPending, setPreviewPending] = import_react28.default.useState(false);
+  const [previewError, setPreviewError] = import_react28.default.useState(null);
+  const previewVersion = import_react28.default.useRef(0);
+  const mayView = status?.available === true && status.can_administer === true;
+  const current = mayView && !loading && !error && Boolean(config);
+  const actionCatalogKey = JSON.stringify(actions);
+  const scope = JSON.stringify([status?.subject, status?.available, status?.can_administer]);
+  const previewScope = JSON.stringify([
+    scope,
+    status?.revision,
+    status?.enabled,
+    actionCatalogKey,
+    loading,
+    error,
+    readOnly,
+    previewSubject,
+    previewAction,
+    previewIdentity
+  ]);
+  const latestPreviewScope = import_react28.default.useRef(previewScope);
+  latestPreviewScope.current = previewScope;
+  import_react28.default.useEffect(() => {
+    previewVersion.current += 1;
+    setPreviewResult(null);
+    setPreviewError(null);
+    setPreviewPending(false);
+  }, [previewScope]);
+  import_react28.default.useEffect(() => {
+    setPreviewAction((value) => actions.includes(value) ? value : actions[0] ?? "");
+  }, [actionCatalogKey]);
+  import_react28.default.useEffect(() => {
+    setRuleDraft(null);
+    setAdminsDraft(null);
+    setGroupNameDraft("");
+    setGroupMembersDraft("");
+    setEditingGroup(null);
+    setMutationError(null);
+  }, [scope]);
+  import_react28.default.useEffect(() => () => {
+    previewVersion.current += 1;
+  }, []);
+  import_react28.default.useEffect(() => {
+    if (tab2 === "preview" && inspectFocusPending.current) {
+      previewSubjectInput.current?.focus();
+      inspectFocusPending.current = false;
+    }
+  }, [tab2]);
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
-  const canEdit = !readOnly && Boolean(config);
+  const canEdit = current && !readOnly && !saving;
+  async function mutate(action, done = () => {
+  }) {
+    if (!canEdit) return;
+    setSaving(true);
+    setMutationError(null);
+    try {
+      if (await action() !== false) done();
+    } catch {
+      setMutationError("Changes were not saved. Your draft is retained; refresh Console access before trying again.");
+    } finally {
+      setSaving(false);
+    }
+  }
   function startGroupEdit(name2, members) {
     setEditingGroup(name2);
     setGroupNameDraft(name2);
     setGroupMembersDraft(formatListInput(members));
   }
+  function inspectSubject(subject) {
+    if (!current || saving) return;
+    previewVersion.current += 1;
+    setPreviewResult(null);
+    setPreviewError(null);
+    setPreviewPending(false);
+    setPreviewSubject(subject);
+    inspectFocusPending.current = true;
+    setTab("preview");
+  }
   function submitGroup() {
     const name2 = groupNameDraft.trim();
     if (!name2) return;
-    onSaveGroup(name2, { members: parseListInput(groupMembersDraft) });
-    setEditingGroup(null);
-    setGroupNameDraft("");
-    setGroupMembersDraft("");
+    void mutate(() => onSaveGroup(name2, { members: parseListInput(groupMembersDraft) }), () => {
+      setEditingGroup(null);
+      setGroupNameDraft("");
+      setGroupMembersDraft("");
+    });
   }
   async function runPreview() {
     const subject = previewSubject.trim();
-    if (!subject || !previewAction) return;
-    const result = await onPreview(
-      subject,
-      previewAction,
-      previewIdentity.trim() || void 0
-    );
-    setPreviewResult(result);
+    if (!current || !subject || !actions.includes(previewAction) || previewPending) return;
+    const version = ++previewVersion.current;
+    const requestedScope = previewScope;
+    setPreviewPending(true);
+    setPreviewResult(null);
+    setPreviewError(null);
+    try {
+      const result = await onPreview(subject, previewAction, previewIdentity.trim() || void 0);
+      if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
+        if (result?.allowed === true || result?.allowed === false) setPreviewResult(result);
+        else setPreviewError("Access preview unavailable. No decision was returned.");
+      }
+    } catch {
+      if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
+        setPreviewError("Access preview unavailable. Refresh and try again.");
+      }
+    } finally {
+      if (version === previewVersion.current) setPreviewPending(false);
+    }
   }
+  if (!mayView) return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("section", { className: "gating access-panel", "data-testid": "access-panel", style: { padding: 24, gap: 12, alignItems: "flex-start" }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("h2", { children: "Console access" }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: loading ? "Loading Console access..." : status?.available === false ? "Console access administration is not available on this runtime." : "Current administrator access is required to view this configuration." }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: onRefresh, "data-testid": "access-refresh", children: "Refresh" })
+  ] });
   return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating access-panel", "data-testid": "access-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("h2", { children: "Access" }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__head", style: { flexDirection: "column", alignItems: "flex-start", gap: 6 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("h2", { children: "Console access" }),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { children: "Manage access to MobKit console and runtime surfaces. These rules do not grant native tool, source or connected-account permissions." }),
       /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("p", { children: [
         "\xB7 ",
         enabled ? "enforcing" : "not enforced",
@@ -32278,7 +32668,10 @@ function AccessPanel({
         ] }) : null
       ] })
     ] }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", "data-testid": "access-error", children: error }) : null,
+    loading ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "Refreshing owner state. Changes are temporarily unavailable." }) : null,
+    error || mutationError ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", role: "alert", "data-testid": "access-error", children: error || mutationError }) : null,
+    error ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { style: { padding: "0 24px" }, children: "Last loaded configuration may be out of date. Refresh before making changes." }) : null,
+    readOnly ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "This connection is read-only." }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__tabs", children: [
       ["overview", "groups", "rules", "preview"].map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
         "button",
@@ -32296,7 +32689,7 @@ function AccessPanel({
       )),
       /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "gating__tab", onClick: onRefresh, "data-testid": "access-refresh", children: "Refresh" })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__list access-panel__body", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("fieldset", { className: "gating__list access-panel__body", disabled: tab2 === "preview" ? !current : tab2 === "groups" ? !current || saving : !canEdit, style: { border: 0, margin: 0, minWidth: 0 }, children: [
       tab2 === "overview" ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__policies", children: [
         /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": enabled ? "active" : "paused", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy__head", children: [
@@ -32308,7 +32701,7 @@ function AccessPanel({
             "button",
             {
               "data-testid": "access-toggle-enabled",
-              onClick: () => onSetEnabled(!enabled),
+              onClick: () => void mutate(() => onSetEnabled(!enabled)),
               children: enabled ? "Disable enforcement" : "Enable enforcement"
             }
           ) }) : null
@@ -32346,8 +32739,7 @@ function AccessPanel({
                   className: "approve",
                   "data-testid": "access-save-admins",
                   onClick: () => {
-                    onSaveAdmins(parseListInput(adminsDraft));
-                    setAdminsDraft(null);
+                    void mutate(() => onSaveAdmins(parseListInput(adminsDraft)), () => setAdminsDraft(null));
                   },
                   children: "Save"
                 }
@@ -32358,12 +32750,24 @@ function AccessPanel({
         ] })
       ] }) : null,
       tab2 === "groups" ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__policies", children: [
-        groups.length === 0 && editingGroup === null ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", children: "No groups yet. Groups assign people to rules \u2014 create one, then reference it from a rule." }) : null,
+        groups.length === 0 && editingGroup === null ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", children: "No groups yet. Groups assign people to rules - create one, then reference it from a rule." }) : null,
         groups.map(
           ([name2, group]) => editingGroup === name2 ? null : /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": `access-group:${name2}`, children: [
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: name2 }) }),
             group.description ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__rule", children: group.description }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: member }, member)) }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "chip", style: { display: "inline-flex", alignItems: "center", gap: 6 }, children: [
+              member,
+              current && !saving ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+                "button",
+                {
+                  type: "button",
+                  style: { textDecoration: "underline" },
+                  "aria-label": `Inspect access for ${member}`,
+                  onClick: () => inspectSubject(member),
+                  children: "Inspect access"
+                }
+              ) : null
+            ] }, member)) }),
             canEdit ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy__stats", children: [
               /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
                 "button",
@@ -32380,7 +32784,7 @@ function AccessPanel({
                   "data-testid": `access-group-delete:${name2}`,
                   onClick: () => {
                     if (window.confirm(`Delete group "${name2}"?`)) {
-                      onDeleteGroup(name2);
+                      void mutate(() => onDeleteGroup(name2));
                     }
                   },
                   children: "Delete"
@@ -32471,7 +32875,7 @@ function AccessPanel({
                       "data-testid": `access-rule-delete:${rule.id}`,
                       onClick: () => {
                         if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
-                          onDeleteRule(rule.id);
+                          void mutate(() => onDeleteRule(rule.id));
                         }
                       },
                       children: "Delete"
@@ -32483,8 +32887,8 @@ function AccessPanel({
             rule.id
           )
         ),
-        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => setRuleDraft(emptyRuleDraft()), children: "New rule" }) }) : null,
-        canEdit && ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
+        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) }), children: "New rule" }) }) : null,
+        ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? `Edit ${ruleDraft.id}` : "New rule" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
             /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("label", { children: [
@@ -32608,10 +33012,9 @@ function AccessPanel({
                 {
                   className: "approve",
                   "data-testid": "access-rule-save",
-                  disabled: !ruleDraft.id.trim() || ruleDraft.actions.length === 0,
+                  disabled: !canEdit || !ruleDraft.id.trim() || ruleDraft.actions.length === 0 || ruleDraft.actions.some((action) => !actions.includes(action)),
                   onClick: () => {
-                    onUpsertRule(ruleFromDraft(ruleDraft));
-                    setRuleDraft(null);
+                    void mutate(() => onUpsertRule(ruleFromDraft(ruleDraft)), () => setRuleDraft(null));
                   },
                   children: "Save rule"
                 }
@@ -32622,7 +33025,7 @@ function AccessPanel({
         ] }) : null
       ] }) : null,
       tab2 === "preview" ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__policies", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: "Check access as someone else" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: "Check Console access as someone else" }) }),
         /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("label", { children: [
             "Subject",
@@ -32630,6 +33033,7 @@ function AccessPanel({
               "input",
               {
                 "data-testid": "access-preview-subject",
+                ref: previewSubjectInput,
                 value: previewSubject,
                 onChange: (event) => setPreviewSubject(event.target.value),
                 placeholder: "alice@example.com"
@@ -32657,13 +33061,14 @@ function AccessPanel({
                 value: previewIdentity,
                 onChange: (event) => setPreviewIdentity(event.target.value),
                 children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("option", { value: "", children: "\u2014" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("option", { value: "", children: "-" }),
                   agents.map((agent) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("option", { value: agent.identity, children: agent.label || agent.identity }, agent.identity))
                 ]
               }
             )
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "access-panel__form-actions", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-preview-run", onClick: () => void runPreview(), children: "Evaluate" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "access-panel__form-actions", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-preview-run", disabled: !current || !previewSubject.trim() || !actions.includes(previewAction) || previewPending, onClick: () => void runPreview(), children: "Evaluate" }) }),
+          previewError ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", "data-testid": "access-preview-error", children: previewError }) : null,
           previewResult ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "div",
             {
@@ -32671,8 +33076,9 @@ function AccessPanel({
               "data-testid": "access-preview-result",
               "data-allowed": previewResult.allowed ? "true" : "false",
               children: [
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "Observation only, not permission for a later action. " }),
                 previewResult.allowed ? "ALLOWED" : "DENIED",
-                previewResult.reason ? ` \u2014 ${previewResult.reason}` : "",
+                previewResult.reason ? ` - ${previewResult.reason}` : "",
                 previewResult.is_admin ? " (admin)" : "",
                 previewResult.groups?.length ? ` \xB7 groups: ${previewResult.groups.join(", ")}` : ""
               ]
@@ -32708,8 +33114,8 @@ function resolveMemoryTabAlias(tab2) {
   if (tab2 === "quarantine") return "pipeline";
   return MEMORY_TABS.includes(tab2) ? tab2 : null;
 }
-function realmOfRecord(record5) {
-  return record5.scope.realm;
+function realmOfRecord(record6) {
+  return record6.scope.realm;
 }
 function scopeGroupKey(scope) {
   switch (scope.scope) {
@@ -32749,19 +33155,19 @@ function scopeGroupRank(scope) {
 }
 function groupRecordsByScope(records) {
   const byKey = /* @__PURE__ */ new Map();
-  for (const record5 of records) {
-    const key = scopeGroupKey(record5.scope);
+  for (const record6 of records) {
+    const key = scopeGroupKey(record6.scope);
     let group = byKey.get(key);
     if (!group) {
       group = {
         key,
-        label: scopeGroupLabel(record5.scope),
-        scope: record5.scope,
+        label: scopeGroupLabel(record6.scope),
+        scope: record6.scope,
         records: []
       };
       byKey.set(key, group);
     }
-    group.records.push(record5);
+    group.records.push(record6);
   }
   return Array.from(byKey.values()).sort((a, b) => {
     const rankDelta = scopeGroupRank(a.scope) - scopeGroupRank(b.scope);
@@ -32998,16 +33404,16 @@ function createMemoryRecordsPager(deps) {
   return pager;
 }
 var DEAD_INJECTION_THRESHOLD = 3;
-function recordUtility(record5) {
-  const injected = record5.usage?.injected_count ?? 0;
-  const recalled = record5.usage?.explicit_recall_count ?? 0;
-  const useful = record5.usage?.judged_useful_count ?? 0;
+function recordUtility(record6) {
+  const injected = record6.usage?.injected_count ?? 0;
+  const recalled = record6.usage?.explicit_recall_count ?? 0;
+  const useful = record6.usage?.judged_useful_count ?? 0;
   return {
     injected,
     recalled,
     useful,
     ratio: injected > 0 ? useful / injected : null,
-    bytesSpent: injected * (record5.body_bytes ?? 0),
+    bytesSpent: injected * (record6.body_bytes ?? 0),
     dead: injected >= DEAD_INJECTION_THRESHOLD && useful === 0
   };
 }
@@ -33022,8 +33428,8 @@ function sortRecordsByUtility(records) {
     return ub.bytesSpent - ua.bytesSpent;
   });
 }
-function utilityLine(record5) {
-  const u = recordUtility(record5);
+function utilityLine(record6) {
+  const u = recordUtility(record6);
   const ratio = u.ratio === null ? "\u2014" : u.ratio.toFixed(2);
   return `inj ${u.injected} \xB7 recall ${u.recalled} \xB7 useful ${u.useful} \xB7 ratio ${ratio} \xB7 ~${formatBytes(u.bytesSpent)} spent`;
 }
@@ -33037,27 +33443,27 @@ var LATTICE_WALK_MAX_RECORDS = 2e3;
 var LATTICE_WALK_PAGE_LIMIT = 200;
 function latticeInvariants(records, options) {
   const llmCeilingViolations = [];
-  const byId = new Map(records.map((record5) => [record5.id, record5]));
-  for (const record5 of records) {
-    const author = record5.provenance?.author?.author;
-    const rank = record5.trust ? TRUST_RANK[record5.trust] : void 0;
+  const byId = new Map(records.map((record6) => [record6.id, record6]));
+  for (const record6 of records) {
+    const author = record6.provenance?.author?.author;
+    const rank = record6.trust ? TRUST_RANK[record6.trust] : void 0;
     if ((author === "agent" || author === "distiller" || author === "steward") && typeof rank === "number" && rank > TRUST_RANK.agent_observed) {
-      llmCeilingViolations.push({ id: record5.id, realm: realmOfRecord(record5) });
+      llmCeilingViolations.push({ id: record6.id, realm: realmOfRecord(record6) });
     }
   }
   const chainViolations = /* @__PURE__ */ new Map();
-  for (const record5 of records) {
-    const path2 = /* @__PURE__ */ new Set([record5.id]);
-    let cursor = record5.supersedes;
+  for (const record6 of records) {
+    const path2 = /* @__PURE__ */ new Set([record6.id]);
+    let cursor = record6.supersedes;
     while (cursor) {
       if (path2.has(cursor)) {
-        chainViolations.set(record5.id, { id: record5.id, realm: realmOfRecord(record5) });
+        chainViolations.set(record6.id, { id: record6.id, realm: realmOfRecord(record6) });
         break;
       }
       const parent = byId.get(cursor);
       if (!parent) {
         if (options.complete) {
-          chainViolations.set(record5.id, { id: record5.id, realm: realmOfRecord(record5) });
+          chainViolations.set(record6.id, { id: record6.id, realm: realmOfRecord(record6) });
         }
         break;
       }
@@ -33072,7 +33478,7 @@ function latticeInvariants(records, options) {
 }
 function latticeFingerprint(records, realms, baseCursor) {
   const rows = records.map(
-    (record5) => `${record5.id}:${record5.supersedes || ""}:${record5.trust}:${record5.status?.status || ""}:${record5.updated_at_ms || 0}`
+    (record6) => `${record6.id}:${record6.supersedes || ""}:${record6.trust}:${record6.status?.status || ""}:${record6.updated_at_ms || 0}`
   ).join("|");
   return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
 }
@@ -33181,8 +33587,8 @@ function computeVerdictTiles(inputs) {
       targetTab: "records"
     });
   } else {
-    const dead = inputs.records.filter((record5) => recordUtility(record5).dead);
-    const deadBytes = dead.reduce((sum, record5) => sum + recordUtility(record5).bytesSpent, 0);
+    const dead = inputs.records.filter((record6) => recordUtility(record6).dead);
+    const deadBytes = dead.reduce((sum, record6) => sum + recordUtility(record6).bytesSpent, 0);
     tiles.push({
       id: "recall",
       label: "RECALL",
@@ -33269,11 +33675,11 @@ function scopeOverviewRows(records) {
     const counts = { active: 0, quarantined: 0, superseded: 0, tombstoned: 0 };
     let bytes = 0;
     const trustCounts = /* @__PURE__ */ new Map();
-    for (const record5 of group.records) {
-      const status = record5.status?.status;
+    for (const record6 of group.records) {
+      const status = record6.status?.status;
       if (status && status in counts) counts[status] += 1;
-      bytes += record5.body_bytes ?? 0;
-      const trust = trustLabel(record5.trust);
+      bytes += record6.body_bytes ?? 0;
+      const trust = trustLabel(record6.trust);
       trustCounts.set(trust, (trustCounts.get(trust) || 0) + 1);
     }
     const trustMix = Array.from(trustCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([trust, count]) => `${count} ${trust}`).join(" \xB7 ");
@@ -33403,9 +33809,9 @@ function normalizeDreamRunDetail(detail) {
   return { phases, verdicts, skips, raw: null };
 }
 function lineageLane(chain, currentId) {
-  return [...chain].reverse().map((record5) => ({
-    record: record5,
-    current: record5.id === currentId
+  return [...chain].reverse().map((record6) => ({
+    record: record6,
+    current: record6.id === currentId
   }));
 }
 function dreamRunsTouching(dreams, recordId) {
@@ -33434,8 +33840,8 @@ function evidenceExcerptLines(entries, range, maxLines = 30) {
 }
 function identityOptions(records) {
   const identities = /* @__PURE__ */ new Set();
-  for (const record5 of records) {
-    if (record5.scope.scope === "identity") identities.add(record5.scope.identity);
+  for (const record6 of records) {
+    if (record6.scope.scope === "identity") identities.add(record6.scope.identity);
   }
   return Array.from(identities).sort((a, b) => a.localeCompare(b));
 }
@@ -33445,26 +33851,26 @@ function knowledgeComposition(records, identity) {
     {
       label: `identity:${identity}`,
       count: count(
-        (record5) => record5.scope.scope === "identity" && record5.scope.identity === identity
+        (record6) => record6.scope.scope === "identity" && record6.scope.identity === identity
       ),
       filter: { scope: "identity", key: identity },
       approximate: false
     },
     {
       label: "mob (all mobs)",
-      count: count((record5) => record5.scope.scope === "mob"),
+      count: count((record6) => record6.scope.scope === "mob"),
       filter: { scope: "mob" },
       approximate: true
     },
     {
       label: "operator",
-      count: count((record5) => record5.scope.scope === "operator"),
+      count: count((record6) => record6.scope.scope === "operator"),
       filter: { scope: "operator" },
       approximate: true
     },
     {
       label: "realm",
-      count: count((record5) => record5.scope.scope === "realm"),
+      count: count((record6) => record6.scope.scope === "realm"),
       filter: { scope: "realm" },
       approximate: true
     }
@@ -33503,28 +33909,28 @@ function SectionNote({
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": testid, children });
 }
 function RecordRow({
-  record: record5,
+  record: record6,
   utilityMode,
   onSelect
 }) {
-  const utility = utilityMode ? recordUtility(record5) : null;
+  const utility = utilityMode ? recordUtility(record6) : null;
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "button",
     {
       type: "button",
       className: "memory-row",
-      "data-testid": `memory-record:${record5.id}`,
+      "data-testid": `memory-record:${record6.id}`,
       onClick: onSelect,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record5.title || record5.id }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record6.title || record6.id }),
         /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-row__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record5.kind }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record5.trust), tone: trustTone(record5.trust) }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record5.status), tone: statusTone(record5.status) }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record6.kind }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record6.trust), tone: trustTone(record6.trust) }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record6.status), tone: statusTone(record6.status) }),
           utility?.dead ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: "DEAD", tone: "warning" }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record5.updated_at_ms) })
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record6.updated_at_ms) })
         ] }),
-        utility ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record5) }) : null
+        utility ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record6) }) : null
       ]
     }
   );
@@ -33539,16 +33945,16 @@ function BiographyView({
   onSelectRecord,
   onLoadEvidence
 }) {
-  const { record: record5, chain, injections } = detail;
-  const provenance = record5.provenance;
+  const { record: record6, chain, injections } = detail;
+  const provenance = record6.provenance;
   const evidence = provenance?.evidence || [];
   const verification = provenance?.verification;
-  const usage = record5.usage;
-  const lane = lineageLane(chain, record5.id);
-  const touchingRuns = dreamRunsTouching(dreams, record5.id);
+  const usage = record6.usage;
+  const lane = lineageLane(chain, record6.id);
+  const touchingRuns = dreamRunsTouching(dreams, record6.id);
   const [evidenceState, setEvidenceState] = import_react29.default.useState(null);
   const evidenceSeqRef = import_react29.default.useRef(0);
-  const recordIdentity = record5.scope.scope === "identity" ? record5.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
+  const recordIdentity = record6.scope.scope === "identity" ? record6.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
   async function openEvidence(ref, index2) {
     if (!onLoadEvidence) return;
     const key = evidenceKey(ref, index2);
@@ -33566,24 +33972,24 @@ function BiographyView({
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail", "data-testid": "memory-detail", children: [
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("button", { type: "button", className: "memory-back", onClick: onBack, "data-testid": "memory-detail-back", children: "\u2190 Back" }),
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("h3", { children: record5.title || record5.id }),
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("h3", { children: record6.title || record6.id }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-detail__chips", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record5.kind }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record5.trust), tone: trustTone(record5.trust) }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record5.status), tone: statusTone(record5.status) })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record6.kind }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record6.trust), tone: trustTone(record6.trust) }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record6.status), tone: statusTone(record6.status) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         CopyButton,
         {
-          text: JSON.stringify(record5, null, 2),
+          text: JSON.stringify(record6, null, 2),
           label: "Copy record JSON",
           className: "memory-copy-json"
         }
       )
     ] }),
-    record5.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record5.description }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record5.body }),
-    record5.tags && record5.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record5.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
+    record6.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record6.description }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record6.body }),
+    record6.tags && record6.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record6.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Born" }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: authorLine(provenance?.author) }),
@@ -34201,23 +34607,23 @@ function MemoryPanel({
         pageLoading ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", children: "Loading records\u2026" }) : null,
         !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", "data-testid": "memory-records-empty", children: recordsDenied || listView.denied ? "Records: no grant." : "No memory records yet." }) : null,
         !pageLoading && listView.denied && listView.records.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(SectionNote, { testid: "memory-records-denied-note", children: "Further pages: no grant \u2014 the continuation of this query was denied for this principal." }) : null,
-        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group", children: listView.records.map((record5) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group", children: listView.records.map((record6) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
           RecordRow,
           {
-            record: record5,
+            record: record6,
             utilityMode: sortMode === "utility",
-            onSelect: () => onSelectRecord(realmOfRecord(record5), record5.id)
+            onSelect: () => onSelectRecord(realmOfRecord(record6), record6.id)
           },
-          record5.id
+          record6.id
         )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: group.label }),
-          group.records.map((record5) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          group.records.map((record6) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             RecordRow,
             {
-              record: record5,
-              onSelect: () => onSelectRecord(realmOfRecord(record5), record5.id)
+              record: record6,
+              onSelect: () => onSelectRecord(realmOfRecord(record6), record6.id)
             },
-            record5.id
+            record6.id
           ))
         ] }, group.key)) : null,
         listView.cursor && onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
@@ -34390,25 +34796,25 @@ function MemoryPanel({
           ] }) : null,
           quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", children: [
             /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: "Quarantined records" }),
-            quarantineRecords.map((record5) => {
-              const reason = record5.status.status === "quarantined" ? record5.status.reason : void 0;
+            quarantineRecords.map((record6) => {
+              const reason = record6.status.status === "quarantined" ? record6.status.reason : void 0;
               return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
                 "button",
                 {
                   type: "button",
                   className: "memory-row",
-                  "data-testid": `memory-quarantine-record:${record5.id}`,
-                  onClick: () => onSelectRecord(realmOfRecord(record5), record5.id),
+                  "data-testid": `memory-quarantine-record:${record6.id}`,
+                  onClick: () => onSelectRecord(realmOfRecord(record6), record6.id),
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record5.title || record5.id }),
+                    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record6.title || record6.id }),
                     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-row__meta", children: [
                       reason ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__reason", children: reason }) : null,
-                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record5.trust), tone: trustTone(record5.trust) }),
-                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record5.created_at_ms) })
+                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record6.trust), tone: trustTone(record6.trust) }),
+                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record6.created_at_ms) })
                     ] })
                   ]
                 },
-                record5.id
+                record6.id
               );
             })
           ] }) : null
@@ -34583,8 +34989,8 @@ function stateLabel(state) {
 function displayPeer(peer) {
   if (typeof peer === "string") return peer.split("/").pop() || peer;
   if (peer && typeof peer === "object") {
-    const record5 = peer;
-    const value = record5.label ?? record5.display_name ?? record5.name ?? record5.identity ?? record5.member_id ?? record5.id;
+    const record6 = peer;
+    const value = record6.label ?? record6.display_name ?? record6.name ?? record6.identity ?? record6.member_id ?? record6.id;
     if (typeof value === "string") return value.split("/").pop() || value;
   }
   return "";
@@ -35908,8 +36314,8 @@ var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function historyBlockType(record5) {
-  const raw = record5.block_type ?? record5.type;
+function historyBlockType(record6) {
+  const raw = record6.block_type ?? record6.type;
   return typeof raw === "string" ? raw : void 0;
 }
 function sanitizeLogValue(value) {
@@ -37722,8 +38128,8 @@ function textFromValue(value) {
     return value.map(textFromValue).filter(Boolean).join(" ").trim();
   }
   if (value && typeof value === "object") {
-    const record5 = value;
-    const direct = record5.summary ?? record5.message ?? record5.text ?? record5.body ?? record5.reply ?? record5.result ?? record5.content ?? record5.subject ?? record5.request_subject ?? record5.prompt ?? record5.description ?? record5.token;
+    const record6 = value;
+    const direct = record6.summary ?? record6.message ?? record6.text ?? record6.body ?? record6.reply ?? record6.result ?? record6.content ?? record6.subject ?? record6.request_subject ?? record6.prompt ?? record6.description ?? record6.token;
     const text8 = textFromValue(direct);
     if (text8) return text8;
   }
@@ -37757,11 +38163,11 @@ function sessionHistoryAssistantReply(frame, data) {
   }
   const blocks = Array.isArray(message.blocks) ? message.blocks : [];
   const text8 = blocks.map((block) => {
-    const record5 = recordOf3(block);
-    const blockType = typeof record5.block_type === "string" ? record5.block_type : typeof record5.type === "string" ? record5.type : "";
+    const record6 = recordOf3(block);
+    const blockType = typeof record6.block_type === "string" ? record6.block_type : typeof record6.type === "string" ? record6.type : "";
     if (blockType !== "text") return "";
-    const blockData = recordOf3(record5.data);
-    return textFromValue(blockData.text ?? record5.text);
+    const blockData = recordOf3(record6.data);
+    return textFromValue(blockData.text ?? record6.text);
   }).filter(Boolean).join(" ").trim();
   return text8;
 }
@@ -38214,7 +38620,7 @@ var failureMessages = {
   cancelled: "Initial context preparation was cancelled.",
   authority_rejected: "The session authority refused the initial context; no fallback was attempted."
 };
-function record3(raw) {
+function record4(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("Invalid voice context status.");
   }
@@ -38229,10 +38635,10 @@ function isFailure(value) {
   return typeof value === "string" && Object.hasOwn(failureMessages, value);
 }
 function parseVoiceContextStatus(raw, scope) {
-  const result = record3(raw);
+  const result = record4(raw);
   exactKeys(result, ["identity", "request_id", "channel_id", "context_preparation"]);
   if (result.identity !== scope.identity || result.request_id !== scope.requestId || result.channel_id !== scope.channelId) throw new Error("Voice context status does not match the active call.");
-  const preparation = record3(result.context_preparation);
+  const preparation = record4(result.context_preparation);
   switch (preparation.phase) {
     case "not_requested":
     case "provider_acknowledged":
@@ -39118,7 +39524,8 @@ function flattenEntryRows(entry) {
       time: formatTime3(entry.createdAt),
       createdAt: entry.createdAt,
       text: entry.text || "",
-      ...entry.runtimeEvent ? { runtimeEvent: entry.runtimeEvent } : {}
+      ...entry.runtimeEvent ? { runtimeEvent: entry.runtimeEvent } : {},
+      ...entry.kind === "message" && entry.operationFeedback ? { operationFeedback: entry.operationFeedback } : {}
     }];
   }
   const role = entry.identity.role;
@@ -39480,6 +39887,7 @@ function msgSignature(message) {
     message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? void 0)}` : "",
     textMark(message.text),
     textMark(message.copyText),
+    message.operationFeedback ? JSON.stringify(message.operationFeedback) : "",
     message.contextMessage ? JSON.stringify(message.contextMessage) : "",
     message.workedFor ?? "",
     textMark(message.workedForCopyText)
@@ -39533,6 +39941,9 @@ function runtimeEventJson(payload) {
   }
 }
 function EventRow({ message: m }) {
+  if (m.operationFeedback) {
+    return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { "data-conversation-row-id": m.scrollRowId ?? m.id, children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(OperationFeedbackView, { feedback: m.operationFeedback, createdAt: m.createdAt }) });
+  }
   const sentence = m.source?.sentence || m.text || "";
   const payloadJson = m.runtimeEvent ? runtimeEventJson(m.runtimeEvent.payload) : "";
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
@@ -41893,7 +42304,7 @@ var VOICE_CAPTIONS_METHOD = "mobkit/console/voice/captions";
 function invalid() {
   throw new Error("Invalid voice captions.");
 }
-function record4(raw) {
+function record5(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid();
   return raw;
 }
@@ -41905,14 +42316,14 @@ function itemId(value) {
   return value;
 }
 function parseVoiceCaptions(raw, scope, after) {
-  const result = record4(raw);
+  const result = record5(raw);
   exactKeys2(result, ["identity", "request_id", "channel_id", "cursor", "captions"]);
   if (result.identity !== scope.identity || result.request_id !== scope.requestId || result.channel_id !== scope.channelId) throw new Error("Voice captions do not match the active call.");
   const cursor = result.cursor;
   if (typeof cursor !== "number" || !Number.isSafeInteger(cursor) || cursor < after) invalid();
   if (!Array.isArray(result.captions)) invalid();
   const captions = result.captions.map((raw2) => {
-    const caption = record4(raw2);
+    const caption = record5(raw2);
     if (caption.kind === "caption") {
       exactKeys2(caption, ["kind", "item_id", "text"]);
       if (typeof caption.text !== "string") invalid();
@@ -43336,8 +43747,8 @@ function actionVisible(actions, key) {
 function normalizeConsoleInspectResult(value) {
   const direct = normalizeIdentityInspectViewState(value);
   if (direct) return direct;
-  const record5 = value && typeof value === "object" ? value : {};
-  const identityRecord = record5.identity && typeof record5.identity === "object" ? record5.identity : null;
+  const record6 = value && typeof value === "object" ? value : {};
+  const identityRecord = record6.identity && typeof record6.identity === "object" ? record6.identity : null;
   if (!identityRecord) return null;
   return normalizeIdentityInspectViewState({
     identity: identityRecord.identity,
@@ -43351,7 +43762,7 @@ function normalizeConsoleInspectResult(value) {
       session_id: identityRecord.session_id,
       agent_runtime_id: identityRecord.runtime_member_id
     },
-    topology_peers: Array.isArray(record5.peers) ? record5.peers : [],
+    topology_peers: Array.isArray(record6.peers) ? record6.peers : [],
     lease: null
   });
 }
@@ -43450,9 +43861,9 @@ function isTerminalTurnCompletedFrame(frame) {
 }
 function isActiveServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record5?.type === "string" ? record5.type : "";
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record6?.type === "string" ? record6.type : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations) || type.includes(".completed") || type.includes(".done") || type.includes(".failed") || type.includes(".error")) {
     return false;
   }
@@ -43460,10 +43871,10 @@ function isActiveServerToolContentFrame2(frame) {
 }
 function isTerminalServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record5 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record5?.content && typeof record5.content === "object" ? record5.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record5?.type === "string" ? record5.type : "";
-  const status = typeof content3?.status === "string" ? content3.status : typeof record5?.status === "string" ? record5.status : "";
+  const record6 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record6?.content && typeof record6.content === "object" ? record6.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record6?.type === "string" ? record6.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record6?.status === "string" ? record6.status : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations)) {
     return false;
   }
@@ -43686,6 +44097,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     audit: []
   });
   const [accessData, setAccessData] = import_react45.default.useState({
+    scope: "",
+    loading: false,
     status: null,
     config: null,
     error: null
@@ -43725,7 +44138,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     events: [],
     version: 0,
     sorted: null,
-    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyLifecycle: new ConsoleActivityProjection(),
     busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
     busyFoldValid: true,
     capturedAt: null,
@@ -43985,7 +44398,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         events: [],
         version: 0,
         sorted: null,
-        busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+        busyLifecycle: new ConsoleActivityProjection(),
         busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
         busyFoldValid: true,
         byKey: /* @__PURE__ */ new Map(),
@@ -44034,8 +44447,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function clearOptimisticUserByContent(identity, frame) {
     if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
       return false;
-    const record5 = frame.data && typeof frame.data === "object" ? frame.data : {};
-    const contentValue = frame.event === "run_started" ? record5.prompt : record5.content;
+    const record6 = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const contentValue = frame.event === "run_started" ? record6.prompt : record6.content;
     const content3 = typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content3) return false;
     const clearedPanelKeys = [];
@@ -44078,7 +44491,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!updated || !updated.id) return false;
       const merged = mergeFrameUpdate(log, updated);
       if (!merged) return false;
-      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.interactionId !== merged.next.interactionId || merged.previous.runId !== merged.next.runId || merged.previous.status !== merged.next.status || merged.previous.data !== merged.next.data || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
         log.busyFoldValid = false;
       }
       clearOptimisticUserForFrame(identity, updated);
@@ -44127,69 +44540,30 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       maybeDrainHead(identity);
     }
   }
-  function foldBusyFrame(lifecycle, frame) {
-    switch (frame.event) {
-      case "interaction_started":
-        lifecycle.interactionOpen = true;
-        break;
-      case "run_started":
-        lifecycle.runOpen = true;
-        break;
-      case "run_completed":
-      case "run_failed":
-        lifecycle.runOpen = false;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        lifecycle.interactionOpen = false;
-        lifecycle.runOpen = false;
-        lifecycle.legacyBusy = false;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) {
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          lifecycle.legacyBusy = false;
-        }
-        break;
-      default: {
-        const transition = busyTransitionForFrame(frame);
-        if (transition !== null) lifecycle.legacyBusy = transition;
-        break;
-      }
-    }
-  }
-  function busyFromLifecycle(lifecycle) {
-    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
-  }
   function updateBusyStateForFrame(identity, frame) {
     const log = getOrCreateLog(identity);
     if (frame.event === "assistant_history_snapshot" || frame.event === "frame_updated" && !log.busyFoldValid) {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
     if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
-    foldBusyFrame(log.busyLifecycle, frame);
+    if (!log.busyLifecycle.fold(frame)) return;
     log.busyFoldedThroughMs = ts;
     identityLifecycleRef.current[identity] = {
       interactionOpen: log.busyLifecycle.interactionOpen,
       runOpen: log.busyLifecycle.runOpen
     };
-    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
+    applyBusyState(identity, log.busyLifecycle.busy);
   }
   function recomputeBusyStateFromLog(identity) {
     const log = getOrCreateLog(identity);
-    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    const lifecycle = new ConsoleActivityProjection();
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const frames = sortedEvents(log);
-    const coveredHistory = settledHistoryActivity(frames);
-    const ordered = frames.filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame)).sort((a, b) => {
+    const ordered = sortedEvents(log).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
@@ -44197,7 +44571,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
     });
     for (const frame of ordered) {
-      foldBusyFrame(lifecycle, frame);
+      lifecycle.fold(frame);
       if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
         foldedThrough = frame.timestampMs;
       }
@@ -44209,7 +44583,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       interactionOpen: lifecycle.interactionOpen,
       runOpen: lifecycle.runOpen
     };
-    applyBusyState(identity, busyFromLifecycle(lifecycle));
+    applyBusyState(identity, lifecycle.busy);
   }
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
@@ -44300,7 +44674,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (inFlight) {
       return inFlight.then(() => {
         if (options.clearPhase) {
-          clearPhaseForIdentity(normalized);
+          recomputePhaseForIdentity(normalized);
           forceRender();
         }
       });
@@ -44314,7 +44688,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         limit: 200
       });
       reconcileServerLog(normalized, page.frames, page.available);
-      if (options.clearPhase) clearPhaseForIdentity(normalized);
+      if (options.clearPhase) recomputePhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
@@ -44701,14 +45075,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       forceRender();
     }, delayMs);
   }
-  function updatePanelPhaseFromFrame(panelKey, frame, lifecycleBusy = false) {
+  function updatePanelPhaseFromFrame(panelKey, frame, projectedPhase = null) {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
-        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, null);
+        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, projectedPhase);
         return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
+      case "run_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
@@ -44749,23 +45124,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "interaction_complete":
       case "interaction_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        return commitPanelPhase(panelKey, projectedPhase);
       case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) return commitPanelPhase(panelKey, null);
+        if (systemNoticeClearsBusyState2(frame)) return commitPanelPhase(panelKey, projectedPhase);
         return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) {
-          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+          return commitPanelPhase(panelKey, projectedPhase);
         }
         return false;
       case "message_delivery_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, projectedPhase);
       default:
         return false;
     }
@@ -44777,7 +45152,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return recomputePhaseForIdentity(identity);
     }
     let changed = false;
-    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -44785,7 +45159,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey2(panel.id, target),
         frame,
-        lifecycleBusy
+        getOrCreateLog(identity).busyLifecycle.phase
       )) changed = true;
     }
     return changed;
@@ -45110,26 +45484,50 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const visible = new Set(collectConsoleDockPanelIds(activeTab?.layout));
     return dock.viewState.panels.filter((panel) => visible.has(panel.id)).map((panel) => panel.target).filter(Boolean);
   }, [dock.viewState.panels, dock.viewState.tabs, dock.viewState.activeTabId]);
+  const accessScope = JSON.stringify([baseUrl, storageNamespace, experience?.runtime_id, experience?.access?.subject]);
+  const accessScopeRef = import_react45.default.useRef(accessScope);
+  accessScopeRef.current = accessScope;
+  const accessRefreshVersion = import_react45.default.useRef(0);
+  const visibleAccessData = accessData.scope === accessScope ? accessData : null;
+  import_react45.default.useEffect(() => {
+    accessRefreshVersion.current += 1;
+    setAccessData({ scope: accessScope, loading: false, status: null, config: null, error: null });
+  }, [accessScope, experience?.access?.can_administer]);
   const refreshAccessData = import_react45.default.useCallback(() => panelRefreshFlight("access", async () => {
+    if (accessScope !== accessScopeRef.current) return;
+    const version = ++accessRefreshVersion.current;
+    const isCurrent = () => version === accessRefreshVersion.current && accessScope === accessScopeRef.current;
     const accessTarget = controlWorkbenchTarget("access");
+    setAccessData((current) => ({
+      scope: accessScope,
+      loading: true,
+      error: null,
+      status: current.scope === accessScope ? current.status : null,
+      config: current.scope === accessScope ? current.config : null
+    }));
+    let status = null;
     try {
-      const status = await executeHeadlessCommand(
-        CONSOLE_COMMAND_NAMES2.accessStatus,
-        accessTarget
-      ) || null;
+      status = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.accessStatus, accessTarget) || null;
+      if (!isCurrent()) return;
       let config = null;
       if (status?.available && status?.can_administer) {
-        const result = await executeHeadlessCommand(
-          CONSOLE_COMMAND_NAMES2.getAccessConfig,
-          accessTarget
-        );
+        const result = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.getAccessConfig, accessTarget);
         config = result?.config || null;
+        if (result?.revision !== void 0) status = { ...status, revision: result.revision };
       }
-      setAccessData({ status, config, error: null });
+      if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
-      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      if (!isCurrent()) return;
+      const failure = classifyConsoleSendFailure(err);
+      const forbidden = failure.kind === "access_denied" || failure.kind === "unauthenticated";
+      setAccessData((current) => ({
+        ...current,
+        loading: false,
+        error: errorMessage(err),
+        ...forbidden ? { status: null, config: null } : {}
+      }));
     }
-  }), [panelRefreshFlight, baseUrl]);
+  }), [panelRefreshFlight, baseUrl, accessScope]);
   const refreshMemoryData = import_react45.default.useCallback(() => panelRefreshFlight("memory", async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
@@ -45394,18 +45792,25 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   );
   const runAccessMutation = import_react45.default.useCallback(
     async (command, params) => {
+      if (accessData.scope !== accessScope || accessData.loading || accessData.error || accessData.status?.available !== true || accessData.status.can_administer !== true || experience?.access?.can_administer !== true || frontendReadOnly || experience?.console_policy?.read_only === true) return false;
+      let mutationError = null;
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
-        setAccessData((current) => ({ ...current, error: null }));
       } catch (err) {
-        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+        mutationError = errorMessage(err);
       }
+      if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
+      if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {
       });
+      if (mutationError && accessScope === accessScopeRef.current) {
+        setAccessData((current) => ({ ...current, error: mutationError }));
+      }
+      return mutationError === null;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, refreshAccessData, loadExperience]
+    [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only]
   );
   const refreshTopologyData = import_react45.default.useCallback(() => panelRefreshFlight("topology", async () => {
     try {
@@ -45470,7 +45875,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   import_react45.default.useEffect(() => {
     void refreshPanelDataRef.current().catch(() => {
     });
-  }, [visiblePanelKey]);
+  }, [visiblePanelKey, accessScope, experience?.access?.can_administer]);
   const scheduleExperienceRefresh = import_react45.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(() => {
@@ -45488,7 +45893,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) {
-          clearPhaseForIdentity(identity);
+          recomputePhaseForIdentity(identity);
           forceRender();
           return;
         }
@@ -45804,14 +46209,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return true;
     } catch (submitError) {
       const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
-      if (lifetimeRef.current.active) {
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
         optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
           (url) => URL.revokeObjectURL(url)
         );
         delete optimisticUserByPanelKeyRef.current[panelKey];
-        commitPanelPhase(panelKey, null);
-        identityBusyRef.current[identity] = false;
         commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+        recomputeBusyStateFromLog(identity);
+        recomputePhaseForIdentity(identity);
       }
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
         if (pendingAttempt && attemptNamespace) {
@@ -45985,8 +46390,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     try {
       const inspection = await inspectIdentityViaHeadless(original.destination);
       if (!active()) return;
-      const record5 = inspection && typeof inspection === "object" ? inspection : null;
-      const owner = record5?.identity && typeof record5.identity === "object" ? record5.identity : record5;
+      const record6 = inspection && typeof inspection === "object" ? inspection : null;
+      const owner = record6?.identity && typeof record6.identity === "object" ? record6.identity : record6;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
         answer(`Couldn't check: ${names.agent} couldn't be found.`);
         return;
@@ -46037,7 +46442,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (!saved) throw new Error("The quote edit was not saved. Keep this draft and try again.");
   }
   function reorderContexts(contexts, id, direction) {
-    const index2 = contexts.findIndex((record5) => record5.id === id);
+    const index2 = contexts.findIndex((record6) => record6.id === id);
     const to = index2 + (direction === "up" ? -1 : 1);
     if (index2 < 0 || to < 0 || to >= contexts.length) return contexts;
     const next = contexts.slice();
@@ -46626,7 +47031,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             if (item?.envelopeJson) void dispatchPendingAttempt(identity, itemId2, JSON.parse(item.envelopeJson).handling_mode, true);
           },
           onReconcile: (itemId2) => onStackReconcile(identity, itemId2),
-          onRemoveContext: (itemId2, contextId) => updatePendingContexts(identity, itemId2, (contexts) => contexts.filter((record5) => record5.id !== contextId)),
+          onRemoveContext: (itemId2, contextId) => updatePendingContexts(identity, itemId2, (contexts) => contexts.filter((record6) => record6.id !== contextId)),
           onEditContext: (itemId2, contextId, quote) => editPendingContext(identity, itemId2, contextId, quote),
           onReorderContext: (itemId2, contextId, direction) => updatePendingContexts(identity, itemId2, (contexts) => reorderContexts(contexts, contextId, direction)),
           onTrash: (itemId2) => onStackTrash(identity, itemId2),
@@ -46684,7 +47089,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           setContextDrafts((current) => ({ ...current, [draftKey]: next }));
         }, onRemove: (id) => {
           if (sendScope !== sendScopeRef.current) return;
-          const next = quotedContexts.filter((record5) => record5.id !== id);
+          const next = quotedContexts.filter((record6) => record6.id !== id);
           setContextDrafts((current) => ({ ...current, [draftKey]: next }));
           persistComposerDraft(identity, panelKey, draft, next);
         }, onReorder: (id, direction) => {
@@ -46942,40 +47347,35 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(
         AccessPanel,
         {
-          status: accessData.status,
-          config: accessData.config,
-          error: accessData.error,
+          status: experience?.access?.can_administer === true ? visibleAccessData?.status ?? null : null,
+          config: visibleAccessData?.config ?? null,
+          error: visibleAccessData?.error,
+          loading: visibleAccessData?.loading ?? true,
           readOnly: frontendReadOnly || experience?.console_policy?.read_only === true,
           agents: agents.map((agent) => ({
             identity: agent.identity || agent.member_id,
             label: agent.label
           })),
           onRefresh: () => void refreshAccessData(),
-          onSetEnabled: (enabled) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
+          onSetEnabled: (enabled) => runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
           onSaveAdmins: (admins) => {
             const config = {
               ...accessData.config || {},
               admins
             };
-            void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
+            return runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
           },
-          onUpsertRule: (rule) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
-          onDeleteRule: (id) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
-          onSaveGroup: (name2, group) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }),
-          onDeleteGroup: (name2) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }),
-          onPreview: async (subject, action, identity) => {
-            try {
-              return await executeHeadlessCommand(
-                CONSOLE_COMMAND_NAMES2.previewAccess,
-                controlWorkbenchTarget("access"),
-                identity ? { subject, action, identity } : { subject, action }
-              ) || null;
-            } catch (err) {
-              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
-              return null;
-            }
-          }
-        }
+          onUpsertRule: (rule) => runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
+          onDeleteRule: (id) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
+          onSaveGroup: (name2, group) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }),
+          onDeleteGroup: (name2) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }),
+          onPreview: async (subject, action, identity) => await executeHeadlessCommand(
+            CONSOLE_COMMAND_NAMES2.previewAccess,
+            controlWorkbenchTarget("access"),
+            identity ? { subject, action, identity } : { subject, action }
+          ) || null
+        },
+        accessScope
       );
     if (target.kind === "memory")
       return /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(

@@ -10,7 +10,7 @@ const entries = [
   "src/lib/adapters-integrity.test.ts",
   "src/lib/adapters-durable-append.test.ts",
   "src/lib/adapters-assistant-identity.test.ts",
-  "../packages/console-core/src/settled-history-activity.test.ts",
+  "../packages/console-core/src/activity-projection.test.ts",
   "src/lib/adapters-realtime-identity.test.ts",
   "../packages/console-core/src/assistant-message-identity.test.ts",
   "../packages/console-core/src/assistant-message-transport.test.ts",

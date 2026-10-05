@@ -1,16 +1,21 @@
 """Tests for typed event construction and parsing."""
 import json
 
+import pytest
+
 from meerkat_mobkit._sse import SseEvent
 from meerkat_mobkit.events import (
     AgentEvent,
     Event,
+    EventStream,
     MobEvent,
     RunCompleted,
     RunFailed,
     RunStarted,
     TextDelta,
     ToolCallRequested,
+    ToolExecutionCompleted,
+    ToolResultReceived,
     UnknownEvent,
     parse_agent_event,
 )
@@ -173,6 +178,111 @@ class TestAgentEvent:
 
 
 class TestMobEvent:
+    @pytest.mark.asyncio
+    async def test_unfamiliar_hook_reasons_stay_opaque_and_tool_status_unchanged(self):
+        # No receiving-refusal carrier is declared here; unfamiliar fields
+        # remain open payloads, not a local permission or run-failure fact.
+        reasons = [
+            {"reason_code": "future_hook_cause", "version": 99, "details": {"kind": "denied"}},
+            {"reason_code": 17, "refusal": "denied"},
+            ["denied", None],
+            None,
+        ]
+        hooks = [{
+            "type": "hook_launch_refused", "hook_id": "host-hook", "point": "pre_tool_execution",
+            "tool_use_id": "  opaque-call  ", "reason": reason,
+            "future_detail": {"version": 99, "values": [None, 1]},
+        } for reason in reasons]
+        result = '{"version":99,"cause":{"kind":"denied","future":[null,true]}}'
+        payloads = [
+            *hooks,
+            {"type": "tool_execution_completed", "id": "  opaque-call  ", "name": "read_file",
+             "content": [{"type": "text", "text": result}], "result": result,
+             "is_error": True, "duration_ms": 1},
+            {"type": "tool_result_received", "id": "  opaque-call  ", "name": "read_file",
+             "is_error": True, "future_detail": {"kind": "denied"}},
+            {"type": "run_completed", "session_id": "session-opaque", "result": "done"},
+        ]
+
+        async def wire():
+            for index, payload in enumerate(payloads):
+                yield SseEvent(id=str(index), event=payload["type"], data=json.dumps({
+                    "member_id": "agent-1", "payload": payload,
+                }))
+
+        events = [envelope.event async for envelope in EventStream(wire(), MobEvent)]
+        for event, hook in zip(events, hooks):
+            assert isinstance(event, UnknownEvent)
+            assert event.type == "hook_launch_refused"
+            assert event.data == hook
+        tool, feedback, completed = events[len(hooks):]
+        assert isinstance(tool, ToolExecutionCompleted)
+        assert (tool.id, tool.result, tool.is_error) == ("  opaque-call  ", result, True)
+        assert isinstance(feedback, ToolResultReceived)
+        assert (feedback.id, feedback.is_error) == ("  opaque-call  ", True)
+        assert isinstance(completed, RunCompleted)
+        assert (completed.session_id, completed.result) == ("session-opaque", "done")
+        assert not any(isinstance(event, RunFailed) for event in events)
+
+    @pytest.mark.asyncio
+    async def test_local_refusal_wire_keeps_call_feedback_and_stream_continuity(self):
+        refusal = '{"error":"operation_refused","message":"operation unavailable under current authorization"}'
+        hook = {
+            "type": "hook_launch_refused", "hook_id": "host-hook",
+            "point": "pre_tool_execution", "tool_use_id": "  mechanical-call  ",
+            "reason": {"reason_code": "confinement_refused", "refusal": "unsupported_platform"},
+            "future_detail": {"owner": ["opaque", 1]},
+        }
+        # The host projector retains native content and derives the published
+        # result field. ToolResultReceived remains metadata in this SDK.
+        payloads = [
+            hook,
+            {"type": "tool_execution_completed", "id": "  blocked-call  ",
+             "tool_call_id": "  blocked-call  ", "name": "delete_file",
+             "content": [{"type": "text", "text": refusal}], "result": refusal,
+             "is_error": True, "duration_ms": 0},
+            {"type": "tool_result_received", "id": "  blocked-call  ",
+             "name": "delete_file", "content": [{"type": "text", "text": refusal}],
+             "is_error": True},
+            {"type": "tool_execution_completed", "id": "permitted-call",
+             "tool_call_id": "permitted-call", "name": "read_file",
+             "content": [{"type": "text", "text": "permitted result"}],
+             "result": "permitted result", "is_error": False, "duration_ms": 1},
+            {"type": "tool_result_received", "id": "permitted-call",
+             "name": "read_file", "is_error": False},
+            {"type": "run_completed", "session_id": "session-1", "result": "done"},
+        ]
+
+        async def wire():
+            for index, payload in enumerate(payloads):
+                yield SseEvent(id=str(index), event=payload["type"], data=json.dumps({
+                    "member_id": "agent-1", "source": "agent-1", "payload": payload,
+                }))
+
+        events = [event async for event in EventStream(wire(), MobEvent)]
+        assert [type(event.event) for event in events] == [
+            UnknownEvent, ToolExecutionCompleted, ToolResultReceived,
+            ToolExecutionCompleted, ToolResultReceived, RunCompleted,
+        ]
+        assert all(event.member_id == "agent-1" for event in events)
+        unknown, blocked, blocked_feedback, permitted, permitted_feedback, completed = (
+            event.event for event in events
+        )
+        assert isinstance(unknown, UnknownEvent)
+        assert unknown.data == hook
+        assert isinstance(blocked, ToolExecutionCompleted)
+        assert (blocked.id, blocked.result, blocked.is_error) == ("  blocked-call  ", refusal, True)
+        assert isinstance(blocked_feedback, ToolResultReceived)
+        assert (blocked_feedback.id, blocked_feedback.is_error) == ("  blocked-call  ", True)
+        assert isinstance(permitted, ToolExecutionCompleted)
+        assert (permitted.id, permitted.result, permitted.is_error) == (
+            "permitted-call", "permitted result", False,
+        )
+        assert isinstance(permitted_feedback, ToolResultReceived)
+        assert (permitted_feedback.id, permitted_feedback.is_error) == ("permitted-call", False)
+        assert isinstance(completed, RunCompleted)
+        assert (completed.session_id, completed.result) == ("session-1", "done")
+
     def test_from_sse_typed(self):
         payload = json.dumps({
             "member_id": "agent-1",

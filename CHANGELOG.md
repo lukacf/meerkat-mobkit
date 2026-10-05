@@ -344,6 +344,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The console renders recognized current operation refusals, confinement
+  causes, pre-tool hook decisions/launch failures and outcome-audit failures as
+  distinct local feedback. Permitted sibling results and error status remain
+  visible; an outcome-audit notice does not change the action's actual result.
+  Unknown or malformed tool causes use the ordinary tool-result path, which may
+  display raw output, without a permission or mechanical-refusal classification.
+  Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`;
+  these projections do not configure native authorization or supply a grant editor.
+
 - Python SDK: `MobKitBuilder.gateway_init_timeout(seconds)` sets how long
   `connect()` waits for the gateway to answer `mobkit/init` (its `accepted`
   acknowledgement, or an older gateway's single response). The default stays
@@ -1124,6 +1133,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   non-terminal audit record exists and no plan, apply or recovery holds the
   mutation lock. A read no longer delays an apply. The same-process bilateral
   coordinator query still takes its coordinator and runtime locks.
+
+- Console access uses the server's action catalog and current administrator
+  state. Stale previews and mutation responses cannot replace another account's
+  state; failed saves retain the draft, and typed refusal details stay private
+  in both current and reconstructed conversation history.
 
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,
