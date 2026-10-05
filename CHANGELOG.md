@@ -11,19 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `MobRuntimeError` gains `MobStopFlowRunsUnsettled(Box<MobStopFlowRunsUnsettled>)`
   (see Changed). Exhaustive matches must handle it.
-
 - `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
   MobTerminalShutdownOutcome` (see Changed). Code constructing the report
   must set it; `MobTerminalShutdownOutcome` is `#[non_exhaustive]`.
-
 - `ContinuityStore::as_incremental_sessions` no longer has a default. Every
   continuity store now states whether it serves MobKit's session-delta
   channel: a decorator forwards its inner store's channel, and a
   whole-snapshot store returns `None` and says why.
   - The default `None` let wrappers around incremental-capable stores, and
     native stores that never considered the channel, silently fall back to
-    writing the whole session document at every turn boundary. One OB3
-    coordinator was rewritten in full, at 286 MB, 44 times a day.
+    writing the whole session document at every turn boundary. One
+    production coordinator session was rewritten in full, at 286 MB, 44
+    times a day.
   - Implementors without the method must add it.
 - `UnifiedRuntimeBuilderError` gains
   `SessionStoreNotIncremental { store_kind }` (see Added). Exhaustive matches
@@ -150,6 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   before a restart; to keep such an edge, declare it in your provider.
   Runtimes without a topology provider are unchanged: they unwire only the
   edges they wired.
+- Behaviour change: dropping a `MobkitRuntimeHandle` without `shutdown()`
+  now terminates its live module processes; previously they kept running.
+  Call `shutdown()` for an orderly stop (see Fixed, module subprocess reaping).
 - MobKit runs on meerkat 0.8.51:
   - `UnifiedRuntime::shutdown` drives the mob actor's terminal teardown with
     one `MobHandle::shutdown_with_report` call bounded by
@@ -166,7 +168,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     is 317 s, and the advertised `stdio_shutdown_horizon_ms` is 352 000, so
     the outer timeout can never fire inside the teardown and drop the
     per-member shutdown report. Hosts that honour the advertised horizon need
-    no change; a deployment grace period must cover 352 s plus process exit.
+    no change. Check the deployment's configured termination grace period
+    against 352 s plus process exit: a shorter grace can cut a shutdown short
+    and lose its per-member report.
   - The implicit-delegate idle sweep warns when a retirement does not
     complete within `retire`'s wait, then awaits the member's
     `retirement_settlement()` and reports how it settled: retired, or stuck
@@ -442,7 +446,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   display raw output, without a permission or mechanical-refusal classification.
   Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`;
   these projections do not configure native authorization or supply a grant editor.
-
 - Console voice applies Meerkat's barge-in playback hint
   (`live/assistant_playback_hint`, meerkat #1651). When the user speaks over
   audible assistant audio, Meerkat asks the client to duck its playback, and
@@ -489,7 +492,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   member, still narrowed by the child profile's `deny` list and governed by
   the child application tool policy. Documented under "Child mob tool policy
   and bundles" in the configuration reference.
-
 - `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
   `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
   host Rust tool bundles to meerkat-mob's `MobBuilder::register_tool_bundle`,
@@ -499,6 +501,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   name on both the builder and a supplied spec is refused as conflicting
   configuration. Agent-created child mobs receive only the bundles
   registered as child-available (see above).
+- Console: Find in transcript searches every loaded message, including turns
+  the windowed transcript keeps out of the DOM where the browser's
+  find-in-page cannot reach. Open it from the search button beside Copy
+  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
+  step through matching rows (newest first), each brought into view (and
+  revealed when it is behind Show earlier messages) and highlighted with
+  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
 - `mobkit/init` can run as accepted-then-settled (#550), so startup is no
   longer cut off by the SDK's 60 s request timeout. Both SDKs opt in by
   default.
@@ -783,7 +792,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Removed an inaccurate third-party attribution from the console scroll
   geometry, its notices files and the embedded console bundles; the code is
   original.
-
 - Console: scrolling up from the bottom of a transcript no longer sticks
   before it scrolls (#597). The first 32 px of an upward scroll stayed in
   the live-edge band and kept following the end, and a scroll within 1 px of
@@ -792,12 +800,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   console did not write (wheel, scrollbar, touch, or a gesture chained out
   of a code block) now leaves the live edge at once; following resumes on
   the way down, within the live-edge band or at the end.
-
 - Python and TypeScript SDK callbacks retain their originating gateway process
   across reconnect. Late results, errors and deadline/cancellation responses
   cannot answer reused callback IDs on a replacement process, and retired
   readers cannot fail its pending requests.
-
 - A voice channel reopened through MobKit while delegated work from an
   earlier channel was still running now opens with Meerkat's "work started
   before this call is still finishing" startup line (meerkat #1652), so the
@@ -806,9 +812,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   authority's post-close work source, as Meerkat's RPC router does; before,
   no MobKit door bound one.
 - A declared role migration is applied on the boot path, or refused typed;
-  it is never silently dropped (HomeCore: children declared
-  `role_migrations` to a restricted profile but kept their old role and
-  its tools, such as `spawn_member` and `delegate`, after the restart).
+  it is never silently dropped (children that declared `role_migrations`
+  to a restricted profile kept their old role and its tools, such as
+  `spawn_member` and `delegate`, after a restart).
   - The mob's explicit resume restores every member under its durable
     role before the session bridge runs, and Meerkat lets neither that
     restore nor its spawn customizer change the profile. The migration
@@ -836,7 +842,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Any attach under a declaration checks that the member runs the
     declared role, and refuses typed when it does not.
 - A managed peer edge the topology no longer wants is unwired after a
-  restart (HomeCore: children's agents kept reaching the parents' after the
+  restart (children's agents kept reaching their parents' agents after the
   topology provider stopped declaring those edges).
   - The managed-edge set was process memory, empty at boot, while the mob's
     wiring is durable and replays. A dropped edge was neither managed nor
@@ -859,7 +865,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Every kickoff request, and every typed `lifecycle` notice (meerkat #1608),
   now shows its typed summary (`Peer request: mob.kickoff_failed`); an
   ordinary peer request still shows its authored content.
-
 - The console aggregator no longer re-reads a large session's whole history
   twice after registration (#570). Registration's recovery pass could land
   while a member was idle between runs of a queued burst and read the
@@ -891,7 +896,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     a pass scheduled after it. The large session is now read once (one full
     read, converged after about 7 s), and the measured idle window stays
     near 15 ms. Verifying only the new suffix of a history is #573.
-
 - A restored identity member whose customizer tools could not be published
   before the mob build (an early `customize_build` failure, #563) no longer
   starts a run without them. The build asks meerkat to hold its run starts
@@ -908,14 +912,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   compacted past its retention cut could no longer be persisted
   (`identity_first_repeated_compaction`). Other projection errors still
   fail the write.
-
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled
   paths such as `../../<other-worktree>/console/node_modules/...` into
   `console/dist/index.cjs`, which passed the freshness check there and
   reached main once (regenerated in 4e337578).
-
 - The stdio gateway no longer queues ordinary requests behind `mobkit/init`
   (#550). Before, a request that arrived during startup waited in a 64-slot
   queue that nothing drained until init finished. A startup provider callback
@@ -929,7 +931,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Python SDK: a callback response is no longer written behind host requests
   queued for the gateway's stdin. Writes stay whole lines, and a callback
   response now waits only for the line currently being written (#550).
-
 - SDK transports (Python and TypeScript) no longer leave a request or a
   gateway callback waiting out its deadline because one stdout or stdin line
   was bad (#550):
@@ -975,7 +976,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     holds; such a descendant now gets EPIPE.
   - Behavior change: dropping the runtime handle now terminates its live
     module processes; previously they kept running.
-
 - Identity members no longer lose their `customize_build` tools on a
   restart, an adoption, a respawn or a delivery-time repair (#563). Before,
   those tools reached a member only as the per-spawn overlay of the one
@@ -1014,7 +1014,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `IdentityRuntime::set_customizer_tool_registry`, and
     `MobBootstrapSpec::with_spawn_member_customizer`, which composes instead of
     replacing.
-
 - An identity member that had not run a turn before a shutdown is
   materialized again at the next boot. The local continuity store creates its
   head-canonical tables only at the first delta write, but its per-session
@@ -1103,7 +1102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs
   `--trace`, and `--trace-invalidations` names the source) and lowers the
   rect-read limit to 12 per token (about 9 now, 13 before).
-
 - Console: a streaming reply no longer re-parses its whole Markdown source on
   every token. While a reply streams, its document renders as closed blocks,
   each parsed once, plus the open tail. A boundary is a blank line outside a
@@ -1117,7 +1115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   definitions, which resolve across blocks, renders as a whole parse on
   completion. `npm run perf:typing:browser` fails on more than 500 Markdown
   source characters parsed per streamed token.
-
 - Console: a streamed token no longer presents the whole transcript again.
   The continued (incremental) transcript derivation still rendered every
   entry on each token: run durations, the visibility filter, per-entry
@@ -1130,7 +1127,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   oracle and seeded fuzz still prove it equal to a full derivation.
   `npm run perf:typing:browser` fails on more than 4 transcript entries
   presented per streamed token (about 2 now, one per derivation).
-
 - Console: two per-render scans of the whole history no longer run on every
   streamed token. Day separators formatted their full date with locale date
   formatting each time the streaming turn rendered; a day key's label is now
@@ -1141,7 +1137,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   run instead of the whole log. `npm run perf:typing:browser` reports
   active-run frames read per token and fails on more than 0.05 day-label
   formats per streamed token.
-
 - Console: streamed text renders on every third animation frame instead of
   every frame, as a React transition. A frame that only adds streamed text
   waits for the third animation frame (counted in frames, so the pace slows
@@ -1153,15 +1148,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   streams instead of about once per token, and main-thread time per streamed
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
-
-- Console: Find in transcript searches every loaded message, including turns
-  the windowed transcript keeps out of the DOM where the browser's
-  find-in-page cannot reach. Open it from the search button beside Copy
-  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
-  step through matching rows (newest first), each brought into view (and
-  revealed when it is behind Show earlier messages) and highlighted with
-  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
-
 - Console: browser find-in-page and keyboard and screen-reader navigation
   still reach the windowed transcript. Measured turns within 20 turns of the
   mounted window stay in the DOM, parked as `hidden="until-found"` at their
@@ -1176,7 +1162,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   parked turns carry their full text, that the path find takes on a match
   keeps the geometry, and that keyboard focus reaches every loaded turn in
   order.
-
 - Console: the transcript mounts only the turns near the viewport. Every
   revealed turn used to stay mounted, so an operator who scrolled back kept
   the whole loaded history in the DOM (about 16,000 elements at 300 turns),
@@ -1200,7 +1185,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fonts, without LCD text or subpixel glyph positions) at 17 scroll
   positions including after a resize, and a selection, a focused control, an opened tool call and a rail
   jump must survive.
-
 - Console: a transcript row keeps what the reader opened if it unmounts and
   mounts again. Disclosure state lived in the DOM or in component state, so
   a remounted row reset it: event payloads, thinking blocks, tool calls,
@@ -1308,6 +1292,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   state. Stale previews and mutation responses cannot replace another account's
   state; failed saves retain the draft, and typed refusal details stay private
   in both current and reconstructed conversation history.
+- Test hygiene with no product change:
+  - the identity background lease renewal test waits for the renewal's own
+    `LeaseUpdated` event instead of a 45 ms wall-clock window (#566);
+  - the console stock-presentation scenario checks the table, link and image
+    in the reply to its accepted input, not the first table in the
+    transcript, which the windowed transcript can park out of view (#583);
+  - the console startup-deadline test expires its deadline once the HTTP
+    read has started, instead of after a fixed 150 ms budget (#586).
 
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,
