@@ -830,6 +830,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     read, converged after about 7 s), and the measured idle window stays
     near 15 ms. Verifying only the new suffix of a history is #573.
 
+- A restored identity member whose customizer tools could not be published
+  before the mob build (an early `customize_build` failure, #563) no longer
+  starts a run without them. The build asks meerkat to hold its run starts
+  (`MobBuilder::hold_restored_member_run_starts`, reason
+  `HostRunStartHoldReason::ToolsNotPublished`), so a queued input, a kickoff or
+  a peer message admitted when meerkat's own resume revives it waits. The
+  materialization that publishes its tools releases the hold
+  (`MobHandle::release_member_run_starts`). A release that fails keeps the
+  identity in `IdentityStatus::customizer_tools_pending` with the error.
 - Durable-behind admission skips transcript commits that meerkat 0.8.51's
   history retention has retired. Their parent projection now returns
   `TranscriptRevisionRetired` (a retired commit has no body to prove

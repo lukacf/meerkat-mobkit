@@ -8300,6 +8300,14 @@ pub struct MobBootstrapSpec {
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
     /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
     pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
+    /// Restored members whose customizer tools could not be published before
+    /// the mob build (an early `customize_build` failure, #563). Forwarded to
+    /// `MobBuilder::hold_restored_member_run_starts` for
+    /// `HostRunStartHoldReason::ToolsNotPublished`, so meerkat's restore
+    /// starts no run for them (a queued input, a kickoff, a peer message)
+    /// without their tools; the identity runtime releases each hold when the
+    /// member's materialization publishes them.
+    pub(crate) restored_members_awaiting_tools: Vec<meerkat_mob::AgentIdentity>,
     /// Process-local registry resolving exact application consequence-policy
     /// identities for member builds, forwarded to
     /// `MobBuilder::with_tool_consequence_policy_registry`.
@@ -8430,6 +8438,7 @@ impl MobBootstrapSpec {
             runtime_adapter: None,
             live_compose_inputs: None,
             spawn_member_customizer: None,
+            restored_members_awaiting_tools: Vec::new(),
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
             tool_bundles: BTreeMap::new(),
@@ -10524,6 +10533,12 @@ impl MobRuntime {
 
         if let Some(customizer) = spec.spawn_member_customizer.clone() {
             builder = builder.with_spawn_member_customizer(customizer);
+        }
+        if !spec.restored_members_awaiting_tools.is_empty() {
+            builder = builder.hold_restored_member_run_starts(
+                meerkat_mob::HostRunStartHoldReason::ToolsNotPublished,
+                spec.restored_members_awaiting_tools.iter().cloned(),
+            );
         }
         if let Some(registry) = spec.tool_consequence_policy_registry.clone() {
             builder = builder.with_tool_consequence_policy_registry(registry);
