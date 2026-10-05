@@ -122,6 +122,21 @@ export interface GatingActionResult {
   next_pending_id?: string;
 }
 
+/** Display projection of the current gating owner's records, not execution state. */
+export interface GatingAuditEntryView {
+  auditId?: string;
+  pendingId?: string;
+  actionId?: string;
+  eventType?: string;
+  actorId?: string;
+  riskTier: "r0" | "r1" | "r2" | "r3" | "unknown";
+  recordedRiskTier?: string;
+  outcome?: string;
+  decision?: string;
+  approverId?: string;
+  automaticAllowance: boolean;
+}
+
 export interface RoutingSectionView {
   routes: Array<{
     route_key: string;
@@ -445,6 +460,28 @@ export function normalizeIdentityInspectViewState(value: unknown): IdentityInspe
       : record.last_activity_ms === null
         ? { last_activity_ms: null }
         : {}),
+  };
+}
+
+export function normalizeGatingAuditEntry(value: unknown): GatingAuditEntryView {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const detail = record.detail && typeof record.detail === "object" && !Array.isArray(record.detail)
+    ? record.detail as Record<string, unknown> : {};
+  const tier = record.risk_tier;
+  return {
+    auditId: trimString(record.audit_id),
+    pendingId: trimString(record.pending_id),
+    actionId: trimString(record.action_id),
+    eventType: trimString(record.event_type),
+    actorId: trimString(record.actor_id),
+    riskTier: tier === "r0" || tier === "r1" || tier === "r2" || tier === "r3" ? tier : "unknown",
+    recordedRiskTier: trimString(tier),
+    outcome: trimString(record.outcome),
+    decision: trimString(detail.decision),
+    approverId: trimString(detail.approver_id),
+    automaticAllowance: record.event_type === "evaluated"
+      && (record.outcome === "allowed" || record.outcome === "allowed_with_audit"),
   };
 }
 
