@@ -21,6 +21,7 @@ import {
   systemNoticeClearsBusyState,
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
+import { MEERKAT_1608_KICKOFF_NOTICES } from "./fixtures/meerkat-1608-kickoff-notices";
 import { describeFailure, summarizeFailureData } from "./failure-summary";
 
 test("authorization feedback projects a typed operation refusal without ending the active run", () => {
@@ -4461,6 +4462,115 @@ function meerkat071KickoffNotice() {
   };
 }
 
+// Meerkat 0.8.52 sends member-kickoff status as a one-way typed lifecycle
+// notice: comms `kind: "lifecycle"`, the lifecycle kind as `intent`, no
+// request id, and model-facing notice text as content.
+const MEERKAT_LIFECYCLE_NOTICE_PROJECTION =
+  "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+  + " (display_name: incident-command-center/commander/incident-commander)\n"
+  + "Kind: mob.kickoff_started\n"
+  + "Params: {\n"
+  + "  \"peer\": \"incident-commander\",\n"
+  + "  \"role\": \"commander\"\n"
+  + "}\n"
+  + "\n"
+  + "This is a one-way status notice, not a request. There is nothing to answer:"
+  + " do not call send_response or send_message for it.";
+
+function kickoffNoticeFrame(form: "lifecycle" | "request", intent: string, index: number) {
+  const summary = `${form === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`;
+  return {
+    id: `kickoff-${form}-${index}`,
+    event: "system_notice",
+    timestampMs: Date.parse("2026-10-03T18:48:01.519Z") + index,
+    sourceKind: "session_history" as const,
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "comms",
+        body: summary,
+        blocks: [{
+          type: "comms",
+          kind: form,
+          direction: "incoming",
+          peer: {
+            id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+            display_name: "incident-command-center/commander/incident-commander",
+          },
+          ...(form === "request" ? { request_id: `964020b4-c9b6-4c31-ba6c-3059827${index}` } : {}),
+          intent,
+          summary,
+          payload: { peer: "incident-commander", role: "commander" },
+          content: [{
+            type: "text",
+            text: form === "lifecycle"
+              ? MEERKAT_LIFECYCLE_NOTICE_PROJECTION.replace("mob.kickoff_started", intent)
+              : MEERKAT_071_PEER_REQUEST_PROJECTION.replace("mob.kickoff_started", intent),
+          }],
+        }],
+      },
+    },
+  };
+}
+
+test("mapFramesToTimelineEntries renders every kickoff phase, lifecycle or request form, as its typed status", () => {
+  const phases = ["pending", "starting", "started", "callback_pending", "failed", "cancelled"] as const;
+  const labels = ["pending", "starting", "started", "waiting for callback", "failed", "cancelled"];
+  const agent = { agent_id: "scribe", member_id: "scribe", label: "Scribe", kind: "mob_agent" } as const;
+  const check = (label: string, frames: Parameters<typeof mapFramesToTimelineEntries>[1], expected: Record<string, unknown>) => {
+    const entries = mapFramesToTimelineEntries(agent, frames, { renderInteractionStartsAsUser: true });
+    const blocks = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : []);
+    assert.deepEqual(blocks.find((block) => block.type === "member-kickoff"), expected, label);
+    assert.ok(!blocks.some((block) => block.type === "tool-call"), `${label}: no peer card`);
+    const rendered = JSON.stringify(entries);
+    for (const marker of ["Peer lifecycle notice from", "Peer request from", "pubkey", "send_response", "nothing to answer"]) {
+      assert.ok(!rendered.includes(marker), `${label} must not surface model-facing text "${marker}"`);
+    }
+  };
+  phases.forEach((phase, index) => {
+    // Meerkat #1608's serialized lifecycle notice, as is and with the
+    // peer_spec live mob payloads also carry.
+    const message = structuredClone(MEERKAT_1608_KICKOFF_NOTICES[index]) as unknown as Record<string, unknown>;
+    assert.equal((message.blocks as Array<Record<string, unknown>>)[0].intent, `mob.kickoff_${phase}`);
+    const lifecycle = {
+      type: "member-kickoff", phase, member: "delivery-lead", role: "delivery",
+      copyText: `Kickoff ${labels[index]}: delivery-lead`,
+    };
+    const frame = (data: Record<string, unknown>) => [{
+      id: `kickoff-lifecycle-${index}`, event: "system_notice", timestampMs: Date.parse("2026-10-03T18:48:01.519Z") + index,
+      sourceKind: "session_history" as const, data: { message: data },
+    }];
+    check(`lifecycle mob.kickoff_${phase}`, frame(message), lifecycle);
+    const withPeerSpec = structuredClone(message);
+    const block = (withPeerSpec.blocks as Array<Record<string, unknown>>)[0];
+    block.payload = { ...(block.payload as Record<string, unknown>), peer_spec: {
+      address: "inproc://incident-command-center/delivery/delivery-lead",
+      peer_id: "6f6114cd-2cf7-590f-a172-0e36feacd12c", pubkey: [20, 129, 97, 58],
+    } };
+    check(`lifecycle mob.kickoff_${phase} with peer_spec`, frame(withPeerSpec), lifecycle);
+    // The request form older sessions keep.
+    check(`request mob.kickoff_${phase}`, [kickoffNoticeFrame("request", `mob.kickoff_${phase}`, index)], {
+      type: "member-kickoff", phase, member: "incident-commander", role: "commander",
+      copyText: `Kickoff ${labels[index]}: incident-commander`,
+    });
+  });
+});
+
+test("mapFramesToTimelineEntries renders any other typed lifecycle notice by its summary, never its content", () => {
+  const frame = kickoffNoticeFrame("lifecycle", "mob.member_paused", 0);
+  const block = frame.data.message.blocks[0];
+  block.content = [{ type: "text", text: MEERKAT_LIFECYCLE_NOTICE_PROJECTION.replace("mob.kickoff_started", "mob.member_paused") }];
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "scribe", member_id: "scribe", label: "Scribe", kind: "mob_agent" },
+    [frame],
+    { renderInteractionStartsAsUser: true },
+  );
+  const card = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : [])
+    .find((candidate) => candidate.type === "tool-call");
+  assert.equal(card?.type === "tool-call" ? card.peerBody : undefined, "Peer lifecycle: mob.member_paused");
+  assert.ok(!JSON.stringify(entries).includes("Peer lifecycle notice from"));
+});
+
 test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport projection as the comms body", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -4496,13 +4606,14 @@ test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport 
   const block = commsEntry && "blocks" in commsEntry && Array.isArray(commsEntry.blocks)
     ? commsEntry.blocks[0]
     : null;
-  assert.equal(block?.type, "tool-call");
-  const peerBody = block?.type === "tool-call" ? block.peerBody || "" : "";
-  assert.equal(peerBody, "Peer request: mob.kickoff_started");
+  // A kickoff request renders as its typed status, not a peer message.
+  assert.equal(block?.type, "member-kickoff");
+  const statusText = block?.type === "member-kickoff" ? `${block.member} ${block.role ?? ""} ${block.copyText}` : "";
+  assert.equal(block?.type === "member-kickoff" ? block.copyText : "", "Kickoff started: incident-commander");
   for (const marker of ["pubkey", "peer_spec", "send_response", "Do not answer this request"]) {
     assert.ok(
-      !peerBody.includes(marker),
-      `comms body must not leak transport scaffold marker "${marker}": ${peerBody}`,
+      !statusText.includes(marker),
+      `kickoff status must not leak transport scaffold marker "${marker}": ${statusText}`,
     );
   }
 

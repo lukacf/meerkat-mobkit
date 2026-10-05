@@ -2,6 +2,7 @@ import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, g
 import clsx from "clsx";
 
 import {
+  memberKickoffPhaseLabel,
   conversationRichPeerBodyForDisplay,
   conversationRichPeerIntentForDisplay,
   normalizeConversationDisplayText,
@@ -119,6 +120,29 @@ function renderBlock(
           </span>
         </header>
         {block.detail ? <div className="cc-background-job__detail">{block.detail}</div> : null}
+      </section>
+    );
+  }
+
+  if (block.type === "member-kickoff") {
+    return (
+      <section
+        className="cc-member-kickoff"
+        data-phase={block.phase}
+        aria-label={block.copyText}
+        key={`member-kickoff-${index}`}
+      >
+        <svg className="cc-member-kickoff__icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <circle cx="10" cy="7" r="3" />
+          <path d="M4.5 16.5c.8-2.8 3-4.5 5.5-4.5s4.7 1.7 5.5 4.5" strokeLinecap="round" />
+        </svg>
+        <span className="cc-member-kickoff__kind">Kickoff</span>
+        <strong className="cc-member-kickoff__member">{block.member}</strong>
+        {block.role ? <span className="cc-member-kickoff__role">{block.role}</span> : null}
+        <span className="cc-member-kickoff__phase" data-phase={block.phase}>
+          <span className="cc-member-kickoff__phase-dot" aria-hidden="true" />
+          {memberKickoffPhaseLabel(block.phase)}
+        </span>
       </section>
     );
   }

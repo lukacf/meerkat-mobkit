@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildSignalGroupsForTest } from "./SignalsRail";
 import type { ConsoleFrame } from "../types";
+import { MEERKAT_1608_KICKOFF_NOTICES } from "../lib/fixtures/meerkat-1608-kickoff-notices";
 
 test("signals rail deduplicates live and history copies of the same visible reply", () => {
   const frames: ConsoleFrame[] = [
@@ -146,10 +147,10 @@ test("signals rail previews never leak the meerkat 0.7.1 peer transport projecti
   ];
 
   const groups = buildSignalGroupsForTest(frames);
-  const received = groups.find((group) => group.title.startsWith("Received from"));
+  const kickoff = groups.find((group) => group.title === "Kickoff started");
 
-  assert.ok(received, "incoming comms notice should produce a Received from signal");
-  assert.equal(received?.detail, "Peer request: mob.kickoff_started");
+  assert.ok(kickoff, "a kickoff notice produces its typed kickoff signal");
+  assert.equal(kickoff?.detail, "Incident Commander");
   for (const group of groups) {
     for (const item of group.items) {
       assert.ok(
@@ -248,4 +249,30 @@ test("signals rail names a provider failure from meerkat's typed error_report", 
   const [signal] = groups[0].items;
   assert.equal(signal.label, "Agent turn failed");
   assert.equal(signal.detail, "LLM error: authentication failed (401) (llm_auth_error)");
+});
+
+test("signals rail shows a typed kickoff lifecycle notice by its phase, never its notice text", () => {
+  // Meerkat #1608's serialized mob.kickoff_failed lifecycle notice.
+  const failedNotice = MEERKAT_1608_KICKOFF_NOTICES.find((message) => message.blocks[0].intent === "mob.kickoff_failed");
+  assert.ok(failedNotice);
+  const frames: ConsoleFrame[] = [{
+    id: "kickoff-failed",
+    event: "system_notice",
+    identity: "scribe",
+    timestampMs: Date.now(),
+    sourceKind: "session_history",
+    data: structuredClone(failedNotice) as unknown as Record<string, unknown>,
+  }];
+  const groups = buildSignalGroupsForTest(frames);
+  const failed = groups.find((group) => group.title === "Kickoff failed");
+  assert.ok(failed, "a failed kickoff produces its typed signal");
+  assert.equal(failed?.detail, "Delivery Lead (delivery)");
+  for (const group of groups) {
+    for (const item of group.items) {
+      assert.ok(
+        !/peer_id|send_response|nothing to answer/i.test(`${item.label} ${item.detail}`),
+        `signal preview must not surface lifecycle notice text: ${item.label} ${item.detail}`,
+      );
+    }
+  }
 });

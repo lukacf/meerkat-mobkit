@@ -1,4 +1,5 @@
 import type { ToolCompletionEvidence } from "./tool-completion";
+import type { MemberKickoffPhase } from "./member-kickoff";
 const SUMMARY_HEADER_RE = /^(\d+)\s+files?\s+changed(?:\s+\+([\d,]+)\s+-([\d,]+))?$/i;
 const SUMMARY_FILE_RE = /^(.+?)\s+\+([\d,]+)\s+-([\d,]+)$/;
 const FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
@@ -56,6 +57,15 @@ export interface ConversationRichBackgroundJobBlock {
   displayName?: string;
   status: string;
   detail: string;
+  copyText: string;
+}
+
+/** Presentation of a canonical member-kickoff status notice (`mob.kickoff_<phase>`), never inferred from prose. */
+export interface ConversationRichMemberKickoffBlock {
+  type: "member-kickoff";
+  phase: MemberKickoffPhase;
+  member: string;
+  role?: string;
   copyText: string;
 }
 
@@ -149,6 +159,7 @@ export type ConversationRichBlock =
   | ConversationRichMarkdownBlock
   | ConversationRichParagraphBlock
   | ConversationRichBackgroundJobBlock
+  | ConversationRichMemberKickoffBlock
   | ConversationRichHeadingBlock
   | ConversationRichCodeBlock
   | ConversationRichTableBlock
@@ -519,6 +530,7 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
         ...block.rows.map((row) => row.join(" | ")),
       ].join("\n").trim();
     case "background-job":
+    case "member-kickoff":
       return block.copyText;
     case "heading":
       return block.text.trim();

@@ -4,6 +4,7 @@ import { conversationEntryText } from "@console-core";
 import { mapFramesToTimelineEntries as stock } from "./adapters";
 import { mapFramesToTimelineEntries as shared } from "../../../packages/console-core/src/adapters";
 import type { ConsoleFrame } from "../types";
+import { MEERKAT_1608_KICKOFF_NOTICES } from "./fixtures/meerkat-1608-kickoff-notices";
 
 function frame(id: string, event: string, data: unknown, extra: Partial<ConsoleFrame> = {}): ConsoleFrame {
   return { id, event, data, timestampMs: 100, ...extra };
@@ -450,11 +451,70 @@ for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const)
         const rendered = JSON.stringify(mapper(null, [typedCommsNotice(kind, intent, KICKOFF_PROJECTION.replace("INTENT", intent))], { textMode }));
         assert.ok(!/send_response|pubkey|Do not answer this request|Peer request from peer_id/.test(rendered),
           `${surface} ${textMode} ${kind} ${intent} shows model-facing transport text`);
-        assert.ok(rendered.includes(`${kind === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`),
-          `${surface} ${textMode} ${kind} ${intent} shows its typed summary`);
+        assert.ok(rendered.includes(`"type":"member-kickoff","phase":"${intent.slice("mob.kickoff_".length)}"`),
+          `${surface} ${textMode} ${kind} ${intent} renders as its typed kickoff status`);
       }
       const authored = JSON.stringify(mapper(null, [typedCommsNotice("request", "review.document", "Please review the release notes.")], { textMode }));
       assert.ok(authored.includes("Please review the release notes."), `${surface} ${textMode}: an ordinary request's authored content still shows`);
     });
   }
+}
+
+// Meerkat #1608: member-kickoff status arrives as a one-way typed lifecycle
+// notice (older sessions keep the request form). Its content is model-facing
+// notice text; neither surface may show it, and both render the typed status.
+const LIFECYCLE_NOTICE_TEXT = "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c\n"
+  + "Kind: KIND\nParams: {\"peer\":\"incident-commander\",\"role\":\"commander\"}\n\n"
+  + "This is a one-way status notice, not a request. There is nothing to answer: do not call send_response or send_message for it.";
+
+function commsNotice(kind: "lifecycle" | "request", intent: string): ConsoleFrame {
+  const summary = `${kind === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`;
+  return {
+    id: `notice-${kind}-${intent}`,
+    event: "system_notice",
+    timestampMs: 1_000,
+    sourceKind: "session_history",
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "comms",
+        body: summary,
+        blocks: [{
+          type: "comms",
+          kind,
+          direction: "incoming",
+          peer: { id: "6f6114cd-2cf7-590f-a172-0e36feacd12c", display_name: "incident-command-center/commander/incident-commander" },
+          ...(kind === "request" ? { request_id: "964020b4-c9b6-4c31-ba6c-30598279b388" } : {}),
+          intent,
+          summary,
+          payload: { peer: "incident-commander", role: "commander" },
+          content: [{ type: "text", text: LIFECYCLE_NOTICE_TEXT.replace("KIND", intent) }],
+        }],
+      },
+    },
+  };
+}
+
+for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const) {
+  test(`${surface}: kickoff notices render as typed status and never show lifecycle notice text`, () => {
+    // Meerkat #1608's serialized lifecycle notices, every phase.
+    for (const message of MEERKAT_1608_KICKOFF_NOTICES) {
+      const phase = message.blocks[0].intent.slice("mob.kickoff_".length);
+      const entries = mapper(null, [frame(`real-${phase}`, "system_notice", { message: structuredClone(message) }, { sourceKind: "session_history" })]);
+      const blocks = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : []);
+      const kickoff = blocks.find((block) => block.type === "member-kickoff");
+      assert.equal(kickoff?.type === "member-kickoff" ? kickoff.phase : undefined, phase, `${surface} lifecycle ${phase}`);
+      assert.equal(kickoff?.type === "member-kickoff" ? kickoff.member : undefined, "delivery-lead", `${surface} lifecycle ${phase}`);
+      assert.ok(!JSON.stringify(entries).includes("Peer lifecycle notice from"), `${surface} lifecycle ${phase}`);
+    }
+    {
+      const entries = mapper(null, [commsNotice("request", "mob.kickoff_started")]);
+      const blocks = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : []);
+      const kickoff = blocks.find((block) => block.type === "member-kickoff");
+      assert.equal(kickoff?.type === "member-kickoff" ? kickoff.phase : undefined, "started", `${surface} request started`);
+    }
+    const other = mapper(null, [commsNotice("lifecycle", "mob.member_paused")]);
+    assert.ok(!JSON.stringify(other).includes("Peer lifecycle notice from"), `${surface}: other lifecycle notices show their summary`);
+    assert.ok(JSON.stringify(other).includes("Peer lifecycle: mob.member_paused"), `${surface}: by its summary`);
+  });
 }
