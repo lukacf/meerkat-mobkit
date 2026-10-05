@@ -195,9 +195,13 @@ impl meerkat_client::LlmClient for ScriptedClient {
                 }
                 // A typed post-admission failure whose message the repairable
                 // classifier accepts. The work WAS admitted; the turn then
-                // failed.
+                // failed. It must be a failure meerkat does NOT retry inside
+                // the turn, so that one LLM call proves MobKit did not
+                // resubmit: meerkat 0.8.51 retries `IncompleteResponse` (a
+                // truncated stream) under its bounded agent-loop policy, so
+                // that variant would count meerkat's own replays here.
                 None => {
-                    yield Err(LlmError::IncompleteResponse {
+                    yield Err(LlmError::StreamParseError {
                         message: REPAIRABLE_SENTINEL.to_string(),
                     });
                 }
