@@ -27,8 +27,8 @@ function historicalFrames() {
     frame(37, "tool_call_requested", { id: "reply-call", tool_call_id: "reply-call", name: "send_response",
       assistant_message_id: "tool-assistant", args: { peer_id: "primary-peer", in_reply_to: "kickoff-interaction", status: "completed" },
       type: "session_history", source_event_type: "session_history" }, { run_id: "kickoff-run", interaction_id: "kickoff-interaction" }),
-    // The captured tool result has no run or interaction ID. It is the legacy
-    // activity that remains busy without a validated settled history boundary.
+    // The captured tool result has no run or interaction ID. Saved tool rows
+    // remain transcript evidence and never reserve current work.
     frame(38, "tool_execution_completed", { id: "reply-call", tool_call_id: "reply-call", result: receipt,
       content: [{ type: "text", text: receipt }], is_error: false, type: "session_history", source_event_type: "session_history" }),
     frame(39, "text_complete", { assistant_message_id: "final-assistant", text: "Kickoff started acknowledged.",
@@ -118,10 +118,16 @@ async function runHistoryQueue(mode) {
   if (noText) boundary.payload.assistant_message_ids = ["tool-assistant"];
   if (["seed", "late-history", "update-to-history", "update-to-live"].includes(mode)) initial.push(boundary);
   if (mode === "update-to-history") initial[0] = { ...initial[0], source: { kind: "console_event" } };
-  if (mode === "active-run") initial.unshift(frame(36, "run_started", { run_id: "kickoff-run", source_event_type: "run_started" },
-    { source: { kind: "console_event" }, run_id: "kickoff-run", interaction_id: "kickoff-interaction", status: "delivered" }));
+  if (mode === "active-run") {
+    initial.unshift(frame(36, "run_started", { run_id: "kickoff-run", source_event_type: "run_started" },
+      { source: { kind: "console_event" }, run_id: "kickoff-run", interaction_id: "kickoff-interaction", status: "delivered" }));
+    initial.push(frame(40, "run_started", { run_id: "current-run", source_event_type: "run_started" },
+      { source: { kind: "console_event" }, run_id: "current-run", interaction_id: "kickoff-interaction", status: "delivered" }));
+    initial.push(frame(41, "text_delta", { delta: "Current run is still working." },
+      { source: { kind: "console_event" }, run_id: "current-run", interaction_id: "kickoff-interaction", status: "delivered" }));
+  }
   if (mode === "newer-live") initial.push(frame(44, "tool_call_requested", { id: "live-call", tool_call_id: "live-call", name: "peers" },
-    { source: { kind: "console_event" }, status: "delivered" }));
+    { source: { kind: "console_event" }, run_id: "current-run", interaction_id: "kickoff-interaction", status: "delivered" }));
   if (mode === "other-session") {
     boundary.session_id = "other-session"; boundary.payload.session_id = "other-session";
   }
@@ -134,6 +140,9 @@ async function runHistoryQueue(mode) {
   page.on("pageerror", error => result.errors.push(error.message));
   const sends = () => fixture.requests.filter(call => call.method === "mobkit/console/send");
   const emit = item => { result.emitted.push(item); fixture.emit(item); };
+  const waitForSend = () => page.waitForResponse(response => response.url().endsWith("/console/rpc")
+    && response.request().postDataJSON()?.method === "mobkit/console/send");
+  const waitsForCurrentWork = ["active-run", "newer-live", "update-to-history", "update-to-live"].includes(mode);
   const text = `Continue the review after history recovery (${mode}).`;
   try {
     await page.goto(`${fixture.baseUrl}/console`, { waitUntil: "domcontentloaded" });
@@ -146,9 +155,10 @@ async function runHistoryQueue(mode) {
       await pane.locator("[data-conversation-row-id]").first().waitFor();
     }
     if (mode === "no-final-text") {
-      await typing.waitFor();
+      assert.equal(await typing.count(), 0, "saved tools cannot open a phase even without final text or a snapshot");
       emit(boundary);
-      await typing.waitFor({ state: "hidden" });
+      await page.waitForTimeout(350);
+      assert.equal(await typing.count(), 0, "a history snapshot cannot open a phase either");
     }
     if (mode === "late-history") {
       emit(tools[0]); emit(tools[1]);
@@ -165,30 +175,41 @@ async function runHistoryQueue(mode) {
       emit(update("console_event"));
       await typing.waitFor();
     }
-    await page.getByTestId(`chat-composer:${identity}`).fill(text);
-    await page.getByTestId(`chat-send:${identity}`).click();
-    if (!["seed", "no-final-text", "late-history"].includes(mode)) {
-      await page.getByTestId("pending-stack").waitFor();
-      assert.equal(sends().length, 0, "historical tool activity gates the queued draft before any settled boundary");
-      if (mode === "update-to-history") emit(update("session_history"));
-      else if (mode !== "no-boundary") emit(boundary);
+    if (!waitsForCurrentWork) {
+      assert.equal(await typing.count(), 0, "history-only rows cannot reserve current work, with or without a snapshot");
     }
-    if (["seed", "stream", "no-final-text", "late-history", "update-to-history"].includes(mode)) {
-      await page.waitForResponse(response => response.url().endsWith("/console/rpc")
-        && response.request().postDataJSON()?.method === "mobkit/console/send", { timeout: 5_000 }).catch(error => {
-        if (sends().length !== 1) throw error;
-      });
-      assert.equal(sends().length, 1, "the settled boundary releases the queued message exactly once");
-      assert.equal(sends()[0].params.content, text);
-      assert.equal(sends()[0].params.identity, identity);
+    await page.getByTestId(`chat-composer:${identity}`).fill(text);
+    let sendResponse = waitsForCurrentWork ? null : waitForSend();
+    await page.getByTestId(`chat-send:${identity}`).click();
+    if (waitsForCurrentWork) {
+      await page.getByTestId("pending-stack").waitFor();
+      assert.equal(sends().length, 0, "current live work must retain the queued draft");
       emit(boundary);
       await page.waitForTimeout(350);
-      assert.equal(sends().length, 1, "replaying the settled snapshot cannot submit again");
-    } else {
-      await page.waitForTimeout(700);
       await page.getByTestId("pending-stack").waitFor();
-      assert.equal(sends().length, 0, `${mode} cannot settle activity or release the queued message`);
+      assert.equal(sends().length, 0, "a snapshot cannot settle current live work");
+      if (mode === "update-to-history") {
+        sendResponse = waitForSend();
+        emit(update("session_history"));
+      } else {
+        const terminal = (cursor, runId) => frame(cursor, "interaction_complete", { source_event_type: "interaction_complete" },
+          { source: { kind: "console_event" }, run_id: runId, interaction_id: "kickoff-interaction" });
+        emit(terminal(45, mode === "active-run" ? "kickoff-run" : "unrelated-old-run"));
+        await page.waitForTimeout(350);
+        await page.getByTestId("pending-stack").waitFor();
+        assert.equal(sends().length, 0, "an old run terminal cannot release the current run's queued message");
+        await typing.waitFor();
+        sendResponse = waitForSend();
+        emit(terminal(46, mode === "update-to-live" ? "kickoff-run" : "current-run"));
+      }
     }
+    await sendResponse;
+    assert.equal(sends().length, 1, "the draft sends exactly once when current work permits it");
+    assert.equal(sends()[0].params.content, text);
+    assert.equal(sends()[0].params.identity, identity);
+    if (mode !== "no-boundary") emit(boundary);
+    await page.waitForTimeout(350);
+    assert.equal(sends().length, 1, "history snapshot arrival or replay cannot submit again");
     assert.deepEqual(result.errors, []);
     result.passed = true;
     process.stdout.write(`browser settled history queue ${mode} ok\n`);
