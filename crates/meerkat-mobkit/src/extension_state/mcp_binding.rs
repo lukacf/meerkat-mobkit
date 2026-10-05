@@ -392,7 +392,7 @@ mod tests {
         let binding = Arc::new(binding(public, runtime.clone()).unwrap());
         let durable = binding.public_config().clone();
         let mut request = vec![durable.clone()];
-        resolve_document_mcp_configs(&mut request, &[binding.clone()]).unwrap();
+        resolve_document_mcp_configs(&mut request, std::slice::from_ref(&binding)).unwrap();
         assert_eq!(request, vec![runtime]);
         let encoded = serde_json::to_string(&durable).unwrap();
         assert!(!encoded.contains("first-process-secret"));
@@ -449,7 +449,7 @@ mod tests {
                         "documents",
                         "http://127.0.0.1/mcp",
                         HashMap::new(),
-                    )
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -482,21 +482,23 @@ mod tests {
                         "documents",
                         "http://127.0.0.1/mcp",
                         HashMap::new(),
-                    )
+                    );
                 }
                 _ => unreachable!(),
             }
             let mut request = vec![changed];
             let before = request.clone();
             assert!(
-                resolve_document_mcp_configs(&mut request, &[binding.clone()]).is_err(),
+                resolve_document_mcp_configs(&mut request, std::slice::from_ref(&binding)).is_err(),
                 "{field}"
             );
             assert_eq!(request, before, "no partial resolution on {field}");
         }
         let mut duplicate = vec![binding.public_config().clone(); 2];
         let before = duplicate.clone();
-        assert!(resolve_document_mcp_configs(&mut duplicate, &[binding.clone()]).is_err());
+        assert!(
+            resolve_document_mcp_configs(&mut duplicate, std::slice::from_ref(&binding)).is_err()
+        );
         assert_eq!(duplicate, before);
         let unrelated = McpServerConfig::stdio("unrelated", "ordinary-mcp", vec![], HashMap::new());
         let mut request = vec![unrelated.clone()];

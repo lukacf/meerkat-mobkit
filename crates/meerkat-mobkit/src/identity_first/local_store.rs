@@ -4397,7 +4397,7 @@ mod tests {
         );
         assert!(matches!(
             store
-                .resolve_many(&[impostor.clone()])
+                .resolve_many(std::slice::from_ref(&impostor))
                 .await
                 .unwrap()
                 .get(&impostor),
