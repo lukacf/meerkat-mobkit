@@ -54,7 +54,13 @@ type Session = {
   anchor: ConversationScrollAnchor | null;
   pendingSubmittedRow: string | null;
   lastSubmittedRow: string | null;
+  /// The position the controller last wrote (or observed for a pending
+  /// browser reveal), read back from the viewport so it is exactly what that
+  /// write's scroll event reports.
   expectedScrollTop: number | null;
+  /// The last position seen, written or observed, so a scroll event can tell
+  /// which way it moved.
+  lastScrollTop: number | null;
   requestedAnchor: string | null;
   awaitingAnchor: boolean;
   missingAnchor: boolean;
@@ -148,8 +154,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     // and a restore written in between snapped to the nearest turn start.
     if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
     if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
-    session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
+    // Read back the value the browser kept (clamped or rounded): this write's
+    // scroll event reports exactly it, so the event is recognised as ours
+    // without a tolerance that would also swallow a small user scroll.
+    session.expectedScrollTop = viewport.scrollTop;
+    session.lastScrollTop = session.expectedScrollTop;
   }, []);
 
   const applyLayout = useCallback(() => {
@@ -319,6 +329,7 @@ export function useConversationScrollController(options: ConversationScrollContr
         pendingSubmittedRow: remembered?.pendingSubmittedRow ?? null,
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
+        lastScrollTop: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false,
@@ -348,6 +359,9 @@ export function useConversationScrollController(options: ConversationScrollContr
     const onScroll = () => {
       const session = sessionRef.current;
       if (!session) return;
+      const observed = viewport.scrollTop;
+      const previous = session.lastScrollTop;
+      session.lastScrollTop = observed;
       // Clearing rows while an identity's authorized history loads can clamp
       // scrollTop and emit a native scroll event. Preserve the pending anchor;
       // explicit pointer, wheel and keyboard intent cancel it via readHistory.
@@ -355,12 +369,21 @@ export function useConversationScrollController(options: ConversationScrollContr
         publish();
         return;
       }
-      if (session.expectedScrollTop !== null && Math.abs(viewport.scrollTop - session.expectedScrollTop) <= 1) {
+      if (session.expectedScrollTop !== null && Math.abs(observed - session.expectedScrollTop) <= 0.5) {
         publish();
         return;
       }
       session.expectedScrollTop = null;
-      session.mode = conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
+      // Any upward movement the controller did not write leaves the live edge
+      // at once, whatever produced it (wheel, scrollbar, touch, a gesture
+      // chained out of a nested scroller). Only a scroll that is not upward,
+      // or a clamp that lands exactly at the end, may stay or resume
+      // following within the live-edge band: the band applies on the way
+      // down. Staying in the band on the way up let the next streamed layout
+      // pass snap the reader back to the end.
+      const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
+      const movedUp = previous !== null && observed < previous - 0.5 && end - observed > 0.5;
+      session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
       cancelReveal(session);
@@ -399,6 +422,7 @@ export function useConversationScrollController(options: ConversationScrollContr
         // A nearby control can be revealed before its native scroll event.
         // Keep that observed position expected if the click grows its content.
         session.expectedScrollTop = viewport.scrollTop;
+        session.lastScrollTop = session.expectedScrollTop;
       }
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });

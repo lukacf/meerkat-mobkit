@@ -572,8 +572,66 @@ describe("conversation scroll intent", () => {
     render(<Harness />);
     const viewport = screen.getByTestId("viewport");
     rowReads.clear();
+    // The content shrinks by 20 px and the browser clamps scrollTop to the
+    // new end: the scroll lands exactly at the live edge.
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 980 });
     userScroll(viewport, 780);
     expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
     expect(rowReads.size).toBe(0);
+  });
+});
+
+describe("leaving the live edge upward", () => {
+  // Following the end, a reader scrolls up by a few pixels while a reply
+  // streams in. Any upward movement the controller did not write leaves the
+  // live edge at once: the 32 px live-edge band applies only on the way down,
+  // and the growth must not snap the reader back to the end.
+  const grown = [...baseRows, { id: "streamed", height: 160 }];
+  test.each([1, 2, 5, 10])("a %i px wheel scroll up during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: -distance });
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test.each([1, 2, 5, 10])("a %i px scroll-event-only move up (scrollbar or touch) during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test.each([1, 2, 5, 10])("a %i px move up that chains out of a nested scroller during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    // A code block that can still scroll up owns the wheel, so the wheel path
+    // does not leave the live edge; the viewport scroll that follows when the
+    // gesture chains out of it must.
+    const nested = document.createElement("pre");
+    nested.style.overflowY = "auto";
+    Object.defineProperties(nested, { scrollHeight: { configurable: true, value: 400 }, clientHeight: { configurable: true, value: 100 } });
+    viewport.querySelector('[data-conversation-row-id="row-9"]')!.append(nested);
+    nested.scrollTop = 30;
+    fireEvent.wheel(nested, { deltaY: -distance });
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test("our own write to the end is not mistaken for a user scroll", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    view.rerender(<Harness rows={grown} />);
+    expect(viewport.scrollTop).toBe(960);
+    // The native scroll event for the controller's own write arrives later.
+    fireEvent.scroll(viewport);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={[...grown, { id: "more", height: 40 }]} />);
+    expect(viewport.scrollTop).toBe(1000);
   });
 });
