@@ -116,60 +116,6 @@ pub(crate) fn open_disk_store(
     ))
 }
 
-fn identity_history_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
-    tx.execute_batch("CREATE TABLE continuity_identity_history(session_id TEXT PRIMARY KEY, identity TEXT NOT NULL);
-    CREATE INDEX continuity_identity_history_identity_idx ON continuity_identity_history(identity);
-    CREATE TABLE continuity_identity_coverage(mob_id TEXT PRIMARY KEY, after_cursor INTEGER NOT NULL);
-    CREATE TRIGGER continuity_identity_history_immutable BEFORE INSERT ON continuity_identity_history
-    WHEN EXISTS(SELECT 1 FROM continuity_identity_history WHERE session_id=NEW.session_id AND identity<>NEW.identity)
-    BEGIN SELECT RAISE(ABORT, 'conflicting historical identity binding'); END;
-    CREATE TRIGGER continuity_identity_history_insert AFTER INSERT ON continuity_records
-    BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;
-    CREATE TRIGGER continuity_identity_history_update AFTER UPDATE OF session_id,identity ON continuity_records
-    BEGIN INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) VALUES(NEW.session_id,NEW.identity); END;")
-}
-
-pub(crate) const IDENTITY_HISTORY_DOMAIN: meerkat_sqlite::SchemaDomain =
-    meerkat_sqlite::SchemaDomain {
-        name: "mobkit-identity-history",
-        migrations: &[meerkat_sqlite::Migration {
-            version: 1,
-            name: "retained-identity-bindings",
-            apply: identity_history_schema,
-        }],
-        initialize_current: identity_history_schema,
-        allowed_existing_versions: &[1],
-        bridge_recoverable_versions: &[],
-        released_predecessors: &[],
-        owned_objects: &[
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Index,
-                name: "continuity_identity_history_identity_idx",
-            },
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Table,
-                name: "continuity_identity_history",
-            },
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Table,
-                name: "continuity_identity_coverage",
-            },
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Trigger,
-                name: "continuity_identity_history_immutable",
-            },
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Trigger,
-                name: "continuity_identity_history_insert",
-            },
-            meerkat_sqlite::SchemaObject {
-                kind: meerkat_sqlite::SchemaObjectKind::Trigger,
-                name: "continuity_identity_history_update",
-            },
-        ],
-        retired_objects: &[],
-    };
-
 /// Holds runtime query authorities, never copied lineage or document policy.
 /// A handle is installed by Meerkat's pre-activation callback before its first
 /// member can dispatch. Every operation reads current authority afresh.
@@ -291,19 +237,18 @@ impl NativeAuthorityRegistry {
             if snapshot.member_binding.mob_id == self.identity_bridge_mob {
                 let decoded =
                     crate::member_comms_id::runtime_alias_str(&snapshot.member_binding.member);
-                if let Ok(identity) = crate::identity_first::AgentIdentity::parse(&decoded) {
-                    if crate::member_comms_id::mob_member_id(identity.as_str()).as_str()
+                if let Ok(identity) = crate::identity_first::AgentIdentity::parse(&decoded)
+                    && crate::member_comms_id::mob_member_id(identity.as_str()).as_str()
                         == snapshot.member_binding.member
-                        && continuity
-                            .has_historical_identity(&identity)
-                            .await
-                            .map_err(|_| documents::Error::AuthorityUnavailable)?
-                    {
-                        // Durable intent reserves the host target even after
-                        // publication cancellation and process restart. Only
-                        // exact-session history above can establish Agent.
-                        return Err(documents::Error::AuthorityUnavailable);
-                    }
+                    && continuity
+                        .has_historical_identity(&identity)
+                        .await
+                        .map_err(|_| documents::Error::AuthorityUnavailable)?
+                {
+                    // Durable intent reserves the host target even after
+                    // publication cancellation and process restart. Only
+                    // exact-session history above can establish Agent.
+                    return Err(documents::Error::AuthorityUnavailable);
                 }
             }
             if !continuity

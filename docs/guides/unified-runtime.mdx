@@ -108,10 +108,16 @@ host fails before activation with typed `ExtensionAuthorityUnavailable`.
 Use the local continuity store or an implementation of the complete history
 contract; an unavailable history is never interpreted as an unrelated Worker.
 
-Local identity history is a one-way opt-in. Once installed, its database
-triggers continue retaining bindings even while extension tools are disabled,
-so a later re-enable can safely resolve ancestors. Disabling the factory
-does not remove stored documents, identity history or those triggers.
+Local identity history is a one-way opt-in to continuity schema version 3.
+Enabling it atomically installs retention triggers and backfills existing
+bindings. Older binaries refuse the database after this opt-in, because they
+cannot preserve the ancestry proof. Ordinary opens and head-only migrations
+do not enable history or incur this additional downgrade barrier.
+
+Current binaries continue retaining bindings even with extension tools
+disabled or the extension feature compiled out, so a later re-enable can
+safely resolve ancestors. Disabling the factory does not remove stored
+documents, identity history or those triggers.
 
 This is an unreleased integration candidate. Building the Git candidate
 requires the exact Meerkat `[patch.crates-io]` table from this repository's

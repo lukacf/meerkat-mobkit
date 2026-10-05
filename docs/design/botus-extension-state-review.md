@@ -395,3 +395,32 @@ unconfigured ABAC behavior, and retained exact released version requirements
 with a workspace-only pinned upstream patch. Runtime execution of the new
 acceptance fixtures remains pending; these source changes are not an
 independent test verdict.
+
+## Runtime findings and owning-domain repair
+
+The `f8424fafb` GCP run compiled the host tests, then passed 9 of 11 selected
+unit tests and 4 of 7 integration tests (one subprocess helper was ignored
+as intended). Identity-history activation failed because the independent
+history schema oracle could not create triggers on another domain's
+`continuity_records` table. Two unit and two integration failures shared
+that defect. The delegation fixture also lacked the tool producer's native
+Rust-bundle provenance. The earlier source reviews did not catch these
+runtime failures.
+
+The implementation response moves history into the owning continuity domain
+as explicit version 3 opt-in. Its initializer owns every trigger target;
+backfill and the version stamp commit together, or roll back together on
+conflicting identity bindings. Frozen version 1/2 verifiers and head-only
+migrations preserve the earlier storage contracts. Older binaries refuse
+an opted-in database, while current feature-off binaries verify its complete
+schema and preserve retention triggers. This prevents a downgrade interval
+from invalidating the native-birth coverage proof.
+
+Five new unconditional schema tests cover these boundaries. The native test
+producer now declares its actual Rust bundle. The native fixtures also inspect
+model-visible denial, continued permitted sibling calls and a real restricted
+source's fork policy. Root and a separate implementation agent found no
+concrete issue in bounded source reviews of the schema repair; neither ran
+builds or tests during those reviews. Successor execution and lint remain
+pending. This implementation response records the repair and failed run,
+not an independent runtime acceptance verdict.

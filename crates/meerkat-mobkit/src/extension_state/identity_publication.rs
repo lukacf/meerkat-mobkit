@@ -59,7 +59,6 @@ impl Drop for IdentityPublication {
             state
                 .targets
                 .retain(|_, fence| !Arc::ptr_eq(&fence.pending.token, &self.token));
-            return;
         }
         // A canceled spawn may still commit after its caller disappears.
         // Keep the closed fence until exact admission settlement is known;

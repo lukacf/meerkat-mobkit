@@ -37,11 +37,17 @@ impl AgentToolDispatcher for Probe {
         ["botus_read", "botus_apply"]
             .into_iter()
             .map(|name| {
-                Arc::new(ToolDef::new(
-                    name,
-                    "Probe extension authority",
-                    serde_json::json!({"type":"object","properties":{}}),
-                ))
+                Arc::new(
+                    ToolDef::new(
+                        name,
+                        "Probe extension authority",
+                        serde_json::json!({"type":"object","properties":{}}),
+                    )
+                    .with_provenance(meerkat_core::ToolProvenance {
+                        kind: meerkat_core::ToolSourceKind::RustBundle,
+                        source_id: NAME.into(),
+                    }),
+                )
             })
             .collect::<Vec<_>>()
             .into()

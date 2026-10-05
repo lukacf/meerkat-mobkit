@@ -395,13 +395,22 @@ the extension store or constructing its dispatchers. This version supports
 the bundled local continuity authority and custom providers implementing the
 full retained-history contract.
 
-Enabling local history installs durable triggers once. Turning the extension
-feature or its factory off does not remove those triggers or retained identity
-facts. Continued history is necessary to preserve the original coverage proof
-when extensions are enabled again; a host must not treat a disabled interval
-as evidence that sessions were Workers. No extension store or dispatcher is
-opened while disabled, but a previously enabled continuity database continues
-its retained-history writes.
+Enabling local history explicitly migrates the owning `mobkit-continuity`
+domain to schema version 3. History tables, coverage, retention triggers and
+backfill commit together; conflicting exact bindings roll the migration back.
+The version 3 stamp deliberately refuses older binaries that cannot retain
+identity history. Ordinary opens and head-only migrations remain at versions
+1 and 2 until this explicit opt-in.
+
+Turning the extension feature or its factory off in a current binary does not
+remove retention triggers or identity facts. Continued history is necessary
+to preserve the original coverage proof when extensions are enabled again;
+a host must not treat a disabled interval as evidence that sessions were
+Workers. Current binaries verify and support an opted-in database even when
+the extension feature is compiled out. No extension store or dispatcher is
+opened while disabled, but the continuity database continues retaining exact
+bindings from records, snapshots and head rows. The v3 lockout prevents an
+older writer from silently creating a gap in this history.
 
 Document durability does not widen native member lifetime. The current
 MobKit composition gives implicit delegate child mobs in-memory journals;

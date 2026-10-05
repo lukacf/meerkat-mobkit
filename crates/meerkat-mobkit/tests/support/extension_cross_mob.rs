@@ -19,11 +19,17 @@ const ROOT_REVOKED: &str = "PERSISTENT_ROOT_REVOKED";
 const ROOT_REOPEN_DENIED: &str = "PERSISTENT_ROOT_REOPEN_DENIED";
 const ROOT_REOPEN_EDITOR: &str = "PERSISTENT_ROOT_REOPEN_EDITOR";
 const ROOT_REOPEN_REVOKED: &str = "PERSISTENT_ROOT_REOPEN_REVOKED";
+const POLICY_OWNER: &str = "RESTRICTED_POLICY_OWNER";
+const POLICY_SOURCE: &str = "RESTRICTED_POLICY_SOURCE";
+const POLICY_FORK: &str = "RESTRICTED_POLICY_FORK";
+const POLICY_BARRIER: &str = "RESTRICTED_POLICY_BARRIER";
 
 #[derive(Default)]
 struct Evidence {
     document: Option<Document>,
     actors: BTreeMap<String, (SessionId, Principal)>,
+    sibling_documents: BTreeMap<String, Document>,
+    backend_denials: std::collections::BTreeSet<String>,
 }
 
 pub(super) struct Scenario {
@@ -32,6 +38,7 @@ pub(super) struct Scenario {
     grant: Semaphore,
     revoke: Semaphore,
     finish: Semaphore,
+    finish_fork: Semaphore,
 }
 
 impl Scenario {
@@ -44,6 +51,7 @@ impl Scenario {
                 grant: Semaphore::new(0),
                 revoke: Semaphore::new(0),
                 finish: Semaphore::new(0),
+                finish_fork: Semaphore::new(0),
             }),
             receiver,
         )
@@ -59,6 +67,10 @@ impl Scenario {
         let args: serde_json::Value = call.parse_args().unwrap();
         let action = args["action"].as_str().unwrap();
         let actor = args["actor"].as_str().unwrap();
+        assert_ne!(
+            action, "policy-forbidden",
+            "the native execution policy must reject botus_apply before dispatch"
+        );
         let session = execution.origin_session_id().unwrap().clone();
         {
             let mut evidence = self.evidence.lock().await;
@@ -69,13 +81,16 @@ impl Scenario {
                 evidence.actors.insert(actor.to_owned(), actual);
             }
         }
-        if action == "create" {
-            assert_eq!(actor, "owner");
+        let mut denied = false;
+        if matches!(action, "create" | "sibling-create") {
+            if action == "create" {
+                assert_eq!(actor, "owner");
+            }
             let receipt = bundle
                 .documents
                 .mutate(
                     caller,
-                    &request("cross-mob-create"),
+                    &request(&format!("{actor}-{action}")),
                     Mutation::Create(NewDocument {
                         content: content(),
                         owner: None,
@@ -91,7 +106,18 @@ impl Scenario {
                 .await
                 .unwrap();
             assert_eq!(document.owner, Owner::Agent(caller.principal().clone()));
-            self.evidence.lock().await.document = Some(document);
+            let mut evidence = self.evidence.lock().await;
+            if action == "create" {
+                evidence.document = Some(document);
+            } else {
+                assert_ne!(document.id, evidence.document.as_ref().unwrap().id);
+                assert!(
+                    evidence
+                        .sibling_documents
+                        .insert(actor.into(), document)
+                        .is_none()
+                );
+            }
         } else {
             let document = self.evidence.lock().await.document.clone().unwrap();
             if action == "owner-persisted" {
@@ -136,53 +162,89 @@ impl Scenario {
                     Err(Error::NotFound)
                 ));
                 self.evidence.lock().await.document = Some(updated);
+            } else if matches!(action, "reader-edit-denied" | "reader-admin-denied") {
+                let before = bundle.documents.get(caller, &document.id).await.unwrap();
+                let mutation = if action == "reader-edit-denied" {
+                    Mutation::Replace {
+                        id: document.id.clone(),
+                        expected_revision: before.revision.clone(),
+                        content: DocumentContent {
+                            payload: vec![9],
+                            ..content()
+                        },
+                    }
+                } else {
+                    Mutation::SetAccess {
+                        id: document.id.clone(),
+                        expected_revision: before.revision.clone(),
+                        access: DocumentAccess::default(),
+                    }
+                };
+                assert!(matches!(
+                    bundle
+                        .documents
+                        .mutate(caller, &request(&format!("{actor}-{action}")), mutation)
+                        .await,
+                    Err(Error::NotFound)
+                ));
+                let after = bundle.documents.get(caller, &document.id).await.unwrap();
+                assert_eq!(after.revision, before.revision);
+                assert_eq!(after.content.payload, before.content.payload);
+                denied = true;
             } else if action.starts_with("reader") {
                 let visible = bundle.documents.get(caller, &document.id).await.unwrap();
                 assert_eq!(visible.id, document.id);
                 assert_eq!(visible.content.payload, content().payload);
                 assert_eq!(visible.owner, document.owner);
-                // Reader grants never confer either data writes or ACL control.
-                for (suffix, mutation) in [
-                    (
-                        "edit",
-                        Mutation::Replace {
-                            id: document.id.clone(),
-                            expected_revision: visible.revision.clone(),
-                            content: content(),
-                        },
-                    ),
-                    (
-                        "admin",
-                        Mutation::SetAccess {
-                            id: document.id.clone(),
-                            expected_revision: visible.revision,
-                            access: DocumentAccess::default(),
-                        },
-                    ),
-                ] {
+                if action.starts_with("reader-policy") {
+                    // This read tool really executes. The provider independently
+                    // refuses a write using its runtime-resolved caller context.
                     assert!(matches!(
                         bundle
                             .documents
                             .mutate(
                                 caller,
-                                &request(&format!("{actor}-{action}-{suffix}")),
-                                mutation
+                                &request(&format!("{actor}-{action}-backend-write")),
+                                Mutation::Replace {
+                                    id: document.id.clone(),
+                                    expected_revision: visible.revision.clone(),
+                                    content: DocumentContent {
+                                        payload: vec![9],
+                                        ..content()
+                                    },
+                                }
                             )
                             .await,
                         Err(Error::NotFound)
                     ));
+                    assert_eq!(
+                        bundle
+                            .documents
+                            .get(caller, &document.id)
+                            .await
+                            .unwrap()
+                            .revision,
+                        visible.revision
+                    );
+                    self.evidence
+                        .lock()
+                        .await
+                        .backend_denials
+                        .insert(actor.into());
                 }
             } else {
                 assert!(matches!(
                     bundle.documents.get(caller, &document.id).await,
                     Err(Error::NotFound)
                 ));
+                denied = true;
             }
         }
         self.events.send(format!("{actor}:{action}")).unwrap();
         let gate = match action {
             "private" => Some(&self.grant),
             "reader-hold" => Some(&self.revoke),
+            "revoked-hold" if actor == "fork" => Some(&self.finish_fork),
             "revoked-hold" => Some(&self.finish),
             _ => None,
         };
@@ -193,7 +255,17 @@ impl Scenario {
                 .unwrap()
                 .forget();
         }
-        Ok(ToolResult::new(call.id.to_owned(), "{}".into(), false).into())
+        Ok(ToolResult::new(
+            call.id.to_owned(),
+            if denied {
+                r#"{"error":"not_found"}"#
+            } else {
+                "{}"
+            }
+            .into(),
+            denied,
+        )
+        .into())
     }
 
     async fn set_shared(
@@ -260,6 +332,21 @@ impl Scenario {
 #[derive(Default)]
 struct CrossMobClient {
     calls: Mutex<BTreeMap<&'static str, usize>>,
+    pending: Mutex<BTreeMap<&'static str, Vec<ExpectedResult>>>,
+    observed: Mutex<std::collections::BTreeSet<String>>,
+    completed: Mutex<std::collections::BTreeSet<&'static str>>,
+}
+
+struct ExpectedResult {
+    id: String,
+    label: String,
+    error: Option<&'static str>,
+}
+
+struct ScriptCall {
+    name: &'static str,
+    args: serde_json::Value,
+    error: Option<&'static str>,
 }
 
 impl CrossMobClient {
@@ -268,6 +355,24 @@ impl CrossMobClient {
         // must not repeat this test's already-completed creation script.
         Self {
             calls: Mutex::new(BTreeMap::from([(OWNER, 10), (ROOT_OWNER, 10)])),
+            ..Default::default()
+        }
+    }
+
+    fn assert_observed(&self, labels: &[&str], completed: &[&str]) {
+        let observed = self.observed.lock().unwrap();
+        for label in labels {
+            assert!(
+                observed.contains(*label),
+                "next model request did not observe {label}"
+            );
+        }
+        let actual = self.completed.lock().unwrap();
+        for role in completed {
+            assert!(
+                actual.contains(role),
+                "scripted native turn did not complete: {role}"
+            );
         }
     }
 }
@@ -304,6 +409,10 @@ impl LlmClient for CrossMobClient {
             })
             .find_map(|text| {
                 [
+                    POLICY_OWNER,
+                    POLICY_SOURCE,
+                    POLICY_FORK,
+                    POLICY_BARRIER,
                     REOPEN_OWNER,
                     ROOT_REOPEN_DENIED,
                     ROOT_REOPEN_EDITOR,
@@ -327,81 +436,186 @@ impl LlmClient for CrossMobClient {
             *index += 1;
             current
         };
-        for message in &request.messages {
-            if let Message::ToolResults { results, .. } = message {
-                for result in results {
+        // Inspect the very next model request, not just dispatcher internals.
+        // Forks may also inherit older parent results, so match exact call IDs.
+        if let Some(expected) = self.pending.lock().unwrap().remove(role) {
+            for expected in expected {
+                let result = request
+                    .messages
+                    .iter()
+                    .find_map(|message| {
+                        if let Message::ToolResults { results, .. } = message {
+                            results
+                                .iter()
+                                .find(|result| result.tool_use_id == expected.id)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| panic!("next model request omitted {}", expected.id));
+                assert_eq!(
+                    result.is_error,
+                    expected.error.is_some(),
+                    "{}: {}",
+                    expected.label,
+                    result.text_content()
+                );
+                if let Some(error) = expected.error {
                     assert!(
-                        !result.is_error,
-                        "native tool failed: {}",
+                        result.text_content().contains(error),
+                        "{}: {}",
+                        expected.label,
                         result.text_content()
                     );
                 }
+                self.observed.lock().unwrap().insert(expected.label);
             }
         }
-        let probe = |actor: &str, action: &str| {
-            Some((
-                if action == "create" || action.starts_with("editor") {
-                    "botus_apply"
-                } else {
-                    "botus_read"
-                },
-                serde_json::json!({"actor":actor,"action":action,
-                    "principal":"forged-admin","lineage":["forged-root"]}),
-            ))
+        let expected_provenance = meerkat_core::ToolProvenance {
+            kind: meerkat_core::ToolSourceKind::RustBundle,
+            source_id: NAME.into(),
         };
-        let call = match (role, index) {
-            (OWNER, 0) => probe("owner", "create"),
-            (OWNER, 1) => Some((
+        for name in ["botus_read", "botus_apply"] {
+            let tool = request.tools.iter().find(|tool| tool.name == name).unwrap();
+            assert_eq!(tool.provenance.as_ref(), Some(&expected_provenance));
+        }
+        let probe = |actor: &str, action: &str| ScriptCall {
+            name: if matches!(
+                action,
+                "create"
+                    | "sibling-create"
+                    | "reader-edit-denied"
+                    | "reader-admin-denied"
+                    | "policy-forbidden"
+            ) || action.starts_with("editor")
+            {
+                "botus_apply"
+            } else {
+                "botus_read"
+            },
+            args: serde_json::json!({"actor":actor,"action":action,
+                    "principal":"forged-admin","lineage":["forged-root"]}),
+            error: if action == "policy-forbidden" {
+                Some("policy")
+            } else if matches!(
+                action,
+                "private"
+                    | "reader-edit-denied"
+                    | "reader-admin-denied"
+                    | "revoked-hold"
+                    | "root-revoked"
+                    | "root-reopen-denied"
+                    | "root-reopen-revoked"
+            ) {
+                Some("not_found")
+            } else {
+                None
+            },
+        };
+        let native = |name, args| ScriptCall {
+            name,
+            args,
+            error: None,
+        };
+        let calls = match (role, index) {
+            (OWNER | POLICY_OWNER, 0) => vec![probe("owner", "create")],
+            (OWNER, 1) => vec![native(
                 "delegate",
                 serde_json::json!({"member_id":"cross-mob-helper","task":HELPER,
                     "result_label":"cross-mob-helper-result","max_text_bytes":1024,
                     "tooling":{"mode":"inherit_parent"}}),
-            )),
-            (HELPER, 0) => probe("helper", "private"),
-            (HELPER, 1) => probe("helper", "reader-before-fork"),
-            (HELPER, 2) => Some((
+            )],
+            (HELPER, 0) => vec![probe("helper", "private")],
+            (HELPER, 1) => vec![
+                probe("helper", "reader-edit-denied"),
+                probe("helper", "sibling-create"),
+            ],
+            (HELPER, 2) => vec![probe("helper", "reader-admin-denied")],
+            (HELPER, 3) => vec![probe("helper", "reader-before-fork")],
+            (HELPER, 4) => vec![native(
                 "fork_off",
                 serde_json::json!({"member_id":"cross-mob-fork","task":FORK,
                     "result_label":"cross-mob-fork-result","max_text_bytes":1024,
                     "idle_retire_secs":3600}),
-            )),
-            (HELPER, 3) => probe("helper", "reader-hold"),
-            (HELPER, 4) => probe("helper", "revoked-hold"),
-            (FORK, 0) => probe("fork", "reader-hold"),
-            (FORK, 1) => probe("fork", "revoked-hold"),
-            (REOPEN_OWNER, 0) => probe("owner", "owner-persisted"),
-            (ROOT_OWNER, 0) => probe("owner", "create"),
-            (ROOT_OWNER, 1) => Some((
+            )],
+            (HELPER, 5) => vec![probe("helper", "reader-hold")],
+            (HELPER, 6) => vec![probe("helper", "revoked-hold")],
+            (FORK, 0) => vec![
+                probe("fork", "reader-edit-denied"),
+                probe("fork", "sibling-create"),
+            ],
+            (FORK, 1) => vec![probe("fork", "reader-admin-denied")],
+            (FORK, 2) => vec![probe("fork", "reader-hold")],
+            (FORK, 3) => vec![probe("fork", "revoked-hold")],
+            (REOPEN_OWNER, 0) => vec![probe("owner", "owner-persisted")],
+            (ROOT_OWNER, 0) => vec![probe("owner", "create")],
+            (ROOT_OWNER, 1) => vec![native(
                 "fork_off",
                 serde_json::json!({
                     "member_id":"root-persistent-fork", "task":ROOT_FORK,
                     "idle_retire_secs":3600, "max_text_bytes":1024,
                 }),
-            )),
-            (ROOT_FORK, 0) => probe("fork", "editor-initial"),
-            (ROOT_REVOKED, 0) => probe("fork", "root-revoked"),
-            (ROOT_REOPEN_DENIED, 0) => probe("fork", "root-reopen-denied"),
-            (ROOT_REOPEN_EDITOR, 0) => probe("fork", "editor-reopen"),
-            (ROOT_REOPEN_REVOKED, 0) => probe("fork", "root-reopen-revoked"),
-            _ => None,
+            )],
+            (ROOT_FORK, 0) => vec![probe("fork", "editor-initial")],
+            (ROOT_REVOKED, 0) => vec![probe("fork", "root-revoked")],
+            (ROOT_REOPEN_DENIED, 0) => vec![probe("fork", "root-reopen-denied")],
+            (ROOT_REOPEN_EDITOR, 0) => vec![probe("fork", "editor-reopen")],
+            (ROOT_REOPEN_REVOKED, 0) => vec![probe("fork", "root-reopen-revoked")],
+            (POLICY_SOURCE, 0) => vec![
+                probe("source", "policy-forbidden"),
+                probe("source", "reader-policy-source"),
+            ],
+            (POLICY_SOURCE, 1) => vec![native(
+                "fork_off",
+                serde_json::json!({
+                    "member_id":"policy-inherited-fork", "task":POLICY_FORK,
+                    "idle_retire_secs":3600, "max_text_bytes":1024,
+                }),
+            )],
+            (POLICY_FORK, 0) => vec![
+                probe("policy-fork", "policy-forbidden"),
+                probe("policy-fork", "reader-policy-fork"),
+            ],
+            _ => vec![],
         };
         let mut events = Vec::new();
-        if let Some((name, args)) = &call {
+        let mut expected = Vec::new();
+        for (slot, call) in calls.iter().enumerate() {
             assert!(
-                request.tools.iter().any(|tool| tool.name == *name),
-                "native inherited surface must offer {name}"
+                request.tools.iter().any(|tool| tool.name == call.name),
+                "native inherited surface must offer {}",
+                call.name
             );
+            let id = format!("{role}-{index}-{slot}");
+            expected.push(ExpectedResult {
+                id: id.clone(),
+                label: format!(
+                    "{role}:{}",
+                    call.args["action"].as_str().unwrap_or(call.name)
+                ),
+                error: call.error,
+            });
             events.push(Ok(LlmEvent::ToolCallComplete {
-                id: format!("{role}-{index}"),
-                name: (*name).into(),
-                args: args.clone(),
+                id,
+                name: call.name.into(),
+                args: call.args.clone(),
                 meta: None,
             }));
-        } else {
+        }
+        if calls.is_empty() {
+            self.completed.lock().unwrap().insert(role);
             events.push(Ok(LlmEvent::TextDelta {
                 delta: "done".into(),
                 meta: None,
             }));
+        } else {
+            assert!(
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .insert(role, expected)
+                    .is_none()
+            );
         }
         events.push(Ok(LlmEvent::UsageUpdate {
             usage: meerkat_core::TurnUsage::host_declared(
@@ -412,7 +626,7 @@ impl LlmClient for CrossMobClient {
         }));
         events.push(Ok(LlmEvent::Done {
             outcome: LlmDoneOutcome::Success {
-                stop_reason: if call.is_some() {
+                stop_reason: if !calls.is_empty() {
                     StopReason::ToolUse
                 } else {
                     StopReason::EndTurn
@@ -442,13 +656,9 @@ async fn expect_events(receiver: &mut mpsc::UnboundedReceiver<String>, expected:
 async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_document_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (scenario, mut events) = Scenario::new();
-    let (runtime, context, _) = harness_with_client(
-        dir.path(),
-        None,
-        Arc::new(CrossMobClient::default()),
-        Some(scenario.clone()),
-    )
-    .await;
+    let client = Arc::new(CrossMobClient::default());
+    let (runtime, context, _) =
+        harness_with_client(dir.path(), None, client.clone(), Some(scenario.clone())).await;
     let root = runtime.spawn(worker("cross-mob-owner")).await.unwrap();
     let owner_session = member_session(&runtime, &root.agent_identity).await;
     let owner_turn = runtime
@@ -499,8 +709,14 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
     expect_events(
         &mut events,
         &[
+            "helper:reader-edit-denied",
+            "helper:sibling-create",
+            "helper:reader-admin-denied",
             "helper:reader-before-fork",
             "helper:reader-hold",
+            "fork:reader-edit-denied",
+            "fork:sibling-create",
+            "fork:reader-admin-denied",
             "fork:reader-hold",
         ],
     )
@@ -533,11 +749,41 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
         .await;
     scenario.revoke.add_permits(2);
     expect_events(&mut events, &["helper:revoked-hold", "fork:revoked-hold"]).await;
-    scenario.finish.add_permits(2);
+    // Finish the fork first so helper retirement cannot cancel its final
+    // model request before it observes the denial and completes its turn.
+    scenario.finish_fork.add_permits(1);
+    run_member_turn(&child, "cross-mob-fork", ROOT_BARRIER).await;
+    scenario.finish.add_permits(1);
     tokio::time::timeout(Duration::from_secs(60), owner_turn.turn.wait())
         .await
         .unwrap()
         .unwrap();
+    client.assert_observed(
+        &[
+            "CROSS_MOB_HELPER:private",
+            "CROSS_MOB_HELPER:reader-edit-denied",
+            "CROSS_MOB_HELPER:sibling-create",
+            "CROSS_MOB_HELPER:reader-admin-denied",
+            "CROSS_MOB_HELPER:revoked-hold",
+            "CROSS_MOB_FORK:reader-edit-denied",
+            "CROSS_MOB_FORK:sibling-create",
+            "CROSS_MOB_FORK:reader-admin-denied",
+            "CROSS_MOB_FORK:revoked-hold",
+        ],
+        &[OWNER, HELPER, FORK],
+    );
+    {
+        let evidence = scenario.evidence.lock().await;
+        assert_eq!(evidence.sibling_documents.len(), 2);
+        for actor in ["helper", "fork"] {
+            let document = &evidence.sibling_documents[actor];
+            assert_eq!(
+                document.owner,
+                Owner::Agent(evidence.actors[actor].1.clone())
+            );
+            assert_eq!(document.content.payload, content().payload);
+        }
+    }
     // Delegate always retires its helper and cascades that retirement to
     // fork_off descendants. The fixture must not override that lifetime.
     assert!(
@@ -632,10 +878,11 @@ async fn extension_native_delegate_cross_mob_fork_sharing_revocation_and_documen
 }
 
 async fn run_root_fork_turn(handle: &MobHandle, task: &str) {
-    let member = handle
-        .member(&AgentIdentity::from("root-persistent-fork"))
-        .await
-        .unwrap();
+    run_member_turn(handle, "root-persistent-fork", task).await;
+}
+
+async fn run_member_turn(handle: &MobHandle, identity: &str, task: &str) {
+    let member = handle.member(&AgentIdentity::from(identity)).await.unwrap();
     let turn = member
         .start_turn(
             ContentInput::Text(task.into()),
@@ -762,4 +1009,108 @@ async fn extension_native_root_fork_off_document_access_survives_restart() {
     run_root_fork_turn(&reopened.mob_handle(), ROOT_REOPEN_REVOKED).await;
     expect_events(&mut events, &["fork:root-reopen-revoked"]).await;
     reopened.shutdown().await;
+}
+
+/// Source launch policy reaches a real fork_off child. Both native dispatch
+/// and an executing read probe's backend write must refuse mutation.
+#[tokio::test(flavor = "multi_thread")]
+async fn extension_native_restricted_source_fork_off_denies_apply_and_backend_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scenario, mut events) = Scenario::new();
+    let client = Arc::new(CrossMobClient::default());
+    let (runtime, context, _) =
+        harness_with_client(dir.path(), None, client.clone(), Some(scenario.clone())).await;
+    let owner = runtime.spawn(worker("policy-owner")).await.unwrap();
+    let owner_session = member_session(&runtime, &owner.agent_identity).await;
+    run_member_turn(&runtime.mob_handle(), "policy-owner", POLICY_OWNER).await;
+    expect_events(&mut events, &["owner:create"]).await;
+
+    let mut source = worker("restricted-source");
+    source.tool_access_policy = Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
+        ["botus_apply"].into_iter().collect(),
+    ));
+    let source = runtime.spawn(source).await.unwrap();
+    let source_session = member_session(&runtime, &source.agent_identity).await;
+    let source_caller = caller(&context, &source_session).await;
+    // The owner explicitly grants Editor to the source and its real forks.
+    // The source's policy still caps their access below that document grant.
+    scenario
+        .set_access(
+            &context,
+            &owner_session,
+            "restricted-source-editor-grant",
+            DocumentAccess {
+                grants: vec![Grant {
+                    audience: Audience::Agent {
+                        principal: source_caller.principal().clone(),
+                        reach: Reach::Forks,
+                    },
+                    role: Role::Editor,
+                }],
+                ..Default::default()
+            },
+        )
+        .await;
+    let before = scenario.evidence.lock().await.document.clone().unwrap();
+    run_member_turn(&runtime.mob_handle(), "restricted-source", POLICY_SOURCE).await;
+    run_member_turn(
+        &runtime.mob_handle(),
+        "policy-inherited-fork",
+        POLICY_BARRIER,
+    )
+    .await;
+    expect_events(
+        &mut events,
+        &[
+            "source:reader-policy-source",
+            "policy-fork:reader-policy-fork",
+        ],
+    )
+    .await;
+    client.assert_observed(
+        &[
+            "RESTRICTED_POLICY_SOURCE:policy-forbidden",
+            "RESTRICTED_POLICY_SOURCE:reader-policy-source",
+            "RESTRICTED_POLICY_SOURCE:fork_off",
+            "RESTRICTED_POLICY_FORK:policy-forbidden",
+            "RESTRICTED_POLICY_FORK:reader-policy-fork",
+        ],
+        &[POLICY_OWNER, POLICY_SOURCE, POLICY_FORK, POLICY_BARRIER],
+    );
+    let evidence = scenario.evidence.lock().await;
+    assert_eq!(
+        evidence.backend_denials,
+        ["source".to_owned(), "policy-fork".to_owned()]
+            .into_iter()
+            .collect()
+    );
+    let fork_session = evidence.actors["policy-fork"].0.clone();
+    drop(evidence);
+    let fork_creation = runtime
+        .mob_handle()
+        .member_creation_for_session(&fork_session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fork_creation
+            .fork_source
+            .as_ref()
+            .unwrap()
+            .source_session_id,
+        source_session
+    );
+    assert!(matches!(
+        fork_creation.creation.provenance,
+        MemberCreationProvenance::Fork { .. }
+    ));
+    let owner_caller = caller(&context, &owner_session).await;
+    let after = context
+        .documents
+        .get(&owner_caller, &before.id)
+        .await
+        .unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.content.payload, before.content.payload);
+    runtime.shutdown().await;
 }
