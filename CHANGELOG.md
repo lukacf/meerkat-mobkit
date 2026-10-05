@@ -717,6 +717,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Removed an inaccurate third-party attribution from the console scroll
   geometry, its notices files and the embedded console bundles; the code is
   original.
+
+- Console: scrolling up from the bottom of a transcript no longer sticks
+  before it scrolls (#597). The first 32 px of an upward scroll stayed in
+  the live-edge band and kept following the end, and a scroll within 1 px of
+  the console's last write was taken for its own, so a streamed reply's next
+  layout pass snapped the reader back to the end. Any upward movement the
+  console did not write (wheel, scrollbar, touch, or a gesture chained out
+  of a code block) now leaves the live edge at once; following resumes on
+  the way down, within the live-edge band or at the end.
+
 - Python and TypeScript SDK callbacks retain their originating gateway process
   across reconnect. Late results, errors and deadline/cancellation responses
   cannot answer reused callback IDs on a replacement process, and retired

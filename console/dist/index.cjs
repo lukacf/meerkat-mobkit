@@ -6499,8 +6499,9 @@ function useConversationScrollController(options) {
     const bounded = Math.max(0, Math.min(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight), top));
     if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
     if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
-    session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
+    session.expectedScrollTop = viewport.scrollTop;
+    session.lastScrollTop = session.expectedScrollTop;
   }, []);
   const applyLayout = (0, import_react4.useCallback)(() => {
     const viewport = optionsRef.current.viewportRef.current;
@@ -6648,6 +6649,7 @@ function useConversationScrollController(options) {
         pendingSubmittedRow: remembered?.pendingSubmittedRow ?? null,
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
+        lastScrollTop: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false
@@ -6672,16 +6674,21 @@ function useConversationScrollController(options) {
     const onScroll = () => {
       const session = sessionRef.current;
       if (!session) return;
+      const observed = viewport.scrollTop;
+      const previous3 = session.lastScrollTop;
+      session.lastScrollTop = observed;
       if (session.awaitingAnchor) {
         publish();
         return;
       }
-      if (session.expectedScrollTop !== null && Math.abs(viewport.scrollTop - session.expectedScrollTop) <= 1) {
+      if (session.expectedScrollTop !== null && Math.abs(observed - session.expectedScrollTop) <= 0.5) {
         publish();
         return;
       }
       session.expectedScrollTop = null;
-      session.mode = conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
+      const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
+      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5;
+      session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
       cancelReveal(session);
@@ -6707,6 +6714,7 @@ function useConversationScrollController(options) {
       if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         session.expectedScrollTop = viewport.scrollTop;
+        session.lastScrollTop = session.expectedScrollTop;
       }
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
