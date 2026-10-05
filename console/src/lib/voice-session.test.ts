@@ -95,11 +95,29 @@ class Analyser extends Node {
 }
 
 class Gain extends Node {
-  gain = { value: 1 };
+  /** Ramp targets as [target, startTime, timeConstant]; a ramp settles to its target. */
+  targets: [number, number, number][] = [];
+  gain = {
+    value: 1,
+    cancelScheduledValues: (_time: number) => {},
+    setTargetAtTime: (target: number, startTime: number, timeConstant: number) => {
+      this.targets.push([target, startTime, timeConstant]);
+      this.gain.value = target;
+    },
+  };
+}
+
+/**
+ * The master (speaker) gain of the `attempt`-th peer preparation on `context`. Each
+ * preparation creates its master gain and then its barge-in playback gate.
+ */
+function masterGain(context: { gains: Gain[] }, attempt: number): Gain {
+  return context.gains[attempt * 2];
 }
 
 class Context {
   state = "suspended";
+  currentTime = 0;
   onstatechange: (() => void) | null = null;
   destination = new Node();
   analysers: Analyser[] = [];
@@ -673,6 +691,31 @@ test("assistant captions upsert live speech by item id with the segment's whole 
   assert.equal(h.controller.getSnapshot().activeChannelId, null);
 });
 
+test("barge-in playback hints duck and restore the gate between the speaker analyser and the master gain", async () => {
+  const h = harness();
+  const feed = captionFeed(h);
+  await h.controller.start(target);
+  await flush();
+  const context = h.contexts[0];
+  const [master, gate] = context.gains;
+  assert.ok(gate, "the playback gate is its own node");
+  assert.ok(gate.connections.includes(master), "gate feeds the master gain (mute and speaker state stay there)");
+  assert.equal(gate.gain.value, 1, "assistant audio plays at unity until a hint arrives");
+  await feed.push([{ kind: "playback_hint", hint: "duck" }]);
+  assert.deepEqual(gate.targets.at(-1), [0, 0, 0.01], "duck ramps the gate to silence");
+  assert.equal(master.gain.value, 1, "the master gain (speaker on) is untouched");
+  await feed.push([
+    { kind: "caption", item_id: "segment-1", text: "Here is the" },
+    { kind: "playback_hint", hint: "restore" },
+  ]);
+  assert.deepEqual(gate.targets.at(-1), [1, 0, 0.01], "restore ramps back to unity");
+  assert.deepEqual(
+    h.controller.getSnapshot().liveSpeech.map((item) => item.text), ["Here is the"],
+    "a hint never becomes a caption row",
+  );
+  await h.controller.close();
+});
+
 test("data-channel output transcripts never create assistant captions; item-keyed user deltas still do", async () => {
   const h = harness();
   await h.controller.start(target);
@@ -805,6 +848,7 @@ test("the caption observer and parser match the shared Rust captions contract", 
     captions: [
       { kind: "caption", itemId: "segment-a", text: "The vault phrase is amber." },
       { kind: "retracted", itemId: "segment-b" },
+      { kind: "playback_hint", hint: "duck" },
     ],
   });
   const h = harness();
@@ -844,7 +888,14 @@ test("caption parsing accepts only the exact typed shape", () => {
     wire({ captions: [{ kind: "caption", item_id: "a", text: "Hi", delta: "Hi" }] }),
     wire({ captions: [{ kind: "retracted", item_id: "b", text: "x" }] }),
     wire({ captions: [{ kind: "final", item_id: "a" }] }),
+    wire({ captions: [{ kind: "playback_hint", hint: "louder" }] }),
+    wire({ captions: [{ kind: "playback_hint" }] }),
+    wire({ captions: [{ kind: "playback_hint", hint: "duck", item_id: "a" }] }),
   ]) assert.throws(() => parseVoiceCaptions(bad, scope, 0), JSON.stringify(bad));
+  assert.deepEqual(
+    parseVoiceCaptions(wire({ captions: [{ kind: "playback_hint", hint: "restore" }] }), scope, 0).captions,
+    [{ kind: "playback_hint", hint: "restore" }],
+  );
   assert.throws(() => parseVoiceCaptions(wire(), scope, 4), "a cursor never moves backwards");
   assert.throws(() => parseVoiceCaptions(wire({ channel_id: "old" }), scope, 0));
 });
@@ -1896,7 +1947,7 @@ test("owner-issued replacement reuses request and mic, preserves target/mutes an
     assert.equal(oldPeer.connectionState, "closed");
     assert.ok(oldNodes.every((node) => node.disconnected));
     assert.equal(h.peers.length, 2);
-    assert.equal(h.contexts[0].gains[1].gain.value, 0);
+    assert.equal(masterGain(h.contexts[0], 1).gain.value, 0);
     assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
     const register = h.calls.filter((call) => call.method === "mobkit/live/playback_owner/register").at(-1)!;
     assert.equal(register.params.channel_id, "recovery-channel");
@@ -1924,14 +1975,14 @@ test("recovery keeps media gated until new typed activation and can be cancelled
   await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   assert.equal(h.streams[0].tracks[0].enabled, false);
-  assert.equal(h.contexts[0].gains[1].gain.value, 0);
+  assert.equal(masterGain(h.contexts[0], 1).gain.value, 0);
   assert.equal(h.peers[0].remoteTrack.stopped, true);
   h.controller.toggleMicrophone();
   h.controller.toggleMicrophone();
   h.controller.toggleSpeaker();
   h.controller.toggleSpeaker();
   assert.equal(h.streams[0].tracks[0].enabled, false);
-  assert.equal(h.contexts[0].gains[1].gain.value, 0);
+  assert.equal(masterGain(h.contexts[0], 1).gain.value, 0);
   await h.controller.close();
   status.resolve({
     phase: "active", handle: {
@@ -2262,7 +2313,7 @@ test("transport loss waits for delayed owner replacement while preserving target
   assert.deepEqual(h.controller.getSnapshot().target, target);
   assert.equal(h.controller.getSnapshot().microphoneMuted, true);
   assert.equal(h.controller.getSnapshot().speakerMuted, true);
-  assert.equal(h.contexts[0].gains[1].gain.value, 0);
+  assert.equal(masterGain(h.contexts[0], 1).gain.value, 0);
   assert.equal(h.streams.length, 1);
   assert.equal(h.peers.length, 2);
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);

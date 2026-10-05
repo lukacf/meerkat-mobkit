@@ -105,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- `mobkit/console/voice/captions` batches may carry a `playback_hint` entry
+  (`{"kind": "playback_hint", "hint": "duck" | "restore"}`) next to
+  `caption` and `retracted`. The embedded console ships with the gateway that
+  emits it; a client that parses captions strictly must accept the new kind.
 - Storage census slots add `resolution: "unverified"` when a bare injected
   WorkGraph store supplied no durability declaration. Existing declared
   resolutions and slot fields retain their wire shape. Both persistent and
@@ -439,6 +443,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`;
   these projections do not configure native authorization or supply a grant editor.
 
+- Console voice applies Meerkat's barge-in playback hint
+  (`live/assistant_playback_hint`, meerkat #1651). When the user speaks over
+  audible assistant audio, Meerkat asks the client to duck its playback, and
+  to restore it when the overlap ends; the provider has no command that
+  clears audio it already queued. Console voice's public observation
+  publisher now implements `publish_playback_hint` (playback-output
+  publications are still refused) and puts the newest hint on the call's
+  caption stream as `{"kind": "playback_hint", "hint": "duck" | "restore"}`.
+  The console routes the assistant's audio through a playback gate after the
+  speaker analyser and ramps it to silence on `duck` and back on `restore`.
+  Mute and speaker state stay on the master gain.
 - Python SDK: `MobKitBuilder.gateway_init_timeout(seconds)` sets how long
   `connect()` waits for the gateway to answer `mobkit/init` (its `accepted`
   acknowledgement, or an older gateway's single response). The default stays
@@ -783,6 +798,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cannot answer reused callback IDs on a replacement process, and retired
   readers cannot fail its pending requests.
 
+- A voice channel reopened through MobKit while delegated work from an
+  earlier channel was still running now opens with Meerkat's "work started
+  before this call is still finishing" startup line (meerkat #1652), so the
+  model does not claim that work is done before its result arrives. MobKit's
+  live composition now binds its delegation coordinator as the open
+  authority's post-close work source, as Meerkat's RPC router does; before,
+  no MobKit door bound one.
 - A declared role migration is applied on the boot path, or refused typed;
   it is never silently dropped (HomeCore: children declared
   `role_migrations` to a restricted profile but kept their old role and

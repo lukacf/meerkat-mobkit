@@ -4,14 +4,19 @@
  * each open assistant segment keyed by the segment's item id, the same id the
  * committed assistant row later lists in `realtime_origin.provider_item_ids`.
  * A caption carries the segment's whole text so far and replaces earlier text;
- * a retraction names a segment no committed row will replace.
+ * a retraction names a segment no committed row will replace. A playback hint
+ * is Meerkat's barge-in signal (`live/assistant_playback_hint`): duck the
+ * assistant's playback while the user speaks over it, restore it afterwards.
  */
 
 export const VOICE_CAPTIONS_METHOD = "mobkit/console/voice/captions";
 
+export type VoicePlaybackHint = "duck" | "restore";
+
 export type VoiceCaption =
   | { readonly kind: "caption"; readonly itemId: string; readonly text: string }
-  | { readonly kind: "retracted"; readonly itemId: string };
+  | { readonly kind: "retracted"; readonly itemId: string }
+  | { readonly kind: "playback_hint"; readonly hint: VoicePlaybackHint };
 
 export interface VoiceCaptionBatch {
   readonly cursor: number;
@@ -63,6 +68,11 @@ export function parseVoiceCaptions(raw: unknown, scope: VoiceCaptionScope, after
     if (caption.kind === "retracted") {
       exactKeys(caption, ["kind", "item_id"]);
       return { kind: "retracted", itemId: itemId(caption.item_id) };
+    }
+    if (caption.kind === "playback_hint") {
+      exactKeys(caption, ["kind", "hint"]);
+      if (caption.hint !== "duck" && caption.hint !== "restore") invalid();
+      return { kind: "playback_hint", hint: caption.hint };
     }
     return invalid();
   });

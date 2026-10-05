@@ -77,7 +77,8 @@
     "cursor": 7,
     "captions": [
       { "kind": "caption", "item_id": "segment-a", "text": "The vault phrase is amber." },
-      { "kind": "retracted", "item_id": "segment-b" }
+      { "kind": "retracted", "item_id": "segment-b" },
+      { "kind": "playback_hint", "hint": "duck" }
     ]
   },
   "context_status_failure_reasons": [

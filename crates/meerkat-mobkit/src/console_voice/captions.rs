@@ -17,6 +17,14 @@
 //! text, and a retraction replaces the item's entry with a typed tombstone.
 //! Captions are display state only: dropping one never affects canonical
 //! history, and the committed row, not the caption, is what the console keeps.
+//!
+//! The same stream carries Meerkat's barge-in playback hint
+//! (`live/assistant_playback_hint`): `duck` when the user's speech overlaps
+//! audible assistant audio, `restore` when the overlap ends. The browser has
+//! no other way to stop audio the provider already queued, so it applies the
+//! hint to its own playback gain. A hint is channel state, not a segment:
+//! only the newest one is retained, so a late or retried read still gets the
+//! current state.
 
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +64,8 @@ pub(crate) struct VoiceCaptionBatch {
     pub captions: Vec<VoiceCaption>,
 }
 
-/// The newest state of one provisional assistant segment.
+/// The newest state of one provisional assistant segment, or the channel's
+/// current playback hint.
 #[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -65,6 +74,19 @@ pub(crate) enum VoiceCaption {
     Caption { item_id: String, text: String },
     /// No committed row will replace this segment's caption; drop it.
     Retracted { item_id: String },
+    /// Duck or restore the assistant's playback (barge-in).
+    PlaybackHint { hint: VoicePlaybackHint },
+}
+
+/// The playback a barge-in hint asks the browser for.
+#[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum VoicePlaybackHint {
+    /// Silence assistant playback: the user is speaking over it.
+    Duck,
+    /// Play assistant audio normally again.
+    Restore,
 }
 
 #[cfg(feature = "openai-live")]
@@ -106,6 +128,9 @@ mod contract_tests {
                     VoiceCaption::Retracted {
                         item_id: "segment-b".to_string(),
                     },
+                    VoiceCaption::PlaybackHint {
+                        hint: VoicePlaybackHint::Duck,
+                    },
                 ],
             },
         };
@@ -138,7 +163,7 @@ mod hub {
     use meerkat_core::SessionId;
     use tokio::sync::Notify;
 
-    use super::{VoiceCaption, VoiceCaptionBatch};
+    use super::{VoiceCaption, VoiceCaptionBatch, VoicePlaybackHint};
     use crate::console_voice::VoiceError;
 
     /// Channels retained per registered session: the current one and the
@@ -165,6 +190,9 @@ mod hub {
         channel_id: String,
         /// Ordered by `sequence`, oldest first.
         items: VecDeque<Item>,
+        /// The newest playback hint and its sequence. Channel state, never
+        /// evicted by segment captions.
+        playback_hint: Option<(u64, VoicePlaybackHint)>,
     }
 
     struct Registration {
@@ -234,17 +262,30 @@ mod hub {
             self.record(session, channel, item_id, ItemState::Retracted);
         }
 
-        fn record(&self, session: &SessionId, channel: &str, item_id: &str, state: ItemState) {
+        /// Replace the channel's playback hint. Never waits, like captions.
+        pub(crate) fn publish_playback_hint(
+            &self,
+            session: &SessionId,
+            channel: &str,
+            hint: VoicePlaybackHint,
+        ) {
             let mut sessions = self.lock();
             let Some(registration) = sessions.get_mut(session).filter(|entry| !entry.closed) else {
                 return;
             };
             let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+            Self::channel_entry(registration, channel).playback_hint = Some((sequence, hint));
+            let changed = Arc::clone(&registration.changed);
+            drop(sessions);
+            changed.notify_waiters();
+        }
+
+        fn channel_entry<'a>(registration: &'a mut Registration, channel: &str) -> &'a mut Channel {
             let position = registration
                 .channels
                 .iter()
                 .position(|entry| entry.channel_id == channel);
-            let entry = if let Some(position) = position {
+            if let Some(position) = position {
                 &mut registration.channels[position]
             } else {
                 if registration.channels.len() >= MAX_CHANNELS_PER_SESSION {
@@ -253,10 +294,20 @@ mod hub {
                 registration.channels.push_back(Channel {
                     channel_id: channel.to_string(),
                     items: VecDeque::new(),
+                    playback_hint: None,
                 });
                 let last = registration.channels.len() - 1;
                 &mut registration.channels[last]
+            }
+        }
+
+        fn record(&self, session: &SessionId, channel: &str, item_id: &str, state: ItemState) {
+            let mut sessions = self.lock();
+            let Some(registration) = sessions.get_mut(session).filter(|entry| !entry.closed) else {
+                return;
             };
+            let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+            let entry = Self::channel_entry(registration, channel);
             entry.items.retain(|item| item.item_id != item_id);
             if entry.items.len() >= MAX_ITEMS_PER_CHANNEL {
                 entry.items.pop_front();
@@ -307,17 +358,34 @@ mod hub {
             else {
                 return Ok(batch);
             };
-            for item in entry.items.iter().filter(|item| item.sequence > after) {
-                batch.cursor = batch.cursor.max(item.sequence);
-                batch.captions.push(match &item.state {
-                    ItemState::Caption(text) => VoiceCaption::Caption {
-                        item_id: item.item_id.clone(),
-                        text: text.clone(),
-                    },
-                    ItemState::Retracted => VoiceCaption::Retracted {
-                        item_id: item.item_id.clone(),
-                    },
-                });
+            let mut newer: Vec<(u64, VoiceCaption)> = entry
+                .items
+                .iter()
+                .filter(|item| item.sequence > after)
+                .map(|item| {
+                    (
+                        item.sequence,
+                        match &item.state {
+                            ItemState::Caption(text) => VoiceCaption::Caption {
+                                item_id: item.item_id.clone(),
+                                text: text.clone(),
+                            },
+                            ItemState::Retracted => VoiceCaption::Retracted {
+                                item_id: item.item_id.clone(),
+                            },
+                        },
+                    )
+                })
+                .collect();
+            if let Some((sequence, hint)) = entry.playback_hint
+                && sequence > after
+            {
+                newer.push((sequence, VoiceCaption::PlaybackHint { hint }));
+            }
+            newer.sort_by_key(|(sequence, _)| *sequence);
+            for (sequence, caption) in newer {
+                batch.cursor = batch.cursor.max(sequence);
+                batch.captions.push(caption);
             }
             Ok(batch)
         }
@@ -389,6 +457,97 @@ mod hub {
                 item_id: item_id.to_string(),
                 text: text.to_string(),
             }
+        }
+
+        /// The barge-in playback hint rides the caption stream in sequence
+        /// order. Only the newest hint is retained (a late read gets the
+        /// current state), segment captions never evict it, and a hint for a
+        /// session without a console call is dropped.
+        #[test]
+        fn playback_hints_ride_the_stream_newest_only_and_survive_eviction() {
+            let hub = Arc::new(VoiceCaptionHub::default());
+            let session = session();
+            let registration = hub.register(&session);
+            hub.publish_text(&session, "channel-a", "segment-a", "Here is the long");
+            hub.publish_playback_hint(&session, "channel-a", VoicePlaybackHint::Duck);
+            hub.publish_text(
+                &session,
+                "channel-a",
+                "segment-a",
+                "Here is the long readout",
+            );
+            let batch = registration.read("channel-a", 0).expect("read");
+            assert_eq!(
+                batch.captions,
+                vec![
+                    VoiceCaption::PlaybackHint {
+                        hint: VoicePlaybackHint::Duck
+                    },
+                    caption("segment-a", "Here is the long readout"),
+                ],
+                "in sequence order; the segment's caption is coalesced"
+            );
+            let cursor = batch.cursor;
+
+            hub.publish_playback_hint(&session, "channel-a", VoicePlaybackHint::Restore);
+            assert_eq!(
+                registration
+                    .read("channel-a", cursor)
+                    .expect("read")
+                    .captions,
+                vec![VoiceCaption::PlaybackHint {
+                    hint: VoicePlaybackHint::Restore
+                }]
+            );
+            assert_eq!(
+                registration
+                    .read("channel-a", 0)
+                    .expect("read")
+                    .captions
+                    .iter()
+                    .filter(|caption| matches!(caption, VoiceCaption::PlaybackHint { .. }))
+                    .collect::<Vec<_>>(),
+                vec![&VoiceCaption::PlaybackHint {
+                    hint: VoicePlaybackHint::Restore
+                }],
+                "only the newest hint is retained"
+            );
+
+            for index in 0..(MAX_ITEMS_PER_CHANNEL + 4) {
+                hub.publish_text(&session, "channel-a", &format!("segment-{index}"), "text");
+            }
+            assert!(
+                registration
+                    .read("channel-a", 0)
+                    .expect("read")
+                    .captions
+                    .contains(&VoiceCaption::PlaybackHint {
+                        hint: VoicePlaybackHint::Restore
+                    }),
+                "segment captions never evict the channel's hint"
+            );
+
+            let other = SessionId::new();
+            hub.publish_playback_hint(&other, "channel-a", VoicePlaybackHint::Duck);
+            assert!(hub.lock().get(&other).is_none(), "no console call, no hint");
+        }
+
+        #[test]
+        fn playback_hints_serialize_as_typed_caption_entries() {
+            assert_eq!(
+                serde_json::to_value(VoiceCaption::PlaybackHint {
+                    hint: VoicePlaybackHint::Duck
+                })
+                .expect("serialize"),
+                serde_json::json!({"kind": "playback_hint", "hint": "duck"})
+            );
+            assert_eq!(
+                serde_json::to_value(VoiceCaption::PlaybackHint {
+                    hint: VoicePlaybackHint::Restore
+                })
+                .expect("serialize"),
+                serde_json::json!({"kind": "playback_hint", "hint": "restore"})
+            );
         }
 
         #[test]
