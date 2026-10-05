@@ -306,6 +306,13 @@ async fn caller(
     context: &ToolBundleContext,
     session: &meerkat_core::SessionId,
 ) -> HostAccessContext {
+    caller_at(context, session, "native caller").await
+}
+async fn caller_at(
+    context: &ToolBundleContext,
+    session: &meerkat_core::SessionId,
+    stage: &str,
+) -> HostAccessContext {
     context
         .caller_resolver
         .resolve(
@@ -313,7 +320,9 @@ async fn caller(
             None,
         )
         .await
-        .unwrap()
+        .unwrap_or_else(|error| {
+            panic!("{stage}: caller resolution failed for {session}: {error:?}")
+        })
 }
 fn request(id: &str) -> RequestIdentity {
     RequestIdentity::new(id, id.as_bytes()).unwrap()
@@ -818,13 +827,41 @@ async fn stable_harness(
     ToolBundleContext,
     Arc<tokio::sync::Mutex<Vec<(meerkat_core::SessionId, Principal)>>>,
 ) {
+    let sessions =
+        Arc::new(meerkat_store::SqliteSessionStore::open(path.join("sessions.sqlite3")).unwrap());
+    let (storage, provenance) =
+        meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(path.join("mob.sqlite3"))
+            .unwrap();
+    // Session/continuity persistence alone does not retain the native mob
+    // journal. These tests require the original creation facts after reopen.
+    let spec =
+        MobBootstrapSpec::persistent(definition(path), storage, path.to_path_buf(), 16, sessions)
+            .unwrap()
+            .with_mob_storage_provenance(provenance)
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: false,
+                notify_orchestrator_on_resume: false,
+                default_llm_client: Some(Arc::new(ScriptClient {
+                    calls: AtomicUsize::new(0),
+                    tool: "botus_apply",
+                })),
+            });
     let captured = Arc::new(Mutex::new(None));
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let capture = captured.clone();
     let probe_calls = calls.clone();
     let runtime = Box::pin(
         UnifiedRuntime::builder()
-            .definition(definition(path))
+            .mob_spec(spec)
+            .module_config(meerkat_mobkit::MobKitConfig {
+                modules: vec![],
+                discovery: meerkat_mobkit::DiscoverySpec {
+                    namespace: "extension-stable".into(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(10))
             .persistent_state(path)
             .continuity_from_state_dir(path)
             .await
@@ -836,10 +873,6 @@ async fn stable_harness(
             .identity_runtime_instance_id("extension-stable")
             .comms(true)
             .access_controller(access)
-            .default_llm_client(Arc::new(ScriptClient {
-                calls: AtomicUsize::new(0),
-                tool: "botus_apply",
-            }))
             .register_tool_bundle_factory(
                 NAME,
                 ToolBundleRequirements::durable_documents(NAME, "botus_read", "botus_apply"),
@@ -896,7 +929,7 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
         creation.creation.provenance,
         meerkat_mob::MemberCreationProvenance::Root
     ));
-    let owner = caller(&context, &session).await;
+    let owner = caller_at(&context, &session, "stable owner before reset").await;
     let receipt = context
         .documents
         .lookup_receipt(&owner, &request("first-native-create"))
@@ -933,7 +966,24 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
         .reset(&identity)
         .await
         .unwrap();
-    let after_reset = caller(&context, &successor.session_id).await;
+    let successor_creation = runtime
+        .mob_handle()
+        .member_creation_for_session(&successor.session_id)
+        .await
+        .unwrap()
+        .expect("reset successor has a native creation record");
+    assert_eq!(
+        successor_creation.creation.creation_id,
+        creation.creation.creation_id
+    );
+    assert!(matches!(
+        &successor_creation.creation.provenance,
+        meerkat_mob::MemberCreationProvenance::Successor {
+            predecessor_session_id,
+            ..
+        } if *predecessor_session_id == session
+    ));
+    let after_reset = caller_at(&context, &successor.session_id, "stable owner after reset").await;
     assert_eq!(after_reset.principal(), &principal);
     assert!(
         context
@@ -954,7 +1004,18 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
         .unwrap()
         .session_id
         .unwrap();
-    let restored = caller(&context, &session).await;
+    assert_eq!(
+        session, successor.session_id,
+        "restore keeps the reset session"
+    );
+    let restored_creation = runtime
+        .mob_handle()
+        .member_creation_for_session(&session)
+        .await
+        .unwrap()
+        .expect("restored successor retains the native creation journal");
+    assert_eq!(restored_creation.creation, successor_creation.creation);
+    let restored = caller_at(&context, &session, "stable owner after reopen").await;
     assert_eq!(restored.principal(), &principal);
     assert!(
         context

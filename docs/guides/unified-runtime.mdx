@@ -101,6 +101,13 @@ MobKit composition, `delegate` uses an ephemeral child mob and retires the
 helper and its fork descendants when delegation completes. Such members
 cannot be resumed after restart. Persistent root-mob members retain their
 native identity and lineage through the configured durable mob storage.
+The convenience `persistent_state(...)` path persists sessions and other
+stores but leaves the native mob journal in memory. To retain member identity
+and lineage across process restarts, supply `mob_spec(...)` using
+`MobBootstrapSpec::persistent(...)` with `persistent_mob_storage(...)` and its
+storage provenance. Durable document rows or continuity records alone cannot
+reconstruct missing native creation facts; the extension refuses unavailable
+authority.
 
 The SDK callback-backed `GatewayContinuityStore` currently lacks the required
 retained identity-history capability. Registering this extension on such a
