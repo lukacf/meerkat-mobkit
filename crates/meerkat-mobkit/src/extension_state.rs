@@ -3,6 +3,8 @@
 //! this feature is compiled and a factory is explicitly registered.
 pub(crate) mod identity_publication;
 pub use identity_publication::IdentityPublication;
+pub(crate) mod mcp_binding;
+pub use mcp_binding::{ChildMcpAvailability, HostMcpDocumentBinding};
 
 use async_trait::async_trait;
 use documents::{EdgeKind, HostPolicy, LineageLink, Principal, Role, VerifiedLineage};
@@ -334,6 +336,7 @@ impl NativeAuthorityRegistry {
 pub(crate) struct NativeCallerResolver {
     pub(crate) registry: std::sync::Weak<NativeAuthorityRegistry>,
     pub(crate) requirements: ToolBundleRequirements,
+    pub(crate) child_availability: Option<ChildMcpAvailability>,
 }
 impl NativeCallerResolver {
     fn policy(
@@ -437,6 +440,13 @@ impl ToolCallerResolver for NativeCallerResolver {
             .mob_member_binding
             .ok_or(documents::Error::AuthorityUnavailable)?;
         let handle = registry.handle(&binding.mob_id)?;
+        if self.child_availability == Some(ChildMcpAvailability::HostOnly)
+            && handle
+                .owner_bridge_session_lifecycle_authority()
+                .is_some_and(|authority| authority.destroy_on_owner_archive)
+        {
+            return Err(documents::Error::NotFound);
+        }
         let entry = handle
             .get_member(&meerkat_mob::AgentIdentity::from(binding.member.as_str()))
             .await
@@ -637,6 +647,7 @@ comms = true
         );
         let resolver = NativeCallerResolver {
             registry: Arc::downgrade(&registry),
+            child_availability: None,
             requirements: ToolBundleRequirements::durable_documents(
                 "durable-documents-test",
                 "documents_read",
@@ -658,6 +669,18 @@ comms = true
                 Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly),
                 Some(Role::Reader),
             ),
+            (
+                Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
+                    ["documents_apply"].into_iter().collect(),
+                )),
+                Some(Role::Reader),
+            ),
+            (
+                Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
+                    ["documents_read"].into_iter().collect(),
+                )),
+                None,
+            ),
             (None, Some(Role::Editor)),
         ] {
             metadata.tooling.tool_access_policy = policy;
@@ -676,6 +699,59 @@ comms = true
                 expected
             );
         }
+        registry.before_activation()(handle.read_handle())
+            .await
+            .unwrap();
+        let host_only = NativeCallerResolver {
+            registry: Arc::downgrade(&registry),
+            requirements: resolver.requirements.clone(),
+            child_availability: Some(ChildMcpAvailability::HostOnly),
+        };
+        let root_context =
+            ToolDispatchContext::default().with_runtime_identity(session_id.clone(), None);
+        assert!(host_only.resolve(&root_context, None).await.is_ok());
+
+        // Scope comes from the native owner bridge authority. A copied
+        // descriptor or a root-looking profile name cannot change it.
+        let mut child_definition = handle.definition().clone();
+        child_definition.id = "document-child-scope".into();
+        let child =
+            meerkat_mob::MobBuilder::new(child_definition, meerkat_mob::MobStorage::in_memory())
+                .with_session_service(sessions.clone())
+                .with_default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .before_activation(registry.before_activation())
+                .with_owner_bridge_session_create_authority(session_id, true, false)
+                .create()
+                .await
+                .unwrap();
+        let child_identity = meerkat_mob::AgentIdentity::from("child");
+        child
+            .spawn_spec(meerkat_mob::SpawnMemberSpec::host_root(
+                "worker",
+                child_identity.clone(),
+            ))
+            .await
+            .unwrap();
+        let child_session = child
+            .get_member(&child_identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .bridge_session_id()
+            .unwrap()
+            .clone();
+        let child_context =
+            ToolDispatchContext::default().with_runtime_identity(child_session, None);
+        assert!(matches!(
+            host_only.resolve(&child_context, None).await,
+            Err(documents::Error::NotFound)
+        ));
+        let child_available = NativeCallerResolver {
+            child_availability: Some(ChildMcpAvailability::ChildAvailable),
+            ..host_only
+        };
+        assert!(child_available.resolve(&child_context, None).await.is_ok());
+        child.stop().await.unwrap();
         handle.stop().await.unwrap();
     }
 }
