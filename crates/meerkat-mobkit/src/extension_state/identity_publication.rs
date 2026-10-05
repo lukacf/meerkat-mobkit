@@ -216,3 +216,97 @@ fn fence_applies(fence: &Fence, snapshot: &MemberCreationSnapshot) -> bool {
     };
     successor || snapshot.birth_cursor > fence.after_cursor
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (
+        Arc<IdentityPublications>,
+        IdentityPublication,
+        MemberCreationSnapshot,
+    ) {
+        let publications = Arc::new(IdentityPublications::default());
+        let identity = AgentIdentity::parse("stable:writer").unwrap();
+        let publication = publications.begin(&identity).unwrap();
+        let snapshot = MemberCreationSnapshot {
+            birth_cursor: 11,
+            session_id: SessionId::new(),
+            member_binding: meerkat_core::MobMemberBinding {
+                mob_id: "test".into(),
+                role: "worker".into(),
+                member: "writer".into(),
+            },
+            creation: meerkat_mob::MemberCreationRecord::default(),
+            fork_source: None,
+        };
+        let mut state = publications.state.lock().unwrap();
+        let pending = state.pending.get(&identity).unwrap().clone();
+        state.targets.insert(
+            ("test".into(), "writer".into()),
+            Fence {
+                pending,
+                after_cursor: 10,
+                predecessor: None,
+                exact_session: None,
+            },
+        );
+        drop(state);
+        (publications, publication, snapshot)
+    }
+
+    #[tokio::test]
+    async fn extension_publication_drop_unblocks_and_refuses_late_birth() {
+        let (publications, publication, mut snapshot) = fixture();
+        let waiting = {
+            let publications = publications.clone();
+            let snapshot = snapshot.clone();
+            tokio::spawn(async move { publications.wait(&snapshot).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(publication);
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(documents::Error::AuthorityUnavailable)
+        ));
+        // The native actor may commit well after cancellation. There is no
+        // sampled end cursor that could reclassify that session as a worker.
+        snapshot.birth_cursor = 1000;
+        assert!(matches!(
+            publications.wait(&snapshot).await,
+            Err(documents::Error::AuthorityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn extension_publication_preserves_older_birth_and_publishes_new_session() {
+        let (publications, publication, mut snapshot) = fixture();
+        snapshot.birth_cursor = 9;
+        publications.wait(&snapshot).await.unwrap();
+        snapshot.birth_cursor = 11;
+        publication.publish();
+        publications.wait(&snapshot).await.unwrap();
+        assert!(publications.state.lock().unwrap().targets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extension_publication_exact_binding_does_not_block_other_history() {
+        let (publications, publication, mut snapshot) = fixture();
+        let identity = AgentIdentity::parse("stable:writer").unwrap();
+        publications
+            .bind_session(&identity, &snapshot.session_id)
+            .unwrap();
+        drop(publication);
+        assert!(matches!(
+            publications.wait(&snapshot).await,
+            Err(documents::Error::AuthorityUnavailable)
+        ));
+        snapshot.session_id = SessionId::new();
+        publications.wait(&snapshot).await.unwrap();
+    }
+}

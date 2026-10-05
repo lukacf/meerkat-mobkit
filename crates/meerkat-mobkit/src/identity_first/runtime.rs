@@ -7363,15 +7363,23 @@ impl IdentityRuntime {
         }
 
         #[cfg(feature = "extension-state")]
-        let extension_publication = self
+        let extension_publication = match self
             .bridge
             .as_ref()
             .map(|bridge| bridge.begin_extension_identity_publication(identity))
             .transpose()
-            .map_err(|error| {
-                IdentityRuntimeError::Internal(format!("identity publication preparation: {error}"))
-            })?
-            .flatten();
+        {
+            Ok(publication) => publication.flatten(),
+            Err(error) => {
+                let cleanup = self.release_uninstalled_materialize_lease(&grant).await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "identity publication preparation: {error}{}",
+                    cleanup
+                        .map(|error| format!("; lease cleanup failed: {error}"))
+                        .unwrap_or_default()
+                )));
+            }
+        };
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut resumed = false;
@@ -13031,15 +13039,21 @@ impl IdentityRuntime {
         }
 
         #[cfg(feature = "extension-state")]
-        let extension_publication = self
+        let extension_publication = match self
             .bridge
             .as_ref()
             .map(|bridge| bridge.begin_extension_identity_publication(identity))
             .transpose()
-            .map_err(|error| {
-                IdentityRuntimeError::Internal(format!("identity publication preparation: {error}"))
-            })?
-            .flatten();
+        {
+            Ok(publication) => publication.flatten(),
+            Err(error) => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "identity publication preparation: {error}"
+                )));
+            }
+        };
 
         // Bridge: ONE authoritative successor transition. This used to retire the
         // old mob member and then create a fresh one, which the durable-roster

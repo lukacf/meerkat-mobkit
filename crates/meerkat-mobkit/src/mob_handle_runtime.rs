@@ -6941,6 +6941,12 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
                 self.inner.load_persisted_session_metadata(session_id).await
             }
+            async fn load_retained_session_metadata(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+                self.inner.load_retained_session_metadata(session_id).await
+            }
             async fn authorize_revivable_retired_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -8065,6 +8071,12 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
         self.inner.load_persisted_session_metadata(session_id).await
+    }
+    async fn load_retained_session_metadata(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+        self.inner.load_retained_session_metadata(session_id).await
     }
     async fn authorize_revivable_retired_session(
         &self,
@@ -15925,6 +15937,16 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn load_retained_session_metadata(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+            self.record("load_retained_session_metadata");
+            Err(SessionError::NotFound {
+                id: session_id.clone(),
+            })
+        }
+
         async fn subscribe_session_activity(
             &self,
             _session_id: &meerkat_core::SessionId,
@@ -16617,6 +16639,38 @@ comms = true
         assert_eq!(
             probe.calls(),
             vec!["subscribe_session_activity", "subscribe_session_activity"],
+            "each wrapper forwards exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_wrappers_forward_retained_metadata_errors_and_exact_session() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            let result = wrapper.load_retained_session_metadata(&session_id).await;
+            assert!(matches!(result, Err(SessionError::NotFound { id }) if id == session_id));
+        }
+        assert_eq!(
+            probe.calls(),
+            vec![
+                "load_retained_session_metadata",
+                "load_retained_session_metadata"
+            ],
             "each wrapper forwards exactly once"
         );
     }

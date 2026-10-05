@@ -423,9 +423,10 @@ impl NativeCallerResolver {
     ) -> documents::Result<Option<Role>> {
         let metadata = registry
             .sessions
-            .load_persisted_session_metadata(&source.session_id)
+            .load_retained_session_metadata(&source.session_id)
             .await
             .map_err(|_| documents::Error::AuthorityUnavailable)?
+            .filter(|view| view.session_id == source.session_id)
             .and_then(|view| view.session_metadata)
             .ok_or(documents::Error::AuthorityUnavailable)?;
         let binding = metadata
@@ -484,6 +485,7 @@ impl ToolCallerResolver for NativeCallerResolver {
             .load_persisted_session_metadata(session_id)
             .await
             .map_err(|_| documents::Error::AuthorityUnavailable)?
+            .filter(|view| view.session_id == *session_id)
             .and_then(|view| view.session_metadata)
             .ok_or(documents::Error::AuthorityUnavailable)?;
         let binding = metadata
@@ -616,5 +618,119 @@ impl ToolCallerResolver for NativeCallerResolver {
             caller = caller.with_valid_owners(BTreeSet::from([owner.clone()]));
         }
         Ok(caller)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_native_retained_source_policy_observes_authoritative_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "retained-policy"
+[profiles.worker]
+model = "gpt-5.5"
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .unwrap();
+        let spec = crate::MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            4,
+            Arc::new(
+                meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.sqlite3"))
+                    .unwrap(),
+            ),
+        )
+        .unwrap()
+        .with_options(crate::MobBootstrapOptions {
+            allow_ephemeral_sessions: false,
+            notify_orchestrator_on_resume: false,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        // Keep the exact epoch-observing facade used by the session authority.
+        // Mutating a SessionStore export would not change native policy.
+        let runtime_store = spec.runtime_authority_prewarm.clone().unwrap();
+        let sessions = spec.session_service.clone();
+        let runtime = crate::MobRuntime::bootstrap(spec).await.unwrap();
+        let handle = runtime.handle();
+        let identity = meerkat_mob::AgentIdentity::from("source");
+        handle
+            .spawn_spec(meerkat_mob::SpawnMemberSpec::host_root(
+                "worker",
+                identity.clone(),
+            ))
+            .await
+            .unwrap();
+        let session_id = handle
+            .get_member(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .bridge_session_id()
+            .unwrap()
+            .clone();
+        let snapshot = handle
+            .member_creation_for_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let registry = NativeAuthorityRegistry::new(
+            "test".into(),
+            handle.mob_id().to_string(),
+            sessions.clone(),
+            None,
+            None,
+        );
+        let resolver = NativeCallerResolver {
+            registry: Arc::downgrade(&registry),
+            requirements: ToolBundleRequirements::durable_documents(
+                "botus-1-2-3",
+                "botus_read",
+                "botus_apply",
+            ),
+        };
+        assert_eq!(
+            resolver.source_ceiling(&registry, &snapshot).await.unwrap(),
+            Some(Role::Editor)
+        );
+        let mut source = sessions
+            .load_persisted_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut metadata = source.try_session_metadata().unwrap().unwrap();
+        for (policy, expected) in [
+            (
+                Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly),
+                Some(Role::Reader),
+            ),
+            (None, Some(Role::Editor)),
+        ] {
+            metadata.tooling.tool_access_policy = policy;
+            source.set_session_metadata(metadata.clone()).unwrap();
+            runtime_store
+                .commit_session_snapshot(
+                    &meerkat_runtime::LogicalRuntimeId::for_session(&session_id),
+                    meerkat_runtime::SerializedSessionSnapshot {
+                        session_snapshot: source.to_persisted_bytes().unwrap().into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resolver.source_ceiling(&registry, &snapshot).await.unwrap(),
+                expected
+            );
+        }
+        handle.stop().await.unwrap();
     }
 }

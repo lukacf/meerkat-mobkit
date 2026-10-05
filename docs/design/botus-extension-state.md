@@ -161,8 +161,10 @@ Lineage must be complete enough to prove both an allow and the absence of a
 matching subtree denial. Missing, cyclic, truncated, inconsistent or stale
 provenance fails closed for delegation. Legacy unknown ancestry must not be
 treated as a proven root to bypass a subtree denial.
-Immutable creation provenance therefore distinguishes `Root`, `Derived` and
-`LegacyUnknown`. Only runtime-attested `Root` proves an empty ancestor chain;
+Immutable creation provenance distinguishes explicit host `Root`, verified
+`Spawn` or `Fork`, native `Successor`, current-runtime `Unproven`, and
+`LegacyUnknown`. Generic construction defaults to `Unproven`; only a trusted
+host root constructor or a captured native source witness establishes proof. Only runtime-attested `Root` proves an empty ancestor chain;
 an absent old field is `LegacyUnknown`, not `Root`. Unsupported or incomplete
 ancestry produces a typed authority-unavailable result inside the host and an
 appropriate non-disclosing tool failure, never a silently reduced allowlist.
@@ -202,18 +204,17 @@ Unsupported, failed-open or nonpersistent storage refuses activation of a
 package that requires durability. There is no package-local SQLite or memory
 fallback. Hosts without such packages do not open this capability.
 
-Proposed additive registration API:
+The optional registration API:
 
 ```rust
 builder.register_tool_bundle_factory(
     "botus-1-2-3",
-    ToolBundleRequirements::durable_documents("botus-1-2-3"),
+    ToolBundleRequirements::durable_documents("botus-1-2-3", "botus_read", "botus_apply"),
     botus_factory,
 )
 ```
 
-Names above are proposed, not existing APIs. The factory receives a namespace-
-bound document service and an `Arc<dyn ToolCallerResolver>`, never a principal.
+The factory receives a namespace-bound document service and an `Arc<dyn ToolCallerResolver>`, never a principal.
 The resolver obtains `origin_session_id` on each dispatch, reads typed persisted
 session/member bindings, validates the current caller binding, obtains durable
 lineage, and intersects host ABAC. Lookup failures propagate; an empty roster
@@ -367,8 +368,12 @@ identity history provides the same exclusion after restart; decoding the
 canonical native member name locates that history only in the identity bridge's
 root mob and never assigns an Agent principal. Ordinary Worker name reuse on
 unreserved targets keeps its independent creation-token behavior. A missing
-source session policy makes inherited access unavailable, including after
-archival if the native metadata authority no longer exposes that policy.
+source session policy makes inherited access unavailable. The native
+`load_retained_session_metadata` authority reads the latest retained metadata
+for that exact source session, including archived sessions. It does not assert
+that the source is currently executing, or return a historical policy revision.
+Missing typed metadata, binding, unsupported reads and failures remain unavailable;
+a present typed record with no policy has native unrestricted semantics.
 
 Inherited data access intersects the current source session policy and current
 caller policy on every call. An explicit host-authorized widening of native

@@ -5517,7 +5517,7 @@ pub(crate) fn build_spawn_spec(
     base_profile: Option<&meerkat_mob::Profile>,
 ) -> Result<SpawnMemberSpec, BridgeError> {
     let mid = member_id_for_spawn_spec(runtime_id, spec);
-    let mut spawn_spec = SpawnMemberSpec::new(spec.profile.clone(), mid);
+    let mut spawn_spec = SpawnMemberSpec::host_root(spec.profile.clone(), mid);
 
     if let Some(message) = spec.initial_message.as_ref() {
         spawn_spec = spawn_spec.with_initial_message(message.clone());

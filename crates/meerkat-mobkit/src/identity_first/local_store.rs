@@ -3784,6 +3784,13 @@ mod tests {
         drop(store);
         let reopened = LocalContinuityStore::open(&path).unwrap();
         reopened.enable_identity_binding_history().await.unwrap();
+        assert!(reopened.has_historical_identity(&identity).await.unwrap());
+        assert!(
+            !reopened
+                .has_historical_identity(&AgentIdentity::parse("never-declared").unwrap())
+                .await
+                .unwrap()
+        );
         reopened
             .establish_identity_history_coverage("mob", 99)
             .await

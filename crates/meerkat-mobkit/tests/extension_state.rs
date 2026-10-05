@@ -242,7 +242,7 @@ async fn harness(
     (runtime, context, calls)
 }
 fn worker(id: &str) -> SpawnMemberSpec {
-    SpawnMemberSpec::new("worker", AgentIdentity::from(id))
+    SpawnMemberSpec::host_root("worker", AgentIdentity::from(id))
 }
 async fn member_session(
     runtime: &UnifiedRuntime,
@@ -560,42 +560,54 @@ struct RestartEvidence {
 fn extension_native_fresh_process_restart_and_current_revocation() {
     let dir = tempfile::tempdir().unwrap();
     for phase in ["create", "revoke", "verify"] {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "extension_subprocess_fixture",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("BOTUS_EXTENSION_RESTART_PATH", dir.path())
-            .env("BOTUS_EXTENSION_RESTART_PHASE", phase)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            if child.try_wait().unwrap().is_some() {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                child.kill().unwrap();
-                let output = child.wait_with_output().unwrap();
-                panic!(
-                    "restart phase {phase} timed out: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "restart phase {phase}:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        subprocess_phase(dir.path(), phase);
     }
+}
+
+#[test]
+fn extension_native_fresh_process_unpublished_late_birth_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    for phase in ["late-create", "late-reopen"] {
+        subprocess_phase(dir.path(), phase);
+    }
+}
+
+fn subprocess_phase(path: &std::path::Path, phase: &str) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "extension_subprocess_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("BOTUS_EXTENSION_RESTART_PATH", path)
+        .env("BOTUS_EXTENSION_RESTART_PHASE", phase)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "restart phase {phase} timed out: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "restart phase {phase}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -604,6 +616,10 @@ async fn extension_subprocess_fixture() {
     let path = std::path::PathBuf::from(std::env::var_os("BOTUS_EXTENSION_RESTART_PATH").unwrap());
     let phase = std::env::var("BOTUS_EXTENSION_RESTART_PHASE").unwrap();
     let evidence_path = path.join("restart-evidence.json");
+    if phase.starts_with("late-") {
+        unpublished_late_birth_phase(&path, &phase).await;
+        return;
+    }
     let (runtime, context, _) = harness(&path, None).await;
     if phase == "create" {
         let root = runtime.spawn(worker("root")).await.unwrap();
@@ -890,5 +906,113 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
             .await
             .is_ok()
     );
+    runtime.shutdown().await;
+}
+
+async fn unpublished_late_birth_phase(path: &std::path::Path, phase: &str) {
+    use meerkat_mobkit::identity_first::{
+        AgentIdentity as StableIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
+        ContinuityRecord, LeaseAcquireResult,
+    };
+    let (runtime, context, _) = stable_harness(
+        path,
+        meerkat_mobkit::access::AccessController::new(Default::default()).unwrap(),
+    )
+    .await;
+    let identity = StableIdentity::parse("durable:late").unwrap();
+    let target = meerkat_mobkit::member_comms_id::mob_member_id(identity.as_str());
+    let evidence = path.join("late-session.json");
+    let session = if phase == "late-create" {
+        let identity_runtime = runtime.identity_runtime().unwrap();
+        let mut grants = identity_runtime
+            .lease_provider()
+            .acquire_leases(std::slice::from_ref(&identity), "late-test")
+            .await
+            .unwrap();
+        let LeaseAcquireResult::Acquired(grant) = grants.remove(&identity).unwrap() else {
+            panic!("fresh identity lease");
+        };
+        let provisional = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("late-runtime").unwrap(),
+            session_id: meerkat_core::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        identity_runtime
+            .continuity_store()
+            .upsert_continuity_record(&provisional, grant.fencing_token)
+            .await
+            .unwrap();
+        let publication = identity_runtime
+            .bridge()
+            .unwrap()
+            .begin_extension_identity_publication(&identity)
+            .unwrap()
+            .unwrap();
+        drop(publication);
+        // This is the authoritative outcome of a submitted native spawn that
+        // commits after its materialization caller has been canceled. The
+        // exact actual binding was never published into continuity.
+        runtime
+            .mob_handle()
+            .spawn_spec(SpawnMemberSpec::host_root("worker", target.clone()))
+            .await
+            .unwrap();
+        let session = member_session(&runtime, &target).await;
+        assert!(
+            identity_runtime
+                .continuity_store()
+                .historical_identity_binding(&session)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        identity_runtime
+            .continuity_store()
+            .delete_continuity_record(&identity, grant.fencing_token)
+            .await
+            .unwrap();
+        identity_runtime
+            .lease_provider()
+            .release_leases(&[grant])
+            .await
+            .unwrap();
+        std::fs::write(&evidence, serde_json::to_vec(&session).unwrap()).unwrap();
+        session
+    } else {
+        serde_json::from_slice(&std::fs::read(&evidence).unwrap()).unwrap()
+    };
+    assert_eq!(member_session(&runtime, &target).await, session);
+    assert!(matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            context.caller_resolver.resolve(
+                &ToolDispatchContext::default().with_runtime_identity(session, None),
+                None,
+            )
+        )
+        .await
+        .unwrap(),
+        Err(Error::AuthorityUnavailable)
+    ));
+    // An unrelated worker target still gets a fresh immutable worker identity.
+    let worker_member = runtime
+        .spawn(worker(if phase == "late-create" {
+            "unreserved-before"
+        } else {
+            "unreserved-after"
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        caller(
+            &context,
+            &member_session(&runtime, &worker_member.agent_identity).await
+        )
+        .await
+        .principal(),
+        Principal::Worker { .. }
+    ));
     runtime.shutdown().await;
 }
