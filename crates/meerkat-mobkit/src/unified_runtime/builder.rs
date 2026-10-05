@@ -104,6 +104,16 @@ pub struct UnifiedRuntimeBuilder {
     >,
     /// Child mob application tool policy added to the mob spec.
     child_application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    #[cfg(feature = "extension-state")]
+    tool_bundle_factories: BTreeMap<
+        String,
+        (
+            crate::extension_state::ToolBundleRequirements,
+            Arc<dyn crate::extension_state::ToolBundleFactory>,
+        ),
+    >,
+    #[cfg(feature = "extension-state")]
+    extension_store: Option<crate::storage_provider::OpenedExtensionState>,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -422,6 +432,20 @@ impl UnifiedRuntimeBuilder {
         binding: meerkat_core::ApplicationToolPolicyBinding,
     ) -> Self {
         self.child_application_tool_policy = Some(binding);
+        self
+    }
+
+    /// Build an optional tool bundle from the configured provider's durable
+    /// document capability. Profiles select its name through rust_bundles.
+    #[cfg(feature = "extension-state")]
+    pub fn register_tool_bundle_factory(
+        mut self,
+        name: impl Into<String>,
+        requirements: crate::extension_state::ToolBundleRequirements,
+        factory: Arc<dyn crate::extension_state::ToolBundleFactory>,
+    ) -> Self {
+        self.tool_bundle_factories
+            .insert(name.into(), (requirements, factory));
         self
     }
 
@@ -1047,6 +1071,19 @@ impl UnifiedRuntimeBuilder {
             ));
         }
 
+        #[cfg(feature = "extension-state")]
+        if !self.tool_bundle_factories.is_empty()
+            && wants_identity_first
+            && self.continuity_store.is_none()
+        {
+            let path = self.persistent_state_path.clone().ok_or_else(|| {
+                UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    "extension documents require a configured persistent identity authority".into(),
+                )
+            })?;
+            self = self.continuity_from_state_dir(path).await?;
+        }
+
         let continuity_session_store = self
             .continuity_store
             .as_ref()
@@ -1097,6 +1134,9 @@ impl UnifiedRuntimeBuilder {
             }
             None => self.resolve_mob_spec().await?,
         };
+
+        #[cfg(feature = "extension-state")]
+        let extension_authority = self.materialize_extension_factories(&mut mob_spec).await?;
 
         // Provider-declared durability flows to the census verbatim (M4b):
         // replace the locally-labeled slots for the domains the provider
@@ -1334,7 +1374,8 @@ impl UnifiedRuntimeBuilder {
             .keys()
             .map(|identity| crate::member_comms_id::mob_member_id(identity.as_str()))
             .collect();
-        let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
+        #[allow(unused_mut)]
+        let mut runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
@@ -1344,6 +1385,11 @@ impl UnifiedRuntimeBuilder {
         ))
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+
+        #[cfg(feature = "extension-state")]
+        {
+            runtime.extension_authority = extension_authority;
+        }
 
         // Construct session bridge from the mob handle for identity-first wiring.
         // Available for BOTH persistent_state and external-authoritative paths —
@@ -1375,6 +1421,10 @@ impl UnifiedRuntimeBuilder {
             } else {
                 crate::identity_first::bridge::MobSessionBridge::new(handle)
             };
+            #[cfg(feature = "extension-state")]
+            if let Some(authority) = &runtime.extension_authority {
+                bridge = bridge.with_extension_identity_publication(authority.publications.clone());
+            }
             // Heal seam (2026-07-29 incident): without the recoverer, the
             // continuity repair supervisor can only reset entries — a
             // cosmetic heal that materialization re-Breaks when the durable
@@ -1852,6 +1902,137 @@ impl UnifiedRuntimeBuilder {
     /// code path. Conflicts between the provider and explicit per-slot seams
     /// are typed errors; the provider's set was validated fail-closed at
     /// `open_realm`.
+    #[cfg(feature = "extension-state")]
+    async fn materialize_extension_factories(
+        &mut self,
+        spec: &mut MobBootstrapSpec,
+    ) -> Result<
+        Option<Arc<crate::extension_state::NativeAuthorityRegistry>>,
+        UnifiedRuntimeBuilderError,
+    > {
+        use crate::extension_state::{
+            NativeAuthorityRegistry, NativeCallerResolver, ToolBundleContext,
+        };
+        use crate::storage_provider::MobKitStorageProvider;
+        if self.tool_bundle_factories.is_empty() {
+            return Ok(None);
+        }
+        let state_dir = self.persistent_state_path.clone().ok_or_else(|| {
+            UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "durable extension documents require persistent_state()".into(),
+            )
+        })?;
+        let opened = match self.extension_store.take() {
+            Some(opened) => opened,
+            None => {
+                crate::storage_provider::DiskMobKitStorageProvider
+                    .open_extension_state(
+                        &crate::storage_provider::MobKitRealmOpenContext::for_state_dir(state_dir),
+                    )
+                    .await?
+            }
+        };
+        if opened.durability.domain != "extension-state"
+            || opened.durability.class != meerkat_core::DurabilityClass::Durable
+            || opened.durability.resolution != meerkat_core::DurabilityResolution::Persistent
+        {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "extension provider must declare persistent extension-state storage".into(),
+            ));
+        }
+        self.provider_slot_census
+            .push(crate::storage_health::StorageSlotSummary {
+                durability: crate::storage_health::StorageSlotDurability::Declared(
+                    opened.durability,
+                ),
+                backend: "configured extension-state provider".into(),
+                detail: None,
+                degraded: false,
+            });
+        if let Some(continuity) = &self.continuity_store {
+            continuity
+                .enable_identity_binding_history()
+                .await
+                .map_err(|error| {
+                    UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                        "extension identity history unavailable: {error}"
+                    ))
+                })?;
+        }
+        let registry = NativeAuthorityRegistry::new(
+            crate::storage_provider::MEERKAT_LEVEL_REALM_ID.into(),
+            spec.definition.id.to_string(),
+            Arc::clone(&spec.session_service),
+            self.continuity_store.clone(),
+            self.access_controller.clone(),
+        );
+        let mut child_bundles = meerkat_mob_mcp::ChildToolBundles::new();
+        let mut namespaces = std::collections::BTreeSet::new();
+        for (name, (requirements, factory)) in std::mem::take(&mut self.tool_bundle_factories) {
+            if spec.tool_bundles.contains_key(&name)
+                || self.tool_bundles.contains_key(&name)
+                || !namespaces.insert(requirements.namespace.clone())
+            {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    format!("extension bundle or namespace registered more than once: {name}"),
+                ));
+            }
+            let documents = mobkit_extension_state::DocumentService::new(
+                crate::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                requirements.namespace.clone(),
+                Arc::clone(&opened.store),
+            )
+            .map_err(|error| {
+                UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
+            })?;
+            let resolver = Arc::new(NativeCallerResolver {
+                registry: Arc::downgrade(&registry),
+                requirements: requirements.clone(),
+            });
+            let dispatcher = factory
+                .build(ToolBundleContext {
+                    documents,
+                    caller_resolver: resolver,
+                })
+                .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
+            let names = dispatcher.tools();
+            if !names.iter().any(|tool| tool.name == requirements.read_tool)
+                || !names.iter().any(|tool| tool.name == requirements.edit_tool)
+                || dispatcher.tool_mutation_class(&requirements.read_tool)
+                    != meerkat_core::ToolMutationClass::ReadOnly
+                || dispatcher.tool_mutation_class(&requirements.edit_tool)
+                    != meerkat_core::ToolMutationClass::Mutating
+            {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    format!(
+                        "extension bundle {name} must declare its read and edit tools accurately"
+                    ),
+                ));
+            }
+            child_bundles = child_bundles.register(
+                name.clone(),
+                Arc::clone(&dispatcher),
+                meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable,
+            );
+            spec.tool_bundles.insert(name, dispatcher);
+        }
+        let callback = registry.before_activation();
+        if let Some(state) = &spec.agent_mob_mcp_state {
+            state
+                .set_before_activation(Arc::clone(&callback))
+                .map_err(|error| {
+                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
+                })?;
+            state
+                .set_additional_child_tool_bundles(child_bundles)
+                .map_err(|error| {
+                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
+                })?;
+        }
+        spec.before_activation = Some(callback);
+        Ok(Some(registry))
+    }
+
     async fn materialize_storage_provider(&mut self) -> Result<(), UnifiedRuntimeBuilderError> {
         let Some(provider) = self.storage_provider.take() else {
             return Ok(());
@@ -1926,6 +2107,10 @@ impl UnifiedRuntimeBuilder {
             declared_ephemeral_domains,
         };
         let set = provider.open_realm(&ctx).await?;
+        #[cfg(feature = "extension-state")]
+        if !self.tool_bundle_factories.is_empty() {
+            self.extension_store = Some(provider.open_extension_state(&ctx).await?);
+        }
         // Providers are contracted to enforce this before returning; the
         // composition re-checks because the rule is the composition's.
         crate::storage_provider::enforce_fail_closed_store_set(&set, &ctx)?;

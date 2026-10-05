@@ -7362,6 +7362,17 @@ impl IdentityRuntime {
             self.publish_customizer_tools(identity, &mut draft).await;
         }
 
+        #[cfg(feature = "extension-state")]
+        let extension_publication = self
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.begin_extension_identity_publication(identity))
+            .transpose()
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!("identity publication preparation: {error}"))
+            })?
+            .flatten();
+
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut resumed = false;
         let mut record = if let Some(mut record) = continuity {
@@ -7964,6 +7975,10 @@ impl IdentityRuntime {
         )
         .await;
         self.clear_materialization_backoff(identity).await;
+        #[cfg(feature = "extension-state")]
+        if let Some(publication) = extension_publication {
+            publication.publish();
+        }
         Ok(EmbodimentOutcome {
             already_active: false,
             record,
@@ -13015,6 +13030,17 @@ impl IdentityRuntime {
             }
         }
 
+        #[cfg(feature = "extension-state")]
+        let extension_publication = self
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.begin_extension_identity_publication(identity))
+            .transpose()
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!("identity publication preparation: {error}"))
+            })?
+            .flatten();
+
         // Bridge: ONE authoritative successor transition. This used to retire the
         // old mob member and then create a fresh one, which the durable-roster
         // contract makes impossible - the successor occupies the same roster row,
@@ -13395,6 +13421,10 @@ impl IdentityRuntime {
                 "reset old bridge cleanup debt recorded after continuity commit",
             );
             self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
+            #[cfg(feature = "extension-state")]
+            if let Some(publication) = extension_publication {
+                publication.publish();
+            }
             return Ok(new_record);
         }
 

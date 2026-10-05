@@ -8454,6 +8454,8 @@ pub struct MobBootstrapSpec {
     /// What the agent mob tools were installed with, so bootstrap can
     /// reinstall them with the final child policy.
     pub(crate) agent_mob_tools_install: Option<AgentMobToolsInstall>,
+    #[cfg(feature = "extension-state")]
+    pub(crate) before_activation: Option<meerkat_mob::MobBeforeActivation>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8568,6 +8570,8 @@ impl MobBootstrapSpec {
             child_tool_bundle_availability: BTreeMap::new(),
             child_application_tool_policy: None,
             agent_mob_tools_install: None,
+            #[cfg(feature = "extension-state")]
+            before_activation: None,
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -10797,6 +10801,10 @@ impl MobRuntime {
         }
         for (name, dispatcher) in &spec.tool_bundles {
             builder = builder.register_tool_bundle(name.clone(), Arc::clone(dispatcher));
+        }
+        #[cfg(feature = "extension-state")]
+        if let Some(callback) = &spec.before_activation {
+            builder = builder.before_activation(Arc::clone(callback));
         }
 
         // Apply-time WorkGraph attention overlays: the provisioner's

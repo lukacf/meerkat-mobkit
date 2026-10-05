@@ -2237,6 +2237,94 @@ fn delete_head_canonical_rows_in_txn(
 
 #[async_trait]
 impl ContinuityStore for LocalContinuityStore {
+    #[cfg(feature = "extension-state")]
+    async fn establish_identity_history_coverage(
+        &self,
+        mob: &str,
+        cursor: u64,
+    ) -> Result<(), ContinuityStoreError> {
+        let mob = mob.to_string();
+        self.run_blocking("identity history coverage", move |inner| inner.with_writer(|connection| {
+            connection.execute("INSERT OR IGNORE INTO continuity_identity_coverage(mob_id,after_cursor) VALUES(?1,?2)", rusqlite::params![mob, cursor]).map_err(|e| sqlite_err("coverage anchor", e))?;
+            Ok(())
+        })).await
+    }
+
+    #[cfg(feature = "extension-state")]
+    async fn identity_history_covers_birth(
+        &self,
+        mob: &str,
+        birth_cursor: u64,
+    ) -> Result<bool, ContinuityStoreError> {
+        let mob = mob.to_string();
+        self.run_blocking("identity history covers birth", move |inner| {
+            inner.with_reader(|connection| {
+                let anchor: Option<u64> = connection
+                    .query_row(
+                        "SELECT after_cursor FROM continuity_identity_coverage WHERE mob_id=?1",
+                        [mob],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| sqlite_err("coverage read", e))?;
+                Ok(anchor.is_some_and(|cursor| birth_cursor > cursor))
+            })
+        })
+        .await
+    }
+    #[cfg(feature = "extension-state")]
+    async fn enable_identity_binding_history(&self) -> Result<(), ContinuityStoreError> {
+        self.run_blocking("identity binding history", |inner| inner.with_writer(|connection| {
+            meerkat_sqlite::apply_domain_migrations(connection, &crate::extension_state::IDENTITY_HISTORY_DOMAIN).map_err(|e| mechanics_err("identity history schema", e))?;
+            // Preserve all extant authoritative historical bindings. The
+            // table's conflict trigger refuses ambiguous identity reuse.
+            let tx = connection.transaction().map_err(|e| sqlite_err("history transaction", e))?;
+            tx.execute_batch("INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM continuity_records; INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM session_snapshots;").map_err(|e| sqlite_err("history backfill", e))?;
+            if inner.head_tables_available(&tx)? {
+                tx.execute_batch("INSERT OR IGNORE INTO continuity_identity_history(session_id,identity) SELECT session_id,identity FROM continuity_session_heads;").map_err(|e| sqlite_err("history head backfill", e))?;
+            }
+            tx.commit().map_err(|e| sqlite_err("history commit", e))
+        })).await
+    }
+
+    #[cfg(feature = "extension-state")]
+    async fn has_historical_identity(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<bool, ContinuityStoreError> {
+        let identity = identity.to_string();
+        self.run_blocking("historical identity intent", move |inner| inner.with_reader(|connection| {
+            connection.query_row("SELECT EXISTS(SELECT 1 FROM continuity_identity_history WHERE identity=?1)", [identity], |row| row.get(0))
+                .map_err(|e| sqlite_err("identity intent history", e))
+        })).await
+    }
+
+    #[cfg(feature = "extension-state")]
+    async fn historical_identity_binding(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<Option<AgentIdentity>, ContinuityStoreError> {
+        let id = session_id.to_string();
+        self.run_blocking("historical identity binding", move |inner| {
+            inner.with_reader(|connection| {
+                let identity: Option<String> = connection
+                    .query_row(
+                        "SELECT identity FROM continuity_identity_history WHERE session_id=?1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| sqlite_err("identity history read", e))?;
+                identity
+                    .map(|identity| {
+                        AgentIdentity::parse(&identity)
+                            .map_err(|e| ContinuityStoreError::Corruption(e.to_string()))
+                    })
+                    .transpose()
+            })
+        })
+        .await
+    }
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -3643,6 +3731,118 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "extension-state")]
+    #[tokio::test]
+    async fn extension_history_survives_rotation_deletion_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("continuity.sqlite3");
+        let store = LocalContinuityStore::open(&path).unwrap();
+        let identity = AgentIdentity::parse("writer").unwrap();
+        let original = meerkat_core::SessionId::new();
+        let successor = meerkat_core::SessionId::new();
+        let token = FencingToken::new(1);
+        store
+            .upsert_continuity_record(&record(&identity, &original), token)
+            .await
+            .unwrap();
+        store.enable_identity_binding_history().await.unwrap();
+        assert_eq!(
+            store.historical_identity_binding(&original).await.unwrap(),
+            Some(identity.clone())
+        );
+        store
+            .establish_identity_history_coverage("mob", 10)
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .identity_history_covers_birth("mob", 10)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .identity_history_covers_birth("mob", 11)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .identity_history_covers_birth("unknown-mob", 11)
+                .await
+                .unwrap()
+        );
+        store
+            .upsert_continuity_record(&record(&identity, &successor), token)
+            .await
+            .unwrap();
+        store
+            .delete_continuity_record(&identity, token)
+            .await
+            .unwrap();
+        drop(store);
+        let reopened = LocalContinuityStore::open(&path).unwrap();
+        reopened.enable_identity_binding_history().await.unwrap();
+        reopened
+            .establish_identity_history_coverage("mob", 99)
+            .await
+            .unwrap();
+        for session in [original, successor] {
+            assert_eq!(
+                reopened
+                    .historical_identity_binding(&session)
+                    .await
+                    .unwrap(),
+                Some(identity.clone())
+            );
+        }
+        assert!(
+            reopened
+                .identity_history_covers_birth("mob", 11)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[cfg(feature = "extension-state")]
+    #[tokio::test]
+    async fn extension_history_refuses_exact_session_identity_borrowing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("continuity.sqlite3");
+        let store = LocalContinuityStore::open(&path).unwrap();
+        store.enable_identity_binding_history().await.unwrap();
+        let original = AgentIdentity::parse("original").unwrap();
+        let impostor = AgentIdentity::parse("impostor").unwrap();
+        let session = meerkat_core::SessionId::new();
+        let token = FencingToken::new(1);
+        store
+            .upsert_continuity_record(&record(&original, &session), token)
+            .await
+            .unwrap();
+        store
+            .delete_continuity_record(&original, token)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .upsert_continuity_record(&record(&impostor, &session), token)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.historical_identity_binding(&session).await.unwrap(),
+            Some(original)
+        );
+        assert!(matches!(
+            store
+                .resolve_many(&[impostor.clone()])
+                .await
+                .unwrap()
+                .get(&impostor),
+            Some(ContinuityResolveState::Uninitialized)
+        ));
+    }
 
     fn record(
         identity: &AgentIdentity,
