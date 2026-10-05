@@ -21,7 +21,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const NAME: &str = "botus-1-2-3";
+const NAME: &str = "durable-documents-test";
 
 #[path = "support/extension_cross_mob.rs"]
 mod cross_mob;
@@ -34,7 +34,7 @@ struct Probe {
 #[async_trait::async_trait]
 impl AgentToolDispatcher for Probe {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
-        ["botus_read", "botus_apply"]
+        ["documents_read", "documents_apply"]
             .into_iter()
             .map(|name| {
                 Arc::new(
@@ -53,7 +53,7 @@ impl AgentToolDispatcher for Probe {
             .into()
     }
     fn tool_mutation_class(&self, name: &str) -> ToolMutationClass {
-        if name == "botus_read" {
+        if name == "documents_read" {
             ToolMutationClass::ReadOnly
         } else {
             ToolMutationClass::Mutating
@@ -82,7 +82,7 @@ impl AgentToolDispatcher for Probe {
                 .dispatch(&self.context, &caller, call, context)
                 .await;
         }
-        if call.name == "botus_apply" {
+        if call.name == "documents_apply" {
             self.context
                 .documents
                 .mutate(
@@ -179,7 +179,7 @@ runtime_mode = "turn_driven"
 external_addressable = true
 [profiles.worker.tools]
 comms = true
-rust_bundles = ["botus-1-2-3"]
+rust_bundles = ["durable-documents-test"]
 "#
         .replace(
             "{MOB_ID}",
@@ -209,7 +209,7 @@ async fn harness(
         access,
         Arc::new(ScriptClient {
             calls: AtomicUsize::new(0),
-            tool: "botus_read",
+            tool: "documents_read",
         }),
         None,
     )
@@ -268,7 +268,7 @@ async fn harness_with_client(
         .persistent_state(path)
         .register_tool_bundle_factory(
             NAME,
-            ToolBundleRequirements::durable_documents(NAME, "botus_read", "botus_apply"),
+            ToolBundleRequirements::durable_documents(NAME, "documents_read", "documents_apply"),
             Arc::new(move |context: ToolBundleContext| {
                 *factory_capture.lock().unwrap() = Some(context.clone());
                 Ok(Arc::new(Probe {
@@ -633,8 +633,8 @@ fn subprocess_phase(path: &std::path::Path, phase: &str) {
             "--ignored",
             "--nocapture",
         ])
-        .env("BOTUS_EXTENSION_RESTART_PATH", path)
-        .env("BOTUS_EXTENSION_RESTART_PHASE", phase)
+        .env("MOBKIT_EXTENSION_RESTART_PATH", path)
+        .env("MOBKIT_EXTENSION_RESTART_PHASE", phase)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -667,8 +667,8 @@ fn subprocess_phase(path: &std::path::Path, phase: &str) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launched by extension_native_fresh_process_restart_and_current_revocation"]
 async fn extension_subprocess_fixture() {
-    let path = std::path::PathBuf::from(std::env::var_os("BOTUS_EXTENSION_RESTART_PATH").unwrap());
-    let phase = std::env::var("BOTUS_EXTENSION_RESTART_PHASE").unwrap();
+    let path = std::path::PathBuf::from(std::env::var_os("MOBKIT_EXTENSION_RESTART_PATH").unwrap());
+    let phase = std::env::var("MOBKIT_EXTENSION_RESTART_PHASE").unwrap();
     let evidence_path = path.join("restart-evidence.json");
     if phase.starts_with("late-") {
         unpublished_late_birth_phase(&path, &phase).await;
@@ -811,7 +811,7 @@ impl meerkat_mobkit::identity_first::contracts::RosterProvider for StableRoster 
             labels: BTreeMap::new(),
             context: None,
             additional_instructions: vec![],
-            initial_message: Some(ContentInput::Text("create a workbook".into())),
+            initial_message: Some(ContentInput::Text("create a document".into())),
             runtime_mode_override: None,
             backend: None,
             binding: None,
@@ -843,7 +843,7 @@ async fn stable_harness(
                 notify_orchestrator_on_resume: false,
                 default_llm_client: Some(Arc::new(ScriptClient {
                     calls: AtomicUsize::new(0),
-                    tool: "botus_apply",
+                    tool: "documents_apply",
                 })),
             });
     let captured = Arc::new(Mutex::new(None));
@@ -875,7 +875,11 @@ async fn stable_harness(
             .access_controller(access)
             .register_tool_bundle_factory(
                 NAME,
-                ToolBundleRequirements::durable_documents(NAME, "botus_read", "botus_apply"),
+                ToolBundleRequirements::durable_documents(
+                    NAME,
+                    "documents_read",
+                    "documents_apply",
+                ),
                 Arc::new(move |context: ToolBundleContext| {
                     *capture.lock().unwrap() = Some(context.clone());
                     Ok(Arc::new(Probe {

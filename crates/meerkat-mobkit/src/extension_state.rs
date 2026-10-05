@@ -638,9 +638,9 @@ comms = true
         let resolver = NativeCallerResolver {
             registry: Arc::downgrade(&registry),
             requirements: ToolBundleRequirements::durable_documents(
-                "botus-1-2-3",
-                "botus_read",
-                "botus_apply",
+                "durable-documents-test",
+                "documents_read",
+                "documents_apply",
             ),
         };
         assert_eq!(

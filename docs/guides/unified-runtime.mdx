@@ -54,29 +54,28 @@ If neither definition source nor `mob_spec` is present, the builder returns
 ## Optional extension documents
 
 Rust hosts can enable the default-off `extension-state` Cargo feature and
-register an external `ToolBundleFactory`. Botus 1-2-3 uses the registration
-name and document namespace `botus-1-2-3`; its spreadsheet engine is a separate
-package. Profile selection keeps the tools off agents that do not need them:
+register an external `ToolBundleFactory`. The extension package owns its tools
+and payload schema; MobKit supplies durable storage and caller authority. The
+following example uses a `durable-documents-test` factory with read and edit
+tools. Profile selection keeps the tools off agents that do not need them:
 
 ```toml
 [profiles.worker.tools]
-rust_bundles = ["botus-1-2-3"]
+rust_bundles = ["durable-documents-test"]
 ```
 
-Register the package's factory while building a persistent runtime:
+Register the package's factory on the host's configured persistent builder:
 
 ```rust
 use meerkat_mobkit::extension_state::ToolBundleRequirements;
 
-let runtime = UnifiedRuntime::builder()
-    .definition_path("config/mob.toml")
-    .persistent_state(".mobkit/state")
+let runtime = persistent_builder
     .register_tool_bundle_factory(
-        "botus-1-2-3",
+        "durable-documents-test",
         ToolBundleRequirements::durable_documents(
-            "botus-1-2-3", "botus_read", "botus_apply",
+            "durable-documents-test", "documents_read", "documents_apply",
         ),
-        botus_factory, // Arc<dyn ToolBundleFactory> supplied by the package
+        external_factory, // Arc<dyn ToolBundleFactory> supplied by the package
     )
     .build()
     .await?;
@@ -86,11 +85,11 @@ The configured storage provider must support durable extension documents.
 The disk provider supplies this capability. No factory means no extension
 store or tool registration, even if the feature is compiled.
 
-Workbooks start private to the executing agent. Forks inherit the owner's
+Documents start private to the executing agent. Forks inherit the owner's
 data access by default; ordinary spawned helpers need an explicit grant or
 descendant sharing. Reader grants remain read-only through forks, and
 inherited access never permits changing grants, transferring or deleting a
-workbook. Revocation is checked on the next access. Native policy always
+document. Revocation is checked on the next access. Native policy always
 applies; an enabled host access controller additionally checks
 `extension.read`, `extension.edit` and `extension.manage`. With host ABAC
 disabled or unconfigured, that layer adds no restriction. See

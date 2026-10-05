@@ -1,8 +1,8 @@
 # Independent extension-state and native adapter review
 
 Date: 2026-10-05. Reviewed the current uncommitted MobKit worktree, the
-upstream Meerkat creation/activation changes, and Botus `src/native.rs` and
-`tests/native.rs`. This reviewer authored the design; different agents wrote
+upstream Meerkat creation/activation changes, and a downstream adapter
+(`src/native.rs` and `tests/native.rs` in its separate repository). This reviewer authored the design; different agents wrote
 the implementation. This pass changed documentation only and ran no builds.
 
 ## Findings
@@ -22,9 +22,9 @@ Upstream `crates/meerkat-mob/src/runtime/actor/spawn_activation.rs:2186-2224`
 admits that initial turn before the spawn commit and reply. Only after the
 bridge returns does `runtime.rs:7771-7774` persist the actual session binding.
 
-Therefore a Botus call in the initial turn can resolve as Worker, while a
+Therefore an extension call in the initial turn can resolve as Worker, while a
 later call from the exact same session resolves as Agent. A created private
-sheet becomes inaccessible to its later logical owner. ABAC also evaluates
+document becomes inaccessible to its later logical owner. ABAC also evaluates
 the wrong subject during this window, so an Agent-specific denial does not
 necessarily apply. The creation coverage anchor proves historical coverage;
 it does not prove that the identity binding transaction has completed.
@@ -71,8 +71,8 @@ Those bounded changes preserve the journal as the authority.
 
 ### P2: Edit retry misses a committed receipt if deletion wins before its read
 
-Location: external Botus `src/native.rs:447`, the fallible document read before
-the second receipt lookup at lines 448-468.
+Location: reference downstream adapter `src/native.rs:447`, the fallible
+document read before the second receipt lookup at lines 448-468.
 
 The adapter retries receipt lookup when it sees a different revision, but
 propagates a failed read immediately. A valid ordering is: duplicate edit
@@ -87,13 +87,13 @@ Required fix: repeat authorized receipt lookup before propagating an Edit
 read failure, preserving the failure when no authorized receipt exists.
 A deterministic barrier test should establish the ordering above and assert
 the original receipt with `replayed: true`, without fresh changes or selected
-cells. Also retain the revoked-authority failure case. This finding is copied
-to Botus `REVIEW-engine.md` as a separate native-adapter follow-up.
+data. Also retain the revoked-authority failure case. This finding is copied
+to the downstream `REVIEW-engine.md` as a separate native-adapter follow-up.
 
 ## Acceptance evidence still required
 
-The existing Botus native tests explicitly use a `TestAuthority`; they do not
-prove `NativeCallerResolver`, the factory bootstrap, or the provider binding.
+The existing downstream native tests explicitly use a `TestAuthority`; they
+do not prove `NativeCallerResolver`, the factory bootstrap, or the provider binding.
 The implementer reports that real-runtime tests are being added. Acceptance
 must include the kickoff and lifecycle sequences above, real same-mob and
 cross-mob fork/spawn resolution, descendant revocation after restart, and
@@ -166,12 +166,12 @@ implementation owner and root before implementation of the replacement.
 
 ### Native edit retry: addressed in source
 
-Botus `src/native.rs:447-470` now repeats authorized receipt lookup when the
-Edit read fails and preserves the original failure if no authorized receipt
+The downstream adapter `src/native.rs:447-470` now repeats authorized receipt
+lookup when the Edit read fails and preserves the original failure if no authorized receipt
 is returned. `tests/native.rs:510-567` deterministically pauses the missing
 receipt, commits the original edit, optionally revokes the Editor, deletes,
 and resumes the duplicate. It asserts the original receipt without selected
-cells or changes when permitted, and unavailable after revocation. The code
+data or changes when permitted, and unavailable after revocation. The code
 and test address the reported P2; no execution result is claimed here.
 
 ## Registry-fence delta review
@@ -321,13 +321,14 @@ source. Stable Agent identity still requires exact-session history; a reused
 Worker name gets its creation-token principal, and the root stable-target
 exclusion prevents failed publication from silently becoming a Worker.
 
-The external Botus adapter's authority failure is an infrastructure result:
+The reference downstream adapter's authority failure is an infrastructure
+result:
 `Failure::AuthorityUnavailable` becomes the fixed
 `ToolError::ExecutionFailed` message, and the caller resolves before any
 document access (`src/native.rs:204-219,281-325`). Missing documents and denied
 document access keep the same generic unavailable response. Empty create
 skips the nonempty edit-batch requirement, but still constructs and validates
-the workbook through serialization before committing
+the document through serialization before committing
 (`src/native.rs:414-423,571-579`; `src/engine.rs:314-320`). Receipt lookup still
 precedes state-dependent work, commit-time replay drops fresh selections, and
 the read-failure recovery only returns a provider-authorized receipt.
@@ -353,13 +354,13 @@ the intended route but is not runtime evidence that it works.
 
 The smallest useful additional fixture is one scripted native flow:
 
-1. A parent owns a workbook and invokes the actual `delegate` tool. Assert the
+1. A parent owns a document and invokes the actual `delegate` tool. Assert the
    helper's native binding has a different mob id and its first dispatched
    extension-probe call resolves its own principal. Default owner reach denies the
    spawned child until the owner explicitly shares.
 2. Share Reader access with that child using its resolved principal and Forks
    reach. Have the child invoke actual `fork_off`; its fork must read the same
-   workbook, and neither child nor fork may edit or administer it. This checks
+   document, and neither child nor fork may edit or administer it. This checks
    both the cross-mob Spawn edge and the subsequent native Fork edge without
    manufacturing `HostAccessContext` or lineage in the test.
 3. Remove that grant and repeat reads through the same shared dispatcher;

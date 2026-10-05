@@ -1,17 +1,16 @@
-# Provider-owned extension documents for Botus 1-2-3
+# Provider-owned extension documents
 
 Status: implemented candidate, validation pending, 2026-10-05. The independent
 implementation and adversarial review are ongoing; this document does not
 claim passing runtime acceptance or a released upstream dependency.
-See the [Botus spreadsheet contract](https://github.com/lukacf/botus-1-2-3/blob/main/SPEC.md).
 
 ## Decision
 
 MobKit supplies durable, access-controlled extension documents through the
-deployment's configured storage provider. Botus remains an optional package
-and owns only spreadsheet commands, its JSON payload schema, and evaluation.
-Enabling Botus does not create a second database configuration or expose a
-generic state-editing tool to agents.
+deployment's configured storage provider. Each optional extension package owns
+its commands, payload schema and evaluation. Enabling an extension does not
+create a second database configuration or expose a generic state-editing tool
+to agents.
 
 Implement the generic contract and reference SQLite backend in a small
 `mobkit-extension-state` crate with no Meerkat dependency. MobKit's optional
@@ -28,7 +27,7 @@ document store open, tool definitions, prompts or runtime initialization.
 - `storage_provider.rs:141` is the composite provider boundary. Its existing
   fail-closed rule requires declared durable storage or an explicit error.
 - `src/blob_store.rs:60` stores bytes but has no document listing or revision
-  compare-and-swap. Blobs alone cannot implement concurrent mutable books.
+  compare-and-swap. Blobs alone cannot implement concurrent mutable documents.
 - `src/runtime/metadata.rs:306` owns subscription cursors and idle-retirement
   records. It is not an application-data store.
 - `src/unified_runtime/builder.rs:375` registers named tool bundles selected
@@ -48,7 +47,8 @@ document store open, tool definitions, prompts or runtime initialization.
 
 A record has a provider-minted nonreused document ID, package namespace,
 realm, title, content type, schema version, opaque payload bytes, owner, ACL,
-opaque revision, and timestamps. Botus uses a versioned JSON workbook payload.
+opaque revision, and timestamps. Payload interpretation and schema evolution
+belong to the extension package, not the document store.
 Realm and namespace are bound by the host service, not supplied by tool input.
 Names are display metadata and are never document identity.
 
@@ -64,19 +64,19 @@ record inside their mutation transaction before comparing and replacing the
 record. SQLite uses a write transaction, not a read-authorize-write sequence
 on separate connections. Remote backends must provide equivalent atomicity.
 
-Botus evaluates and serializes an edit before conditional commit. A concurrent
-edit, ACL change, or transfer makes that commit conflict or become unauthorized.
+The extension evaluates and serializes an edit before conditional commit. A
+concurrent edit, ACL change, or transfer makes that commit conflict or become unauthorized.
 Failed validation or commit leaves the stored document untouched.
 
 Mutation request IDs are scoped by realm, namespace and actual principal.
 The fingerprint binds the canonical original agent request after parsing and
-default normalization, before reading the workbook or evaluating any formulas.
+default normalization, before loading or interpreting the document payload.
 It includes the requested operation, document, expected revision, data changes
 and requested result selection. It must not be computed from a recalculated
 payload whose value can change after the first commit.
 
 The adapter first asks the service for an authorized prior receipt using that
-request ID and fingerprint, before loading a workbook or rejecting a stale
+request ID and fingerprint, before loading a document or rejecting a stale
 expected revision. A completed identical retry returns the original receipt.
 Otherwise evaluation proceeds and the mutation transaction checks the receipt
 again before authorizing/comparing/committing, so concurrent duplicate calls
@@ -96,8 +96,8 @@ unfiltered document IDs or ACL membership appear in pagination metadata.
 The caller context is created by the host and is not deserializable from agent
 arguments. It contains a verified realm and principal, current mob memberships,
 managed mobs, realm administration, verified lineage, and applicable host policy.
-Unknown fields in Botus tool inputs are rejected. Labels and transcripts never
-establish any of these facts.
+Extension tools must reject caller-supplied authority fields. Labels and
+transcripts never establish any of these facts.
 
 | Owner | Direct management authority | Implicit data audience |
 |---|---|---|
@@ -135,13 +135,13 @@ transfers or deletes documents.
 fork edges. `Descendants` additionally accepts verified spawn edges. A child
 created by ordinary spawning needs an explicit direct grant or an audience
 whose reach includes descendants. A fork uses the original document ID and
-current ACL; no workbook or ACL is copied at fork time.
+current ACL; no document or ACL is copied at fork time.
 
 For every inherited route, compute the minimum of the source grant role and
 every delegation ceiling along the verified path. Then intersect the result
 with current runtime/tool policy and host ABAC for the actual caller and action.
 A Reader cannot become an Editor through another fork. Do not clone Meerkat's
-tool policy into a Botus policy language: the host evaluates its existing typed
+tool policy into an extension-specific policy language: the host evaluates its existing typed
 policy and passes the permitted operation ceiling to the generic service.
 
 Removing a grant revokes that grant and every access route derived from it on
@@ -208,9 +208,9 @@ The optional registration API:
 
 ```rust
 builder.register_tool_bundle_factory(
-    "botus-1-2-3",
-    ToolBundleRequirements::durable_documents("botus-1-2-3", "botus_read", "botus_apply"),
-    botus_factory,
+    "durable-documents-test",
+    ToolBundleRequirements::durable_documents("durable-documents-test", "documents_read", "documents_apply"),
+    external_factory,
 )
 ```
 
@@ -239,12 +239,12 @@ a mutable global, reconstruct the provider, or capture a parent-bound closure.
 
 ## Export and protected artifact handling
 
-Raw workbook bytes stay behind the document service. MobKit's existing
+Raw document bytes stay behind the document service. MobKit's existing
 `/blobs/{id}` route is a bearer-capability surface, not document ACL enforcement.
-Do not return its blob IDs or URLs for protected workbooks or their exports.
-Protected exports are deferred from v0.1. Botus returns bounded explicit reads
-only; no artifact-route redesign is required for this release. A future export
-may use a protected artifact handle only when every fetch checks the actual
+Do not return its blob IDs or URLs for protected documents or their exports.
+Protected exports are deferred from this contract. Extensions return bounded
+explicit reads only; no artifact-route redesign is required for this release.
+A future export may use a protected artifact handle only when every fetch checks the actual
 principal, host policy and current document ACL. Reusing the physical blob
 backend does not authorize using the public blob route.
 
@@ -289,7 +289,7 @@ The 2026-10-05 root review approved this contract with the following required
 conditions, incorporated above:
 
 1. Idempotency fingerprints identify the original request, and authorized
-   receipt lookup precedes workbook evaluation or stale-revision rejection.
+   receipt lookup precedes document evaluation or stale-revision rejection.
 2. The MobKit extension-state dependency and adapter remain default-off.
 3. Persist proven root versus legacy-unknown provenance and require explicit
    durable-identity successor continuity.
@@ -304,19 +304,21 @@ document as evidence of runtime behavior.
 
 - New `crates/mobkit-extension-state`: typed documents/ACLs/revisions, policy
   evaluator, provider-facing contract, SQLite reference implementation and
-  independent conformance tests. No workbook concepts or Meerkat dependencies.
+  independent conformance tests. No domain-specific payload concepts or Meerkat
+  dependencies.
 - `storage_provider.rs`, `storage_layout.rs`, storage health/doctor/migration:
   optional capability, provider-owned path, durability and lifecycle integration.
 - `unified_runtime/builder.rs` and `mob_handle_runtime.rs`: factory registration,
   dependency resolution and authority binding before execution.
 - A small optional adapter module: typed dynamic caller/lineage resolver and
-  intersection with host policy. No authority in Botus payloads or schemas.
+  intersection with host policy. No authority in extension payloads or schemas.
 - Upstream Meerkat PR: durable ordinary-spawn/delegate provenance and any missing
   pre-activation/query seams. MobKit integration follows its released contract.
-- Botus repository: engine, two tools and package factory consuming the service.
+- Extension repositories: domain engines, tool schemas and package factories
+  consuming the service.
 
-Rejected: independent Botus SQLite (splits deployment storage), runtime/session
-metadata or semantic memory (wrong owner), raw blobs alone (no CAS/catalog/ACL),
+Rejected: independent package-local SQLite (splits deployment storage),
+runtime/session metadata or semantic memory (wrong owner), raw blobs alone (no CAS/catalog/ACL),
 copied fork ACLs (revocation divergence), and console labels as lineage
 (untrusted and not durable). A required new realm-store-set field is viable but
 unnecessarily source-breaking for providers that do not enable extensions.
@@ -324,7 +326,7 @@ unnecessarily source-breaking for providers that do not enable extensions.
 ## Native integration contract
 
 Enable MobKit's `extension-state` feature explicitly and register a factory with
-`register_tool_bundle_factory("botus-1-2-3", requirements, factory)`. Requirements
+`register_tool_bundle_factory("durable-documents-test", requirements, factory)`. Requirements
 name its document namespace and the read/edit tools. The factory receives a
 provider-owned `DocumentService` and a `ToolCallerResolver`; it resolves each
 runtime dispatch before reads, mutations and receipt lookups. The reference
@@ -336,7 +338,7 @@ the original requester. The single `runtime_origin_session` adapter retains
 Meerkat's runner-supplied dispatch context and is the replacement point for the
 [tracked original-requester context work](https://github.com/lukacf/meerkat/issues/1646).
 Native tool grants and current host policy intersect document ACL rights. A
-workbook ACL can narrow those rights but cannot grant a tool denied by native
+document ACL can narrow those rights but cannot grant a tool denied by native
 execution policy. Namespaced access subjects are `agent:<stable identity>` or
 `worker:<creation UUID>`; resource identity selectors still receive the actual
 stable application identity, and labels come from the current native roster.
@@ -345,7 +347,7 @@ A stable application `AgentIdentity` denotes the same logical agent across
 reset, deletion and host re-registration. Applications must mint a different
 stable identity for a different agent, even if its display name is reused.
 Unrelated worker name reuse receives a distinct runtime-issued creation token
-and cannot access its predecessor's books. Historical exact-session identity
+and cannot access its predecessor's documents. Historical exact-session identity
 bindings are immutable and remain available after session retirement.
 
 Initial native extension calls wait for the host's actual continuity binding

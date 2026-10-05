@@ -69,7 +69,7 @@ impl Scenario {
         let actor = args["actor"].as_str().unwrap();
         assert_ne!(
             action, "policy-forbidden",
-            "the native execution policy must reject botus_apply before dispatch"
+            "the native execution policy must reject documents_apply before dispatch"
         );
         let session = execution.origin_session_id().unwrap().clone();
         {
@@ -475,7 +475,7 @@ impl LlmClient for CrossMobClient {
             kind: meerkat_core::ToolSourceKind::RustBundle,
             source_id: NAME.into(),
         };
-        for name in ["botus_read", "botus_apply"] {
+        for name in ["documents_read", "documents_apply"] {
             let tool = request.tools.iter().find(|tool| tool.name == name).unwrap();
             assert_eq!(tool.provenance.as_ref(), Some(&expected_provenance));
         }
@@ -489,9 +489,9 @@ impl LlmClient for CrossMobClient {
                     | "policy-forbidden"
             ) || action.starts_with("editor")
             {
-                "botus_apply"
+                "documents_apply"
             } else {
-                "botus_read"
+                "documents_read"
             },
             args: serde_json::json!({"actor":actor,"action":action,
                     "principal":"forged-admin","lineage":["forged-root"]}),
@@ -1075,7 +1075,7 @@ async fn extension_native_restricted_source_fork_off_denies_apply_and_backend_wr
 
     let mut source = worker("restricted-source");
     source.tool_access_policy = Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
-        ["botus_apply"].into_iter().collect(),
+        ["documents_apply"].into_iter().collect(),
     ));
     let source = runtime.spawn(source).await.unwrap();
     let source_session = member_session(&runtime, &source.agent_identity).await;

@@ -2510,11 +2510,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temporary directory");
         let state = dir.path().join("unopened-extension-state");
         builder = builder.persistent_state(&state).register_tool_bundle_factory(
-            "botus-1-2-3",
+            "durable-documents-test",
             crate::extension_state::ToolBundleRequirements::durable_documents(
-                "botus-1-2-3",
-                "botus_read",
-                "botus_apply",
+                "durable-documents-test",
+                "documents_read",
+                "documents_apply",
             ),
             Arc::new(
                 |_: crate::extension_state::ToolBundleContext| -> Result<
