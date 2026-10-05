@@ -23,15 +23,21 @@ pub fn can_create(caller: &HostAccessContext, owner: &Owner) -> bool {
         && manages(caller, owner)
 }
 
-// None means no matching route. Some(None) is a matching route whose
-// delegation ceiling denies data access (still relevant to subtree denies).
+// A matching route can deny all delegated access and still match a subtree
+// deny. Keep that fact distinct from an audience that does not match at all.
+struct MatchedRoute {
+    ceiling: Option<Role>,
+}
+
 fn agent_route(
     caller: &HostAccessContext,
     principal: &Principal,
     reach: Reach,
-) -> Option<Option<Role>> {
+) -> Option<MatchedRoute> {
     if &caller.principal == principal {
-        return Some(Some(Role::Editor));
+        return Some(MatchedRoute {
+            ceiling: Some(Role::Editor),
+        });
     }
     if reach == Reach::SelfOnly {
         return None;
@@ -43,20 +49,21 @@ fn agent_route(
         }
         ceiling = ceiling.zip(link.ceiling).map(|(a, b)| a.min(b));
         if &link.parent == principal {
-            return Some(ceiling);
+            return Some(MatchedRoute { ceiling });
         }
     }
     None
 }
 
-fn route(caller: &HostAccessContext, audience: &Audience) -> Option<Option<Role>> {
+fn route(caller: &HostAccessContext, audience: &Audience) -> Option<MatchedRoute> {
     match audience {
         Audience::Agent { principal, reach } => agent_route(caller, principal, *reach),
-        Audience::Mob(id) => caller
-            .member_mobs
-            .contains(id)
-            .then_some(Some(Role::Editor)),
-        Audience::Realm => Some(Some(Role::Editor)),
+        Audience::Mob(id) => caller.member_mobs.contains(id).then_some(MatchedRoute {
+            ceiling: Some(Role::Editor),
+        }),
+        Audience::Realm => Some(MatchedRoute {
+            ceiling: Some(Role::Editor),
+        }),
     }
 }
 
@@ -76,13 +83,12 @@ pub fn authorize(caller: &HostAccessContext, document: &Document, operation: Ope
         return false;
     }
     let mut role = match &document.owner {
-        Owner::Agent(principal) => {
-            agent_route(caller, principal, document.access.owner_reach).flatten()
-        }
+        Owner::Agent(principal) => agent_route(caller, principal, document.access.owner_reach)
+            .and_then(|route| route.ceiling),
         owner => manages(caller, owner).then_some(Role::Editor),
     };
     for grant in &document.access.grants {
-        if let Some(ceiling) = route(caller, &grant.audience).flatten() {
+        if let Some(ceiling) = route(caller, &grant.audience).and_then(|route| route.ceiling) {
             let candidate = grant.role.min(ceiling);
             role = Some(role.map_or(candidate, |old| old.max(candidate)));
         }

@@ -309,3 +309,89 @@ an ordinary unreserved Worker. Together with the dropped-waiter unit fixture,
 this exercises the relevant failure-state predicates. Compilation and runtime
 results remain pending. This re-review made no production changes and ran no
 builds or tests.
+
+## Final focused source pass at MobKit c4e60f1e936a934608de02e167226bbfa706b947
+
+No new production defect was found in this bounded pass. The prior retained
+metadata forwarding repair is present in both wrapper implementations
+(`mob_handle_runtime.rs:6855-6859,7975-7979`). The source-policy fixture now
+retains the exact runtime-store facade and commits through it
+(`extension_state.rs:659-661,718-731`), closing the earlier fixture defect in
+source. Stable Agent identity still requires exact-session history; a reused
+Worker name gets its creation-token principal, and the root stable-target
+exclusion prevents failed publication from silently becoming a Worker.
+
+The external Botus adapter's authority failure is an infrastructure result:
+`Failure::AuthorityUnavailable` becomes the fixed
+`ToolError::ExecutionFailed` message, and the caller resolves before any
+document access (`src/native.rs:204-219,281-325`). Missing documents and denied
+document access keep the same generic unavailable response. Empty create
+skips the nonempty edit-batch requirement, but still constructs and validates
+the workbook through serialization before committing
+(`src/native.rs:414-423,571-579`; `src/engine.rs:314-320`). Receipt lookup still
+precedes state-dependent work, commit-time replay drops fresh selections, and
+the read-failure recovery only returns a provider-authorized receipt.
+
+### Required acceptance fixture: native delegation across a mob boundary
+
+Current native tests fork with `fork_member` and spawn with a host-supplied
+creation witness on the same mob handle
+(`tests/extension_state.rs:342-364`). Those tests do not establish that an
+actual agent's `delegate` call delivers the registered bundle into its child
+mob, captures the parent from the executing session, and registers the child
+handle before its first native extension-probe dispatch.
+
+Source wiring exists: MobKit supplies the shared dispatcher and pre-activation
+callback to `MobMcpState` (`unified_runtime/builder.rs:1953-1973`). Upstream
+`configure_builder` applies them for child create and restore
+(`meerkat-mob-mcp/src/lib.rs:1463-1478,1671-1675`); child definitions receive
+the available bundles at lines 1888-1893. Native delegation captures creation
+source from the bound parent session (`agent_tools.rs:1073-1079`), and the
+resolver follows each source's recorded mob/session/creation identity using
+the registry (`extension_state.rs:254-270,519-565`). This inspection supports
+the intended route but is not runtime evidence that it works.
+
+The smallest useful additional fixture is one scripted native flow:
+
+1. A parent owns a workbook and invokes the actual `delegate` tool. Assert the
+   helper's native binding has a different mob id and its first dispatched
+   extension-probe call resolves its own principal. Default owner reach denies the
+   spawned child until the owner explicitly shares.
+2. Share Reader access with that child using its resolved principal and Forks
+   reach. Have the child invoke actual `fork_off`; its fork must read the same
+   workbook, and neither child nor fork may edit or administer it. This checks
+   both the cross-mob Spawn edge and the subsequent native Fork edge without
+   manufacturing `HostAccessContext` or lineage in the test.
+3. Remove that grant and repeat reads through the same shared dispatcher;
+   both child and fork must lose access. With a persistent helper/fork lifetime,
+   reopen the runtime once and recheck a granted read followed by revocation,
+   so child handle restoration and retained source policy are exercised.
+
+Use the existing fake LLM and deterministic barriers to control helper
+lifetime and interleave owner sharing; no live provider is needed. One fixture
+can share the existing warm runtime suite. This is a missing acceptance path,
+not a claim that the inspected cross-mob implementation is defective.
+
+The parent reports that native metadata compilation and all external targets
+compiled; real runtime execution is queued on GCP. This reviewer ran no builds
+or tests and does not treat queued tests as passed.
+
+## Implementation response to delegation acceptance scope
+
+The actual native delegate lifetime narrows the requested restart case:
+MobKit currently composes implicit child mobs with in-memory journals, and
+delegate completion retires the helper together with its fork descendants.
+The new probe fixture exercises actual cross-mob delegation, native fork_off,
+private denial, explicit Reader sharing and revocation while those members
+are alive. It then asserts their native retirement and reopens the persistent
+host to verify the original document and revoked ACL. It does not claim the
+ephemeral child mob or its retired fork can resume. Persistent root-mob
+fork/restart acceptance is a separate route. This clarification preserves
+native storage and lifecycle semantics instead of altering them for a test.
+
+The integration owner added explicit SDK-hosted history refusal before
+extension activation, documented the one-way local history triggers and
+unconfigured ABAC behavior, and retained exact released version requirements
+with a workspace-only pinned upstream patch. Runtime execution of the new
+acceptance fixtures remains pending; these source changes are not an
+independent test verdict.

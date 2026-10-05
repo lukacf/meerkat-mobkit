@@ -5517,6 +5517,10 @@ pub(crate) fn build_spawn_spec(
     base_profile: Option<&meerkat_mob::Profile>,
 ) -> Result<SpawnMemberSpec, BridgeError> {
     let mid = member_id_for_spawn_spec(runtime_id, spec);
+    // A DurableAgentSpec is the trusted host roster's identity declaration.
+    // This ingress creates that identity, not an agent-requested descendant.
+    // Fresh creation is therefore an explicit Root fact. Resume and reset
+    // still go through native transitions that preserve predecessor proof.
     let mut spawn_spec = SpawnMemberSpec::host_root(spec.profile.clone(), mid);
 
     if let Some(message) = spec.initial_message.as_ref() {

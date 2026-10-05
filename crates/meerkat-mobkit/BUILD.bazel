@@ -2699,6 +2699,7 @@ rust_test(
     ],
     srcs = [
         "tests/extension_state.rs",
+        "tests/support/extension_cross_mob.rs",
     ],
     visibility = ["//visibility:public"],
     rustc_env = {

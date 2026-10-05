@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use mobkit_extension_state::*;
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -549,7 +549,7 @@ fn lineage_rejects_cycles_discontinuity_and_wrong_current_principal() {
     let cycle = LineageLink {
         child: principal("b"),
         parent: principal("a"),
-        ..link.clone()
+        ..link
     };
     assert!(VerifiedLineage::derived(vec![link.clone(), cycle]).is_err());
     let lineage = VerifiedLineage::derived(vec![link]).unwrap();

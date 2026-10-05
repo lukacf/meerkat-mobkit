@@ -61,6 +61,7 @@ pub struct SessionSnapshotMatchCandidate {
 #[async_trait]
 pub trait ContinuityStore: Send + Sync {
     /// Enable immutable identity binding history before extension tools run.
+    /// Repeated calls must preserve the same history and succeed idempotently.
     /// Unsupported providers must refuse rather than classify history as workers.
     #[cfg(feature = "extension-state")]
     async fn enable_identity_binding_history(&self) -> Result<(), ContinuityStoreError> {

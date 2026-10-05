@@ -355,10 +355,12 @@ and does not alter general tool admission or provider-native tool capabilities.
 A canceled publication returns authority unavailable. Existing historical
 bindings remain readable while a replacement is pending or fails.
 
-Review snapshots pin every Meerkat dependency to one exact upstream Git commit.
-These are stacked development dependencies, not a claimed released version or
-permission to publish. The final PR records its upstream dependency and the
-released-version follow-up. Additional child tool bundles are propagated into
+Review snapshots declare exact Meerkat versions and use a workspace
+`[patch.crates-io]` table pinned to one upstream Git commit. Patches are not
+transitive: an application consuming the Git candidate must copy that table
+into its workspace root. These are stacked development dependencies, not a
+claim that the required API was released or permission to publish. The final
+PR records its upstream dependency and released-version follow-up. Additional child tool bundles are propagated into
 native delegated mob composition so the same per-call resolver works there.
 
 A failed stable-identity materialization reserves its exact host target until a
@@ -373,10 +375,39 @@ source session policy makes inherited access unavailable. The native
 for that exact source session, including archived sessions. It does not assert
 that the source is currently executing, or return a historical policy revision.
 Missing typed metadata, binding, unsupported reads and failures remain unavailable;
-a present typed record with no policy has native unrestricted semantics.
+a present typed record with no effective policy has native unrestricted
+semantics. The native factory persists its conjunction of the declared profile
+restriction and explicit spawn restriction in this effective field. The
+separate `spawn_tool_access_policy` field is not the effective policy.
 
 Inherited data access intersects the current source session policy and current
 caller policy on every call. An explicit host-authorized widening of native
 source policy may widen an otherwise valid document ACL route. Immutable
 delegation floors belong to the tracked native authority work; this package
 does not persist a private policy snapshot or claim original-requester proof.
+
+Without an enabled host access controller, ABAC adds no further restriction;
+private document ACLs and native tool policy still apply. SDK-hosted
+`GatewayContinuityStore` does not yet provide the retained identity-history
+contract and explicitly refuses extension activation with
+`ExtensionAuthorityUnavailable(UnsupportedAuthority { .. })` before opening
+the extension store or constructing its dispatchers. This version supports
+the bundled local continuity authority and custom providers implementing the
+full retained-history contract.
+
+Enabling local history installs durable triggers once. Turning the extension
+feature or its factory off does not remove those triggers or retained identity
+facts. Continued history is necessary to preserve the original coverage proof
+when extensions are enabled again; a host must not treat a disabled interval
+as evidence that sessions were Workers. No extension store or dispatcher is
+opened while disabled, but a previously enabled continuity database continues
+its retained-history writes.
+
+Document durability does not widen native member lifetime. The current
+MobKit composition gives implicit delegate child mobs in-memory journals;
+completing a delegate retires its helper and fork descendants. The cross-mob
+acceptance fixture therefore checks live private/share/fork/revoke behavior
+and durable original documents after truthful retirement. Persistent
+root-mob member lineage and fork access use the configured durable native
+mob journal. Restoring ephemeral delegate children is not a capability of
+this integration, and no synthetic lineage is created to pretend otherwise.

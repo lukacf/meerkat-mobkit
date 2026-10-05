@@ -30,12 +30,12 @@ fn decode<T: for<'a> Deserialize<'a>>(value: &str) -> Result<T> {
     serde_json::from_str(value).map_err(storage)
 }
 fn now() -> Result<u64> {
-    Ok(SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(storage)?
         .as_millis()
         .try_into()
-        .map_err(storage)?)
+        .map_err(storage)
 }
 
 /// Connection customization lets a composite provider use its own connection

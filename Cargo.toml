@@ -151,3 +151,26 @@ opt-level = 0
 
 [profile.release.package.meerkat-live]
 opt-level = 0
+
+# Stacked review dependency on Meerkat #1749. Consumer workspaces must apply
+# this same patch until the required native API is published.
+[patch.crates-io]
+meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-comms = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-live = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-schedule = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "d0f15ec36b74695fc3edbc4e75711f91d3535062" }

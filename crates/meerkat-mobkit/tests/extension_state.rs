@@ -23,9 +23,13 @@ use std::time::Duration;
 
 const NAME: &str = "botus-1-2-3";
 
+#[path = "support/extension_cross_mob.rs"]
+mod cross_mob;
+
 struct Probe {
     context: ToolBundleContext,
     calls: Arc<tokio::sync::Mutex<Vec<(meerkat_core::SessionId, Principal)>>>,
+    cross_mob: Option<Arc<cross_mob::Scenario>>,
 }
 #[async_trait::async_trait]
 impl AgentToolDispatcher for Probe {
@@ -67,6 +71,11 @@ impl AgentToolDispatcher for Probe {
             .resolve(context, None)
             .await
             .unwrap();
+        if let Some(scenario) = &self.cross_mob {
+            return scenario
+                .dispatch(&self.context, &caller, call, context)
+                .await;
+        }
         if call.name == "botus_apply" {
             self.context
                 .documents
@@ -189,24 +198,52 @@ async fn harness(
     ToolBundleContext,
     Arc<tokio::sync::Mutex<Vec<(meerkat_core::SessionId, Principal)>>>,
 ) {
+    harness_with_client(
+        path,
+        access,
+        Arc::new(ScriptClient {
+            calls: AtomicUsize::new(0),
+            tool: "botus_read",
+        }),
+        None,
+    )
+    .await
+}
+
+async fn harness_with_client(
+    path: &std::path::Path,
+    access: Option<meerkat_mobkit::access::AccessController>,
+    client: Arc<dyn LlmClient>,
+    cross_mob: Option<Arc<cross_mob::Scenario>>,
+) -> (
+    UnifiedRuntime,
+    ToolBundleContext,
+    Arc<tokio::sync::Mutex<Vec<(meerkat_core::SessionId, Principal)>>>,
+) {
     let sessions =
         Arc::new(meerkat_store::SqliteSessionStore::open(path.join("sessions.sqlite3")).unwrap());
     let (storage, provenance) =
         meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(path.join("mob.sqlite3"))
             .unwrap();
-    let client = Arc::new(ScriptClient {
-        calls: AtomicUsize::new(0),
-        tool: "botus_read",
-    });
-    let spec =
-        MobBootstrapSpec::persistent(definition(path), storage, path.to_path_buf(), 16, sessions)
+    let mut definition = definition(path);
+    if cross_mob.is_some() {
+        let meerkat_mob::ProfileBinding::Inline(profile) = definition
+            .profiles
+            .get_mut(&meerkat_mob::ProfileName::from("worker"))
             .unwrap()
-            .with_mob_storage_provenance(provenance)
-            .with_options(MobBootstrapOptions {
-                allow_ephemeral_sessions: false,
-                notify_orchestrator_on_resume: false,
-                default_llm_client: Some(client),
-            });
+        else {
+            panic!("fixture declares an inline worker profile");
+        };
+        profile.tools.mob = true;
+    }
+    let spec = MobBootstrapSpec::persistent(definition, storage, path.to_path_buf(), 16, sessions)
+        .unwrap()
+        .with_mob_storage_provenance(provenance)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: false,
+            notify_orchestrator_on_resume: false,
+            default_llm_client: Some(client),
+        });
     let captured = Arc::new(Mutex::new(None));
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let factory_capture = captured.clone();
@@ -231,6 +268,7 @@ async fn harness(
                 Ok(Arc::new(Probe {
                     context,
                     calls: factory_calls.clone(),
+                    cross_mob: cross_mob.clone(),
                 }) as Arc<dyn AgentToolDispatcher>)
             }),
         );
@@ -803,6 +841,7 @@ async fn stable_harness(
                     Ok(Arc::new(Probe {
                         context,
                         calls: probe_calls.clone(),
+                        cross_mob: None,
                     }) as Arc<dyn AgentToolDispatcher>)
                 }),
             )
@@ -839,6 +878,17 @@ async fn extension_native_first_turn_creation_has_stable_owner_after_reset_and_r
     .expect("initial extension call should wait for publication without blocking spawn reply");
     let (session, principal) = calls.lock().await[0].clone();
     assert_eq!(principal, Principal::Agent("durable:alice".into()));
+    let creation = runtime
+        .mob_handle()
+        .member_creation_for_session(&session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(creation.creation.creation_id.is_some());
+    assert!(matches!(
+        creation.creation.provenance,
+        meerkat_mob::MemberCreationProvenance::Root
+    ));
     let owner = caller(&context, &session).await;
     let receipt = context
         .documents

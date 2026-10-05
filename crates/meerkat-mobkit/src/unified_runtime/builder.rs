@@ -1896,12 +1896,9 @@ impl UnifiedRuntimeBuilder {
         }
     }
 
-    /// Open the composite [`crate::storage_provider::MobKitStorageProvider`]
-    /// realm (when one is installed) and materialize its slots into the
-    /// per-slot builder seams, so the rest of `build()` composes through one
-    /// code path. Conflicts between the provider and explicit per-slot seams
-    /// are typed errors; the provider's set was validated fail-closed at
-    /// `open_realm`.
+    /// Validate retained identity authority before opening optional document
+    /// storage or constructing a dispatcher. With no factory, leave every
+    /// extension capability inactive.
     #[cfg(feature = "extension-state")]
     async fn materialize_extension_factories(
         &mut self,
@@ -1916,6 +1913,12 @@ impl UnifiedRuntimeBuilder {
         use crate::storage_provider::MobKitStorageProvider;
         if self.tool_bundle_factories.is_empty() {
             return Ok(None);
+        }
+        if let Some(continuity) = &self.continuity_store {
+            continuity
+                .enable_identity_binding_history()
+                .await
+                .map_err(UnifiedRuntimeBuilderError::ExtensionAuthorityUnavailable)?;
         }
         let state_dir = self.persistent_state_path.clone().ok_or_else(|| {
             UnifiedRuntimeBuilderError::ConflictingConfiguration(
@@ -1949,16 +1952,6 @@ impl UnifiedRuntimeBuilder {
                 detail: None,
                 degraded: false,
             });
-        if let Some(continuity) = &self.continuity_store {
-            continuity
-                .enable_identity_binding_history()
-                .await
-                .map_err(|error| {
-                    UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
-                        "extension identity history unavailable: {error}"
-                    ))
-                })?;
-        }
         let registry = NativeAuthorityRegistry::new(
             crate::storage_provider::MEERKAT_LEVEL_REALM_ID.into(),
             spec.definition.id.to_string(),
@@ -2107,13 +2100,17 @@ impl UnifiedRuntimeBuilder {
             declared_ephemeral_domains,
         };
         let set = provider.open_realm(&ctx).await?;
-        #[cfg(feature = "extension-state")]
-        if !self.tool_bundle_factories.is_empty() {
-            self.extension_store = Some(provider.open_extension_state(&ctx).await?);
-        }
         // Providers are contracted to enforce this before returning; the
         // composition re-checks because the rule is the composition's.
         crate::storage_provider::enforce_fail_closed_store_set(&set, &ctx)?;
+        #[cfg(feature = "extension-state")]
+        if !self.tool_bundle_factories.is_empty() {
+            set.continuity_store
+                .enable_identity_binding_history()
+                .await
+                .map_err(UnifiedRuntimeBuilderError::ExtensionAuthorityUnavailable)?;
+            self.extension_store = Some(provider.open_extension_state(&ctx).await?);
+        }
 
         // M4b: the single-bundle contract covers the meerkat-shared level
         // too. The built-in disk backend IS the local composition the spec
@@ -2475,6 +2472,73 @@ mod tests {
     use meerkat_core::service::{
         CreateSessionRequest, DeferredPromptPolicy, InitialTurnPolicy, SessionService,
     };
+
+    #[cfg(feature = "extension-state")]
+    #[tokio::test]
+    async fn extension_gateway_authority_refuses_before_storage_or_factory_activation() {
+        struct NoCallbacks;
+        #[async_trait::async_trait]
+        impl crate::identity_first::gateway_bridges::CallbackBridge for NoCallbacks {
+            async fn call(
+                &self,
+                _: &str,
+                _: serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                panic!("extension activation must not invent SDK history callbacks")
+            }
+        }
+
+        let definition = MobDefinition::from_toml("[mob]\nid = \"extension-activation\"\n")
+            .expect("definition parses");
+        let mut spec = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .resolve_mob_spec()
+            .await
+            .expect("ephemeral spec resolves without execution");
+        let continuity = Arc::new(
+            crate::identity_first::gateway_bridges::GatewayContinuityStore::new(NoCallbacks),
+        );
+        let mut builder = UnifiedRuntimeBuilder::default().continuity_store(continuity);
+        assert!(
+            builder
+                .materialize_extension_factories(&mut spec)
+                .await
+                .expect("no registered extension leaves the host unchanged")
+                .is_none()
+        );
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let state = dir.path().join("unopened-extension-state");
+        builder = builder.persistent_state(&state).register_tool_bundle_factory(
+            "botus-1-2-3",
+            crate::extension_state::ToolBundleRequirements::durable_documents(
+                "botus-1-2-3",
+                "botus_read",
+                "botus_apply",
+            ),
+            Arc::new(
+                |_: crate::extension_state::ToolBundleContext| -> Result<
+                    Arc<dyn meerkat_core::AgentToolDispatcher>,
+                    String,
+                > {
+                    panic!("unsupported authority must refuse before factory activation")
+                },
+            ),
+        );
+        assert!(matches!(
+            builder.materialize_extension_factories(&mut spec).await,
+            Err(UnifiedRuntimeBuilderError::ExtensionAuthorityUnavailable(
+                crate::identity_first::ContinuityStoreError::UnsupportedAuthority {
+                    capability: "SDK-hosted identity binding history"
+                }
+            ))
+        ));
+        assert!(
+            !state.exists(),
+            "refusal must precede opening document storage"
+        );
+        assert!(spec.before_activation.is_none());
+    }
 
     /// H1: a persistent-state build with an injected blob store that reports
     /// `!is_persistent()` fails composition unless `ephemeral_blobs(true)`
