@@ -3097,7 +3097,13 @@ mod ordinary_open_helpers {
         session_id: &SessionId,
         channel_id: &LiveChannelId,
     ) {
-        match host.reserve_channel_close_observation(channel_id).await {
+        match host
+            .reserve_channel_close_observation(
+                channel_id,
+                meerkat_core::LiveChannelCloseReason::OpenAbandoned,
+            )
+            .await
+        {
             Ok(observation) => {
                 // Reference order: the host commit requires the adapter
                 // physically closed and detached first (otherwise it fails
@@ -4137,7 +4143,7 @@ fn wire_live_status_from_machine_authority(
         LiveChannelPublicStatus::Opening => Ok(WireLiveAdapterStatus::Opening),
         LiveChannelPublicStatus::Ready => Ok(WireLiveAdapterStatus::Ready),
         LiveChannelPublicStatus::Closing => Ok(WireLiveAdapterStatus::Closing),
-        LiveChannelPublicStatus::Closed => Ok(WireLiveAdapterStatus::Closed),
+        LiveChannelPublicStatus::Closed => Ok(WireLiveAdapterStatus::closed()),
         LiveChannelPublicStatus::Degraded => {
             let reason = authority.degradation_reason.ok_or_else(|| {
                 "LiveChannelStatusResolved emitted degraded status without reason".to_string()
@@ -4399,7 +4405,7 @@ async fn handle_live_status(
                 rpc_id,
                 serde_json::json!({
                     "channel_id": parsed.channel_id,
-                    "status": WireLiveAdapterStatus::Closed,
+                    "status": WireLiveAdapterStatus::closed(),
                     "close_reason": reason.as_str(),
                 }),
             );
@@ -4487,7 +4493,10 @@ async fn handle_live_close(
 
     match ctx
         .host
-        .reserve_channel_close_observation(&channel_id)
+        .reserve_channel_close_observation(
+            &channel_id,
+            meerkat_core::LiveChannelCloseReason::ClientRequested,
+        )
         .await
     {
         Ok(observation) => {
