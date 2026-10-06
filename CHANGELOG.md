@@ -148,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
+  `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
+  (actions/runner-images#14748). The move to 26 will be validated
+  separately (meerkat#1767) instead of being inherited.
 - Candidate launches now refuse a config that differs from the stored mob
   definition. A non-authoritative launch (`runtime_options.mob_composition =
   {"authority": "candidate"}`) resumes on the mob definition stored in its

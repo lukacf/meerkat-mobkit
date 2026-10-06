@@ -25,7 +25,7 @@ concurrency:
 jobs:
   dispatch:
     name: Dispatch docs.rkat.ai mirroring
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Dispatch docs.rkat.ai publication
         env:
