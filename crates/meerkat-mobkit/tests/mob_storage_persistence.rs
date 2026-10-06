@@ -38,11 +38,12 @@ use meerkat_mobkit::identity_first::{
     LocalLeaseProvider, MobSessionBridge, MutableRosterProvider, SessionBridge,
 };
 use meerkat_mobkit::mob_composition_manifest::{
-    MobCompositionManifest, MobCompositionProvenanceError, MobStorageProvenance, manifest_path,
-    persistent_mob_storage,
+    CandidateDefinition, MobCompositionManifest, MobCompositionProvenanceError,
+    MobStorageProvenance, manifest_path, persistent_mob_storage,
 };
 use meerkat_mobkit::mob_handle_runtime::{MobRuntimeError, auto_mark_declared_resume_overrides};
 use meerkat_mobkit::spec_update_ceremony::{SpecUpdateError, declare_spec_update};
+use meerkat_mobkit::storage_health::{BlobDurability, ResolvedStorageSummary, StorageSlotSummary};
 use meerkat_mobkit::unified_runtime::edge_reconcile::DefinitionWiringEdgeDiscovery;
 use meerkat_mobkit::{
     DesiredPeerEdge, DiscoverySpec, IdentityBootstrapMode, MobBootstrapOptions, MobBootstrapSpec,
@@ -803,20 +804,54 @@ async fn a_rehearsal_created_store_is_refused_by_name_not_silently_adopted() {
     }
 }
 
-/// The other direction, which exempting creation alone would have wedged: a
-/// candidate rehearsing against a store an AUTHORITATIVE launch created must
-/// not be refused for the fields candidate mode exists to differ in.
-///
-/// This is the legitimate rehearsal shape - real durable state, restricted
-/// composition, nothing durable authored.
-#[tokio::test]
-async fn a_candidate_is_not_refused_by_a_pin_it_does_not_speak_for() {
-    const MOB_ID: &str = "candidate-vs-real-pin";
-    let temp = tempfile::tempdir().expect("temp dir");
-    let mob_path = temp.path().join("mob.sqlite");
-    let session_root = temp.path().join("sessions");
+/// `base_definition_for` with the operator's newly added tool deny on `lead`:
+/// the shape of a config edit that must not silently stay out of effect.
+fn deny_added_definition_for(mob_id: &str) -> MobDefinition {
+    definition_with(&format!(
+        r#"
+[mob]
+id = "{mob_id}"
 
-    let promoted = boot(&mob_path, &session_root, base_definition_for(MOB_ID))
+[profiles.lead]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+deny = ["spawn_member", "wire_members"]
+"#
+    ))
+}
+
+/// A candidate boot with an explicit candidate-definition policy and a
+/// storage census to report health into.
+async fn boot_candidate_with(
+    mob_path: &Path,
+    session_root: &Path,
+    definition: MobDefinition,
+    policy: CandidateDefinition,
+) -> Result<MobRuntime, MobRuntimeError> {
+    let (storage, provenance) =
+        persistent_mob_storage(mob_path.to_path_buf()).expect("open persistent mob storage");
+    MobRuntime::bootstrap(
+        MobBootstrapSpec::new(definition, storage, session_service(session_root).await)
+            .with_mob_storage_provenance(provenance)
+            .with_composition_authority(
+                meerkat_mobkit::mob_composition_manifest::CompositionAuthority::NonAuthoritative,
+            )
+            .with_candidate_definition(policy)
+            .with_resolved_storage(ResolvedStorageSummary::new(
+                BlobDurability::DeclaredEphemeral,
+                None,
+            ))
+            .with_options(options()),
+    )
+    .await
+}
+
+/// An authoritative launch creates the store and pin for `base_definition_for`.
+async fn create_authoritative_store(mob_path: &Path, session_root: &Path, mob_id: &str) {
+    let promoted = boot(mob_path, session_root, base_definition_for(mob_id))
         .await
         .expect("an authoritative launch creates the store and its pin");
     promoted
@@ -825,17 +860,108 @@ async fn a_candidate_is_not_refused_by_a_pin_it_does_not_speak_for() {
         .await
         .expect("shutdown the promoted runtime");
     drop(promoted);
+}
 
-    let candidate =
-        boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID)).await;
-    assert!(
-        candidate.is_ok(),
-        "a candidate must not be refused by a pin it does not speak for: {:?}",
-        candidate.err()
-    );
-    if let Ok(runtime) = candidate {
-        let _ = runtime.handle().shutdown().await;
+/// The candidate's `mob_composition` health slot, when it reported one.
+fn composition_slot(runtime: &MobRuntime) -> Option<StorageSlotSummary> {
+    runtime
+        .resolved_storage()
+        .expect("the boot declared a storage census")
+        .slots
+        .into_iter()
+        .find(|slot| slot.durability.domain() == "mob_composition")
+}
+
+/// A candidate whose config matches the stored definition boots as before,
+/// with no degraded composition slot.
+#[tokio::test]
+async fn a_candidate_matching_the_stored_definition_boots() {
+    const MOB_ID: &str = "candidate-matches";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        base_definition_for(MOB_ID),
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    .expect("a candidate whose config matches the stored definition boots");
+    assert!(composition_slot(&candidate).is_none());
+    let _ = candidate.handle().shutdown().await;
+}
+
+/// The defect: a candidate resume boots the STORED definition, so a config
+/// whose `profiles.lead.tools.deny` adds a deny the store lacks used to boot
+/// silently without it. It now refuses, naming the diverged field.
+#[tokio::test]
+async fn a_candidate_with_a_divergent_tool_deny_is_refused_naming_the_field() {
+    const MOB_ID: &str = "candidate-divergent-deny";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    match boot_candidate_with(
+        &mob_path,
+        &session_root,
+        deny_added_definition_for(MOB_ID),
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    {
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CandidateDivergent { fields },
+        )) => {
+            assert!(
+                fields
+                    .iter()
+                    .any(|field| field == "profiles.lead.tools.deny"),
+                "the refusal names the diverged deny: {fields:?}"
+            );
+        }
+        Err(other) => panic!("expected a candidate divergence refusal, got: {other}"),
+        Ok(runtime) => {
+            let _ = runtime.handle().shutdown().await;
+            panic!(
+                "the candidate booted the stored definition without the deny its config \
+                 declares: the config is presented but not in effect"
+            );
+        }
     }
+}
+
+/// The explicit opt-in: a certification candidate that knowingly accepts the
+/// stored definition boots it, and reports the diverged fields as degraded
+/// health instead of hiding them.
+#[tokio::test]
+async fn a_candidate_acknowledging_the_stored_definition_boots_it_with_degraded_health() {
+    const MOB_ID: &str = "candidate-stored-opt-in";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        deny_added_definition_for(MOB_ID),
+        CandidateDefinition::Stored,
+    )
+    .await
+    .expect("an acknowledged stored definition boots");
+    let slot = composition_slot(&candidate).expect("the divergence is health-visible");
+    assert!(slot.degraded, "{slot:?}");
+    assert!(
+        slot.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("profiles.lead.tools.deny")),
+        "{slot:?}"
+    );
+    let _ = candidate.handle().shutdown().await;
 }
 
 /// A store with an event log and NO manifest must be adopted by an

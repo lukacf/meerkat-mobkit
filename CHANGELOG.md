@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `MobCompositionProvenanceError` gains `CandidateDivergent { fields }`
+  (see Changed). Exhaustive matches must handle it. `MobBootstrapSpec` gains
+  the pub field `candidate_definition: CandidateDefinition`; code that builds
+  the spec with a struct literal must set it (`CandidateDefinition::default()`
+  keeps the refusing default).
 - `MobRuntimeError` gains `MobStopFlowRunsUnsettled(Box<MobStopFlowRunsUnsettled>)`
   (see Changed). Exhaustive matches must handle it.
 - `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
@@ -143,6 +148,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Candidate launches now refuse a config that differs from the stored mob
+  definition. A non-authoritative launch (`runtime_options.mob_composition =
+  {"authority": "candidate"}`) resumes on the mob definition stored in its
+  event log, because a resume cannot apply a new definition. It used to do
+  that without comparing it to the supplied config, so an edited config (for
+  example a profile's newly added `tools.deny`) silently stayed out of effect
+  while the boot looked healthy. Such a boot now refuses with
+  `MobCompositionProvenanceError::CandidateDivergent`, naming the diverged
+  fields as dotted paths (`profiles.lead.tools.deny`).
+  - To boot the stored definition knowingly, for example in a certification
+    pass that deliberately differs from the stored composition, set
+    `runtime_options.mob_composition.candidate_definition = "stored"`
+    (`MobBootstrapSpec::with_candidate_definition(CandidateDefinition::Stored)`).
+    The boot then runs the stored definition, logs the diverged fields at
+    WARN, and reports them in a degraded `mob_composition` storage-health
+    slot.
+  - `candidate_definition` is candidate-only: an authoritative launch that
+    sets `"stored"` is refused at parse time, since the composition pin
+    judges it.
+  - Candidates still never write or claim the composition pin. Authoritative
+    launches are unchanged.
+  - Upgrading: a candidate-then-promote pipeline whose candidate config
+    differs from the stored definition must add
+    `candidate_definition = "stored"` to the candidate launch, or run the
+    candidate on its own storage path.
 - `wait_for_output` and `wait_for_output_containing` no longer poll.
   - **Rust:** the `IdentityRuntime` methods read the member once, then again
     only when the identity table signals a change. A completion, a
