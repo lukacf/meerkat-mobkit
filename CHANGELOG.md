@@ -937,6 +937,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: clicking a tool or other control at the bottom of a transcript
+  no longer stops the shared conversation pane following the live edge. A
+  pointer action can bring its target into view before the press, and the
+  browser can then settle the scroll position a pixel above the end the
+  console computed (scrollHeight and clientHeight are whole numbers rounded
+  from fractional sizes, so the two ends can differ by under a pixel). After
+  an earlier click that settle read as the reader moving up, so the opened
+  tool was held in place instead of followed. A move of at most that
+  rounding distance, landing at the end while following, after a primary
+  mouse press on the transcript's content, is now a settle. Any larger
+  upward move, and any move after a scrollbar, middle-button, touch or pen
+  press, still leaves the live edge.
+
 - Console: a workbench click made right as the console first loads is no
   longer undone. The saved dock layout, or with no saved layout the
   configured initial panel (`layout.initial_control`, `initial_agent`,
