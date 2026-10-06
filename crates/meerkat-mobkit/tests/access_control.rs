@@ -529,6 +529,100 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
         .status()
 }
 
+/// Everyone may view agents and nobody holds a memory grant. The config
+/// names a memory action (for an unrelated agent), so it is taken literally:
+/// the view rule does not also gain `agent.memory.read`, as it would in a
+/// memory-naive config (see recall_read_action_migration_compat_rule_both_ways).
+fn view_only_memory_aware_controller() -> AccessController {
+    AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "everyone-views".to_string(),
+                actions: vec!["agent.view".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "unrelated-memory-rule".to_string(),
+                actions: vec!["agent.memory.read".to_string()],
+                agents: vec!["someone-else".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller")
+}
+
+/// The anonymous console caller under `controller` views `identity` but holds
+/// neither memory read on it nor quarantine review, by the controller's own
+/// decision and on the actual RPC path.
+async fn assert_view_only_reader(
+    app: &axum::Router,
+    controller: &AccessController,
+    identity: &str,
+) {
+    let reader = controller.view_for_subject(None);
+    assert!(reader.can_view_agent(identity));
+    assert!(!reader.allows_agent("agent.memory.read", identity));
+    assert!(!reader.allows("memory.quarantine.review"));
+    let recall = rpc(
+        app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": identity, "selection": "always" }),
+    )
+    .await;
+    assert_eq!(recall["error"]["code"], json!(-32030), "{recall:#?}");
+    assert_eq!(
+        recall["error"]["data"]["action"],
+        json!("agent.memory.read")
+    );
+}
+
+/// The first frame of `kind` on `/console/timeline/stream`, read from the
+/// stream as it arrives. The deadline only bounds a broken run.
+async fn timeline_stream_frame(app: &axum::Router, kind: &str) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/timeline/stream")
+                .body(Body::empty())
+                .expect("stream request"),
+        )
+        .await
+        .expect("stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut buffered = String::new();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(chunk) = body.next().await {
+            buffered.push_str(&String::from_utf8_lossy(&chunk.expect("stream chunk")));
+            while let Some(end) = buffered.find("\n\n") {
+                let event: String = buffered.drain(..end + 2).collect();
+                let data = event
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim_start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if data.is_empty() {
+                    continue;
+                }
+                let event: Value = serde_json::from_str(&data).expect("stream event json");
+                if event["frame"]["kind"] == json!(kind) {
+                    return event["frame"].clone();
+                }
+            }
+        }
+        panic!("the timeline stream ended before a {kind} frame");
+    })
+    .await
+    .expect("a timeline frame within the deadline")
+}
+
 async fn retire_historical_secret_member(runtime: &UnifiedRuntime, identity: &str) -> u64 {
     let before_spawn = runtime
         .mob_handle()
@@ -2863,6 +2957,919 @@ async fn memory_panel_quarantine_queue_filters_rows_per_scope() {
             .any(|row| row["pending_id"] == json!("gate-delivery-promotion")),
         "{promotions:#?}"
     );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// The operator half of quarantine review over the console: the decision
+/// composes EXISTING grants. The reviewer grant alone decides nothing; it
+/// must meet the per-row read grants and the identity's own write (release)
+/// or delete (tombstone) grant. The store binds the decision to the named
+/// identity's scope and to the reviewed content hash.
+#[tokio::test]
+async fn memory_quarantine_decide_composes_existing_grants_end_to_end() {
+    use meerkat_mobkit::memory::records::{MemoryAuthor, MemoryKind, RecordStatus};
+    use meerkat_mobkit::{AgentMemoryProvider, MemoryScope, NewMemoryRecord, StewardStore};
+
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, gated_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    // A second quarantined router write with no gated promotion pending
+    // (the seeded store still carries its always-quarantine write gate).
+    let reviewable = store
+        .remember_authored(
+            &MemoryScope::Identity {
+                realm: "default".to_string(),
+                identity: "router".to_string(),
+            },
+            NewMemoryRecord {
+                kind: MemoryKind::Preference,
+                title: "Router reviewable claim".to_string(),
+                description: "When routing late-night pages".to_string(),
+                body: "Prefers paging the secondary after 22:00.".to_string(),
+                tags: Vec::new(),
+                evidence: Vec::new(),
+                verification: None,
+            },
+            MemoryAuthor::Agent {
+                identity: "router".to_string(),
+            },
+        )
+        .await
+        .expect("reviewable quarantined record");
+    assert!(matches!(
+        reviewable.status,
+        RecordStatus::Quarantined { .. }
+    ));
+    let reviewable_id = reviewable.memory_id;
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
+
+    // Enforcement on, zero rules: the anonymous caller holds no grants.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: Vec::new(),
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let advertised = |capabilities: &Value| {
+        capabilities["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method == "mobkit/memory/quarantine/decide")
+    };
+    assert!(
+        !advertised(&rpc(&app, "mobkit/capabilities", json!({})).await),
+        "decide needs the reviewer grant before it is advertised"
+    );
+
+    controller
+        .upsert_rule(AccessRule {
+            id: "reviewer".to_string(),
+            actions: vec!["memory.quarantine.review".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("reviewer grant");
+    assert!(advertised(
+        &rpc(&app, "mobkit/capabilities", json!({})).await
+    ));
+
+    let decide = |verdict: &str, identity: &str, memory_id: &str, hash: &str| {
+        json!({
+            "identity": identity,
+            "memory_id": memory_id,
+            "verdict": verdict,
+            "expected_content_hash": hash,
+            "rationale": "confirmed with the on-call lead",
+        })
+    };
+    let hash = meerkat_mobkit::memory::records::content_hash(
+        "Router reviewable claim",
+        "Prefers paging the secondary after 22:00.",
+    );
+
+    // Reviewer grant alone: denied at the identity's view grant.
+    let denied = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &reviewable_id, &hash),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+    assert_eq!(denied["error"]["data"]["action"], json!("agent.view"));
+
+    // Reviewer + read/view on router: can read the body, still cannot
+    // release without the identity's write grant.
+    controller
+        .upsert_rule(AccessRule {
+            id: "router-reader".to_string(),
+            actions: vec!["agent.memory.read".to_string(), "agent.view".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("router read grant");
+    let detail = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": reviewable_id }),
+    )
+    .await;
+    assert_eq!(detail["error"], Value::Null, "{detail:#?}");
+    assert_eq!(detail["result"]["record"]["content_hash"], json!(hash));
+    let denied = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &reviewable_id, &hash),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+    assert_eq!(
+        denied["error"]["data"]["action"],
+        json!("agent.memory.write")
+    );
+
+    // + write on router: the release commits, the reviewed hash bound.
+    controller
+        .upsert_rule(AccessRule {
+            id: "router-writer".to_string(),
+            actions: vec!["agent.memory.write".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("router write grant");
+    let stale = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &reviewable_id, "0000"),
+    )
+    .await;
+    assert_eq!(stale["error"]["code"], json!(-32043), "{stale:#?}");
+    assert_eq!(stale["error"]["data"]["reason"], json!("content_mismatch"));
+    // The refusal never reveals the stored hash to bind against.
+    assert!(!stale.to_string().contains(&hash), "{stale:#?}");
+    let released = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &reviewable_id, &hash),
+    )
+    .await;
+    assert_eq!(released["error"], Value::Null, "{released:#?}");
+    let result = &released["result"];
+    assert_eq!(result["outcome"], json!("released"));
+    assert_eq!(result["realm"], json!("default"));
+    // The console runs without app auth here: the decision says no
+    // principal was known instead of naming anyone.
+    assert_eq!(
+        result["decision"]["review"]["reviewer"],
+        json!({ "kind": "operator", "principal": null })
+    );
+    assert_eq!(result["origin"]["memory_id"], json!(reviewable_id));
+    assert_eq!(result["origin"]["status"]["status"], json!("tombstoned"));
+    assert_eq!(result["origin"]["ever_quarantined"], json!(true));
+    assert_eq!(
+        result["successor"]["memory_id"],
+        json!(format!("{reviewable_id}-released"))
+    );
+    assert_eq!(result["successor"]["status"]["status"], json!("active"));
+    assert_eq!(result["successor"]["trust"], json!("agent_observed"));
+    assert_eq!(result["successor"]["ever_quarantined"], json!(true));
+    assert_eq!(result["successor"]["derived_from"], json!([reviewable_id]));
+    assert_eq!(result["successor"]["content_hash"], json!(hash));
+    assert_eq!(
+        result["decision"]["review"]["origin_quarantine_reason"],
+        json!("test taint"),
+        "{result:#?}"
+    );
+    assert_eq!(
+        result["decision"]["review"]["successor"],
+        json!(format!("{reviewable_id}-released"))
+    );
+    assert!(
+        result["decision"]["audit_token"]
+            .as_str()
+            .is_some_and(|token| token.starts_with("review-"))
+    );
+    // The successor is now ordinary active memory for the identity.
+    let recalled = store
+        .recall(meerkat_mobkit::AgentMemoryRecallRequest {
+            identity: meerkat_mobkit::identity_first::AgentIdentity::parse("router")
+                .expect("router identity"),
+            realm: "default".to_string(),
+            query_text: None,
+            query_terms: Vec::new(),
+            selection: meerkat_mobkit::AgentMemorySelection::Always,
+            max_entries: 64,
+        })
+        .await
+        .expect("recall");
+    assert!(
+        recalled
+            .iter()
+            .any(|record| record.memory_id == format!("{reviewable_id}-released")),
+        "{recalled:#?}"
+    );
+
+    // Replays are idempotent; a cross-verdict replay names the successor.
+    let replay = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &reviewable_id, &hash),
+    )
+    .await;
+    assert_eq!(replay["result"]["outcome"], json!("already_released"));
+    assert_eq!(
+        replay["result"]["successor"]["memory_id"],
+        json!(format!("{reviewable_id}-released"))
+    );
+    assert_eq!(
+        replay["result"]["decision"], result["decision"],
+        "a replay returns the committed decision"
+    );
+
+    // Tombstone needs the identity's delete grant on top of the reviewer
+    // and read grants; with it, a still-gated record is refused typed.
+    let denied = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("tombstone", "router", &gated_id, &hash),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+    assert_eq!(
+        denied["error"]["data"]["action"],
+        json!("agent.memory.delete")
+    );
+    controller
+        .upsert_rule(AccessRule {
+            id: "router-deleter".to_string(),
+            actions: vec!["agent.memory.delete".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("router delete grant");
+    let gated_hash = meerkat_mobkit::memory::records::content_hash(
+        "Router quarantined claim",
+        "Router quarantined claim body",
+    );
+    // A live gated promotion owns its source's publication: a release waits
+    // for gating (or the expiry), while the operator's tombstone invalidates
+    // the gate in the same transaction.
+    let live_gated = store
+        .remember_authored(
+            &MemoryScope::Identity {
+                realm: "default".to_string(),
+                identity: "router".to_string(),
+            },
+            NewMemoryRecord {
+                kind: MemoryKind::Fact,
+                title: "Router gated claim".to_string(),
+                description: String::new(),
+                body: "Pages go to the mob channel.".to_string(),
+                tags: Vec::new(),
+                evidence: Vec::new(),
+                verification: None,
+            },
+            MemoryAuthor::Agent {
+                identity: "router".to_string(),
+            },
+        )
+        .await
+        .expect("live gated record")
+        .memory_id;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    store
+        .record_pending_promotion(
+            "default",
+            meerkat_mobkit::memory::PendingPromotion {
+                pending_id: "gate-live".to_string(),
+                stage_token: "stage-live".to_string(),
+                record_id: live_gated.clone(),
+                scope_kind: "mob".to_string(),
+                scope_key: "access-control-mob".to_string(),
+                rationale: None,
+                status: "pending".to_string(),
+                created_at_ms: now_ms,
+            },
+        )
+        .await
+        .expect("live gate mapping");
+    let live_hash = meerkat_mobkit::memory::records::content_hash(
+        "Router gated claim",
+        "Pages go to the mob channel.",
+    );
+    let gated = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "router", &live_gated, &live_hash),
+    )
+    .await;
+    assert_eq!(gated["error"]["code"], json!(-32043), "{gated:#?}");
+    assert_eq!(gated["error"]["data"]["reason"], json!("gate_pending"));
+    assert_eq!(gated["error"]["data"]["pending_id"], json!("gate-live"));
+    assert!(
+        gated["error"]["data"]["expires_at_ms"]
+            .as_u64()
+            .is_some_and(|expires| expires > now_ms)
+    );
+    let invalidated = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("tombstone", "router", &live_gated, &live_hash),
+    )
+    .await;
+    assert_eq!(
+        invalidated["result"]["outcome"],
+        json!("tombstoned"),
+        "{invalidated:#?}"
+    );
+    assert_eq!(
+        invalidated["result"]["decision"]["review"]["invalidated_promotions"],
+        json!(["gate-live"])
+    );
+    assert!(
+        !store
+            .pending_promotions("default")
+            .await
+            .expect("pending promotions")
+            .iter()
+            .any(|promotion| promotion.pending_id == "gate-live"),
+        "the invalidated gate is no longer pending"
+    );
+
+    // The seeded promotions are long past the shared expiry: a decision
+    // expires them (no steward needed) and records which ones it expired.
+    let expired = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("tombstone", "router", &gated_id, &gated_hash),
+    )
+    .await;
+    assert_eq!(
+        expired["result"]["outcome"],
+        json!("tombstoned"),
+        "{expired:#?}"
+    );
+    assert_eq!(
+        expired["result"]["decision"]["review"]["expired_promotions"],
+        json!(["gate-mob-promotion", "gate-delivery-promotion"])
+    );
+
+    // Another identity's scope never reaches a router record: denied while
+    // ungranted, and reads as not_found once the grants exist.
+    let denied = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "delivery", &gated_id, &gated_hash),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+    controller
+        .upsert_rule(AccessRule {
+            id: "delivery-writer".to_string(),
+            actions: vec![
+                "agent.view".to_string(),
+                "agent.memory.read".to_string(),
+                "agent.memory.write".to_string(),
+            ],
+            agents: vec!["delivery".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("delivery grants");
+    let foreign = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        decide("release", "delivery", &gated_id, &gated_hash),
+    )
+    .await;
+    assert_eq!(foreign["error"]["code"], json!(-32043), "{foreign:#?}");
+    assert_eq!(foreign["error"]["data"]["reason"], json!("not_found"));
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// A read-only console neither advertises nor executes the decision.
+#[tokio::test]
+async fn memory_quarantine_decide_is_refused_on_a_read_only_console() {
+    use meerkat_mobkit::MemoryPanelStore;
+
+    let (_temp_dir, runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
+    let mut decisions = decision_state(false);
+    decisions.console.read_only = true;
+    let app = runtime.build_reference_app_router(decisions);
+
+    let capabilities = rpc(&app, "mobkit/capabilities", json!({})).await;
+    let methods = capabilities["result"]["methods"]
+        .as_array()
+        .expect("methods");
+    assert!(
+        methods
+            .iter()
+            .any(|method| method == "mobkit/memory/panel/quarantine"),
+        "the read surfaces stay: {methods:#?}"
+    );
+    assert!(
+        methods
+            .iter()
+            .all(|method| method != "mobkit/memory/quarantine/decide"),
+        "{methods:#?}"
+    );
+    let refused = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        json!({
+            "identity": "router",
+            "memory_id": quarantined_id,
+            "verdict": "tombstone",
+            "expected_content_hash": meerkat_mobkit::memory::records::content_hash(
+                "Router quarantined claim",
+                "Router quarantined claim body",
+            ),
+        }),
+    )
+    .await;
+    assert_eq!(refused["error"]["code"], json!(-32010), "{refused:#?}");
+    let record = store
+        .record_by_id("default", &quarantined_id)
+        .await
+        .expect("read")
+        .expect("record");
+    assert!(matches!(
+        record.status,
+        meerkat_mobkit::memory::records::RecordStatus::Quarantined { .. }
+    ));
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// One quarantined `router` write through the seeded store's write gate.
+async fn quarantined_router_record(
+    store: &meerkat_mobkit::SqliteAgentMemoryStore,
+    title: &str,
+    body: &str,
+) -> String {
+    use meerkat_mobkit::AgentMemoryProvider;
+    use meerkat_mobkit::memory::records::{MemoryAuthor, MemoryKind, RecordStatus};
+    let receipt = store
+        .remember_authored(
+            &meerkat_mobkit::MemoryScope::Identity {
+                realm: "default".to_string(),
+                identity: "router".to_string(),
+            },
+            meerkat_mobkit::NewMemoryRecord {
+                kind: MemoryKind::Fact,
+                title: title.to_string(),
+                description: String::new(),
+                body: body.to_string(),
+                tags: Vec::new(),
+                evidence: Vec::new(),
+                verification: None,
+            },
+            MemoryAuthor::Agent {
+                identity: "router".to_string(),
+            },
+        )
+        .await
+        .expect("quarantined router write");
+    assert!(matches!(receipt.status, RecordStatus::Quarantined { .. }));
+    receipt.memory_id
+}
+
+fn operator_review(
+    memory_id: &str,
+    title: &str,
+    body: &str,
+    decision: meerkat_mobkit::QuarantineDecision,
+    principal: Option<&str>,
+    rationale: Option<&str>,
+) -> meerkat_mobkit::QuarantineReviewRequest {
+    meerkat_mobkit::QuarantineReviewRequest {
+        scope: meerkat_mobkit::MemoryScope::Identity {
+            realm: "default".to_string(),
+            identity: "router".to_string(),
+        },
+        memory_id: memory_id.to_string(),
+        decision,
+        expected_content_hash: meerkat_mobkit::memory::records::content_hash(title, body),
+        reviewer: meerkat_mobkit::QuarantineReviewer::Operator {
+            principal: principal.map(str::to_string),
+        },
+        rationale: rationale.map(str::to_string),
+    }
+}
+
+/// With access control on, an anonymous caller is a principal like any
+/// other: no grants, no decision. There is no "no principal, so allow"
+/// path.
+#[tokio::test]
+async fn memory_quarantine_decide_denies_an_anonymous_caller_under_enforced_access() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, _gated_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    let (title, body) = (
+        "Router anonymous claim",
+        "Anonymous callers decide nothing.",
+    );
+    let record = quarantined_router_record(&store, title, body).await;
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
+    runtime.set_access_controller(
+        AccessController::new(AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![AccessRule {
+                id: "everyone-views".to_string(),
+                actions: vec!["agent.view".to_string()],
+                ..AccessRule::default()
+            }],
+            ..AccessControlConfig::default()
+        })
+        .expect("controller"),
+    );
+    let app = runtime.build_reference_app_router(decision_state(false));
+    for verdict in ["release", "tombstone"] {
+        let denied = rpc(
+            &app,
+            "mobkit/memory/quarantine/decide",
+            json!({
+                "identity": "router",
+                "memory_id": record,
+                "verdict": verdict,
+                "expected_content_hash": meerkat_mobkit::memory::records::content_hash(title, body),
+            }),
+        )
+        .await;
+        assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+        assert_eq!(
+            denied["error"]["data"]["action"],
+            json!("memory.quarantine.review")
+        );
+    }
+    let still = meerkat_mobkit::MemoryPanelStore::record_by_id(&store, "default", &record)
+        .await
+        .expect("read")
+        .expect("record");
+    assert!(matches!(
+        still.status,
+        meerkat_mobkit::memory::records::RecordStatus::Quarantined { .. }
+    ));
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// A trusted host without app auth and without access control decides with
+/// no principal, and the decision says so rather than naming anyone.
+#[tokio::test]
+async fn memory_quarantine_decide_on_a_trusted_host_records_no_principal() {
+    let (_temp_dir, runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, _gated_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    let (title, body) = ("Router trusted claim", "The host vouches for its console.");
+    let record = quarantined_router_record(&store, title, body).await;
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let released = rpc(
+        &app,
+        "mobkit/memory/quarantine/decide",
+        json!({
+            "identity": "router",
+            "memory_id": record,
+            "verdict": "release",
+            "expected_content_hash": meerkat_mobkit::memory::records::content_hash(title, body),
+        }),
+    )
+    .await;
+    assert_eq!(released["error"], Value::Null, "{released:#?}");
+    assert_eq!(released["result"]["outcome"], json!("released"));
+    assert_eq!(
+        released["result"]["decision"]["review"]["reviewer"],
+        json!({ "kind": "operator", "principal": null })
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// Quarantined content stays reviewer-only after a review or forget
+/// retires it: the released or discarded origin, and a forgotten
+/// quarantined write, are never readable by an ordinary scope reader,
+/// while the released successor is ordinary memory again.
+#[tokio::test]
+async fn quarantine_evidence_stays_reviewer_only_after_review_and_forget() {
+    use meerkat_mobkit::{AgentMemoryProvider, QuarantineDecision, StewardStore};
+
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, _gated_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    let released_title = "Router released claim";
+    let released_body = "Escalate after two missed pages.";
+    let released = quarantined_router_record(&store, released_title, released_body).await;
+    let discarded_title = "Router discarded claim";
+    let discarded_body = "Ignore the on-call rota.";
+    let discarded = quarantined_router_record(&store, discarded_title, discarded_body).await;
+    let forgotten = quarantined_router_record(&store, "Router forgotten claim", "Forgotten.").await;
+    let successor = store
+        .review_quarantined(operator_review(
+            &released,
+            released_title,
+            released_body,
+            QuarantineDecision::Release,
+            Some("reviewer@example.test"),
+            None,
+        ))
+        .await
+        .expect("release")
+        .successor()
+        .expect("successor")
+        .memory_id
+        .clone();
+    store
+        .review_quarantined(operator_review(
+            &discarded,
+            discarded_title,
+            discarded_body,
+            QuarantineDecision::Tombstone,
+            Some("reviewer@example.test"),
+            None,
+        ))
+        .await
+        .expect("tombstone");
+    store
+        .forget(
+            "default",
+            &meerkat_mobkit::identity_first::AgentIdentity::parse("router").expect("identity"),
+            &forgotten,
+        )
+        .await
+        .expect("forget");
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
+
+    // An ordinary router reader: view + memory read, no review grant.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "router-reader".to_string(),
+            actions: vec!["agent.view".to_string(), "agent.memory.read".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    for (origin, body) in [
+        (&released, released_body),
+        (&discarded, discarded_body),
+        (&forgotten, "Forgotten."),
+    ] {
+        let denied = rpc(
+            &app,
+            "mobkit/memory/panel/record",
+            json!({ "memory_id": origin }),
+        )
+        .await;
+        assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+        assert_eq!(
+            denied["error"]["data"]["action"],
+            json!("memory.quarantine.review")
+        );
+        assert!(!denied.to_string().contains(body), "{denied:#?}");
+    }
+    let rows = rpc(
+        &app,
+        "mobkit/memory/panel/records",
+        json!({ "identity": "router", "limit": 200 }),
+    )
+    .await;
+    let rows = rows["result"]["records"].as_array().expect("rows").clone();
+    for origin in [&released, &discarded, &forgotten] {
+        assert!(
+            rows.iter().all(|row| row["id"] != json!(origin)),
+            "retired quarantine evidence must not list for ordinary readers: {rows:#?}"
+        );
+    }
+
+    // Positive control: the released successor is ordinary memory.
+    let readable = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": successor }),
+    )
+    .await;
+    assert_eq!(readable["error"], Value::Null, "{readable:#?}");
+    assert_eq!(readable["result"]["record"]["body"], json!(released_body));
+    assert!(rows.iter().any(|row| row["id"] == json!(successor)));
+
+    // A reviewer still reads the retained evidence.
+    controller
+        .upsert_rule(AccessRule {
+            id: "reviewer".to_string(),
+            actions: vec!["memory.quarantine.review".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("reviewer grant");
+    let evidence = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": discarded }),
+    )
+    .await;
+    assert_eq!(evidence["result"]["record"]["body"], json!(discarded_body));
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// The verdict a review emits onto the system-wide timeline carries no
+/// reviewer identity and no rationale: a viewer with no memory grant sees
+/// that a verdict happened, never who decided or why.
+#[tokio::test]
+async fn quarantine_verdict_frames_carry_no_reviewer_or_rationale() {
+    use meerkat_mobkit::{QuarantineDecision, StewardStore};
+
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, _gated_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    store.set_event_sink(runtime.memory_event_sink());
+    let (title, body) = (
+        "Router timeline claim",
+        "Verdicts stay terse on the timeline.",
+    );
+    let record = quarantined_router_record(&store, title, body).await;
+    let marker = "MARKER-rationale-7f3a";
+    let reviewer = "reviewer-marker@example.test";
+    store
+        .review_quarantined(operator_review(
+            &record,
+            title,
+            body,
+            QuarantineDecision::Release,
+            Some(reviewer),
+            Some(marker),
+        ))
+        .await
+        .expect("release");
+
+    let controller = view_only_memory_aware_controller();
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    assert_view_only_reader(&app, &controller, "router").await;
+    // The timeline stream subscribes before it snapshots, so the verdict
+    // arrives either in the snapshot or live, whenever its append lands.
+    let streamed = timeline_stream_frame(&app, "memory.quarantine.verdict")
+        .await
+        .to_string();
+    assert!(streamed.contains(&record), "{streamed}");
+    assert!(!streamed.contains(marker), "{streamed}");
+    assert!(!streamed.contains(reviewer), "{streamed}");
+    // The windowed timeline projects the same frame, as terse.
+    let page = rpc(
+        &app,
+        "mobkit/console/query_timeline",
+        json!({ "mode": "recent", "limit": 200 }),
+    )
+    .await;
+    let verdicts = page["result"]["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .filter(|frame| frame["kind"] == json!("memory.quarantine.verdict"))
+        .count();
+    assert_eq!(verdicts, 1, "the applied verdict reaches the timeline");
+    let projected = page.to_string();
+    assert!(!projected.contains(marker), "{projected}");
+    assert!(!projected.contains(reviewer), "{projected}");
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// A dream's open-loop escalation may name a quarantined record. Its nudge
+/// reaches the system-wide timeline, which a reader with agent.view alone
+/// sees; the dream's free-text rationale, which can quote the record, does
+/// not.
+#[tokio::test]
+async fn open_loop_escalation_frames_carry_no_rationale() {
+    use meerkat_client::{LlmClient, LlmDoneOutcome, LlmEvent};
+    use meerkat_mobkit::memory::distiller::TranscriptSlice;
+    use meerkat_mobkit::memory::{
+        DistillerError, DreamOutcome, StewardClientHandle, StewardConfig, StewardEngine,
+        StewardError, StewardProfile, TranscriptSource,
+    };
+
+    struct FixedReply(Arc<dyn LlmClient>);
+    #[async_trait::async_trait]
+    impl StewardClientHandle for FixedReply {
+        async fn client(&self) -> Result<Arc<dyn LlmClient>, StewardError> {
+            Ok(self.0.clone())
+        }
+        fn invalidate(&self) {}
+    }
+    struct NoTranscripts;
+    #[async_trait::async_trait]
+    impl TranscriptSource for NoTranscripts {
+        async fn read(
+            &self,
+            _session_key: &str,
+            _from_index: u64,
+        ) -> Result<Option<TranscriptSlice>, DistillerError> {
+            Ok(None)
+        }
+    }
+    struct AgentWritesQuarantine;
+    impl meerkat_mobkit::memory::taint::LlmWriteGate for AgentWritesQuarantine {
+        fn quarantine_reason(
+            &self,
+            author: &meerkat_mobkit::memory::records::MemoryAuthor,
+            _kind: meerkat_mobkit::memory::staged::StagedBatchKind,
+            _evidence: &[meerkat_mobkit::memory::records::EvidenceRef],
+        ) -> Option<String> {
+            author.is_llm().then(|| "test taint".to_string())
+        }
+    }
+
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let store =
+        meerkat_mobkit::SqliteAgentMemoryStore::open(memory_dir.path()).expect("open store");
+    store.set_llm_write_gate(Arc::new(AgentWritesQuarantine));
+    store.set_event_sink(runtime.memory_event_sink());
+    let record =
+        quarantined_router_record(&store, "Router open loop", "Waiting on the vendor's reply.")
+            .await;
+    let canary = "CANARY-escalation-rationale-5d1c";
+    // One reply serves every phase: an empty gather, then a consolidate that
+    // escalates the quarantined record as a stale open loop.
+    let reply = json!({
+        "requests": [], "ops": [], "proposal_verdicts": [], "quarantine_verdicts": [],
+        "open_loop_escalations": [{ "record_id": record, "rationale": canary }],
+        "contradictions": [], "working_set": []
+    })
+    .to_string();
+    let client: Arc<dyn LlmClient> = Arc::new(TestClient::new(vec![
+        LlmEvent::TextDelta {
+            delta: reply,
+            meta: None,
+        },
+        LlmEvent::Done {
+            outcome: LlmDoneOutcome::Success {
+                stop_reason: meerkat_core::StopReason::EndTurn,
+            },
+        },
+    ]));
+    let engine = Arc::new(
+        StewardEngine::new(
+            StewardProfile::embedded_default(),
+            StewardConfig {
+                enabled: true,
+                min_signals: 1,
+                ..StewardConfig::default()
+            },
+            Arc::new(FixedReply(client)),
+            Arc::new(store.clone()),
+            Arc::new(NoTranscripts),
+            "default",
+        )
+        .with_events(runtime.memory_event_sink()),
+    );
+    engine.note_session_completed();
+    let DreamOutcome::Completed(run) = engine.dream_now().await else {
+        panic!("the dream completes");
+    };
+    assert_eq!(run.verdicts.open_loops_escalated, 1, "{:?}", run.skips);
+
+    let controller = view_only_memory_aware_controller();
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    assert_view_only_reader(&app, &controller, "router").await;
+    let nudge = timeline_stream_frame(&app, "memory.quarantine.verdict")
+        .await
+        .to_string();
+    assert!(nudge.contains("open_loop_escalated"), "{nudge}");
+    assert!(nudge.contains(&record), "{nudge}");
+    assert!(!nudge.contains(canary), "{nudge}");
+    let page = rpc(
+        &app,
+        "mobkit/console/query_timeline",
+        json!({ "mode": "recent", "limit": 200 }),
+    )
+    .await
+    .to_string();
+    assert!(page.contains("open_loop_escalated"), "{page}");
+    assert!(!page.contains(canary), "{page}");
 
     let _ = runtime.mob_handle().stop().await;
 }

@@ -61,6 +61,11 @@ pub(crate) enum MemoryParamsError {
     KMustBePositiveInteger,
     KOutOfRange,
     KRequiresWorkingSetTier,
+    VerdictRequired,
+    UnsupportedVerdict(String),
+    ExpectedContentHashRequired,
+    RationaleMustBeString,
+    RationaleTooLong,
     Index(MemoryIndexError),
 }
 
@@ -159,6 +164,23 @@ impl MemoryParamsError {
             MemoryParamsError::KRequiresWorkingSetTier => {
                 "k is only valid with tier 'working_set'".to_string()
             }
+            MemoryParamsError::VerdictRequired => {
+                "verdict must be 'release' or 'tombstone'".to_string()
+            }
+            MemoryParamsError::UnsupportedVerdict(verdict) => {
+                format!("verdict must be 'release' or 'tombstone' (got '{verdict}')")
+            }
+            MemoryParamsError::ExpectedContentHashRequired => {
+                "expected_content_hash must be the non-empty content_hash of the reviewed record"
+                    .to_string()
+            }
+            MemoryParamsError::RationaleMustBeString => {
+                "rationale must be a string when provided".to_string()
+            }
+            MemoryParamsError::RationaleTooLong => format!(
+                "rationale must be at most {} bytes",
+                crate::memory::review::MAX_REVIEW_RATIONALE_BYTES
+            ),
             MemoryParamsError::Index(MemoryIndexError::EntityRequired) => {
                 "entity must be a non-empty string".to_string()
             }
@@ -193,6 +215,18 @@ pub(crate) struct AgentMemoryForgetRpcRequest {
     pub(crate) identity: AgentIdentity,
     pub(crate) realm: String,
     pub(crate) memory_id: String,
+}
+
+/// `mobkit/memory/quarantine/decide`: one review decision over a
+/// quarantined record in `identity`'s scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MemoryQuarantineDecideRpcRequest {
+    pub(crate) identity: AgentIdentity,
+    pub(crate) realm: String,
+    pub(crate) memory_id: String,
+    pub(crate) decision: crate::memory::review::QuarantineDecision,
+    pub(crate) expected_content_hash: String,
+    pub(crate) rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +413,58 @@ pub(crate) fn parse_agent_memory_forget_params(
         identity,
         realm,
         memory_id,
+    })
+}
+
+pub(crate) fn parse_memory_quarantine_decide_params(
+    params: &Value,
+) -> Result<MemoryQuarantineDecideRpcRequest, MemoryParamsError> {
+    let object = params
+        .as_object()
+        .ok_or(MemoryParamsError::ParamsMustBeObject)?;
+    let identity = parse_agent_memory_identity(object)?;
+    let realm = parse_agent_memory_realm(object)?;
+    let memory_id = object
+        .get("memory_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(MemoryParamsError::MemoryIdRequired)?
+        .to_string();
+    let verdict = object
+        .get("verdict")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .ok_or(MemoryParamsError::VerdictRequired)?;
+    let decision = crate::memory::review::QuarantineDecision::parse(verdict)
+        .ok_or_else(|| MemoryParamsError::UnsupportedVerdict(verdict.to_string()))?;
+    let expected_content_hash = object
+        .get("expected_content_hash")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(MemoryParamsError::ExpectedContentHashRequired)?
+        .to_string();
+    let rationale = match object.get("rationale") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let rationale = value
+                .as_str()
+                .ok_or(MemoryParamsError::RationaleMustBeString)?
+                .trim();
+            if rationale.len() > crate::memory::review::MAX_REVIEW_RATIONALE_BYTES {
+                return Err(MemoryParamsError::RationaleTooLong);
+            }
+            (!rationale.is_empty()).then(|| rationale.to_string())
+        }
+    };
+    Ok(MemoryQuarantineDecideRpcRequest {
+        identity,
+        realm,
+        memory_id,
+        decision,
+        expected_content_hash,
+        rationale,
     })
 }
 
@@ -662,6 +748,77 @@ mod tests {
             Some("Where is my passport?".to_string())
         );
         assert_eq!(parsed.request.query_terms, vec!["passport".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_quarantine_decide_params_bind_scope_verdict_and_content() -> Result<(), Box<dyn Error>>
+    {
+        let parsed = parse_memory_quarantine_decide_params(&json!({
+            "identity": " lead:main ",
+            "memory_id": "mem-1",
+            "verdict": "release",
+            "expected_content_hash": "abc123",
+            "rationale": "  confirmed with the reader  "
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+        assert_eq!(parsed.identity.as_str(), "lead:main");
+        assert_eq!(parsed.realm, "default");
+        assert_eq!(parsed.memory_id, "mem-1");
+        assert_eq!(
+            parsed.decision,
+            crate::memory::review::QuarantineDecision::Release
+        );
+        assert_eq!(parsed.expected_content_hash, "abc123");
+        assert_eq!(
+            parsed.rationale.as_deref(),
+            Some("confirmed with the reader")
+        );
+
+        let base = json!({
+            "identity": "lead:main",
+            "memory_id": "mem-1",
+            "verdict": "tombstone",
+            "expected_content_hash": "abc123"
+        });
+        let with = |key: &str, value: serde_json::Value| {
+            let mut params = base.clone();
+            params[key] = value;
+            parse_memory_quarantine_decide_params(&params).err()
+        };
+        assert_eq!(
+            parse_memory_quarantine_decide_params(&base)
+                .map_err(|err| std::io::Error::other(err.message()))?
+                .rationale,
+            None
+        );
+        assert_eq!(
+            with("verdict", json!("hold")),
+            Some(MemoryParamsError::UnsupportedVerdict("hold".to_string()))
+        );
+        assert_eq!(
+            with("verdict", json!(1)),
+            Some(MemoryParamsError::VerdictRequired)
+        );
+        assert_eq!(
+            with("expected_content_hash", json!(" ")),
+            Some(MemoryParamsError::ExpectedContentHashRequired)
+        );
+        assert_eq!(
+            with("rationale", json!(7)),
+            Some(MemoryParamsError::RationaleMustBeString)
+        );
+        assert_eq!(
+            with(
+                "rationale",
+                json!("r".repeat(crate::memory::review::MAX_REVIEW_RATIONALE_BYTES + 1))
+            ),
+            Some(MemoryParamsError::RationaleTooLong)
+        );
+        assert_eq!(
+            with("memory_id", json!("")),
+            Some(MemoryParamsError::MemoryIdRequired)
+        );
         Ok(())
     }
 

@@ -447,6 +447,14 @@ pub const WORKGRAPH_CONFLICT_CODE: i64 = -32042;
 /// (`data.kind = "workgraph_error"`, full detail — K2 disclosure posture).
 pub const WORKGRAPH_ERROR_CODE: i64 = -32000;
 
+/// JSON-RPC error code for a quarantine review the memory store refused
+/// (`mobkit/memory/quarantine/decide`). Nothing was written.
+/// `data.kind = "memory_quarantine_review_refused"`; `data.reason` is the
+/// typed refusal (`not_found`, `content_mismatch`, `not_quarantined`,
+/// `gate_pending`, `successor_conflict`, `secret_detected`, `stale_update`)
+/// with its fields.
+pub const MEMORY_QUARANTINE_REVIEW_REFUSED_CODE: i64 = -32043;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
