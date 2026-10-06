@@ -3771,7 +3771,15 @@ actions = ["agent.view"]
         };
         let response = json!({"additional_instructions": ["be terse"]});
         let applied = builder
-            .apply_build_agent_response(&mint_req, &response, "b")
+            .apply_build_agent_response(
+                &mint_req,
+                mint_req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone()),
+                &response,
+                "b",
+            )
             .await
             .expect("response applies");
         assert_eq!(
@@ -3783,7 +3791,15 @@ actions = ["agent.view"]
             "a Mint carrier honors standing instructions"
         );
         let applied = builder
-            .apply_build_agent_response(&resume_req, &response, "b")
+            .apply_build_agent_response(
+                &resume_req,
+                resume_req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone()),
+                &response,
+                "b",
+            )
             .await
             .expect("response applies");
         assert_eq!(
@@ -3832,7 +3848,14 @@ actions = ["agent.view"]
         ];
         for (req, expected) in requests {
             let applied = builder
-                .apply_build_agent_response(&req, &spoofing_response, "b")
+                .apply_build_agent_response(
+                    &req,
+                    req.build
+                        .as_ref()
+                        .and_then(|build| build.external_tools.clone()),
+                    &spoofing_response,
+                    "b",
+                )
                 .await
                 .expect("response applies");
             assert_eq!(
@@ -6310,6 +6333,242 @@ comms = true
             Err("stdout channel closed".to_string())
         );
         assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    /// The (registry, owner session) an ops-capable source was bound to.
+    type ObservedBinding = std::sync::Mutex<
+        Option<(
+            Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            meerkat_core::SessionId,
+        )>,
+    >;
+
+    /// Ops-capable external tool source for the owned-build tests. Its
+    /// observations live outside it, so a test holds no extra handle to it.
+    struct ObservedOpsSource {
+        seen: Arc<ObservedBinding>,
+    }
+
+    #[async_trait]
+    impl meerkat_core::AgentToolDispatcher for ObservedOpsSource {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::ToolDef>]> {
+            Arc::from([Arc::new(meerkat_core::ToolDef {
+                name: "ops_probe".into(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                provenance: None,
+            })])
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+            Err(ToolError::not_found(call.name))
+        }
+
+        fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+            meerkat_core::agent::DispatcherCapabilities {
+                ops_lifecycle: true,
+            }
+        }
+
+        fn bind_ops_lifecycle(
+            self: Arc<Self>,
+            registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            owner_bridge_session_id: meerkat_core::SessionId,
+        ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+        {
+            let this = Arc::try_unwrap(self)
+                .map_err(|_| meerkat_core::agent::OpsLifecycleBindError::SharedOwnership)?;
+            *this.seen.lock().expect("source lock") = Some((registry, owner_bridge_session_id));
+            Ok(meerkat_core::agent::BindOutcome::Bound(Arc::new(this)))
+        }
+    }
+
+    struct OwnedBuildFixture {
+        _temp: tempfile::TempDir,
+        builder: StdioCallbackAgentBuilder,
+        request: CreateSessionRequest,
+        session_id: meerkat_core::SessionId,
+        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        _responder: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    /// A session-owned build request carrying `external` as its external
+    /// tools, through the gateway builder. With `callback_tools`, the builder
+    /// takes the SDK callback branch and the SDK answers with those tools, so
+    /// they compose OVER `external`.
+    async fn owned_build_fixture(
+        external: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        callback_tools: Option<Value>,
+    ) -> OwnedBuildFixture {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut inner = FactoryAgentBuilder::new(
+            AgentFactory::new(temp.path().join("sessions")),
+            Config::default(),
+        );
+        inner.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let runtime_adapter = meerkat_runtime::MeerkatMachine::ephemeral();
+        let session = meerkat_core::Session::new();
+        let session_id = session.id().clone();
+        let bindings = runtime_adapter
+            .prepare_bindings(session_id.clone())
+            .await
+            .expect("prepare bindings");
+        let registry = Arc::clone(bindings.ops_lifecycle());
+        let request = CreateSessionRequest {
+            injected_context: Vec::new(),
+            model: "claude-sonnet-4-5".to_string(),
+            prompt: "hello".to_string().into(),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+            build: Some(meerkat_core::service::SessionBuildOptions {
+                resume_session: Some(session),
+                runtime_build_mode: meerkat_core::RuntimeBuildMode::SessionOwned(bindings),
+                external_tools: Some(external),
+                ..meerkat_core::service::SessionBuildOptions::default()
+            }),
+            labels: None,
+        };
+        let (stdout_tx, stdout_rx) = mpsc::channel(16);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let (has_session_builder, responder) = match callback_tools {
+            Some(tools) => {
+                let (_builds, responder) =
+                    answer_build_callbacks(stdout_rx, bridge.clone(), json!({ "tools": tools }));
+                (true, Some(responder))
+            }
+            None => (false, None),
+        };
+        OwnedBuildFixture {
+            _temp: temp,
+            builder: StdioCallbackAgentBuilder {
+                inner,
+                bridge,
+                has_session_builder,
+                session_store: None,
+                detached_jobs: None,
+            },
+            request,
+            session_id,
+            registry,
+            _responder: responder,
+        }
+    }
+
+    fn assert_bound_to_session(seen: &ObservedBinding, fixture: &OwnedBuildFixture) {
+        let (registry, owner) = seen
+            .lock()
+            .expect("source lock")
+            .clone()
+            .expect("the ops-capable external source was bound");
+        assert!(Arc::ptr_eq(&registry, &fixture.registry));
+        assert_eq!(owner, fixture.session_id);
+    }
+
+    /// No SDK SessionBuilder: the gateway builder hands the owned request
+    /// straight to the factory, so an ops-capable external source moves into
+    /// the agent and binds to the session's registry with the session as
+    /// owner. Through the borrowed path it stayed shared and was refused.
+    #[tokio::test]
+    async fn the_owned_build_binds_an_ops_capable_external_source() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let mut fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            None,
+        )
+        .await;
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let agent = fixture
+            .builder
+            .build_agent_taking_tools(&mut fixture.request, event_tx)
+            .await
+            .expect("the owned build binds, no SharedOwnership");
+        drop(agent);
+        assert_bound_to_session(&seen, &fixture);
+        assert!(
+            fixture
+                .request
+                .build
+                .as_ref()
+                .is_some_and(|build| build.external_tools.is_none()),
+            "the external source moved out of the caller's request"
+        );
+    }
+
+    /// With an SDK SessionBuilder whose callback adds its own tools, the
+    /// callback tools compose OVER the ops-capable external source, and the
+    /// composed slot still binds it: the original request's slot is drained
+    /// before the transform, and the composition forwards the binding.
+    #[tokio::test]
+    async fn the_owned_callback_build_binds_an_ops_source_under_callback_tools() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let mut fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            Some(json!([{
+                "name": "weather",
+                "description": "Look up the weather",
+                "input_schema": {"type": "object"}
+            }])),
+        )
+        .await;
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let agent = fixture
+            .builder
+            .build_agent_taking_tools(&mut fixture.request, event_tx)
+            .await
+            .expect("the owned callback build binds, no SharedOwnership");
+        drop(agent);
+        assert_bound_to_session(&seen, &fixture);
+        assert!(
+            fixture
+                .request
+                .build
+                .as_ref()
+                .is_some_and(|build| build.external_tools.is_none()),
+            "the original request no longer holds the source"
+        );
+    }
+
+    /// A host that keeps its own handle to the ops-capable source cannot have
+    /// it rebound: the callback build fails typed instead of running it
+    /// silently unbound.
+    #[tokio::test]
+    async fn a_retained_ops_source_fails_the_owned_callback_build_with_shared_ownership() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let external: Arc<dyn meerkat_core::AgentToolDispatcher> = Arc::new(ObservedOpsSource {
+            seen: Arc::clone(&seen),
+        });
+        let retained = Arc::clone(&external);
+        let mut fixture = owned_build_fixture(
+            external,
+            Some(json!([{
+                "name": "weather",
+                "description": "Look up the weather",
+                "input_schema": {"type": "object"}
+            }])),
+        )
+        .await;
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let error = match fixture
+            .builder
+            .build_agent_taking_tools(&mut fixture.request, event_tx)
+            .await
+        {
+            Ok(_) => panic!("a shared ops-capable source must not build"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("shared ownership"), "{error}");
+        assert!(seen.lock().expect("source lock").is_none());
+        drop(retained);
     }
 
     #[tokio::test]
@@ -12173,9 +12432,14 @@ impl StdioCallbackAgentBuilder {
     /// and the host only ever receives it, so a response naming
     /// `fork_source` (or `fork_source_identity`) is ignored and the request's
     /// own lineage, or its absence, is what the build sees.
+    /// `external_tools` is the request's external tool dispatcher, passed
+    /// explicitly rather than read from `req`: the owned build path drains it
+    /// from the caller's request first, so the transformed request is its
+    /// only holder (see `build_agent_taking_tools`).
     async fn apply_build_agent_response(
         &self,
         req: &CreateSessionRequest,
+        external_tools: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>,
         result: &Value,
         scope_id: &str,
     ) -> Result<CreateSessionRequest, SessionError> {
@@ -12198,6 +12462,19 @@ impl StdioCallbackAgentBuilder {
             deferred_prompt_policy: req.deferred_prompt_policy,
             injected_context: req.injected_context.clone(),
         };
+        match external_tools {
+            Some(tools) => {
+                modified_req
+                    .build
+                    .get_or_insert_with(meerkat_core::service::SessionBuildOptions::default)
+                    .external_tools = Some(tools);
+            }
+            None => {
+                if let Some(build) = modified_req.build.as_mut() {
+                    build.external_tools = None;
+                }
+            }
+        }
         // Resume-ness decides the instruction fold below, so resolve
         // it FIRST: a resume can arrive spawn-level
         // (build.resume_session already loaded) or be requested by
@@ -12435,8 +12712,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 
         match callback_result {
             Ok(result) => {
+                let shared_tools = req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone());
                 let modified_req = self
-                    .apply_build_agent_response(req, &result, &scope_id)
+                    .apply_build_agent_response(req, shared_tools, &result, &scope_id)
                     .await?;
                 self.inner.build_agent(&modified_req, event_tx).await
             }
@@ -12448,6 +12729,54 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     "callback/build_agent failed: {err}"
                 ))))
             }
+        }
+    }
+
+    /// The owned build: the request's external tool dispatcher moves into the
+    /// agent's composed tool surface instead of staying shared with `req`, so
+    /// session-time binding (owner session, ops registry) can rebind it.
+    /// Building through the borrowed `build_agent` would keep a second holder
+    /// alive and fail an ops-capable source with `SharedOwnership`.
+    ///
+    /// The original request's tool slot is drained FIRST, before any clone, so
+    /// no copy of the request keeps the dispatcher. Everything else in `req`
+    /// stays readable after the call, as the trait requires.
+    async fn build_agent_taking_tools(
+        &self,
+        req: &mut CreateSessionRequest,
+        event_tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<Self::Agent, SessionError> {
+        if !self.has_session_builder {
+            // The borrowed path's normalization copies every field unchanged;
+            // forwarding the owned request directly is the same request with
+            // its tools handed over.
+            return self.inner.build_agent_taking_tools(req, event_tx).await;
+        }
+
+        let scope_id = format!(
+            "build-{}",
+            self.bridge
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let owned_tools = req
+            .build
+            .as_mut()
+            .and_then(|build| build.external_tools.take());
+        let options = callback_build_agent_options(req, &scope_id);
+        let params = json!({ "options": options });
+        match self.bridge.call("callback/build_agent", params).await {
+            Ok(result) => {
+                let mut modified_req = self
+                    .apply_build_agent_response(req, owned_tools, &result, &scope_id)
+                    .await?;
+                self.inner
+                    .build_agent_taking_tools(&mut modified_req, event_tx)
+                    .await
+            }
+            Err(err) => Err(SessionError::Agent(agent_tool_error(format!(
+                "callback/build_agent failed: {err}"
+            )))),
         }
     }
 }

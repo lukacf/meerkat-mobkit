@@ -865,6 +865,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The rpc_gateway's SDK callback builder hands a member's external tools to
+  the agent by ownership (`SessionAgentBuilder::build_agent_taking_tools`,
+  Meerkat 0.8.52). Before, an ops-capable external tool source (one that
+  binds to the session's ops registry, such as a detached-job tool bundle)
+  stayed shared with the build request. Meerkat 0.8.52 refuses to bind a
+  shared one, so that member's build failed with `SharedOwnership`.
+  - Both builder branches take the request's tool slot before any copy,
+    whether or not an SDK SessionBuilder is configured. The callback path
+    composes the SDK's tools over the drained source.
+  - `ComposedExternalTools` now forwards `capabilities()` and
+    `bind_ops_lifecycle`. An ops-capable dispatcher composed under other
+    tools is reported and bound instead of silently skipped. A composition
+    or an ops-capable half still held elsewhere refuses with
+    `SharedOwnership`, never running unbound.
+
 - Console: a downward wheel or End at the bottom of a transcript no longer
   stops following the live edge. Such a gesture can leave the scroll position
   a pixel above the computed end (scrollHeight and clientHeight are rounded,
