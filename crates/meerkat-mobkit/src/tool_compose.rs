@@ -18,9 +18,11 @@
 
 use std::sync::Arc;
 
+use meerkat_core::agent::OpsLifecycleBindError;
 use meerkat_core::types::{ToolCallView, ToolDef};
 use meerkat_core::{
-    AgentToolDispatcher, ToolCatalogCapabilities, ToolCatalogEntry, ToolDispatchOutcome, ToolError,
+    AgentToolDispatcher, BindOutcome, DispatcherCapabilities, ToolCatalogCapabilities,
+    ToolCatalogEntry, ToolDispatchOutcome, ToolError,
 };
 
 /// Two external-tool dispatchers behind one slot: `primary` wins name
@@ -123,6 +125,53 @@ impl AgentToolDispatcher for ComposedExternalTools {
             }
         }
         merged.into()
+    }
+
+    /// A composition supports ops-lifecycle binding when either half does: it
+    /// adds no tools of its own, so hiding a half's capability would leave
+    /// that half's ops (detached jobs, async operations) unbound from the
+    /// session's registry while every layer still reported it present.
+    fn capabilities(&self) -> DispatcherCapabilities {
+        let primary = self.primary.capabilities();
+        let fallback = self.fallback.capabilities();
+        DispatcherCapabilities {
+            ops_lifecycle: primary.ops_lifecycle || fallback.ops_lifecycle,
+        }
+    }
+
+    /// Rebind each half that supports ops-lifecycle binding, keeping the
+    /// composition's precedence. Binding needs exclusive ownership all the way
+    /// down: a composition or an ops-capable half still shared elsewhere
+    /// cannot be rebound, and leaving it unbound would silently drop its owner
+    /// session and registry, so the bind is refused with `SharedOwnership`
+    /// (the rule meerkat's own tool gateway applies).
+    fn bind_ops_lifecycle(
+        self: Arc<Self>,
+        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        owner_bridge_session_id: meerkat_core::types::SessionId,
+    ) -> Result<BindOutcome, OpsLifecycleBindError> {
+        let owned = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
+        let mut any_bound = false;
+        let mut bind_half = |half: Arc<dyn AgentToolDispatcher>| {
+            if !half.capabilities().ops_lifecycle {
+                return Ok(half);
+            }
+            if Arc::strong_count(&half) != 1 {
+                return Err(OpsLifecycleBindError::SharedOwnership);
+            }
+            let outcome =
+                half.bind_ops_lifecycle(Arc::clone(&registry), owner_bridge_session_id.clone())?;
+            any_bound |= outcome.was_bound();
+            Ok(outcome.into_dispatcher())
+        };
+        let primary = bind_half(owned.primary)?;
+        let fallback = bind_half(owned.fallback)?;
+        let rebound: Arc<dyn AgentToolDispatcher> = Arc::new(Self { primary, fallback });
+        Ok(if any_bound {
+            BindOutcome::Bound(rebound)
+        } else {
+            BindOutcome::Skipped(rebound)
+        })
     }
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
@@ -328,5 +377,114 @@ mod tests {
             &(Arc::clone(&primary) as Arc<dyn AgentToolDispatcher>),
             &composed
         ));
+    }
+
+    /// Ops-capable half for the binding tests: records what it was bound to.
+    struct OpsHalf {
+        name: &'static str,
+        bound: Arc<std::sync::Mutex<Option<meerkat_core::types::SessionId>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentToolDispatcher for OpsHalf {
+        fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+            Arc::from([Arc::new(ToolDef {
+                name: self.name.into(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                provenance: None,
+            })])
+        }
+
+        async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+            Err(ToolError::not_found(call.name))
+        }
+
+        fn capabilities(&self) -> DispatcherCapabilities {
+            DispatcherCapabilities {
+                ops_lifecycle: true,
+            }
+        }
+
+        fn bind_ops_lifecycle(
+            self: Arc<Self>,
+            _registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            owner_bridge_session_id: meerkat_core::types::SessionId,
+        ) -> Result<BindOutcome, OpsLifecycleBindError> {
+            let this = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
+            *this.bound.lock().expect("bound lock") = Some(owner_bridge_session_id);
+            Ok(BindOutcome::Bound(Arc::new(this)))
+        }
+    }
+
+    fn registry() -> Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry> {
+        Arc::new(meerkat_runtime::RuntimeOpsLifecycleRegistry::new())
+    }
+
+    /// The composition reports an ops-capable half and rebinds it, keeping
+    /// the other half and the precedence: binding a composed slot must reach
+    /// the ops-capable dispatcher behind it, not stop at the wrapper.
+    #[test]
+    fn a_composition_reports_and_binds_its_ops_capable_half() {
+        let bound = Arc::new(std::sync::Mutex::new(None));
+        let ops: Arc<dyn AgentToolDispatcher> = Arc::new(OpsHalf {
+            name: "ops_tool",
+            bound: Arc::clone(&bound),
+        });
+        let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
+        assert!(composed.capabilities().ops_lifecycle);
+        let owner = meerkat_core::types::SessionId::new();
+        let outcome = composed
+            .bind_ops_lifecycle(registry(), owner.clone())
+            .expect("an exclusively owned composition binds");
+        assert!(outcome.was_bound());
+        assert_eq!(bound.lock().expect("bound lock").clone(), Some(owner));
+        let rebound = outcome.into_dispatcher();
+        let names: Vec<String> = rebound.tools().iter().map(|t| t.name.to_string()).collect();
+        assert_eq!(names, vec!["weather".to_string(), "ops_tool".to_string()]);
+    }
+
+    /// A shared ops-capable half, or a shared composition, refuses typed
+    /// instead of running with the half silently unbound.
+    #[test]
+    fn a_shared_ops_half_or_composition_refuses_with_shared_ownership() {
+        let ops: Arc<dyn AgentToolDispatcher> = Arc::new(OpsHalf {
+            name: "ops_tool",
+            bound: Arc::new(std::sync::Mutex::new(None)),
+        });
+        let retained_half = Arc::clone(&ops);
+        let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
+        assert!(matches!(
+            composed.bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new()),
+            Err(OpsLifecycleBindError::SharedOwnership)
+        ));
+        drop(retained_half);
+
+        let composed = ComposedExternalTools::over(
+            Probe::new(vec!["weather"]),
+            Some(Arc::new(OpsHalf {
+                name: "ops_tool",
+                bound: Arc::new(std::sync::Mutex::new(None)),
+            })),
+        );
+        let retained_composition = Arc::clone(&composed);
+        assert!(matches!(
+            composed.bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new()),
+            Err(OpsLifecycleBindError::SharedOwnership)
+        ));
+        drop(retained_composition);
+    }
+
+    /// With no ops-capable half there is nothing to bind: the composition
+    /// reports no capability and a bind is skipped, not refused.
+    #[test]
+    fn a_composition_without_ops_halves_skips_binding() {
+        let composed =
+            ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(Probe::new(vec!["x"])));
+        assert!(!composed.capabilities().ops_lifecycle);
+        let outcome = composed
+            .bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new())
+            .expect("nothing to bind is not a refusal");
+        assert!(!outcome.was_bound());
     }
 }
