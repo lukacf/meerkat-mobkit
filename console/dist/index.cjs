@@ -4688,6 +4688,7 @@ var CONSOLE_RPC_METHODS = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphGet: "mobkit/workgraph/get",
   workgraphEvents: "mobkit/workgraph/events",
@@ -5212,6 +5213,7 @@ var CONSOLE_COMMAND_NAMES = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  decideMemoryQuarantine: "decideMemoryQuarantine",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphGet: "workgraphGet",
   workgraphEvents: "workgraphEvents",
@@ -5362,6 +5364,10 @@ var CONSOLE_COMMAND_SPECS = {
   },
   [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.decideMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS.memoryQuarantineDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   },
   [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {
@@ -30137,6 +30143,7 @@ var CONSOLE_RPC_METHODS2 = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphEvents: "mobkit/workgraph/events",
   workgraphGet: "mobkit/workgraph/get",
@@ -30738,6 +30745,7 @@ var CONSOLE_COMMAND_NAMES2 = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  decideMemoryQuarantine: "decideMemoryQuarantine",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphEvents: "workgraphEvents",
   workgraphGet: "workgraphGet",
@@ -30889,6 +30897,10 @@ var CONSOLE_COMMAND_SPECS2 = {
   },
   [CONSOLE_COMMAND_NAMES2.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS2.memoryPanelAuditVerdicts,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS2.memoryQuarantineDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   },
   [CONSOLE_COMMAND_NAMES2.workgraphSnapshot]: {
@@ -34034,6 +34046,61 @@ function memoryFramePivot(frame) {
   const realm = typeof data.realm === "string" && data.realm.trim() ? data.realm.trim() : void 0;
   return { recordId, realm };
 }
+function canDecideQuarantinedRecord(record7) {
+  return record7.status.status === "quarantined" && record7.scope.scope === "identity" && typeof record7.content_hash === "string" && record7.content_hash.length > 0;
+}
+var QUARANTINE_RATIONALE_MAX_BYTES = 400;
+function quarantineRationaleProblem(rationale) {
+  const bytes = new TextEncoder().encode(rationale.trim()).length;
+  return bytes > QUARANTINE_RATIONALE_MAX_BYTES ? `The rationale is ${bytes} bytes (UTF-8); the limit is ${QUARANTINE_RATIONALE_MAX_BYTES}.` : null;
+}
+function quarantineDecisionSummary(result) {
+  const successor = result.successor?.memory_id;
+  switch (result.outcome) {
+    case "released":
+      return `Released as ${successor ?? "a new record"} (agent_observed, ever-quarantined); the original is kept, tombstoned.`;
+    case "already_released":
+      return `Already released as ${successor ?? "a new record"}; nothing changed.`;
+    case "tombstoned": {
+      const invalidated = result.decision?.review?.invalidated_promotions ?? [];
+      return invalidated.length > 0 ? `Tombstoned; it will never be recalled. Pending promotion ${invalidated.join(", ")} invalidated; it can no longer publish.` : "Tombstoned; it will never be recalled.";
+    }
+    case "already_tombstoned":
+      return "Already tombstoned; nothing changed.";
+    default:
+      return `Decided: ${String(result.outcome)}`;
+  }
+}
+function quarantineDecisionErrorText(error) {
+  const rpcError = error?.rpcError;
+  if (rpcError?.code === -32030) {
+    return "No grant: deciding needs memory.quarantine.review plus view, memory read and memory write (release) or delete (tombstone) on this identity.";
+  }
+  const data = rpcError?.data ?? null;
+  if (data?.kind === "memory_quarantine_review_refused") {
+    switch (data.reason) {
+      case "not_found":
+        return "Refused: no such record in this identity's scope.";
+      case "content_mismatch":
+        return "Refused: the record differs from the one loaded here. Reload it and review again.";
+      case "not_quarantined":
+        return data.released_as ? `Refused: it was already released as ${String(data.released_as)}.` : `Refused: the record is ${String(data.status)}, not quarantined.`;
+      case "gate_pending": {
+        const expires = typeof data.expires_at_ms === "number" ? ` (or wait until it expires, ${new Date(data.expires_at_ms).toISOString()})` : "";
+        return `Refused: gated promotion ${String(data.pending_id)} is waiting on it; decide it in the Gating inbox${expires}. Tombstoning the record instead invalidates that promotion.`;
+      }
+      case "successor_conflict":
+        return `Refused: another record already holds the release id ${String(data.successor_id)}; nothing was changed.`;
+      case "secret_detected":
+        return `Refused: the content matches the ${String(data.class)} secret pattern; tombstone is the only exit.`;
+      case "stale_update":
+        return `Refused: the version this update replaces (${String(data.prior)}) is ${String(data.prior_status)}; tombstone it instead.`;
+      default:
+        break;
+    }
+  }
+  return errorMessage(error);
+}
 function Chip({ label, tone }) {
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "chip memory-chip", "data-tone": tone || "neutral", children: label });
 }
@@ -34073,12 +34140,86 @@ function RecordRow({
 function evidenceKey(evidence, index2) {
   return `${index2}:${evidence.session_id || ""}:${evidence.generation ?? ""}`;
 }
+function QuarantineDecisionBlock({
+  realm,
+  record: record7,
+  onDecide
+}) {
+  const [rationale, setRationale] = import_react29.default.useState("");
+  const [pending, setPending] = import_react29.default.useState(null);
+  const [failure, setFailure] = import_react29.default.useState(null);
+  const rationaleProblem = quarantineRationaleProblem(rationale);
+  const blocked = pending !== null || rationaleProblem !== null;
+  const notice = rationaleProblem ?? failure;
+  async function decide(verdict) {
+    if (rationaleProblem !== null) return;
+    setPending(verdict);
+    setFailure(null);
+    try {
+      await onDecide(verdict, rationale.trim() || void 0);
+    } catch (err) {
+      setFailure(quarantineDecisionErrorText(err));
+    } finally {
+      setPending(null);
+    }
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-quarantine-decide", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Review" }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__line", children: [
+      "Release makes this an active agent_observed record of",
+      " ",
+      record7.scope.scope === "identity" ? record7.scope.identity : "this scope",
+      " (realm ",
+      realm,
+      "); it stays capped below verified trust because it was quarantined. Tombstone discards it."
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+      "input",
+      {
+        className: "memory-filterbar__input",
+        "data-testid": "memory-quarantine-rationale",
+        placeholder: "Rationale (optional, recorded in the audit)",
+        value: rationale,
+        disabled: pending !== null,
+        onChange: (event) => setRationale(event.target.value)
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__line", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "memory-back",
+          "data-testid": "memory-quarantine-release",
+          disabled: blocked,
+          onClick: () => void decide("release"),
+          children: pending === "release" ? "Releasing\u2026" : "Release"
+        }
+      ),
+      " ",
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "memory-back",
+          "data-testid": "memory-quarantine-tombstone",
+          disabled: blocked,
+          onClick: () => void decide("tombstone"),
+          children: pending === "tombstone" ? "Tombstoning\u2026" : "Tombstone"
+        }
+      )
+    ] }),
+    notice ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-quarantine-error", children: notice }) : null
+  ] });
+}
 function BiographyView({
   detail,
   dreams,
   onBack,
   onSelectRecord,
-  onLoadEvidence
+  onLoadEvidence,
+  onDecideQuarantine,
+  decisionNotice
 }) {
   const { record: record7, chain, injections } = detail;
   const provenance = record7.provenance;
@@ -34124,6 +34265,16 @@ function BiographyView({
     ] }),
     record7.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record7.description }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record7.body }),
+    decisionNotice ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-outcome", children: decisionNotice }) : null,
+    onDecideQuarantine && canDecideQuarantinedRecord(record7) ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+      QuarantineDecisionBlock,
+      {
+        realm: detail.realm,
+        record: record7,
+        onDecide: (verdict, rationale) => onDecideQuarantine(record7, verdict, rationale)
+      },
+      record7.id
+    ) : null,
     record7.tags && record7.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record7.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Born" }),
@@ -34336,9 +34487,18 @@ function MemoryPanel({
   onClearDetail,
   onQueryRecords,
   onLoadEvidence,
-  onOpenGating
+  onOpenGating,
+  onDecideQuarantine
 }) {
   const [tab2, setTab] = import_react29.default.useState("holdings");
+  const [decisionNotice, setDecisionNotice] = import_react29.default.useState(null);
+  const decideQuarantine = onDecideQuarantine ? async (record7, verdict, rationale) => {
+    if (!detail) return;
+    const realm = detail.realm;
+    const result = await onDecideQuarantine(realm, record7, verdict, rationale);
+    setDecisionNotice(quarantineDecisionSummary(result));
+    onSelectRecord(realm, result.successor?.memory_id ?? record7.id);
+  } : void 0;
   const [filter, setFilter] = import_react29.default.useState({});
   const [sortMode, setSortMode] = import_react29.default.useState("recency");
   const [paged, setPaged] = import_react29.default.useState(null);
@@ -34623,9 +34783,17 @@ function MemoryPanel({
         {
           detail,
           dreams,
-          onBack: onClearDetail,
-          onSelectRecord,
-          onLoadEvidence
+          onBack: () => {
+            setDecisionNotice(null);
+            onClearDetail();
+          },
+          onSelectRecord: (realm, memoryId) => {
+            setDecisionNotice(null);
+            onSelectRecord(realm, memoryId);
+          },
+          onLoadEvidence,
+          onDecideQuarantine: decideQuarantine,
+          decisionNotice
         }
       ) : detailLoading ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", children: "Loading record\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-groups", children: [
         onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-filterbar", "data-testid": "memory-filter", children: [
@@ -34857,7 +35025,7 @@ function MemoryPanel({
           canReviewQuarantine ? quarantineRecords.length : "no grant",
           ")"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: "Read-only. Verdicts are decided by the memory steward's dream and the gating flow \u2014 this queue cannot be actioned here." }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: onDecideQuarantine ? "Open a quarantined record to release or tombstone it. Gated promotions are decided in the Gating inbox; the memory steward's dream decides the rest." : "Read-only here. Verdicts come from the memory steward's dream, the gating flow, and reviewers who hold the quarantine review and memory write grants." }),
         /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", "data-testid": "memory-pipeline-proposals", children: [
           /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: "Proposed \u2014 awaiting a dream verdict (taint captured at propose time)" }),
           proposalsDenied ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: "Proposals: no grant." }) : proposals.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: "No pending proposals." }) : proposals.map((proposal) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
@@ -44302,7 +44470,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     dreamRuns: [],
     dreamRunsDenied: false,
     auditVerdicts: [],
-    auditVerdictsDenied: false
+    auditVerdictsDenied: false,
+    canDecideQuarantine: false
   });
   const [workGraphData, setWorkGraphData] = import_react45.default.useState({
     items: [],
@@ -45742,7 +45911,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       }
       let quarantineRecords = [];
       let pendingPromotions = [];
+      let canDecideQuarantine = false;
       if (experience?.memory?.can_review_quarantine === true) {
+        try {
+          const capabilities = await consoleTransport.capabilities();
+          canDecideQuarantine = capabilities.methods.includes(
+            consoleCommandMethod2(CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine)
+          );
+        } catch {
+          canDecideQuarantine = false;
+        }
         try {
           const quarantineResult = await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES2.listMemoryQuarantine,
@@ -45831,6 +46009,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         dreamRunsDenied: dreamRuns.denied,
         auditVerdicts: auditVerdicts.value,
         auditVerdictsDenied: auditVerdicts.denied,
+        canDecideQuarantine,
         unavailable: false,
         error: null
       }));
@@ -45962,6 +46141,27 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
+  );
+  const decideMemoryQuarantine = import_react45.default.useCallback(
+    async (realm, record7, verdict, rationale) => {
+      const identity = record7.scope.scope === "identity" ? record7.scope.identity : void 0;
+      const result = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine,
+        controlWorkbenchTarget("memory"),
+        {
+          realm,
+          identity,
+          memory_id: record7.id,
+          verdict,
+          expected_content_hash: record7.content_hash,
+          ...rationale ? { rationale } : {}
+        }
+      );
+      void refreshMemoryData();
+      return result;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshMemoryData]
   );
   const runAccessMutation = import_react45.default.useCallback(
     async (command, params) => {
@@ -47587,6 +47787,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           onClearDetail: () => setMemoryData((current) => ({ ...current, detail: null, detailLoading: false })),
           onQueryRecords: queryMemoryRecords,
           onLoadEvidence: loadMemoryEvidence,
+          onDecideQuarantine: memoryData.canDecideQuarantine && !frontendReadOnly && experience?.console_policy?.read_only !== true ? decideMemoryQuarantine : void 0,
           onOpenGating: (
             // Only offered where the nav itself offers gating — on runtimes
             // without a mob control surface (or with gating hidden) the
