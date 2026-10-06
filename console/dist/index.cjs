@@ -45600,7 +45600,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;

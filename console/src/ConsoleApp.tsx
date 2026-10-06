@@ -2051,10 +2051,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [baseUrl, experience?.runtime_id, experience?.console_config?.title],
   );
 
-  // A layout effect, so the saved layout lands in the same commit that first
-  // draws the experience-gated chrome. As a passive effect it ran a task
-  // later, and a click in between (opening a nav panel) was overwritten by
-  // the restore.
+  // A layout effect, so the saved layout lands in a synchronous follow-up
+  // commit before paint, before any input can be handled. As a passive effect
+  // it ran a task later, and a click in between (opening a nav panel) was
+  // overwritten by the restore.
   React.useLayoutEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
@@ -2579,7 +2579,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // OPEN INITIAL TARGET
   // =========================================================================
 
-  React.useEffect(() => {
+  // A layout effect for the same reason as the saved-layout restore: with no
+  // saved layout, the configured initial target must land before a click can.
+  React.useLayoutEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
