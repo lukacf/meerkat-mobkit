@@ -579,16 +579,20 @@ pub enum CandidateDefinition {
     Stored,
 }
 
-/// Judge a candidate resume: the fields where `supplied` differs from the
-/// `stored` definition the resume will boot. Empty when they match. A
+/// Judge a candidate resume from `fields`, the [`diverged_definition_fields`]
+/// of the stored definition the resume will boot against the supplied one
+/// (empty when they match, after the released-representation allowance). A
 /// difference refuses under [`CandidateDefinition::RequireMatch`] and is
 /// returned for reporting under [`CandidateDefinition::Stored`].
+///
+/// The comparison is structural over the serialized definition: maps compare
+/// by key, lists by value in order, so a reordered list (a `tools.deny`
+/// written in another order, say) counts as a difference, as it does for the
+/// authoritative pin.
 pub fn verify_candidate_resume(
-    stored: &MobDefinition,
-    supplied: &MobDefinition,
+    fields: Vec<String>,
     policy: CandidateDefinition,
 ) -> Result<Vec<String>, MobCompositionProvenanceError> {
-    let fields = diverged_definition_fields(stored, supplied);
     if fields.is_empty() || policy == CandidateDefinition::Stored {
         Ok(fields)
     } else {

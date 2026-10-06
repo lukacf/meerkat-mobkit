@@ -964,6 +964,114 @@ async fn a_candidate_acknowledging_the_stored_definition_boots_it_with_degraded_
     let _ = candidate.handle().shutdown().await;
 }
 
+/// The candidate arm makes the authoritative arm's released-representation
+/// allowance: on a store a 0.8.28 writer created, an unchanged operator
+/// config boots as a candidate, while the same config with an added
+/// `tools.deny` still refuses, naming the field.
+#[tokio::test]
+async fn a_candidate_on_a_released_synthesized_store_is_judged_in_the_released_form() {
+    const MOB_ID: &str = "candidate-legacy-synthesized";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let mut supplied = base_definition_for(MOB_ID);
+    supplied
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile")
+        .provider_params = Some(
+        meerkat_core::lifecycle::run_primitive::ProviderParamsOverride {
+            temperature: Some(0.2),
+            ..Default::default()
+        },
+    );
+    let mut released = supplied.clone();
+    let profile = released
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile");
+    profile.provider = Some(meerkat_core::Provider::OpenAI);
+    profile.resume_overrides = vec![
+        meerkat_mob::ResumeOverrideField::Model,
+        meerkat_mob::ResumeOverrideField::Provider,
+        meerkat_mob::ResumeOverrideField::ProviderParams,
+    ];
+    let first = boot(&mob_path, &session_root, released)
+        .await
+        .expect("create using the released synthesized representation");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown released runtime");
+    drop(first);
+    let manifest_path = manifest_path(&mob_path);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+            .expect("decode manifest");
+    let manifest = manifest.as_object_mut().expect("manifest object");
+    manifest.insert(
+        "created_by_mobkit".to_string(),
+        serde_json::Value::String("0.8.28".to_string()),
+    );
+    manifest.remove("legacy_synthesized_profile_normalization");
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("encode released manifest"),
+    )
+    .expect("write released manifest");
+
+    let mut with_deny = supplied.clone();
+    with_deny
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile")
+        .tools
+        .deny = vec!["spawn_member".to_string()];
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        supplied,
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    .expect("an unchanged operator config boots as a candidate on a released store");
+    assert!(composition_slot(&candidate).is_none());
+    candidate
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown the candidate runtime");
+    drop(candidate);
+
+    match boot_candidate_with(
+        &mob_path,
+        &session_root,
+        with_deny,
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    {
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CandidateDivergent { fields },
+        )) => assert!(
+            fields
+                .iter()
+                .any(|field| field == "profiles.lead.tools.deny"),
+            "{fields:?}"
+        ),
+        Err(other) => panic!("expected a candidate divergence refusal, got: {other}"),
+        Ok(runtime) => {
+            let _ = runtime.handle().shutdown().await;
+            panic!("the added deny booted silently on a released store");
+        }
+    }
+}
+
 /// A store with an event log and NO manifest must be adopted by an
 /// authoritative resume, not refused.
 ///

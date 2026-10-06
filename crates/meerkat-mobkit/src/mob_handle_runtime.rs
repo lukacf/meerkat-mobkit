@@ -8389,6 +8389,10 @@ pub struct MobBootstrapSpec {
     /// definition that differs from the stored one refuses (the default) or
     /// boots the stored definition knowingly. Ignored by authoritative
     /// launches, which the composition pin judges.
+    ///
+    /// A knowing boot logs the diverged fields at WARN and, when the spec
+    /// declares a storage census ([`Self::resolved_storage`]), reports them
+    /// in a degraded `mob_composition` slot.
     pub candidate_definition: crate::mob_composition_manifest::CandidateDefinition,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
@@ -10795,9 +10799,34 @@ impl MobRuntime {
                             "non-empty mob storage has no canonical definition".to_string(),
                         ))
                     })?;
-                let diverged = crate::mob_composition_manifest::verify_candidate_resume(
+                let mut diverged = crate::mob_composition_manifest::diverged_definition_fields(
                     snapshot.definition(),
                     &spec.definition,
+                );
+                // The same released-representation allowance the
+                // authoritative arm makes: a store a 0.8.9-0.8.28 writer
+                // created (proven by its manifest) carries that release's
+                // auto-marked resume overrides, so an unchanged operator
+                // config is judged in that form.
+                if !diverged.is_empty()
+                    && let Some(path) = persistent_mob_path
+                {
+                    let mut legacy_definition = raw_definition.clone();
+                    legacy_auto_mark_declared_resume_overrides(&mut legacy_definition);
+                    if crate::mob_composition_manifest::verify_legacy_synthesized_definition_before_resume(
+                        path,
+                        snapshot.epoch(),
+                        snapshot.definition(),
+                        &spec.definition,
+                        &legacy_definition,
+                    )
+                    .is_ok()
+                    {
+                        diverged.clear();
+                    }
+                }
+                let diverged = crate::mob_composition_manifest::verify_candidate_resume(
+                    diverged,
                     spec.candidate_definition,
                 )
                 .map_err(MobRuntimeError::CompositionProvenance)?;
