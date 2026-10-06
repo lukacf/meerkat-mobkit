@@ -1001,6 +1001,24 @@ function normalizeIdentityInspectViewState(value) {
     ...normalizeFiniteNumber(record7.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record7.last_activity_ms) } : record7.last_activity_ms === null ? { last_activity_ms: null } : {}
   };
 }
+function normalizeGatingAuditEntry(value) {
+  const record7 = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const detail = record7.detail && typeof record7.detail === "object" && !Array.isArray(record7.detail) ? record7.detail : {};
+  const tier = record7.risk_tier;
+  return {
+    auditId: trimString(record7.audit_id),
+    pendingId: trimString(record7.pending_id),
+    actionId: trimString(record7.action_id),
+    eventType: trimString(record7.event_type),
+    actorId: trimString(record7.actor_id),
+    riskTier: tier === "r0" || tier === "r1" || tier === "r2" || tier === "r3" ? tier : "unknown",
+    recordedRiskTier: trimString(tier),
+    outcome: trimString(record7.outcome),
+    decision: trimString(detail.decision),
+    approverId: trimString(detail.approver_id),
+    automaticAllowance: record7.event_type === "evaluated" && (record7.outcome === "allowed" || record7.outcome === "allowed_with_audit")
+  };
+}
 function normalizeGatingActionResult(value) {
   const record7 = value && typeof value === "object" ? value : null;
   if (!record7) {
@@ -6692,6 +6710,7 @@ function useConversationScrollController(options) {
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
         lastScrollTop: null,
+        lastGesture: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false
@@ -6729,7 +6748,8 @@ function useConversationScrollController(options) {
       }
       session.expectedScrollTop = null;
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
-      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5;
+      const downwardSettle = session.lastGesture === "down" && previous3 !== null && previous3 - observed <= 1;
+      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !downwardSettle;
       session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
@@ -6739,12 +6759,18 @@ function useConversationScrollController(options) {
       publish();
     };
     const canLeaveLiveEdge = (delta) => sessionRef.current?.mode !== "following-end" || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
+    const noteGesture = (delta) => {
+      const session = sessionRef.current;
+      if (session && delta !== 0) session.lastGesture = delta < 0 ? "up" : "down";
+    };
     const onWheel = (event) => {
+      noteGesture(event.deltaY);
       if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || event.key === " " && event.shiftKey ? -1 : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
+      noteGesture(delta);
       if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
@@ -6753,6 +6779,7 @@ function useConversationScrollController(options) {
     };
     const onPointerDown = () => {
       const session = sessionRef.current;
+      if (session) session.lastGesture = null;
       if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         session.expectedScrollTop = viewport.scrollTop;
@@ -32300,12 +32327,6 @@ function TimelinePanel({ frames }) {
 // src/panels/GatingInboxPanel.tsx
 var import_react27 = __toESM(require("react"));
 var import_jsx_runtime41 = require("react/jsx-runtime");
-function getRisk(entry) {
-  const tier = String(entry.risk_tier || entry.risk || "").toLowerCase();
-  if (tier === "high" || tier === "crit" || tier === "critical") return "high";
-  if (tier === "medium" || tier === "med" || tier === "warn") return "medium";
-  return "low";
-}
 function formatWaited(entry) {
   const waited = entry.waited_ms || entry.waited || entry.age_ms;
   if (typeof waited !== "number") return "\u2014";
@@ -32359,11 +32380,9 @@ function GatingInboxPanel({
     selected?.scrollIntoView?.({ block: "nearest" });
     selected?.focus({ preventScroll: true });
   }, [selectedPendingId, selectedRequestAvailable, tab2]);
-  const autoApproved = audit.filter((e) => {
-    const r2 = e;
-    return String(r2.decision || "").toLowerCase() === "auto_approve" || String(r2.event_type || "").includes("auto");
-  });
-  const currentList = tab2 === "pending" ? pending : tab2 === "auto" ? autoApproved : audit;
+  const auditEntries = audit.map(normalizeGatingAuditEntry);
+  const automaticallyAllowed = auditEntries.filter((entry) => entry.automaticAllowance);
+  const currentList = tab2 === "pending" ? pending.map((raw) => ({ raw, record: normalizeGatingAuditEntry(raw) })) : (tab2 === "auto" ? automaticallyAllowed : auditEntries).map((record7) => ({ raw: void 0, record: record7 }));
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating", "data-testid": "gating-panel", children: [
     /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("h2", { children: "Approvals" }),
@@ -32371,8 +32390,8 @@ function GatingInboxPanel({
         "\xB7 ",
         pendingLabel,
         " pending \xB7 ",
-        autoApproved.length,
-        " auto-approved"
+        automaticallyAllowed.length,
+        " automatically allowed"
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__tabs", children: [
@@ -32396,7 +32415,7 @@ function GatingInboxPanel({
           "data-testid": "gating-tab:auto",
           children: [
             "Auto ",
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "n", children: autoApproved.length })
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "n", children: automaticallyAllowed.length })
           ]
         }
       ),
@@ -32428,19 +32447,21 @@ function GatingInboxPanel({
       resource.status === "ready" && pendingRequests?.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { children: "No pending approvals." }) : null,
       resource.requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { tabIndex: -1, "data-approval-id": request.pendingId, "data-selected": selectedId === request.pendingId, className: selectedId === request.pendingId ? "is-selected" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ApprovalCard, { request, resourceStatus: resource.status, decision: resource.decisions[request.pendingId], readOnly: readOnly || resource.readOnly, onDecide }) }, request.pendingId))
     ] }) : tab2 === "policies" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gating__empty", role: "status", children: "Policy details are not available in this console." }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+      tab2 !== "pending" && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "gating__audit-note", children: "Approval records do not confirm execution." }),
       currentList.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__empty", children: [
         "No ",
         tab2,
         " items."
       ] }),
-      currentList.map((entry, index2) => {
-        const r2 = entry;
-        const pid = String(r2.pending_id || r2.audit_id || `item-${index2}`);
-        const action = String(r2.action_id || r2.event_type || "unknown action");
-        const agent = String(r2.agent || r2.identity || r2.actor || "");
+      currentList.map(({ raw, record: record7 }, index2) => {
+        const r2 = raw && typeof raw === "object" ? raw : {};
+        const pid = (tab2 === "pending" ? record7.pendingId : record7.auditId) || `item-${index2}`;
+        const action = record7.actionId || record7.eventType || "Unknown action";
+        const agent = record7.actorId || (tab2 === "pending" ? String(r2.agent || r2.identity || r2.actor || "") : "");
         const waited = formatWaited(r2);
-        const risk = getRisk(r2);
-        const payload = payloadSummary(r2);
+        const risk = record7.riskTier;
+        const tierLabel = risk === "unknown" ? `Unknown${record7.recordedRiskTier ? ` (${record7.recordedRiskTier})` : ""}` : risk.toUpperCase();
+        const payload = tab2 === "pending" ? payloadSummary(r2) : "";
         const selected = selectedId === pid;
         const showActions = tab2 === "pending" && !readOnly;
         return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
@@ -32448,15 +32469,40 @@ function GatingInboxPanel({
           {
             className: `gitem ${selected ? "is-selected" : ""}`,
             "data-risk": risk,
-            "data-testid": `gating-pending:${pid}`,
+            "data-testid": `gating-${tab2 === "pending" ? "pending" : "audit"}:${pid}`,
             onClick: () => setSelectedId(pid),
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__risk" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__risk", "aria-hidden": "true" }),
               /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__id", children: pid.slice(0, 8) }),
               /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gitem__action", children: action }),
                 payload && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gitem__payload", children: payload }),
-                agent && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gitem__agent", children: agent })
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                  "Tier: ",
+                  tierLabel
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                  "Actor: ",
+                  agent || "Not recorded"
+                ] }),
+                tab2 !== "pending" && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                    "Event: ",
+                    record7.eventType || "Not recorded"
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                    "Decision: ",
+                    record7.decision || "Not recorded"
+                  ] }),
+                  record7.approverId && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                    "Approver: ",
+                    record7.approverId
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gitem__agent", children: [
+                    "Outcome: ",
+                    record7.outcome || "Not recorded"
+                  ] })
+                ] })
               ] }),
               showActions ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "gitem__actions", children: [
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
@@ -32495,7 +32541,7 @@ function GatingInboxPanel({
                   }
                 )
               ] }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__actions" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "gitem__waited", children: [
+              tab2 === "pending" && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "gitem__waited", children: [
                 "waited",
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("br", {}),
                 waited

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `MobCompositionProvenanceError` gains `CandidateDivergent { fields }`
+  (see Changed). Exhaustive matches must handle it. `MobBootstrapSpec` gains
+  the pub field `candidate_definition: CandidateDefinition`; code that builds
+  the spec with a struct literal must set it (`CandidateDefinition::default()`
+  keeps the refusing default).
 - `MobRuntimeError` gains `MobStopFlowRunsUnsettled(Box<MobStopFlowRunsUnsettled>)`
   (see Changed). Exhaustive matches must handle it.
 - `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
@@ -147,6 +152,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
   (actions/runner-images#14748). The move to 26 will be validated
   separately (meerkat#1767) instead of being inherited.
+- Candidate launches now refuse a config that differs from the stored mob
+  definition. A non-authoritative launch (`runtime_options.mob_composition =
+  {"authority": "candidate"}`) resumes on the mob definition stored in its
+  event log, because a resume cannot apply a new definition. It used to do
+  that without comparing it to the supplied config, so an edited config (for
+  example a profile's newly added `tools.deny`) silently stayed out of effect
+  while the boot looked healthy. Such a boot now refuses with
+  `MobCompositionProvenanceError::CandidateDivergent`, naming the diverged
+  fields as dotted paths (`profiles.lead.tools.deny`).
+  - To boot the stored definition knowingly, for example in a certification
+    pass that deliberately differs from the stored composition, set
+    `runtime_options.mob_composition.candidate_definition = "stored"`
+    (`MobBootstrapSpec::with_candidate_definition(CandidateDefinition::Stored)`).
+    The boot then runs the stored definition, logs the diverged fields at
+    WARN, and reports them in a degraded `mob_composition` storage-health
+    slot.
+  - `candidate_definition` is candidate-only: an authoritative launch that
+    sets `"stored"` is refused at parse time, since the composition pin
+    judges it.
+  - Candidates still never write or claim the composition pin. Authoritative
+    launches are unchanged.
+  - Upgrading: a candidate-then-promote pipeline whose candidate config
+    differs from the stored definition must add
+    `candidate_definition = "stored"` to the candidate launch, or run the
+    candidate on its own storage path.
+- `wait_for_output` and `wait_for_output_containing` no longer poll.
+  - **Rust:** the `IdentityRuntime` methods read the member once, then again
+    only when the identity table signals a change. A completion, a
+    registration and a lease change all signal it. Before, the methods
+    re-read every 500 ms. The caller's timeout is the only timer.
+  - **Python:** a bare `IdentityAgentHandle.wait_for_output()`, the
+    deprecated `baseline=` form and `wait_for_output_containing()` read the
+    member, then wait server-side (`mobkit/wait_for_completion`) for the next
+    completion past the cursor that read saw. Before, they called
+    `mobkit/inspect_identity` every 1.5 s. `poll_interval` now applies only
+    to gateways that predate the server-side wait.
+  - **Behavior change:** a bare `wait_for_output()` or
+    `wait_for_output_containing()` on a live alias with no completion cursor
+    now raises the typed `CompletionCursorUnavailableError` (exported from
+    `meerkat_mobkit`, carrying `identity`) at once. Before, it polled
+    `inspect_identity` until its timeout. **Migration:** a live alias has no
+    completion to wait for, so wait on its turn instead: send or dispatch
+    with `track_turn=True` and pass the ticket as `wait_for_output(turn=...)`
+    or `wait_for_turn(...)`. Identity-first handles are unaffected.
+    `baseline=` is not a migration path, because it now waits on completions
+    too. The cursor waits that already refused a live alias (`after=`,
+    `wait_for_completion`) now raise the same class.
+    `CompletionCursorUnavailableError` subclasses `RuntimeError`, which
+    those waits raised before.
+
 - Behaviour change (identity-first runtimes with a topology provider): with
   a topology provider, reconcile unwires identity edges that neither the
   provider nor the definition's wiring declares, including edges wired
@@ -441,6 +496,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Host-only `mobkit/member_activate_instruction` and
+  `mobkit/member_instruction_activations` (Python
+  `activate_member_instruction` / `member_instruction_activations`,
+  TypeScript `activateMemberInstruction` / `memberInstructionActivations`).
+  A host can change a member's standing instructions after its session was
+  minted. Resume authors nothing, so a restored member otherwise keeps its
+  creation-time prompt, for example after its skills changed.
+  - The verb appends one keyed, immutable instruction activation to the
+    member's current session through Meerkat's
+    `MobHandle::activate_member_instruction`. It is forward-only, survives
+    resume, and re-applying it is a typed `duplicate`.
+  - A call made mid-turn blocks until that turn finalizes, so it can wait
+    for a whole turn, and applies at the boundary. The SDK methods take an
+    optional per-call reply timeout (`transport_timeout` /
+    `transportTimeoutMs`) for members with long turns. Refusals stay typed per
+    Meerkat class in `data.class`, and nothing retries in the gateway:
+    - `admission` with `instruction_activation_code`; `session_busy`,
+      `live_channel_open` and `target_not_materialized` answer `-32015`;
+    - `session` with `session_error_code` and, for a refused request, the
+      typed `instruction_activation_error_code`, such as `digest_mismatch`
+      or `effective_activation_conflict`, answering `-32602`;
+    - `runtime`;
+    - `owner_task`.
+  - The read verb returns the member's durable activation records and, for
+    one exact key, its `key_state`.
+  - Neither verb is an agent tool. The audit actor is `host`.
 
 - The console renders recognized current operation refusals, confinement
   causes, pre-tool hook decisions/launch failures and outcome-audit failures as
@@ -787,6 +869,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: a downward wheel or End at the bottom of a transcript no longer
+  stops following the live edge. Such a gesture can leave the scroll position
+  a pixel above the computed end (scrollHeight and clientHeight are rounded,
+  the scroll range is not), and since the scroll-up fix (#597) that settle
+  read as the reader moving up, so a tool expanded afterwards no longer
+  followed. The console now remembers the direction of the reader's last
+  wheel or key gesture: an upward move of at most a pixel right after a
+  downward gesture is a settle, while a larger upward move, or a small one
+  after a click or scrollbar press, still leaves the live edge.
+
+- The gateway delivers Event-kind detached job deliveries again. These come
+  from `monitors/start` in event-steer or event-queue mode and from
+  `jobs/subscribe` with an `event` kind.
+  - **The bug:** the delivery path admitted event inputs on the machine its
+    session service built for itself, not on the machine that serves the
+    sessions. Admission failed ("Runtime not ready: destroyed"). Delivery
+    rows queue under the session that started the job, so that failed row
+    blocked every later delivery for jobs of the same origin session,
+    notifications included, retried without a warning every second.
+  - **The fix:** the delivery path now admits on the serving machine, which
+    the gateway passes explicitly. Both gateway compositions also bind
+    their persistent session service's runtime machine to it.
+  - **A blocked delivery queue is now visible.** It is logged once at WARN
+    with the origin session, the row and the reason, reported in the job
+    health projection under `detached_jobs.blocked_deliveries`, and it
+    degrades that projection's status.
+  - **Not affected:** host-level notification and record deliveries to
+    sessions without an event row ahead of them. `fork_off` and `council`
+    were not affected either.
+
+- The gateway's agent-memory recorder (`memory`) reaches members whenever
+  memory is enabled, not only when the host also supplies an
+  `AgentCustomizer`. With memory enabled and no host customizer, members
+  had `memory_search` but no recorder. There were two causes:
+  - A member materialized outside the roster bootstrap (lazily on first
+    dispatch, or repaired at delivery) ran no customizer, because the
+    gateway never installed its composed customizer (the host's and/or the
+    agent-memory one) as the identity runtime's own. It now does, as the
+    library builder already did.
+  - A member restored natively at start (persistent mob storage), whose
+    later customized resume attaches the restored occupant, only receives
+    customizer tools through the per-identity customizer tool registry.
+    The gateway created that registry only for a host customizer. It now
+    creates it whenever a customizer is composed.
+  - Custody, grants and taint are unchanged. A profile with memory
+    disabled still never carries the recorder.
+
+- The console's Approvals inbox shows the gating owner's recorded audit
+  outcomes as recorded (#594, shipped in 0.8.46).
+  - **Audit rows:** each shows its tier (`r0` to `r3`, or "Unknown" with the
+    recorded value), actor, event, decision, approver and outcome, with
+    "Not recorded" where the record has no value. The view states that an
+    approval record does not confirm execution.
+  - **The Auto tab and count** now cover exactly the `evaluated` events whose
+    outcome is `allowed` or `allowed_with_audit`. Before, the tab guessed
+    from loosely matched `decision` and `event_type` strings and invented
+    risk labels.
+  - The console core package (`packages/console-core`) exports
+    `normalizeGatingAuditEntry` and `GatingAuditEntryView`, a display
+    projection of one audit record (not execution state).
+  - The console guide documents the Approvals tabs and audit records
+    (#603).
+
+- The console RPC handler no longer reserves a 1.17 MB stack frame. At
+  opt-level 0 LLVM gives every local of every branch its own stack slot, so
+  the handler's poll frame reserved every method arm's future at once, while
+  only one arm runs. On the console send path that left under 0.5 MB of a
+  2 MiB worker stack for everything beneath it.
+  - Each awaiting arm is now its own boxed future, built in
+    `box_in_own_frame`'s frame.
+  - Measured on the `api-routine-tool-owner` console scenario (debug,
+    default worker stack):
+    - the handler frame drops from 1,168,696 to 30,336 bytes, and the send
+      arm adds a 9,872-byte frame of its own;
+    - the stack in use where the path reaches its deepest native frame
+      drops from 1,983,704 to 809,256 bytes;
+    - the handler's future drops from 52,248 to 6,256 bytes, and a test
+      fails it above 16 KiB.
+
+- `UnifiedRuntimeBuilder::build()` now returns a `Send` future, so a host
+  can `tokio::spawn(builder.build())` or drive it under a harness that
+  requires `Send`. Two causes, both present since at least 0.8.44:
+  - The builder kept its `PreSpawnHook` (`Send`, not `Sync`) as a plain
+    field while `build` held `&self` across awaits, which made the builder
+    `!Sync` (E0277). The hook now sits behind an uncontended mutex. The
+    public `PreSpawnHook` type is unchanged.
+  - The persisted-authority prewarm that `build` awaits mapped borrowed
+    session ids through an async closure, which the compiler cannot prove
+    `Send` for every lifetime ("implementation of `Send` is not general
+    enough"). It now maps to owned runtime ids first.
+  - A compile-time test pins both: the builder is `Send + Sync`, `build()`'s
+    future is `Send`, and a builder carrying a pre-spawn hook can be spawned.
+
+- The gateway now builds one runtime delivery inbox and shares it between
+  the shell job projector and the detached-job delivery runtime. Before,
+  each built its own `RuntimeDeliveryInbox` over the same runtime store. An
+  inbox's commit signal is per instance (clones share it), so a delivery
+  committed through one path never woke subscribers of the other. Both
+  instances still read the same rows, so backlog counts agreed and hid the
+  split. Waking on commits, rather than on the gateway's timer, depends on
+  this.
+
 - The published `meerkat-mobkit` crate package now includes the license texts
   its manifest declares (`LICENSE-MIT`, `LICENSE-APACHE`). Cargo packages only
   files under the crate directory, so earlier releases published the crate
@@ -804,6 +988,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   console did not write (wheel, scrollbar, touch, or a gesture chained out
   of a code block) now leaves the live edge at once; following resumes on
   the way down, within the live-edge band or at the end.
+- MobKit's session-service decorators forward
+  `SessionServiceHistoryExt::read_instruction_activation_records`. Without the
+  forward, the defaulted method answered `Unsupported` through MobKit.
+  `verify-session-service-decorators` now also checks the base
+  `SessionService` and `SessionServiceHistoryExt` traits, so a decorator
+  missing a defaulted base method fails the gate.
 - Python and TypeScript SDK callbacks retain their originating gateway process
   across reconnect. Late results, errors and deadline/cancellation responses
   cannot answer reused callback IDs on a replacement process, and retired

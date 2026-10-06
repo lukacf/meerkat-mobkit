@@ -245,7 +245,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32012` | `memory/index` backend persistence failed | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 | `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response (or, for an accepted init, the `failed` settlement) and exits. | none |
-| `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
+| `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry. Also `mobkit/member_activate_instruction` refused at its safe boundary (runtime work still queued at the turn boundary, open live channel, no materialized session, fenced-store backoff); retry at your own next boundary | `mobkit/member_activate_instruction`: `{class: "admission", instruction_activation_code}` |
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 | `-32017` | a covered unified/stdin read arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the wrapped arms (`identity/resolved_tools`, `identity/routing_status`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). The independent HTTP console dispatcher does not apply this wrapper. | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
 | `-32018` | stdio gateway: an ordinary request arrived before `mobkit/init` settled. It was refused at once, not queued. Startup provider callbacks must not issue ordinary RPCs on the runtime that is starting. `mobkit/shutdown` is still admitted. | `{kind: "init_in_progress", method}` |
@@ -1587,6 +1587,69 @@ audit note recorded on the rewrite reason).
 Result: `bounded`, `removed`, `kept`, `message_count`, `parent_revision`,
 `revision` (or `bounded: false` with `removed: 0` when the transcript is
 already within `keep_last`).
+
+### `mobkit/member_activate_instruction`
+
+Host-only: present on the gateway's JSON-RPC surface and the SDKs, never in an
+agent tool catalog. It changes a member's standing instructions after its
+session was minted (resume authors nothing, so a restored member otherwise keeps
+the prompt it was created with).
+
+Params: `identity` (resolved through the same identity-control gate as
+`mobkit/respawn` and `mobkit/compact_member`) and `activation`, Meerkat's
+`InstructionActivationRequest` verbatim: `revision` (`namespace`, `key`,
+`revision_id`, `content_sha256` = `sha256:<hex of body>`), `activation_id`,
+`expectation` (`{"kind": "absent"}` for the first activation of a key, then
+`{"kind": "effective", "activation_id": ...}`), optional `supersedes`, and
+`body`.
+
+The activation is appended forward to the member's CURRENT session through
+Meerkat's `MobHandle::activate_member_instruction`: it holds the session's
+turn-finalization boundary, applies the runtime admission, and adds one keyed
+transcript row that the member's next turn sees. History is never rewritten,
+and the activation survives resume.
+
+**A call made while the member is mid-turn blocks until that turn finalizes**,
+so it can wait for a whole turn. It then applies at that boundary, never inside
+the turn, or is refused as `session_busy` if more runtime work is already
+queued there. The gateway applies no read deadline to this verb. Give the
+client side a reply timeout that covers the member's longest turn (the SDKs'
+`transport_timeout` / `transportTimeoutMs`). If the client gives up first, the
+activation may still apply at the boundary: re-send the identical activation,
+which answers `applied`, `duplicate` or the typed refusal. The result is `{identity, receipt}`;
+`receipt.disposition` is `applied`, or `duplicate` when the exact activation is
+already effective.
+
+Errors keep Meerkat's classes distinct in `data.class`:
+
+- `admission`, with `data.instruction_activation_code`: `session_busy`,
+  `live_channel_open`, `target_not_materialized`, `external_write_fence_conflict`
+  and `external_write_fence_backoff` answer `-32015` (nothing was appended; retry
+  at your own next boundary); `unsupported_current_lowering` answers `-32602`;
+  `durability_unavailable` answers `-32603`.
+- `session`, with `data.session_error_code` (Meerkat's stable session error
+  code). When the session owner refused the request itself,
+  `data.instruction_activation_error_code` carries Meerkat's typed code and the
+  error is `-32602`: `invalid_request`, `digest_mismatch`,
+  `effective_activation_conflict` (a stale `expectation`; re-read `key_state`),
+  `activation_identity_conflict`, `immutable_revision_conflict`,
+  `recorded_but_not_effective`, or
+  `inherited_activation_requires_explicit_activation`.
+  `malformed_activation_history` answers `-32603`. A busy session answers
+  `-32015`; any other session error answers `-32603`.
+- `runtime` and `owner_task`: the runtime authority or the owning task failed.
+
+Nothing retries inside the gateway. An identity with no member session is
+refused as `admission` / `target_not_materialized`, with nothing appended.
+
+### `mobkit/member_instruction_activations`
+
+Host-only. Reads the durable instruction activation records of the member's
+current session. Params: `identity`, and optionally `namespace`, `key`,
+`offset` and `limit` (default 100). The result is `{identity, page}` with
+Meerkat's `InstructionActivationReadPage`; naming one exact `namespace` and
+`key` also returns its `key_state`, including the `next_expectation` for the
+next activation.
 
 ## Scheduling migration
 

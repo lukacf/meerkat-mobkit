@@ -92,6 +92,28 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
 '''
 
 
+HISTORY_EXT_TRAIT_SRC = '''
+pub trait SessionServiceHistoryExt: SessionService {
+    async fn read_history(&self, id: &SessionId) -> Result<SessionHistoryPage, SessionError>;
+    async fn read_instruction_activation_records(
+        &self,
+        _id: &SessionId,
+        _query: crate::InstructionActivationReadQuery,
+    ) -> Result<crate::InstructionActivationReadPage, SessionError> {
+        Err(SessionError::Unsupported("read_instruction_activation_records".to_string()))
+    }
+}
+'''
+
+HISTORY_EXT_IMPL_SRC = '''
+impl meerkat_core::SessionServiceHistoryExt for ForwardingService {
+    async fn read_history(&self, id: &SessionId) -> Result<SessionHistoryPage, SessionError> {
+        self.inner.read_history(id).await
+    }
+}
+'''
+
+
 class DecoratorConformanceGate(unittest.TestCase):
     def test_runtime_store_spec_is_checked_and_exemption_needs_a_reason(self) -> None:
         spec = next(s for s in gate.TRAIT_SPECS if s.name == "RuntimeStore")
@@ -122,8 +144,26 @@ class DecoratorConformanceGate(unittest.TestCase):
         self.assertEqual(gate.stale_exemptions(methods, spec.exempt), [])
 
     def test_every_spec_is_addressed_by_name(self) -> None:
-        self.assertEqual([s.name for s in gate.TRAIT_SPECS], ["MobSessionService", "RuntimeStore"])
-        self.assertEqual(gate.TRAIT_SPECS[0].exempt, {})
+        self.assertEqual(
+            [s.name for s in gate.TRAIT_SPECS],
+            ["MobSessionService", "SessionService", "SessionServiceHistoryExt", "RuntimeStore"],
+        )
+        for spec in gate.TRAIT_SPECS[:3]:
+            self.assertEqual(spec.exempt, {}, spec.name)
+
+    def test_base_trait_defaulted_method_is_checked(self) -> None:
+        # The 0.8.51 defect: the decorators implemented SessionServiceHistoryExt
+        # but not its defaulted `read_instruction_activation_records`, so the
+        # member's activation read answered `Unsupported` through MobKit.
+        spec = next(s for s in gate.TRAIT_SPECS if s.name == "SessionServiceHistoryExt")
+        methods = gate.trait_methods(HISTORY_EXT_TRAIT_SRC, spec.name)
+        self.assertEqual(set(methods), {"read_history", "read_instruction_activation_records"})
+        impls = gate.production_impls(HISTORY_EXT_IMPL_SRC, spec.name)
+        self.assertEqual([t for t, _ in impls], ["ForwardingService"])
+        self.assertEqual(
+            gate.missing_methods(methods, set(), impls[0][1], spec.exempt),
+            ["read_instruction_activation_records"],
+        )
 
     def test_trait_methods_and_feature_gates(self) -> None:
         methods = gate.trait_methods(TRAIT_SRC)

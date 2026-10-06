@@ -69,6 +69,23 @@ TRAIT_SPECS: tuple[TraitSpec, ...] = (
         source_relpath="src/runtime/session_service.rs",
         min_expected_methods=40,  # the trait has ~57 today
     ),
+    # The base session-service traits the decorators also implement. Their
+    # defaulted methods (`update_system_prompt`, `read_instruction_activation_records`,
+    # the transcript rewrite/restore verbs, ...) default to typed `Unsupported`,
+    # so an unforwarded one silently refuses through MobKit's erased service:
+    # `mobkit/member_instruction_activations` read nothing until 2026-10-05.
+    TraitSpec(
+        name="SessionService",
+        package="meerkat-core",
+        source_relpath="src/service/mod.rs",
+        min_expected_methods=15,
+    ),
+    TraitSpec(
+        name="SessionServiceHistoryExt",
+        package="meerkat-core",
+        source_relpath="src/service/mod.rs",
+        min_expected_methods=4,
+    ),
     TraitSpec(
         name="RuntimeStore",
         package="meerkat-runtime",

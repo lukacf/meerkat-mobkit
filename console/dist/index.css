@@ -9343,18 +9343,15 @@ svg[data-svg=fit],
   height: 8px;
   border-radius: 50%;
   justify-self: center;
+  background: var(--ink-muted);
 }
 [data-cc-variant=terminal] .gitem__risk {
   border-radius: 0;
 }
-.gitem[data-risk=low] .gitem__risk {
-  background: var(--ok);
-}
-.gitem[data-risk=medium] .gitem__risk {
-  background: var(--warn);
-}
-.gitem[data-risk=high] .gitem__risk {
-  background: var(--crit);
+.gating__audit-note {
+  padding: 12px 24px;
+  color: var(--ink-muted);
+  font-size: 12px;
 }
 .gitem__id {
   font-family: var(--mono);

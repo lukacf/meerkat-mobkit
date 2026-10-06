@@ -6,6 +6,7 @@ import {
   normalizeExperienceSectionMeta,
   normalizeGatingActionRequest,
   normalizeGatingActionResult,
+  normalizeGatingAuditEntry,
   normalizeIdentityInspectViewState,
   normalizeIdentitySessionRepair,
   normalizeIdentityStatusRow,
@@ -308,6 +309,52 @@ test("normalize inspect views and typed console errors", () => {
       message: "identity not addressable",
     },
   );
+});
+
+test("gating audit classifies only exact owner evaluation allowances", () => {
+  for (const outcome of ["allowed", "allowed_with_audit"]) {
+    assert.equal(normalizeGatingAuditEntry({ event_type: "evaluated", outcome }).automaticAllowance, true);
+  }
+  for (const value of [
+    { event_type: "automation_failed", outcome: "allowed" },
+    { event_type: "approval_decided", outcome: "allowed" },
+    { event_type: " evaluated ", outcome: "allowed" },
+    { event_type: "evaluated", outcome: " allowed " },
+    { event_type: "evaluated", outcome: "pending_approval" },
+    { decision: "auto_approve" },
+    null,
+    [],
+  ]) {
+    assert.equal(normalizeGatingAuditEntry(value).automaticAllowance, false);
+  }
+});
+
+test("gating audit preserves owner tiers and marks other values unknown", () => {
+  for (const risk_tier of ["r0", "r1", "r2", "r3"]) {
+    assert.equal(normalizeGatingAuditEntry({ risk_tier }).riskTier, risk_tier);
+  }
+  for (const risk_tier of ["low", "high", "r4", "R2", 2, undefined]) {
+    assert.equal(normalizeGatingAuditEntry({ risk_tier }).riskTier, "unknown");
+  }
+  assert.equal(normalizeGatingAuditEntry({ risk_tier: "r4" }).recordedRiskTier, "r4");
+});
+
+test("gating audit distinguishes actor from approver and reads the recorded detail decision", () => {
+  const record = normalizeGatingAuditEntry({
+    audit_id: "audit-1", pending_id: "pending-1", action_id: "action-1", actor_id: "requesting-agent",
+    event_type: "rejection_decided", risk_tier: "r3", outcome: "safe_draft",
+    decision: "approve", actor: "wrong-actor",
+    detail: { decision: "reject", approver_id: "human" },
+  });
+  assert.equal(record.auditId, "audit-1");
+  assert.equal(record.pendingId, "pending-1");
+  assert.equal(record.actorId, "requesting-agent");
+  assert.equal(record.approverId, "human");
+  assert.equal(record.decision, "reject");
+  assert.equal(record.outcome, "safe_draft");
+  assert.equal(normalizeGatingAuditEntry({ decision: "approve", detail: null }).decision, undefined);
+  assert.equal(normalizeGatingAuditEntry({ outcome: "future_outcome", detail: { decision: "future_decision" } }).decision, "future_decision");
+  assert.equal(normalizeGatingAuditEntry(null).riskTier, "unknown");
 });
 
 test("normalize gating and routing payloads for the shared control-plane contract", () => {
