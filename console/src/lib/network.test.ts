@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  callConsoleRpc,
   fetchJson,
   parseSseFrames,
   queryTimeline,
@@ -13,6 +14,7 @@ import {
 } from "./network";
 import { mapFramesToTimelineEntries } from "./adapters";
 import type { ConsoleFrame } from "../types";
+import { accessSaveFailure, accessSaveNotice } from "./errors";
 
 test("fetchJson defaults console requests to a 60 second timeout with an abort reason", async () => {
   const originalFetch = globalThis.fetch;
@@ -974,4 +976,46 @@ test("transport failures are typed and stay reconcilable", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("access RPC preserves structured owner evidence and requires exact code and kind", async () => {
+  const originalFetch = globalThis.fetch;
+  const cases = [
+    { error: { code: -32004, message: "private unavailable detail", data: { kind: "access_mutation_unavailable" } }, expected: "unavailable" },
+    { error: { code: -32000, message: "private unavailable detail", data: { kind: "access_mutation_unavailable" } }, expected: "failed" },
+    { error: { code: -32004, message: "private unavailable detail", data: { kind: "unknown_owner_error" } }, expected: "failed" },
+    { error: { code: -32004, message: "access_mutation_unavailable" }, expected: "failed" },
+    { error: { code: -32004, message: "private unavailable detail", data: null }, expected: "failed" },
+    { error: { code: -32602, message: "private validation detail", data: { kind: "invalid_access_config" } }, expected: "invalid" },
+    { error: { code: -32602, message: "invalid access config: missing field `config`" }, expected: "unavailable" },
+    { error: { code: -32004, message: "private validation detail", data: { kind: "invalid_access_config" } }, expected: "failed" },
+  ];
+  try {
+    for (const row of cases) {
+      globalThis.fetch = (async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "access-test", error: row.error }), { status: 200 })) as typeof fetch;
+      await assert.rejects(callConsoleRpc("http://console.test", "mobkit/access/set", { checked_v1: {} }), (error: unknown) => {
+        assert.deepEqual((error as { rpcError?: unknown }).rpcError, row.error, "the transport must retain the owner's structured evidence");
+        assert.equal(accessSaveFailure(error).kind, row.expected, "neither a coincidental code nor message text establishes the outcome");
+        assert.doesNotMatch(accessSaveNotice(accessSaveFailure(error)), /private|missing field/);
+        return true;
+      });
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("ordinary console interaction code -32004 retains its existing send disposition", async () => {
+  const originalFetch = globalThis.fetch;
+  const body = { code: -32004, message: "ordinary interaction unavailable" };
+  globalThis.fetch = (async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "send-test", error: body }), { status: 200 })) as typeof fetch;
+  try {
+    await assert.rejects(sendConsole("http://console.test", "worker", "hello", "console:p", "idem-unavailable"), (error: unknown) => {
+      assert.deepEqual((error as { rpcError?: unknown }).rpcError, body);
+      assert.equal((error as Error).message, "mobkit/console/send RPC error -32004: ordinary interaction unavailable");
+      const failure = classifyConsoleSendFailure(error);
+      assert.equal(failure.state, "outcome-unknown");
+      assert.equal(failure.kind, "refused");
+      assert.equal(accessSaveFailure(error).kind, "failed");
+      return true;
+    });
+  } finally { globalThis.fetch = originalFetch; }
 });

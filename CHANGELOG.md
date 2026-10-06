@@ -529,6 +529,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   controller that could not draw an instance identity advertises no checked
   capability and refuses checked writes with `-32004`
   `access_mutation_unavailable`; unchecked writes stay available.
+- Console Access saves are checked. Each edit keeps the owner instance,
+  revision and configuration from when it began. A conflict, owner change or
+  unavailable checked save keeps the draft with a fixed notice and requires
+  **Review and reapply** before another explicit save; an invalid
+  configuration keeps the draft editable for correction. Refreshing never
+  rebases or resends a draft, and edits stay disabled while owner state is
+  loading or stale, or when the owner does not advertise `checked_v1`. A
+  preview survives an unchanged refresh and is discarded when the owner,
+  revision or configuration changes. The real-browser scenario
+  `real-checked-save-recovery` drives this flow against the acceptance
+  fixture's real access owner.
 - A typed `mobkit/init` code for mob composition provenance refusals: `-32019`
   (`COMPOSITION_PROVENANCE_CODE`), with Python and TypeScript
   `CompositionProvenanceError` (#613).

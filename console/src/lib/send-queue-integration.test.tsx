@@ -2,8 +2,8 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleApp } from "../ConsoleApp";
-import type { MobKitConsoleTransport } from "./headless";
-import type { ConsoleFrame } from "../types";
+import { createHttpConsoleTransport, type MobKitConsoleTransport } from "./headless";
+import type { ConsoleAccessConfig, ConsoleFrame } from "../types";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
@@ -1372,8 +1372,8 @@ describe("access async scope isolation", () => {
     fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get", "mobkit/access/preview", "mobkit/access/enable"] }) as never;
     fake.executeCommand = vi.fn(async input => {
       let result: unknown;
-      if (input.command === "accessStatus") result = { available: true, enabled: true, can_administer: true, subject, revision: 1, actions: ["agent.view"] };
-      else if (input.command === "getAccessConfig") result = { config: { enabled: true, admins: [subject], rules: [], groups: {} }, revision: 1 };
+      if (input.command === "accessStatus") result = { available: true, enabled: true, can_administer: true, subject, revision: 1, owner_instance: "scope-owner", conditional_mutations: "checked_v1", actions: ["agent.view"] };
+      else if (input.command === "getAccessConfig") result = { config: { enabled: true, admins: [subject], rules: [], groups: {} }, revision: 1, owner_instance: "scope-owner", conditional_mutations: "checked_v1" };
       else if (input.command === "previewAccess" || input.command === "enableAccess") {
         started();
         return new Promise((resolve, reject) => { finish = () => operation === "preview" ? reject(new Error("OLD_SCOPE_PRIVATE_ERROR")) : resolve({ command: input.command, accepted: true, result: {} } as never); });
@@ -1397,5 +1397,416 @@ describe("access async scope isolation", () => {
     expect(screen.queryByTestId("access-error")).toBeNull();
     expect(document.body).not.toHaveTextContent("OLD_SCOPE_PRIVATE_ERROR");
     expect(screen.getByTestId("access-toggle-enabled")).toBeEnabled();
+  });
+});
+
+// These are actual ConsoleApp/HTTP-adapter tests with mocked RPC responses.
+// They do not substitute for the real AccessController mutex/TOML tests.
+describe("checked access saves", () => {
+  const originalConfig: ConsoleAccessConfig = {
+    enabled: true, admins: ["root@example.test", "alice@example.test"], rules: [], groups: {},
+  };
+  const editedAdmins = ["root@example.test", "alice@example.test", "carol@example.test"];
+  const draftText = editedAdmins.join(", ");
+  const newerRule = { id: "b-newer-rule", effect: "allow" as const, subjects: ["reader@example.test"], actions: ["agent.view"], agents: ["worker"] };
+  const mutationMethods = new Set([
+    "mobkit/access/set", "mobkit/access/enable", "mobkit/access/rules/upsert",
+    "mobkit/access/rules/delete", "mobkit/access/groups/set", "mobkit/access/groups/delete",
+  ]);
+
+  async function fixture(capability: string | undefined) {
+    const fake = transport(vi.fn());
+    const experience = await fake.loadExperience();
+    const state = {
+      capability, ownerInstance: "opaque-owner:one", revision: 10,
+      config: { ...originalConfig }, legacy: false, applied: 0,
+    };
+    const writes: Array<{ url: string; method: string; params: Record<string, unknown> }> = [];
+    const reads: string[] = [];
+    fake.loadExperience = async () => ({ ...experience, access: { available: true, enabled: true, can_administer: true, subject: "root@example.test" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get", ...mutationMethods] }) as never;
+    fake.executeCommand = createHttpConsoleTransport({ baseUrl: "http://console.test" }).executeCommand;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const metadata = {
+        revision: state.revision,
+        ...(!state.legacy ? { owner_instance: state.ownerInstance, conditional_mutations: state.capability } : {}),
+      };
+      if (body.method === "mobkit/access/status") {
+        reads.push(body.method);
+        return reply({ result: { available: true, enabled: state.config.enabled, can_administer: true, subject: "root@example.test", actions: ["agent.view"], ...metadata } });
+      }
+      if (body.method === "mobkit/access/get") {
+        reads.push(body.method);
+        return reply({ result: { config: state.config, ...metadata } });
+      }
+      if (mutationMethods.has(body.method)) {
+        writes.push({ url: String(url), method: body.method, params: body.params });
+        // A legacy handler accepts its required top-level payload. This makes
+        // an unsafe fallback observable rather than making every write fail.
+        if (state.legacy && body.method === "mobkit/access/set" && body.params.config) {
+          state.config = body.params.config as ConsoleAccessConfig;
+          state.applied += 1; state.revision += 1;
+          return reply({ result: { config: state.config, revision: state.revision } });
+        }
+        const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; config?: ConsoleAccessConfig } | undefined;
+        if (state.legacy || body.method !== "mobkit/access/set" || !checked?.config || Object.keys(body.params).length !== 1) {
+          return reply({ error: { code: -32602, message: "PRIVATE_CHECKED_PAYLOAD_ERROR" } });
+        }
+        if (checked.owner_instance !== state.ownerInstance) {
+          return reply({ error: { code: -32009, message: "PRIVATE_OWNER_MESSAGE", data: { kind: "access_owner_changed" } } });
+        }
+        if (checked.expected_revision !== state.revision) {
+          return reply({ error: { code: -32009, message: "PRIVATE_CONFLICT_MESSAGE", data: { kind: "access_revision_conflict", expected_revision: checked.expected_revision, actual_revision: state.revision } } });
+        }
+        state.config = checked.config;
+        state.applied += 1; state.revision += 1;
+        return reply({ result: { config: state.config, ...metadata, revision: state.revision } });
+      }
+      throw new Error(`unexpected mock HTTP method ${body.method}`);
+    }));
+    return { fake, state, writes, reads };
+  }
+
+  // Restore a saved layout with Access already open, so no nav click can race
+  // the dock layout hydration.
+  async function openAccess(fake: MobKitConsoleTransport) {
+    window.localStorage.setItem("mobkit-console-dock-state:queue-test", JSON.stringify({
+      tabs: [{ id: "tab-1", presetId: "single", layout: { kind: "panel", panelId: "panel-1" } }],
+      panels: [{ id: "panel-1", mode: "console", target: { id: "access", kind: "access", title: "Access" } }],
+      activeTabId: "tab-1", focusedPanelId: "panel-1",
+    }));
+    const view = render(<ConsoleApp baseUrl="" transport={fake} />);
+    await screen.findByText("alice@example.test", { exact: true });
+    return view;
+  }
+
+  function unavailableWrite(testId: string) {
+    const button = screen.queryByTestId(testId);
+    if (button) {
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+  }
+
+  it("keeps the original edit token through refresh and requires explicit conflict review before reapply", async () => {
+    const { fake, state, writes, reads } = await fixture("checked_v1");
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+
+    state.revision = 11;
+    state.config = { ...originalConfig, rules: [newerRule] };
+    const beforeRefresh = reads.length;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(beforeRefresh));
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    expect(await screen.findByTestId("access-rule:b-newer-rule")).toBeVisible();
+    fireEvent.click(screen.getByTestId("access-tab:overview"));
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(writes).toHaveLength(0);
+
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Access configuration changed. Review the latest settings before saving again.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CONFLICT_MESSAGE");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CHECKED_PAYLOAD_ERROR");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(state.config).toEqual({ ...originalConfig, rules: [newerRule] });
+    expect(state.revision).toBe(11);
+    expect(state.applied).toBe(0);
+    expect(screen.getByTestId("access-save-admins")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("access-save-admins"));
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(screen.getByTestId("access-save-admins")).toBeDisabled();
+    expect(writes).toHaveLength(1);
+
+    // Review binds the displayed current base without submitting a write.
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review and reapply", exact: true })); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(writes).toHaveLength(1);
+    expect(screen.getByTestId("access-save-admins")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(screen.queryByTestId("access-admins-input")).toBeNull());
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 11, config: { ...originalConfig, rules: [newerRule], admins: editedAdmins } } },
+    });
+    expect(state.config).toEqual({ ...originalConfig, rules: [newerRule], admins: editedAdmins });
+    expect(state.revision).toBe(12);
+    expect(state.applied).toBe(1);
+    expect(screen.getByText("carol@example.test", { exact: true })).toBeVisible();
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    expect(screen.getByTestId("access-rule:b-newer-rule")).toBeVisible();
+  });
+
+  it("keeps authorized reads usable but sends no mutation without a recognized checked capability", async () => {
+    for (const capability of [undefined, "checked_v2"]) {
+      const { fake, state, writes, reads } = await fixture(capability);
+      const view = await openAccess(fake);
+      expect(reads).toContain("mobkit/access/status");
+      expect(reads).toContain("mobkit/access/get");
+      expect(screen.getByText("alice@example.test", { exact: true })).toBeVisible();
+      unavailableWrite("access-toggle-enabled");
+      unavailableWrite("access-edit-admins");
+      fireEvent.click(screen.getByTestId("access-tab:rules"));
+      unavailableWrite("access-rule-new");
+      fireEvent.click(screen.getByTestId("access-tab:groups"));
+      unavailableWrite("access-group-save");
+      await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+      expect(writes).toHaveLength(0);
+      expect(state.applied).toBe(0);
+      expect(state.revision).toBe(10);
+      view.unmount();
+    }
+  });
+
+  it("retains the draft when a cached capability meets an old backend and never falls back to a legacy write", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    state.legacy = true;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. Checked access saves are unavailable; your draft is retained.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CHECKED_PAYLOAD_ERROR");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    expect(screen.queryByRole("button", { name: "Review and reapply", exact: true })).toBeNull();
+    expect(writes).toHaveLength(1);
+    expect(state.applied).toBe(0);
+    expect(state.revision).toBe(10);
+    expect(state.config).toEqual(originalConfig);
+  });
+
+  it("routes all six access writes through the complete checked envelope", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    // Reuse the same real HTTP adapter and protected-read fixture for every
+    // control. The mock checks only wire shape/sequence, not owner atomicity.
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (!mutationMethods.has(body.method) || body.method === "mobkit/access/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as Record<string, unknown> | undefined;
+      if (Object.keys(body.params).length !== 1 || !checked
+          || checked.owner_instance !== state.ownerInstance || checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32602, message: "PRIVATE_ROUTING_PAYLOAD_ERROR" } });
+      }
+      switch (body.method) {
+        case "mobkit/access/enable": state.config = { ...state.config, enabled: checked.enabled as boolean }; break;
+        case "mobkit/access/rules/upsert": state.config = { ...state.config, rules: [...(state.config.rules ?? []), checked.rule as NonNullable<ConsoleAccessConfig["rules"]>[number]] }; break;
+        case "mobkit/access/rules/delete": state.config = { ...state.config, rules: state.config.rules?.filter(rule => rule.id !== checked.id) }; break;
+        case "mobkit/access/groups/set": state.config = { ...state.config, groups: { ...state.config.groups, [checked.name as string]: checked.group as { members: string[] } } }; break;
+        case "mobkit/access/groups/delete": {
+          const groups = { ...state.config.groups };
+          delete groups[checked.name as string];
+          state.config = { ...state.config, groups };
+          break;
+        }
+        default: throw new Error(`unhandled routing control ${body.method}`);
+      }
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { config: state.config, revision: state.revision, owner_instance: state.ownerInstance, conditional_mutations: "checked_v1" } });
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await openAccess(fake);
+
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(screen.queryByTestId("access-admins-input")).toBeNull());
+    await act(async () => { fireEvent.click(screen.getByTestId("access-toggle-enabled")); });
+    await screen.findByRole("button", { name: "Enable enforcement", exact: true });
+
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    fireEvent.click(screen.getByTestId("access-rule-new"));
+    fireEvent.change(screen.getByTestId("access-rule-id"), { target: { value: "checked-rule" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    await screen.findByTestId("access-rule-delete:checked-rule");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-delete:checked-rule")); });
+    await waitFor(() => expect(screen.queryByTestId("access-rule:checked-rule")).toBeNull());
+    await screen.findByTestId("access-rule-new");
+
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.change(screen.getByTestId("access-group-name"), { target: { value: "checked-group" } });
+    fireEvent.change(screen.getByTestId("access-group-members"), { target: { value: "alice@example.test" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await screen.findByTestId("access-group-delete:checked-group");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-delete:checked-group")); });
+    await waitFor(() => expect(screen.queryByTestId("access-group:checked-group")).toBeNull());
+    expect(screen.queryByTestId("access-error")).toBeNull();
+
+    const payloads = [
+      ["mobkit/access/set", { config: { ...originalConfig, admins: editedAdmins } }],
+      ["mobkit/access/enable", { enabled: false }],
+      ["mobkit/access/rules/upsert", { rule: { id: "checked-rule", effect: "allow", actions: ["agent.view"] } }],
+      ["mobkit/access/rules/delete", { id: "checked-rule" }],
+      ["mobkit/access/groups/set", { name: "checked-group", group: { members: ["alice@example.test"] } }],
+      ["mobkit/access/groups/delete", { name: "checked-group" }],
+    ] as const;
+    expect(writes).toEqual(payloads.map(([method, payload], index) => ({
+      url: "http://console.test/console/rpc", method,
+      params: { checked_v1: { ...payload, owner_instance: "opaque-owner:one", expected_revision: 10 + index } },
+    })));
+    expect(state.applied).toBe(6);
+    expect(state.revision).toBe(16);
+    expect(state.config).toEqual({ ...originalConfig, enabled: false, admins: editedAdmins });
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("reapplies only the intended group members onto the reviewed description", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const initialGroup = { description: "Original group description", members: ["alice@example.test"] };
+    const newerGroup = { ...initialGroup, description: "Another admin's updated description" };
+    const editedMembers = ["carol@example.test"];
+    state.config = { ...originalConfig, groups: { ops: initialGroup } };
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/groups/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; name?: string; group?: { description?: string; members: string[] } } | undefined;
+      if (Object.keys(body.params).length !== 1 || !checked?.group || checked.name !== "ops" || checked.owner_instance !== state.ownerInstance) {
+        return reply({ error: { code: -32602, message: "PRIVATE_GROUP_PAYLOAD_ERROR" } });
+      }
+      if (checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32009, message: "PRIVATE_GROUP_CONFLICT", data: { kind: "access_revision_conflict", expected_revision: checked.expected_revision, actual_revision: state.revision } } });
+      }
+      // Like the real owner, a group save replaces the complete group.
+      state.config = { ...state.config, groups: { ...state.config.groups, ops: checked.group } };
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { revision: state.revision } });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByTestId("access-group-edit:ops"));
+    fireEvent.change(screen.getByTestId("access-group-members"), { target: { value: editedMembers.join(", ") } });
+    state.config = { ...state.config, groups: { ops: newerGroup } };
+    state.revision = 11;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/groups/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, name: "ops", group: { ...initialGroup, members: editedMembers } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Access configuration changed. Review the latest settings before saving again.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_GROUP_CONFLICT");
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    expect(screen.getByTestId("access-group-save")).toBeDisabled();
+    expect(state.config.groups?.ops).toEqual(newerGroup);
+    expect(state.applied).toBe(0);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review and reapply", exact: true })); });
+    expect(writes).toHaveLength(1);
+    expect(screen.getByTestId("access-group-save")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await screen.findByTestId("access-group:ops");
+    expect(writes).toEqual([
+      writes[0],
+      { url: "http://console.test/console/rpc", method: "mobkit/access/groups/set",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 11, name: "ops", group: { ...newerGroup, members: editedMembers } } } },
+    ]);
+    expect(screen.getByText(newerGroup.description, { exact: true })).toBeVisible();
+    expect(state.config.groups?.ops).toEqual({ ...newerGroup, members: editedMembers });
+    expect(state.revision).toBe(12);
+    expect(state.applied).toBe(1);
+  });
+
+  it("retains a typed unavailable draft and blocks repeated Save even when checked reads remain available", async () => {
+    const { fake, state, writes, reads } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: {
+        code: -32004, message: "PRIVATE_UNAVAILABLE_MESSAGE", data: { kind: "access_mutation_unavailable" },
+      } }), { status: 200 });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. Checked access saves are unavailable; your draft is retained.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_UNAVAILABLE_MESSAGE");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    const beforeRefresh = reads.length;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(beforeRefresh));
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    expect(writes).toEqual([{ url: "http://console.test/console/rpc", method: "mobkit/access/set", params: {
+      checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } },
+    } }]);
+    expect(state.capability).toBe("checked_v1");
+    expect(state.revision).toBe(10);
+    expect(state.applied).toBe(0);
+    expect(state.config).toEqual(originalConfig);
+  });
+
+  it("keeps an owner-rejected invalid rule draft editable on its own token, then saves the correction", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/rules/upsert") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; rule?: { groups?: string[] } } | undefined;
+      if (Object.keys(body.params).length !== 1 || checked?.owner_instance !== state.ownerInstance || checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32602, message: "PRIVATE_RULE_PAYLOAD_ERROR" } });
+      }
+      // Like the real owner: the rule names a group the configuration lacks.
+      if (checked.rule?.groups?.length) {
+        return reply({ error: { code: -32602, message: "Invalid access configuration.", data: { kind: "invalid_access_config" } } });
+      }
+      state.config = { ...state.config, rules: [...(state.config.rules ?? []), checked.rule as NonNullable<ConsoleAccessConfig["rules"]>[number]] };
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { revision: state.revision } });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    fireEvent.click(screen.getByTestId("access-rule-new"));
+    fireEvent.change(screen.getByTestId("access-rule-id"), { target: { value: "ops-rule" } });
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "missing-group" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. The resulting access configuration is not valid; your draft is retained for correction.");
+    expect(screen.queryByRole("button", { name: "Review and reapply", exact: true })).toBeNull();
+    expect(screen.getByTestId("access-rule-groups")).toHaveValue("missing-group");
+    expect(state.applied).toBe(0);
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "" } });
+    expect(screen.getByTestId("access-rule-save")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    await screen.findByTestId("access-rule:ops-rule");
+    expect(writes).toEqual([
+      { url: "http://console.test/console/rpc", method: "mobkit/access/rules/upsert",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, rule: { id: "ops-rule", effect: "allow", actions: ["agent.view"], groups: ["missing-group"] } } } },
+      { url: "http://console.test/console/rpc", method: "mobkit/access/rules/upsert",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, rule: { id: "ops-rule", effect: "allow", actions: ["agent.view"] } } } },
+    ]);
+    expect(state.applied).toBe(1);
+    expect(state.revision).toBe(11);
+    expect(screen.queryByTestId("access-error")).toBeNull();
+    expect(document.body).not.toHaveTextContent("PRIVATE_RULE_PAYLOAD_ERROR");
   });
 });

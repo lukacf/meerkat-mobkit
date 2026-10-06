@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { subscribeTimelineEvents as sharedSubscribe, sendConsole as sharedSend, sendConsoleMultipart as sharedMultipart } from "./network";
-import { subscribeTimelineEvents as stockSubscribe, sendConsole as stockSend, sendConsoleMultipart as stockMultipart } from "../../../console/src/lib/network";
+import { callConsoleRpc as sharedRpc, subscribeTimelineEvents as sharedSubscribe, sendConsole as sharedSend, sendConsoleMultipart as sharedMultipart } from "./network";
+import { callConsoleRpc as stockRpc, subscribeTimelineEvents as stockSubscribe, sendConsole as stockSend, sendConsoleMultipart as stockMultipart } from "../../../console/src/lib/network";
 import type { ConsoleTransportState } from "./timeline-subscription";
 import type { ConsoleFrame } from "./runtime-types";
 
@@ -274,5 +274,27 @@ for (const [name, subscribe] of [["shared", sharedSubscribe], ["stock", stockSub
       assert.equal(frames[0]?.event, "replay_unavailable");
       assert.equal(stop.cursor(), "console:4");
     } finally { stop(); globalThis.fetch = original; }
+  });
+}
+
+for (const [name, rpc] of [["shared", sharedRpc], ["stock", stockRpc]] as const) {
+  test(`${name}: typed JSON-RPC errors keep the owner's structured data for checked access saves`, async () => {
+    const original = globalThis.fetch;
+    const errors = [
+      { code: -32004, message: "Access changes are temporarily unavailable.", data: { kind: "access_mutation_unavailable" } },
+      { code: -32602, message: "Invalid access configuration.", data: { kind: "invalid_access_config" } },
+      { code: -32602, message: "invalid access config: missing field" },
+    ];
+    try {
+      for (const error of errors) {
+        globalThis.fetch = (async (_url, init) => Response.json({
+          jsonrpc: "2.0", id: JSON.parse(String(init?.body)).id, error,
+        })) as typeof fetch;
+        await assert.rejects(rpc("", "mobkit/access/set", { checked_v1: {} }), (thrown: unknown) => {
+          assert.deepEqual((thrown as { rpcError?: unknown }).rpcError, error);
+          return true;
+        });
+      }
+    } finally { globalThis.fetch = original; }
   });
 }
