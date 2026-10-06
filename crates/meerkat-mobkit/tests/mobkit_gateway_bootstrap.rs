@@ -957,6 +957,8 @@ fn rpc_init_in(
     let mut child = Command::new(bin)
         .arg("--persistent")
         .current_dir(workspace)
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
         .env("XDG_STATE_HOME", workspace.join("xdg-state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1020,6 +1022,93 @@ fn rpc_gateway_refuses_a_taken_fixed_port_at_init_without_bootstrapping() {
         state.display()
     );
     drop(holder);
+}
+
+/// `RPC_MOB_CONFIG` with the default profile's model pin moved: a composition
+/// change an operator could make between restarts.
+const RPC_MOB_CONFIG_REPINNED: &str =
+    "[mob]\nid = \"http-exposure-test\"\n\n[profiles.default]\nmodel = \"gpt-5.4\"\n";
+
+/// The data of a composition provenance refusal, after asserting the reply is
+/// that refusal on the request id: code `-32019`, not the generic `-32603`.
+fn composition_refusal(response: &Value) -> &Value {
+    assert!(
+        response.get("result").is_none(),
+        "a refused composition must not produce a runtime: {response}"
+    );
+    assert_eq!(response["id"], json!(1), "{response}");
+    assert_eq!(
+        response["error"]["code"],
+        json!(meerkat_mobkit::COMPOSITION_PROVENANCE_CODE),
+        "{response}"
+    );
+    assert_eq!(meerkat_mobkit::COMPOSITION_PROVENANCE_CODE, -32019);
+    &response["error"]["data"]
+}
+
+/// `rpc_gateway`: a composition provenance refusal at init is its own typed
+/// code with the refusal as data, so an SDK can show the diverged fields
+/// without parsing the message. A persistent state is created, then booted
+/// with a moved model pin: authoritatively (refused as `divergent`) and as a
+/// candidate (refused as `candidate_divergent`).
+#[test]
+fn rpc_gateway_refuses_a_diverged_composition_with_a_typed_code_and_its_fields() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let state = workspace.path().join("state");
+    let top_level = json!({ "persistent_state": state.to_string_lossy() });
+
+    let created = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG,
+        top_level.clone(),
+        json!({}),
+        Duration::from_secs(90),
+    );
+    assert!(
+        created.get("result").is_some(),
+        "the first boot creates: {created}"
+    );
+
+    let authoritative = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG_REPINNED,
+        top_level.clone(),
+        json!({}),
+        Duration::from_secs(45),
+    );
+    let data = composition_refusal(&authoritative);
+    assert_eq!(data["kind"], json!("divergent"), "{authoritative}");
+    let fields = data["fields"].as_array().expect("fields is a list");
+    assert!(
+        fields.iter().any(|field| field
+            .as_str()
+            .is_some_and(|f| f.starts_with("profiles.default"))),
+        "the diverged field paths: {authoritative}"
+    );
+    assert!(data["manifest"].is_string(), "{authoritative}");
+    assert!(
+        authoritative["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("Runtime bootstrap failed: ")),
+        "the message is unchanged: {authoritative}"
+    );
+
+    let candidate = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG_REPINNED,
+        top_level,
+        json!({ "mob_composition": { "authority": "candidate" } }),
+        Duration::from_secs(45),
+    );
+    let data = composition_refusal(&candidate);
+    assert_eq!(data["kind"], json!("candidate_divergent"), "{candidate}");
+    let fields = data["fields"].as_array().expect("fields is a list");
+    assert!(
+        fields.iter().any(|field| field
+            .as_str()
+            .is_some_and(|f| f.starts_with("profiles.default"))),
+        "the diverged field paths: {candidate}"
+    );
 }
 
 /// `rpc_gateway`: the four exposure/config options live inside

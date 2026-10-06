@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  COMPOSITION_PROVENANCE_CODE,
+  CompositionProvenanceError,
   INIT_IN_PROGRESS_CODE,
   InitInProgressError,
   InitOutcomeUnknownError,
@@ -24,6 +26,7 @@ import {
   MobKitRuntime,
   RpcError,
   StorageResolutionError,
+  isRpcError,
 } from "../dist/index.js";
 
 // Shared prelude: read the init request, record it, expose answer helpers.
@@ -149,6 +152,47 @@ describe("mobkit/init accepted then settled", () => {
       });
     });
   }
+
+  it("throws CompositionProvenanceError with its kind and fields for a failed settlement", async () => {
+    const { bin } = gateway(`
+      accepted();
+      progress("storage");
+      settled({ outcome: "failed", code: -32019,
+        message: "Runtime bootstrap failed: the candidate definition differs",
+        durable_effects: "none",
+        data: { kind: "candidate_divergent", fields: ["profiles.lead.tools.deny"] } });
+      await sleep(20);
+      process.exit(1);
+    `);
+    const rt = runtime(bin);
+    await assert.rejects(rt.connect(), (error: any) => {
+      assert.ok(error instanceof CompositionProvenanceError);
+      assert.equal(error.code, COMPOSITION_PROVENANCE_CODE);
+      assert.equal(error.kind, "candidate_divergent");
+      assert.deepEqual(error.fields, ["profiles.lead.tools.deny"]);
+      assert.equal(error.data.durable_effects, "none");
+      return true;
+    });
+  });
+
+  it("throws CompositionProvenanceError for a refusal answered as the init's error response", async () => {
+    const { bin } = gateway(`
+      emit({ jsonrpc: "2.0", id: init.id, error: { code: -32019,
+        message: "Runtime bootstrap failed: the composition diverged",
+        data: { kind: "divergent", fields: ["profiles.default.model"],
+                manifest: "/state/mob.sqlite3.composition.json" } } });
+      await sleep(20);
+      process.exit(1);
+    `);
+    const rt = runtime(bin);
+    await assert.rejects(rt.connect(), (error: any) => {
+      assert.ok(error instanceof CompositionProvenanceError);
+      assert.equal(error.kind, "divergent");
+      assert.deepEqual(error.fields, ["profiles.default.model"]);
+      assert.equal(error.data.manifest, "/state/mob.sqlite3.composition.json");
+      return true;
+    });
+  });
 
   it("reports a lost acceptance as outcome unknown", async () => {
     const { bin, record } = gateway(`await new Promise(() => {});`);
@@ -305,5 +349,26 @@ describe("init in progress refusal", () => {
     } finally {
       await rt.shutdown();
     }
+  });
+});
+
+describe("CompositionProvenanceError", () => {
+  it("is a typed RpcError with the pinned code that passes the structural check", () => {
+    const err = new CompositionProvenanceError("refused", "init:1", "mobkit/init", {
+      kind: "divergent",
+      fields: ["profiles.default.model", 7, "profiles.worker"],
+    });
+    assert.ok(err instanceof RpcError);
+    assert.equal(err.name, "CompositionProvenanceError");
+    assert.equal(COMPOSITION_PROVENANCE_CODE, -32019);
+    assert.equal(err.code, COMPOSITION_PROVENANCE_CODE);
+    assert.deepEqual(err.fields, ["profiles.default.model", "profiles.worker"]);
+    assert.equal(isRpcError({ name: "CompositionProvenanceError", code: -32019 }), true);
+  });
+
+  it("reifies without refusal data", () => {
+    const err = new CompositionProvenanceError("refused");
+    assert.equal(err.kind, null);
+    assert.deepEqual(err.fields, []);
   });
 });

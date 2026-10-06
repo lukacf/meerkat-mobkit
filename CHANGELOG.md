@@ -109,6 +109,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- `mobkit/init` composition provenance refusals now answer `-32019` with
+  refusal `data` instead of `-32603` (see Added). A client that matched these
+  refusals on `-32603` must match `-32019`; an SDK older than this release
+  raises them as a plain `RpcError` with the new code.
 - `mobkit/console/voice/captions` batches may carry a `playback_hint` entry
   (`{"kind": "playback_hint", "hint": "duck" | "restore"}`) next to
   `caption` and `retracted`. The embedded console ships with the gateway that
@@ -496,6 +500,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- A typed `mobkit/init` code for mob composition provenance refusals: `-32019`
+  (`COMPOSITION_PROVENANCE_CODE`), with Python and TypeScript
+  `CompositionProvenanceError` (#613).
+  - Every refusal the gateway raises because a persistent mob storage's
+    recorded composition cannot be proven to match the launch used to reach
+    the client as a generic `-32603`, so an SDK could not tell a deliberate
+    refusal from an internal error without parsing the message. This covers
+    a diverged definition, a candidate launch whose definition differs from
+    the stored one, a rehearsal-created store, an unreadable, malformed,
+    unsupported or unwritten manifest, and undeclared non-empty storage.
+  - The error `data` carries the refusal: `kind` (`divergent`,
+    `candidate_divergent`, `created_by_rehearsal`, `missing`, `unreadable`,
+    `malformed`, `unsupported_version`, `not_recorded`, `unproven_storage`),
+    `fields` (the diverged definition fields as dotted paths, always
+    present), and the manifest path, storage path and manifest versions
+    where the refusal has them. The SDK error exposes `kind` and `fields`.
+  - The message is unchanged, and an accepted init carries the same code and
+    data in its `failed` settlement.
+  - Rust: `MobCompositionProvenanceError::refusal()` returns the data as
+    `CompositionProvenanceRefusal`, and
+    `UnifiedRuntimeBootstrapError::composition_provenance()` finds the
+    refusal behind a bootstrap failure.
+  - `mobkit_gateway` (the console/HTTP binary) still reports these refusals
+    as `-32603`.
 
 - Host-only `mobkit/member_activate_instruction` and
   `mobkit/member_instruction_activations` (Python

@@ -209,6 +209,117 @@ impl std::fmt::Display for MobCompositionProvenanceError {
 
 impl std::error::Error for MobCompositionProvenanceError {}
 
+impl MobCompositionProvenanceError {
+    /// The refusal as structured data, for surfaces that report it to a client
+    /// (the `data` of the gateway's `mobkit/init` composition provenance
+    /// refusal). The message stays the human remedy; this carries what a
+    /// client acts on, such as the diverged fields.
+    pub fn refusal(&self) -> CompositionProvenanceRefusal {
+        let mut refusal = CompositionProvenanceRefusal::of(self.refusal_kind());
+        match self {
+            Self::Missing { manifest, storage }
+            | Self::CreatedByRehearsal { manifest, storage } => {
+                refusal.manifest = Some(manifest.display().to_string());
+                refusal.storage = Some(storage.display().to_string());
+            }
+            Self::Unreadable { manifest, .. }
+            | Self::Malformed { manifest, .. }
+            | Self::NotRecorded { manifest, .. } => {
+                refusal.manifest = Some(manifest.display().to_string());
+            }
+            Self::UnsupportedVersion {
+                manifest,
+                found,
+                supported,
+            } => {
+                refusal.manifest = Some(manifest.display().to_string());
+                refusal.found_version = Some(*found);
+                refusal.supported_version = Some(*supported);
+            }
+            Self::Divergent { manifest, fields } => {
+                refusal.manifest = Some(manifest.display().to_string());
+                refusal.fields.clone_from(fields);
+            }
+            Self::CandidateDivergent { fields } => refusal.fields.clone_from(fields),
+            Self::UnprovenStorage => {}
+        }
+        refusal
+    }
+
+    /// The variant as a stable kind.
+    pub const fn refusal_kind(&self) -> CompositionProvenanceRefusalKind {
+        match self {
+            Self::Missing { .. } => CompositionProvenanceRefusalKind::Missing,
+            Self::Unreadable { .. } => CompositionProvenanceRefusalKind::Unreadable,
+            Self::Malformed { .. } => CompositionProvenanceRefusalKind::Malformed,
+            Self::UnsupportedVersion { .. } => CompositionProvenanceRefusalKind::UnsupportedVersion,
+            Self::Divergent { .. } => CompositionProvenanceRefusalKind::Divergent,
+            Self::NotRecorded { .. } => CompositionProvenanceRefusalKind::NotRecorded,
+            Self::CreatedByRehearsal { .. } => CompositionProvenanceRefusalKind::CreatedByRehearsal,
+            Self::CandidateDivergent { .. } => CompositionProvenanceRefusalKind::CandidateDivergent,
+            Self::UnprovenStorage => CompositionProvenanceRefusalKind::UnprovenStorage,
+        }
+    }
+}
+
+/// Which composition provenance refusal fired. One kind per
+/// [`MobCompositionProvenanceError`] variant; on the wire, its snake_case
+/// name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CompositionProvenanceRefusalKind {
+    Missing,
+    Unreadable,
+    Malformed,
+    UnsupportedVersion,
+    Divergent,
+    NotRecorded,
+    CreatedByRehearsal,
+    CandidateDivergent,
+    UnprovenStorage,
+}
+
+/// A composition provenance refusal as structured data: its kind, plus the
+/// facts the variant carries. Absent facts are omitted on the wire, except
+/// `fields`, which is always present (empty unless the kind is `divergent` or
+/// `candidate_divergent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CompositionProvenanceRefusal {
+    pub kind: CompositionProvenanceRefusalKind,
+    /// Dotted paths of the diverged definition fields
+    /// (`profiles.lead.tools.deny`).
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// The composition manifest path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
+    /// The mob storage path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<String>,
+    /// The manifest schema version found (`unsupported_version`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found_version: Option<u32>,
+    /// The newest manifest schema version this build reads
+    /// (`unsupported_version`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_version: Option<u32>,
+}
+
+impl CompositionProvenanceRefusal {
+    const fn of(kind: CompositionProvenanceRefusalKind) -> Self {
+        Self {
+            kind,
+            fields: Vec::new(),
+            manifest: None,
+            storage: None,
+            found_version: None,
+            supported_version: None,
+        }
+    }
+}
+
 /// Record the composition a fresh persistent storage path was created for.
 ///
 /// Crate-internal, and called on the create branch ONLY. Exposing it would let
@@ -689,4 +800,166 @@ pub fn persistent_mob_storage(
 ) -> Result<(meerkat_mob::MobStorage, MobStorageProvenance), meerkat_mob::MobError> {
     let storage = meerkat_mob::MobStorage::persistent(&path)?;
     Ok((storage, MobStorageProvenance::persistent(path)))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn wire(error: &MobCompositionProvenanceError) -> serde_json::Value {
+        serde_json::to_value(error.refusal()).expect("refusal serializes")
+    }
+
+    /// The `mobkit/init` refusal data is a wire contract the SDKs read: one
+    /// snake_case kind per variant, the variant's facts, and `fields` always
+    /// present.
+    #[test]
+    fn every_refusal_has_a_stable_kind_and_its_facts_on_the_wire() {
+        let manifest = PathBuf::from("/state/mob.sqlite3.composition.json");
+        let storage = PathBuf::from("/state/mob.sqlite3");
+        let cases = [
+            (
+                MobCompositionProvenanceError::Missing {
+                    manifest: manifest.clone(),
+                    storage: storage.clone(),
+                },
+                json!({
+                    "kind": "missing",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json",
+                    "storage": "/state/mob.sqlite3"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::Unreadable {
+                    manifest: manifest.clone(),
+                    message: "permission denied".to_string(),
+                },
+                json!({
+                    "kind": "unreadable",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::Malformed {
+                    manifest: manifest.clone(),
+                    message: "expected value".to_string(),
+                },
+                json!({
+                    "kind": "malformed",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::UnsupportedVersion {
+                    manifest: manifest.clone(),
+                    found: 9,
+                    supported: 1,
+                },
+                json!({
+                    "kind": "unsupported_version",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json",
+                    "found_version": 9,
+                    "supported_version": 1
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::Divergent {
+                    manifest: manifest.clone(),
+                    fields: vec!["profiles.lead.model".to_string()],
+                },
+                json!({
+                    "kind": "divergent",
+                    "fields": ["profiles.lead.model"],
+                    "manifest": "/state/mob.sqlite3.composition.json"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::NotRecorded {
+                    manifest: manifest.clone(),
+                    message: "read-only file system".to_string(),
+                },
+                json!({
+                    "kind": "not_recorded",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::CreatedByRehearsal { manifest, storage },
+                json!({
+                    "kind": "created_by_rehearsal",
+                    "fields": [],
+                    "manifest": "/state/mob.sqlite3.composition.json",
+                    "storage": "/state/mob.sqlite3"
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::CandidateDivergent {
+                    fields: vec![
+                        "profiles.lead.tools.deny".to_string(),
+                        "profiles.worker".to_string(),
+                    ],
+                },
+                json!({
+                    "kind": "candidate_divergent",
+                    "fields": ["profiles.lead.tools.deny", "profiles.worker"]
+                }),
+            ),
+            (
+                MobCompositionProvenanceError::UnprovenStorage,
+                json!({ "kind": "unproven_storage", "fields": [] }),
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(wire(&error), expected, "{error:?}");
+            let round_trip: CompositionProvenanceRefusal =
+                serde_json::from_value(expected).expect("the wire form reads back");
+            assert_eq!(round_trip, error.refusal());
+        }
+    }
+
+    /// The gateway finds the refusal behind a bootstrap failure, also when
+    /// the startup rollback that followed it failed too, and only there.
+    #[test]
+    fn a_bootstrap_failure_exposes_only_a_composition_refusal() {
+        use crate::mob_handle_runtime::MobRuntimeError;
+        use crate::unified_runtime::UnifiedRuntimeBootstrapError;
+
+        let refused = UnifiedRuntimeBootstrapError::Mob(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CandidateDivergent {
+                fields: vec!["profiles.lead.tools.deny".to_string()],
+            },
+        ));
+        assert_eq!(
+            refused
+                .composition_provenance()
+                .map(MobCompositionProvenanceError::refusal_kind),
+            Some(CompositionProvenanceRefusalKind::CandidateDivergent)
+        );
+
+        let rolled_back = UnifiedRuntimeBootstrapError::ModuleStartupRollbackFailed {
+            startup_error: Box::new(refused),
+            rollback_error: MobRuntimeError::InvalidInput("rollback failed"),
+        };
+        assert_eq!(
+            rolled_back
+                .composition_provenance()
+                .map(MobCompositionProvenanceError::refusal_kind),
+            Some(CompositionProvenanceRefusalKind::CandidateDivergent)
+        );
+
+        for other in [
+            UnifiedRuntimeBootstrapError::Mob(MobRuntimeError::InvalidConfig("bad".to_string())),
+            UnifiedRuntimeBootstrapError::PreSpawnHook("hook".to_string()),
+            UnifiedRuntimeBootstrapError::ModuleStartupThreadPanicked,
+        ] {
+            assert!(other.composition_provenance().is_none(), "{other}");
+        }
+    }
 }

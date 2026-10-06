@@ -249,6 +249,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 | `-32017` | a covered unified/stdin read arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the wrapped arms (`identity/resolved_tools`, `identity/routing_status`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). The independent HTTP console dispatcher does not apply this wrapper. | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
 | `-32018` | stdio gateway: an ordinary request arrived before `mobkit/init` settled. It was refused at once, not queued. Startup provider callbacks must not issue ordinary RPCs on the runtime that is starting. `mobkit/shutdown` is still admitted. | `{kind: "init_in_progress", method}` |
+| `-32019` | `mobkit/init` mob composition provenance refusal: the persistent mob storage's recorded composition cannot be proven to match the launch. Raised before the mob actuates, for a supplied definition that differs from the recorded one, a candidate launch whose definition differs from the stored one it would boot, a store created by a rehearsal launch, a composition manifest that is unreadable, malformed, of an unsupported version or could not be written, or undeclared non-empty storage. (`missing` is part of the kind vocabulary but the gateway does not raise it today: an authoritative launch adopts and records the definition when the manifest is absent.) The message keeps the `Runtime bootstrap failed: ` prefix and names the remedy. The gateway writes the error response (or, for an accepted init, the `failed` settlement) and exits. | `{kind, fields, manifest?, storage?, found_version?, supported_version?}`; `kind` is `divergent`, `candidate_divergent`, `created_by_rehearsal`, `missing`, `unreadable`, `malformed`, `unsupported_version`, `not_recorded` or `unproven_storage`; `fields` is always present and lists the diverged definition fields as dotted paths (empty for other kinds) |
 | `-32030` | HTTP console ABAC gate refused the operation | `{kind: "access_denied", ...}` |
 
 The `-32010` constant is exported from both SDKs as
@@ -262,6 +263,11 @@ Read-only errors apply to classified mutations; ABAC may deny an applicable
 action gate with `-32030`, or filter a read's results rather than reject it.
 Console timeline replay failures use `CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE`
 so they are not mistaken for mob-events ledger cursor errors.
+The `-32019` constant is exported as `COMPOSITION_PROVENANCE_CODE` and
+reified as `CompositionProvenanceError`, which exposes the refusal's `kind`
+and `fields` (for example the `profiles.lead.tools.deny` path a candidate
+launch diverged on), so a deliberate composition refusal is reported without
+parsing the message. Before this code existed these refusals were `-32603`.
 The `-32014` constant is exported as `STORAGE_RESOLUTION_CODE` and reified
 as `StorageResolutionError`, so a deliberate durability refusal at startup
 is a typed init failure, not a transport error. Storage refusals raised by
