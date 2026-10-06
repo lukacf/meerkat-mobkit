@@ -835,6 +835,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The console's Approvals inbox shows the gating owner's recorded audit
+  outcomes as recorded (#594, shipped in 0.8.46).
+  - **Audit rows:** each shows its tier (`r0` to `r3`, or "Unknown" with the
+    recorded value), actor, event, decision, approver and outcome, with
+    "Not recorded" where the record has no value. The view states that an
+    approval record does not confirm execution.
+  - **The Auto tab and count** now cover exactly the `evaluated` events whose
+    outcome is `allowed` or `allowed_with_audit`. Before, the tab guessed
+    from loosely matched `decision` and `event_type` strings and invented
+    risk labels.
+  - The console core package (`packages/console-core`) exports
+    `normalizeGatingAuditEntry` and `GatingAuditEntryView`, a display
+    projection of one audit record (not execution state).
+  - The console guide documents the Approvals tabs and audit records
+    (#603).
+
 - The console RPC handler no longer reserves a 1.17 MB stack frame. At
   opt-level 0 LLVM gives every local of every branch its own stack slot, so
   the handler's poll frame reserved every method arm's future at once, while
