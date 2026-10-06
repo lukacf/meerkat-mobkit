@@ -372,6 +372,25 @@ class WaitEndedError(MobKitError):
         self.outcome = outcome
 
 
+class CompletionCursorUnavailableError(MobKitError, RuntimeError):
+    """The identity reports no completion cursor, so there is no completion
+    to wait for.
+
+    Raised by the cursor-driven waits (``wait_for_completion``,
+    ``wait_for_output`` without ``turn=``, ``wait_for_output_containing``)
+    when the handle names a live alias with no identity authority, or the
+    gateway predates the completion contract. Wait on a turn ticket instead:
+    send or dispatch with ``track_turn=True`` and pass the ticket as
+    ``wait_for_output(turn=...)`` / ``wait_for_turn``.
+
+    Subclasses ``RuntimeError``, which these waits raised before.
+    """
+
+    def __init__(self, identity: str, detail: str):
+        super().__init__(f"identity {identity!r} reports no completion cursor; {detail}")
+        self.identity = identity
+
+
 class TurnFailedError(MobKitError):
     """The turn a ticket names ran and failed (``mobkit/turn_result`` state
     ``failed``). ``reason`` carries the runtime's typed detail. ``admission``
