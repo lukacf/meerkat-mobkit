@@ -865,6 +865,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: a downward wheel or End at the bottom of a transcript no longer
+  stops following the live edge. Such a gesture can leave the scroll position
+  a pixel above the computed end (scrollHeight and clientHeight are rounded,
+  the scroll range is not), and since the scroll-up fix (#597) that settle
+  read as the reader moving up, so a tool expanded afterwards no longer
+  followed. The console now remembers the direction of the reader's last
+  wheel or key gesture: an upward move of at most a pixel right after a
+  downward gesture is a settle, while a larger upward move, or a small one
+  after a click or scrollbar press, still leaves the live edge.
+
 - The gateway delivers Event-kind detached job deliveries again. These come
   from `monitors/start` in event-steer or event-queue mode and from
   `jobs/subscribe` with an `event` kind.
