@@ -1359,6 +1359,75 @@ describe("durable queued quote editing", () => {
   });
 });
 
+describe("dock layout hydration", () => {
+  // The saved layout, or with none the configured initial target, used to be
+  // applied in a passive effect, after the commit that first drew the
+  // experience-gated nav. A click in that gap was overwritten when it landed.
+  // Click the nav entry the moment it appears (a MutationObserver callback
+  // runs before any later task) and require the click to win.
+  it("keeps a nav click made as soon as the experience renders", async () => {
+    // The restore race needs a saved layout; the file's beforeEach seeds it.
+    expect(window.localStorage.getItem("mobkit-console-dock-state:queue-test")).not.toBeNull();
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...initial, access: { available: true, enabled: true, can_administer: true, subject: "first-admin" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      if (input.command === "accessStatus") return { command: input.command, accepted: true, result: { available: true, enabled: true, can_administer: true, subject: "first-admin", revision: 1, actions: [] } } as never;
+      if (input.command === "getAccessConfig") return { command: input.command, accepted: true, result: { config: { enabled: true, admins: ["first-admin"], rules: [], groups: {} }, revision: 1 } } as never;
+      throw new Error(`unexpected ${input.command}`);
+    });
+    let clicked = false;
+    const observer = new MutationObserver(() => {
+      const nav = document.querySelector("[data-testid='nav:access']");
+      if (nav && !clicked) {
+        clicked = true;
+        fireEvent.click(nav);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<ConsoleApp baseUrl="" transport={fake} />);
+      await waitFor(() => expect(clicked).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
+    await screen.findByTestId("access-panel");
+    await screen.findByText("first-admin", { exact: true });
+  });
+
+  it("keeps a nav click made as soon as the experience renders when no layout is saved", async () => {
+    window.localStorage.clear();
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...initial, console_config: { layout: { initial_control: "logs" } }, access: { available: true, enabled: true, can_administer: true, subject: "first-admin" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      if (input.command === "accessStatus") return { command: input.command, accepted: true, result: { available: true, enabled: true, can_administer: true, subject: "first-admin", revision: 1, actions: [] } } as never;
+      if (input.command === "getAccessConfig") return { command: input.command, accepted: true, result: { config: { enabled: true, admins: ["first-admin"], rules: [], groups: {} }, revision: 1 } } as never;
+      throw new Error(`unexpected ${input.command}`);
+    });
+    let clicked = false;
+    const observer = new MutationObserver(() => {
+      const nav = document.querySelector("[data-testid='nav:access']");
+      if (nav && !clicked) {
+        clicked = true;
+        fireEvent.click(nav);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<ConsoleApp baseUrl="" transport={fake} />);
+      await waitFor(() => expect(clicked).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
+    await screen.findByTestId("access-panel");
+    await screen.findByText("first-admin", { exact: true });
+    expect(screen.queryByTestId("logs-panel")).toBeNull();
+  });
+});
+
 describe("access async scope isolation", () => {
   it.each(["preview", "mutation"])("does not let a delayed old-scope %s overwrite refreshed owner data", async (operation) => {
     const fake = transport(vi.fn());
