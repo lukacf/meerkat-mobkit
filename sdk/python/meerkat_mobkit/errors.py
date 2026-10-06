@@ -24,6 +24,11 @@ STORAGE_RESOLUTION_CODE: int = -32014
 # refuses it at once instead of queueing it behind startup (a provider
 # callback awaiting it during init would wait on itself).
 INIT_IN_PROGRESS_CODE: int = -32018
+# Mob composition provenance refusal at gateway startup (mobkit/init): the
+# persistent mob storage's recorded composition cannot be proven to match the
+# launch. The error data carries the refusal's ``kind`` and, where it has
+# them, the diverged ``fields``.
+COMPOSITION_PROVENANCE_CODE: int = -32019
 # WorkGraph service not configured on the runtime.
 WORKGRAPH_UNAVAILABLE_CODE: int = -32041
 # WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
@@ -280,6 +285,66 @@ class InitInProgressError(RpcError):
             request_id=request_id,
             method=method,
             data=data,
+        )
+
+
+class CompositionProvenanceError(RpcError):
+    """Raised when the gateway refuses to start over the mob's composition provenance.
+
+    A persistent mob storage records the composition it was created for, and
+    a launch whose composition cannot be proven to match it is refused before
+    the mob actuates. The message names the remedy. ``kind`` names the
+    refusal:
+
+    - ``"divergent"``: the supplied definition differs from the one recorded
+      for the storage (revert the change, or move the stored definition with
+      ``MobKitBuilder.declare_spec_update(expected_revision=...)``);
+    - ``"candidate_divergent"``: a candidate launch supplied a definition that
+      differs from the stored one it would boot. Only a gateway launched with
+      ``runtime_options.mob_composition.authority = "candidate"`` raises it,
+      which this builder never sends; the gateway option
+      ``runtime_options.mob_composition.candidate_definition = "stored"``
+      acknowledges the stored definition;
+    - ``"created_by_rehearsal"``: the storage was created by a launch that did
+      not speak for the durable composition;
+    - ``"unreadable"``, ``"malformed"``, ``"unsupported_version"`` or
+      ``"not_recorded"``: the provenance record beside the storage is
+      unusable, or could not be written;
+    - ``"missing"``: no provenance record beside non-empty storage. The
+      gateway does not raise it today (an authoritative launch adopts and
+      records the definition instead); library callers can see it;
+    - ``"unproven_storage"``: non-empty storage with nothing declared about it.
+
+    ``kind`` is ``None`` when the gateway sent no refusal data, and may be a
+    kind newer than this list. ``fields`` lists the diverged definition fields
+    as dotted paths (``profiles.lead.tools.deny``); it is empty unless the
+    kind is ``divergent`` or ``candidate_divergent``. The full refusal stays
+    available as ``data``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            COMPOSITION_PROVENANCE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+        refusal = data if isinstance(data, dict) else {}
+        kind = refusal.get("kind")
+        self.kind: str | None = kind if isinstance(kind, str) else None
+        fields = refusal.get("fields")
+        self.fields: list[str] = (
+            [field for field in fields if isinstance(field, str)]
+            if isinstance(fields, list)
+            else []
         )
 
 

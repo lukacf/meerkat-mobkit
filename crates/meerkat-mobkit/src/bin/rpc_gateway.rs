@@ -44,14 +44,14 @@ use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
 use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
 use meerkat_mobkit::{
-    Base64BlobStoreAdapter, BinaryBlobStore, ConsolePolicy, ConsoleUiConfig, DiscoverySpec,
-    EventLogConfig, EventLogStore, EventQuery, InMemoryMetadataStore, LocalJsonMemoryBackendConfig,
-    MOBKIT_CONTRACT_VERSION, MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec,
-    MobKitConfig, ModuleConfig, ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore,
-    PreSpawnData, RestartPolicy, RuntimeDecisionState, RuntimeOptions, RuntimeRoute,
-    STORAGE_RESOLUTION_CODE, SqliteConsoleLogStore, SqliteMetadataStore, UnifiedRuntime,
-    UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
-    load_console_ui_config_from_path_for_realm,
+    Base64BlobStoreAdapter, BinaryBlobStore, COMPOSITION_PROVENANCE_CODE, ConsolePolicy,
+    ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
+    InMemoryMetadataStore, LocalJsonMemoryBackendConfig, MOBKIT_CONTRACT_VERSION,
+    MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
+    ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, RestartPolicy,
+    RuntimeDecisionState, RuntimeOptions, RuntimeRoute, STORAGE_RESOLUTION_CODE,
+    SqliteConsoleLogStore, SqliteMetadataStore, UnifiedRuntime, UnifiedRuntimeShutdownReport,
+    handle_mobkit_rpc_json, load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{mob_definition_may_use_image_generation, mob_definition_may_use_shell},
     start_mobkit_runtime,
 };
@@ -9173,6 +9173,22 @@ impl InitSession {
 /// because the SDK asked the gateway to shut down before init settled.
 const INIT_STOPPED_FOR_SHUTDOWN_CODE: i64 = -32098;
 
+/// The `data` of a composition provenance init refusal
+/// ([`COMPOSITION_PROVENANCE_CODE`]): the refusal's kind and the facts it
+/// carries, such as the diverged fields. `None` only if serialization fails,
+/// which leaves the typed code and the message intact.
+fn composition_refusal_data(
+    refusal: &meerkat_mobkit::mob_composition_manifest::MobCompositionProvenanceError,
+) -> Option<Value> {
+    match serde_json::to_value(refusal.refusal()) {
+        Ok(data) => Some(data),
+        Err(error) => {
+            tracing::warn!(%error, "composition provenance refusal data did not serialize");
+            None
+        }
+    }
+}
+
 /// `mobkit/init_progress` emission. Like `accepted` and the settlement, each
 /// progress line is written synchronously by the task entering the phase, so
 /// the three keep their order (a `cleanup` phase always precedes the failed
@@ -12861,16 +12877,29 @@ external_addressable = true
     /// the fail-closed durability errors; everything else keeps the standard
     /// JSON-RPC codes.
     fn fail_init(request_id: &Value, code: i64, message: String) -> ! {
+        fail_init_with_data(request_id, code, message, None)
+    }
+
+    /// [`fail_init`] with the error's `data`: the refusal as structured data
+    /// for the SDK, in the error response or the `failed` settlement alike.
+    fn fail_init_with_data(
+        request_id: &Value,
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    ) -> ! {
         let line = match init_session() {
             Some(session) => {
                 session.settled.store(true, Ordering::Release);
-                session.failed_line(code, &message, None)
+                session.failed_line(code, &message, data)
             }
-            None => json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": { "code": code, "message": message }
-            }),
+            None => {
+                let mut error = json!({ "code": code, "message": message });
+                if let Some(data) = data {
+                    error["data"] = data;
+                }
+                json!({ "jsonrpc": "2.0", "id": request_id, "error": error })
+            }
         };
         write_stdout_line_now(&line);
         std::process::exit(1);
@@ -14261,11 +14290,18 @@ external_addressable = true
     .bootstrap()
     .await
     .unwrap_or_else(|e| {
-        fail_init(
-            &request_id,
-            -32603,
-            format!("Runtime bootstrap failed: {e}"),
-        )
+        let message = format!("Runtime bootstrap failed: {e}");
+        match e.composition_provenance() {
+            // A deliberate composition refusal, not an internal error: its own
+            // code, with the refusal's kind and diverged fields as data.
+            Some(refusal) => fail_init_with_data(
+                &request_id,
+                COMPOSITION_PROVENANCE_CODE,
+                message,
+                composition_refusal_data(refusal),
+            ),
+            None => fail_init(&request_id, -32603, message),
+        }
     });
     let runtime = composition.runtime_mut();
     runtime.set_bootstrap_phase_observer(Arc::new(move |phase| {
