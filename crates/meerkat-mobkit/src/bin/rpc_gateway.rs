@@ -178,6 +178,10 @@ struct GatewayRuntimeOptions {
     /// deliberately-restricted composition and the promoted boot is refused -
     /// which cost a live household 929 supervisor respawns and a rollback.
     composition_authority: meerkat_mobkit::mob_composition_manifest::CompositionAuthority,
+    /// `runtime_options.mob_composition.candidate_definition`: `"stored"` lets
+    /// a candidate boot the stored mob definition when the supplied one
+    /// differs (logged, degraded health). Absent, such a candidate refuses.
+    candidate_definition: meerkat_mobkit::mob_composition_manifest::CandidateDefinition,
     /// `runtime_options.compaction = {"auto_compact_threshold": 120000, ...}`:
     /// the host-level session-compaction policy for every agent this gateway
     /// builds. Absent, the gateway inherits meerkat's model-aware default
@@ -430,6 +434,8 @@ impl Default for GatewayRuntimeOptions {
             declare_spec_update: None,
             composition_authority:
                 meerkat_mobkit::mob_composition_manifest::CompositionAuthority::default(),
+            candidate_definition:
+                meerkat_mobkit::mob_composition_manifest::CandidateDefinition::default(),
             compaction: None,
             host_config: None,
             http_listen: meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
@@ -1098,6 +1104,58 @@ mod tests {
             meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative
         );
         assert_eq!(quiet.declare_spec_update, None);
+    }
+
+    /// `mob_composition.candidate_definition` reaches the parsed options, is
+    /// candidate-only, and defaults to requiring a match.
+    #[test]
+    fn candidate_definition_option_parses_and_is_candidate_only() {
+        use meerkat_mobkit::mob_composition_manifest::CandidateDefinition;
+        let stored = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": {
+                "authority": "candidate",
+                "candidate_definition": "stored"
+            } } }),
+            None,
+        )
+        .expect("a candidate may acknowledge the stored definition");
+        assert_eq!(stored.candidate_definition, CandidateDefinition::Stored);
+
+        let candidate = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": { "authority": "candidate" } } }),
+            None,
+        )
+        .expect("candidate");
+        assert_eq!(
+            candidate.candidate_definition,
+            CandidateDefinition::RequireMatch,
+            "a candidate that says nothing must still refuse a divergent definition"
+        );
+
+        let authoritative = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": {
+                "authority": "authoritative",
+                "candidate_definition": "stored"
+            } } }),
+            None,
+        )
+        .err()
+        .expect("an authoritative launch cannot acknowledge a stored definition");
+        assert!(
+            authoritative.contains("requires authority = 'candidate'"),
+            "{authoritative}"
+        );
+
+        let unknown = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": {
+                "authority": "candidate",
+                "candidate_definition": "supplied"
+            } } }),
+            None,
+        )
+        .err()
+        .expect("an unknown choice refuses");
+        assert!(unknown.contains("candidate_definition"), "{unknown}");
     }
 
     #[test]
@@ -7252,6 +7310,8 @@ fn parse_gateway_runtime_options(
     }
     if let Some(composition) = runtime_options.get("mob_composition") {
         parsed.composition_authority = parse_gateway_composition_authority(composition)?;
+        parsed.candidate_definition =
+            parse_gateway_candidate_definition(composition, parsed.composition_authority)?;
     }
     if let Some(declare) = runtime_options.get("declare_spec_update") {
         parsed.declare_spec_update = Some(parse_gateway_declare_spec_update(declare)?);
@@ -7545,6 +7605,40 @@ fn parse_gateway_composition_authority(
              default - for the launch that speaks for the durable composition)"
         )),
     }
+}
+
+/// `runtime_options.mob_composition.candidate_definition`: absent or
+/// `"require_match"` (a candidate whose supplied definition differs from the
+/// stored one refuses), or `"stored"` (it boots the stored definition
+/// knowingly). Only a candidate launch may set it: an authoritative launch is
+/// judged by the composition pin.
+fn parse_gateway_candidate_definition(
+    value: &Value,
+    authority: meerkat_mobkit::mob_composition_manifest::CompositionAuthority,
+) -> Result<meerkat_mobkit::mob_composition_manifest::CandidateDefinition, String> {
+    use meerkat_mobkit::mob_composition_manifest::CandidateDefinition;
+    let Some(choice) = value.get("candidate_definition") else {
+        return Ok(CandidateDefinition::RequireMatch);
+    };
+    let policy = match choice.as_str() {
+        Some("require_match") => CandidateDefinition::RequireMatch,
+        Some("stored") => CandidateDefinition::Stored,
+        _ => {
+            return Err(format!(
+                "unsupported runtime_options.mob_composition.candidate_definition {choice} (use \
+                 'stored' to let a candidate boot the stored mob definition when your config \
+                 differs from it, or 'require_match' - the default - to refuse such a boot)"
+            ));
+        }
+    };
+    if policy == CandidateDefinition::Stored && authority.speaks_for_composition() {
+        return Err(
+            "runtime_options.mob_composition.candidate_definition = 'stored' requires \
+             authority = 'candidate'; an authoritative launch is judged by the composition pin"
+                .to_string(),
+        );
+    }
+    Ok(policy)
 }
 
 fn parse_gateway_declare_spec_update(value: &Value) -> Result<u64, String> {
@@ -13617,6 +13711,7 @@ external_addressable = true
             // A parsed option that never reaches the spec is the same defect as
             // an unreachable API, one layer down.
             .with_composition_authority(gateway_options.composition_authority)
+            .with_candidate_definition(gateway_options.candidate_definition)
             .with_optional_tool_consequence_policy_registry(
                 tool_consequence_policy_registry.clone(),
             )

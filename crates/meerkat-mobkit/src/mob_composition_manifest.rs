@@ -91,6 +91,12 @@ pub enum MobCompositionProvenanceError {
     /// The storage was created by a launch that did not speak for the durable
     /// composition, so no authoritative composition can take effect on it.
     CreatedByRehearsal { manifest: PathBuf, storage: PathBuf },
+    /// A candidate (non-authoritative) launch supplied a definition that
+    /// differs from the stored one it would boot. A resume cannot apply the
+    /// supplied definition, so booting would run the stored composition while
+    /// presenting the supplied one. Refused unless the launch acknowledges
+    /// the stored definition ([`CandidateDefinition::Stored`]).
+    CandidateDivergent { fields: Vec<String> },
     /// A storage arrived already holding events with nothing declared about
     /// what it is.
     ///
@@ -172,6 +178,18 @@ impl std::fmt::Display for MobCompositionProvenanceError {
                  so refusing now rather than leaving an unjudgeable storage path behind)",
                 manifest.display(),
                 message
+            ),
+            Self::CandidateDivergent { fields } => write!(
+                f,
+                "this candidate launch supplied a mob definition that differs from the one \
+                 stored in its mob storage, in: {}. A candidate resume cannot apply the \
+                 supplied definition, so booting would silently run the stored composition \
+                 (for example without a tool deny the supplied config adds) while presenting \
+                 yours. Make the candidate config match the stored definition, or run the \
+                 candidate on its own storage path, or set \
+                 runtime_options.mob_composition.candidate_definition = \"stored\" to boot \
+                 the stored definition knowingly (logged and reported as degraded health)",
+                fields.join(", ")
             ),
             Self::CreatedByRehearsal { manifest, storage } => write!(
                 f,
@@ -531,16 +549,55 @@ pub enum CompositionAuthority {
     /// probe, or certification pass whose composition is intentionally not the
     /// one that should be pinned.
     ///
-    /// Exempt from VERIFICATION on purpose. Verifying such a launch would wedge
-    /// the pipeline in the other direction: the next candidate boot against an
-    /// existing pin would be refused for precisely the fields it is meant to
-    /// differ in.
+    /// Exempt from the PIN: it never writes or claims the composition pin, and
+    /// the pin never refuses it. It is not exempt from presenting what it
+    /// runs: a candidate resume boots the stored definition, so a supplied
+    /// definition that differs refuses
+    /// ([`MobCompositionProvenanceError::CandidateDivergent`]) unless the
+    /// launch acknowledges the stored definition
+    /// ([`CandidateDefinition::Stored`]).
     ///
     /// Not exempt from RECORDING. A store this launch created is tagged as
     /// rehearsal-created, and an authoritative resume of it is refused
     /// ([`MobCompositionProvenanceError::CreatedByRehearsal`]) because a resume
     /// structurally cannot apply the promoted composition.
     NonAuthoritative,
+}
+
+/// Which definition a candidate (non-authoritative) resume may boot when the
+/// supplied definition differs from the stored one. A resume always boots the
+/// stored definition; this only decides whether a difference refuses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateDefinition {
+    /// The supplied definition must match the stored one; any difference
+    /// refuses with [`MobCompositionProvenanceError::CandidateDivergent`].
+    #[default]
+    RequireMatch,
+    /// Boot the stored definition despite a difference, knowingly: the
+    /// diverged fields are logged at WARN and reported as degraded health.
+    Stored,
+}
+
+/// Judge a candidate resume from `fields`, the [`diverged_definition_fields`]
+/// of the stored definition the resume will boot against the supplied one
+/// (empty when they match, after the released-representation allowance). A
+/// difference refuses under [`CandidateDefinition::RequireMatch`] and is
+/// returned for reporting under [`CandidateDefinition::Stored`].
+///
+/// The comparison is structural over the serialized definition: maps compare
+/// by key, lists by value in order, so a reordered list (a `tools.deny`
+/// written in another order, say) counts as a difference, as it does for the
+/// authoritative pin.
+pub fn verify_candidate_resume(
+    fields: Vec<String>,
+    policy: CandidateDefinition,
+) -> Result<Vec<String>, MobCompositionProvenanceError> {
+    if fields.is_empty() || policy == CandidateDefinition::Stored {
+        Ok(fields)
+    } else {
+        Err(MobCompositionProvenanceError::CandidateDivergent { fields })
+    }
 }
 
 impl CompositionAuthority {

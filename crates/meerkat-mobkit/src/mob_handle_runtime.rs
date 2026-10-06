@@ -8385,6 +8385,15 @@ pub struct MobBootstrapSpec {
     /// declares itself non-authoritative so it neither creates the composition
     /// pin nor is refused by one.
     pub composition_authority: crate::mob_composition_manifest::CompositionAuthority,
+    /// For a candidate (non-authoritative) resume: whether a supplied
+    /// definition that differs from the stored one refuses (the default) or
+    /// boots the stored definition knowingly. Ignored by authoritative
+    /// launches, which the composition pin judges.
+    ///
+    /// A knowing boot logs the diverged fields at WARN and, when the spec
+    /// declares a storage census ([`Self::resolved_storage`]), reports them
+    /// in a degraded `mob_composition` slot.
+    pub candidate_definition: crate::mob_composition_manifest::CandidateDefinition,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -8544,6 +8553,7 @@ impl MobBootstrapSpec {
             // ephemerality on the caller's behalf is what would let an
             // external embedder's durable storage resume unverified.
             composition_authority: crate::mob_composition_manifest::CompositionAuthority::default(),
+            candidate_definition: crate::mob_composition_manifest::CandidateDefinition::default(),
             mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance::default(
             ),
             session_service,
@@ -8905,6 +8915,15 @@ impl MobBootstrapSpec {
         authority: crate::mob_composition_manifest::CompositionAuthority,
     ) -> Self {
         self.composition_authority = authority;
+        self
+    }
+
+    /// See [`Self::candidate_definition`].
+    pub fn with_candidate_definition(
+        mut self,
+        policy: crate::mob_composition_manifest::CandidateDefinition,
+    ) -> Self {
+        self.candidate_definition = policy;
         self
     }
 
@@ -10669,6 +10688,10 @@ impl MobRuntime {
         // manifest certifying a composition that is not running. Recording the
         // creating authority instead lets that resume refuse with the real reason.
         let speaks_for_composition = spec.composition_authority.speaks_for_composition();
+        // Health-visible record of a candidate that knowingly boots a stored
+        // definition differing from the supplied one.
+        let mut candidate_composition_slot: Option<crate::storage_health::StorageSlotSummary> =
+            None;
         let mut builder = if event_log_empty {
             if let Some(path) = persistent_mob_path {
                 // Refuse rather than leave behind a path whose composition the
@@ -10759,6 +10782,71 @@ impl MobRuntime {
                         .map_err(MobRuntimeError::CompositionProvenance)?;
                     }
                     Err(other) => return Err(MobRuntimeError::CompositionProvenance(other)),
+                }
+                Some(snapshot)
+            } else if !speaks_for_composition {
+                // A candidate never writes or claims the pin, but it is not
+                // exempt from presenting what it runs: the resume boots the
+                // stored definition, so a supplied definition that differs
+                // refuses unless the launch acknowledges the stored one.
+                let snapshot = spec
+                    .storage
+                    .created_definition_snapshot()
+                    .await
+                    .map_err(|err| MobRuntimeError::Mob(MobError::from(err)))?
+                    .ok_or_else(|| {
+                        MobRuntimeError::Mob(MobError::Internal(
+                            "non-empty mob storage has no canonical definition".to_string(),
+                        ))
+                    })?;
+                let mut diverged = crate::mob_composition_manifest::diverged_definition_fields(
+                    snapshot.definition(),
+                    &spec.definition,
+                );
+                // The same released-representation allowance the
+                // authoritative arm makes: a store a 0.8.9-0.8.28 writer
+                // created (proven by its manifest) carries that release's
+                // auto-marked resume overrides, so an unchanged operator
+                // config is judged in that form.
+                if !diverged.is_empty()
+                    && let Some(path) = persistent_mob_path
+                {
+                    let mut legacy_definition = raw_definition.clone();
+                    legacy_auto_mark_declared_resume_overrides(&mut legacy_definition);
+                    if crate::mob_composition_manifest::verify_legacy_synthesized_definition_before_resume(
+                        path,
+                        snapshot.epoch(),
+                        snapshot.definition(),
+                        &spec.definition,
+                        &legacy_definition,
+                    )
+                    .is_ok()
+                    {
+                        diverged.clear();
+                    }
+                }
+                let diverged = crate::mob_composition_manifest::verify_candidate_resume(
+                    diverged,
+                    spec.candidate_definition,
+                )
+                .map_err(MobRuntimeError::CompositionProvenance)?;
+                if !diverged.is_empty() {
+                    tracing::warn!(
+                        mob_id = %mob_id,
+                        diverged_fields = %diverged.join(", "),
+                        "candidate launch boots the STORED mob definition, which differs from \
+                         the supplied one (runtime_options.mob_composition.candidate_definition \
+                         = \"stored\"); the supplied definition is not in effect"
+                    );
+                    candidate_composition_slot =
+                        Some(crate::storage_health::StorageSlotSummary::degraded(
+                            "mob_composition",
+                            format!(
+                                "candidate launch runs the stored mob definition, not the \
+                                 supplied one; diverged: {}",
+                                diverged.join(", ")
+                            ),
+                        ));
                 }
                 Some(snapshot)
             } else {
@@ -10925,7 +11013,13 @@ impl MobRuntime {
                 workgraph_service: spec.workgraph_service,
                 workgraph_admission,
                 workgraph_realm_migration,
-                resolved_storage: spec.resolved_storage,
+                resolved_storage: match (spec.resolved_storage, candidate_composition_slot) {
+                    (Some(mut summary), Some(slot)) => {
+                        summary.slots.push(slot);
+                        Some(summary)
+                    }
+                    (summary, _) => summary,
+                },
                 session_write_epochs: spec.session_write_epochs,
                 runtime_authority_prewarm: spec.runtime_authority_prewarm,
                 committed_boundary_recoverer: spec.committed_boundary_recoverer,
