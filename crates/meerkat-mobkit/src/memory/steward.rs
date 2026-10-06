@@ -86,6 +86,7 @@ use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryRecord, MemoryScope,
     NewMemoryRecord, RecordMeta, RecordStatus, TrustTier, UsageEvent,
 };
+use crate::memory::review::release_copy;
 use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
@@ -132,8 +133,10 @@ const MAX_WORKING_SET: usize = 64;
 
 /// Gated promotions unresolved after this long are expired and their stage
 /// tokens discarded — the backstop for a gating timeout the observer never
-/// saw (timeout sweeps only run when gating endpoints are called).
-const PROMOTION_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// saw (timeout sweeps only run when gating endpoints are called). Shared
+/// with the quarantine review, which applies the same expiry without a
+/// dream.
+const PROMOTION_EXPIRY_MS: u64 = crate::memory::capabilities::GATED_PROMOTION_EXPIRY_MS;
 
 /// Defaults for the config block (§8.5; §16 open question 5 — measured
 /// starting points, not law).
@@ -853,11 +856,12 @@ struct QuarantineVerdict {
     target_mob: Option<String>,
 }
 
+/// An open loop the dream wants nudged. Its free-text rationale is not
+/// kept: the nudge is a system-wide timeline frame, and the escalated record
+/// may be quarantined.
 #[derive(Debug, Deserialize)]
 struct OpenLoopEscalation {
     record_id: String,
-    #[serde(default)]
-    rationale: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1633,11 +1637,17 @@ impl StewardEngine {
                 continue;
             }
             run.verdicts.open_loops_escalated += 1;
+            // The nudge is a system-wide timeline frame, readable with
+            // agent.view alone, and the escalated record may be quarantined:
+            // the dream's free-text rationale (which can quote the record)
+            // stays out of it. It names the record and stays a nudge, not a
+            // quarantine decision.
             self.emit(MemoryTimelineEvent::QuarantineVerdict {
                 realm: self.realm.clone(),
                 record_id: escalation.record_id,
                 verdict: "open_loop_escalated".to_string(),
-                rationale: Some(escalation.rationale),
+                rationale: None,
+                successor_id: None,
             });
         }
 
@@ -1767,15 +1777,16 @@ impl StewardEngine {
                 token: promotion.stage_token.clone(),
             };
             let _ = self.store.discard_stage(token).await;
-            let _ = self
-                .store
-                .resolve_pending_promotion(&self.realm, &promotion.pending_id, "expired")
-                .await;
-            run.skips.push(format!(
-                "gated promotion '{}' expired unresolved after {}d",
-                promotion.pending_id,
-                PROMOTION_EXPIRY_MS / 86_400_000
-            ));
+            if self
+                .settle_promotion(&promotion.pending_id, "expired")
+                .await
+            {
+                run.skips.push(format!(
+                    "gated promotion '{}' expired unresolved after {}d",
+                    promotion.pending_id,
+                    PROMOTION_EXPIRY_MS / 86_400_000
+                ));
+            }
         }
     }
 
@@ -3030,6 +3041,7 @@ impl StewardEngine {
                 record_id: record.id.clone(),
                 verdict: verdict.verdict.clone(),
                 rationale: Some(verdict.rationale.clone()),
+                successor_id: None,
             });
             // §10.4: a release/promotion re-stages the origin content
             // verbatim, and the staged chokepoint refuses secret-shaped
@@ -3330,10 +3342,7 @@ impl StewardEngine {
             };
             match self.store.commit(token).await {
                 Ok(receipt) => {
-                    let _ = self
-                        .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "committed")
-                        .await;
+                    self.settle_promotion(&notice.pending_id, "committed").await;
                     // Proposal-sourced gates (record_id carries the "prop-"
                     // token minted by `propose`) resolve their proposal on
                     // approval — otherwise the proposal re-enters every
@@ -3361,23 +3370,38 @@ impl StewardEngine {
                     });
                 }
                 Err(err) => {
+                    // Nothing was published: the batch is gone (expired, or
+                    // invalidated by an operator's tombstone) or no longer
+                    // validates against its origin.
                     tracing::warn!(
                         pending_id = %notice.pending_id,
                         error = %err,
                         "agent memory steward: gated promotion commit failed; marking expired"
                     );
-                    let _ = self
-                        .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "expired")
-                        .await;
+                    self.settle_promotion(&notice.pending_id, "expired").await;
                 }
             }
         } else if let Some(next_pending_id) = notice.next_pending_id.as_deref() {
-            // Escalation: the gate lives on under a successor pending id.
-            let _ = self
+            // Escalation: the gate lives on under a successor pending id,
+            // unless it was resolved meanwhile; a resolved promotion is never
+            // re-keyed back into the pending set.
+            match self
                 .store
                 .rekey_pending_promotion(&self.realm, &notice.pending_id, next_pending_id)
-                .await;
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => tracing::info!(
+                    pending_id = %notice.pending_id,
+                    next_pending_id,
+                    "agent memory steward: gated promotion was already resolved; not re-keyed"
+                ),
+                Err(err) => tracing::warn!(
+                    pending_id = %notice.pending_id,
+                    error = %err,
+                    "agent memory steward: gated promotion re-key failed"
+                ),
+            }
         } else {
             let token = crate::memory::staged::StageToken {
                 realm: self.realm.clone(),
@@ -3389,10 +3413,9 @@ impl StewardEngine {
             } else {
                 "denied"
             };
-            let _ = self
-                .store
-                .resolve_pending_promotion(&self.realm, &notice.pending_id, status)
-                .await;
+            if !self.settle_promotion(&notice.pending_id, status).await {
+                return;
+            }
             // An explicit operator denial rejects a proposal-sourced gate's
             // proposal (re-gating a denied proposal every dream would spam
             // the operator after a decision). A timeout leaves it held —
@@ -3407,6 +3430,37 @@ impl StewardEngine {
                 cause = %notice.cause,
                 "agent memory steward: gated promotion discarded"
             );
+        }
+    }
+
+    /// Resolve a gated promotion's mapping if it is still pending. False
+    /// when it was not (an expiry, or an operator's tombstone that
+    /// invalidated the gate, resolved it first): the mapping keeps that
+    /// state and this resolution reports nothing as its own doing.
+    async fn settle_promotion(&self, pending_id: &str, status: &str) -> bool {
+        match self
+            .store
+            .resolve_pending_promotion(&self.realm, pending_id, status)
+            .await
+        {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::info!(
+                    pending_id,
+                    status,
+                    "agent memory steward: gated promotion was already resolved; left as it is"
+                );
+                false
+            }
+            Err(err) => {
+                tracing::warn!(
+                    pending_id,
+                    status,
+                    error = %err,
+                    "agent memory steward: gated promotion resolution failed"
+                );
+                false
+            }
         }
     }
 
@@ -3787,21 +3841,6 @@ fn proposal_promotion_copy(proposal: &PendingProposal) -> NewMemoryRecord {
             proposal.record.verification.clone()
         },
         ..proposal.record.clone()
-    }
-}
-
-/// The content copy used for quarantine releases and promotions: same
-/// title/body/tags, no evidence (derived_from carries lineage and the
-/// §10.2 ceiling walks it).
-fn release_copy(record: &MemoryRecord) -> NewMemoryRecord {
-    NewMemoryRecord {
-        kind: record.kind,
-        title: record.title.clone(),
-        description: record.description.clone(),
-        body: record.body.clone(),
-        tags: record.tags.clone(),
-        evidence: Vec::new(),
-        verification: record.provenance.verification.clone(),
     }
 }
 
@@ -5558,6 +5597,349 @@ mod tests {
             matches!(created.status, RecordStatus::Quarantined { .. }),
             "fresh consolidate creates must respect llm_writes=quarantined: {:?}",
             created.status
+        );
+    }
+
+    /// Stage the gated promotion of `origin` the steward stages: a mob copy
+    /// plus the origin's tombstone, committed only on gating approval.
+    async fn stage_gated_promotion_batch(
+        fixture: &Fixture,
+        origin: &str,
+    ) -> crate::memory::staged::StageToken {
+        let origin_record = fixture
+            .store
+            .records_by_ids(REALM, &[origin.to_string()])
+            .await
+            .expect("read")
+            .remove(0);
+        fixture
+            .store
+            .stage(StagedMutationBatch {
+                kind: StagedBatchKind::ReviewVerdict,
+                realm: REALM.to_string(),
+                author: MemoryAuthor::Steward {
+                    run_id: "dream-gate".to_string(),
+                },
+                ops: vec![
+                    StagedOp::Create {
+                        id: None,
+                        scope: mob_scope(),
+                        record: release_copy(&origin_record),
+                        trust: TrustTier::AgentObserved,
+                        derived_from: vec![origin.to_string()],
+                        rationale: Some("gated quarantine promotion".to_string()),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                    },
+                    StagedOp::Tombstone {
+                        id: origin.to_string(),
+                        rationale: Some("promoted to mob scope (gated)".to_string()),
+                    },
+                ],
+            })
+            .await
+            .expect("stage promotion")
+    }
+
+    async fn map_gate(
+        fixture: &Fixture,
+        pending_id: &str,
+        origin: &str,
+        token: &crate::memory::staged::StageToken,
+    ) {
+        fixture
+            .store
+            .record_pending_promotion(
+                REALM,
+                PendingPromotion {
+                    pending_id: pending_id.to_string(),
+                    stage_token: token.token.clone(),
+                    record_id: origin.to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "mob:home".to_string(),
+                    rationale: None,
+                    status: "pending".to_string(),
+                    created_at_ms: now_ms(),
+                },
+            )
+            .await
+            .expect("gate mapping");
+    }
+
+    fn gate_notice(pending_id: &str, approved: bool, next: Option<&str>) -> GatingResolutionNotice {
+        GatingResolutionNotice {
+            pending_id: pending_id.to_string(),
+            action_id: format!("action-{pending_id}"),
+            approved,
+            next_pending_id: next.map(str::to_string),
+            cause: "approval_decided".to_string(),
+        }
+    }
+
+    fn operator_review(
+        origin: &str,
+        title: &str,
+        body: &str,
+        decision: crate::memory::review::QuarantineDecision,
+    ) -> crate::memory::review::QuarantineReviewRequest {
+        crate::memory::review::QuarantineReviewRequest {
+            scope: identity_scope("identity:worker"),
+            memory_id: origin.to_string(),
+            decision,
+            expected_content_hash: crate::memory::records::content_hash(title, body),
+            reviewer: crate::memory::review::QuarantineReviewer::Operator {
+                principal: Some("operator@example.test".to_string()),
+            },
+            rationale: None,
+        }
+    }
+
+    /// A gated promotion's mapping status, resolved or not.
+    fn gate_status(fixture: &Fixture, pending_id: &str) -> String {
+        rusqlite::Connection::open(fixture.store.path_for_realm(REALM))
+            .expect("open realm db")
+            .query_row(
+                "SELECT status FROM pending_promotions WHERE pending_id = ?1",
+                rusqlite::params![pending_id],
+                |row| row.get(0),
+            )
+            .expect("gate status")
+    }
+
+    /// The gate-registration interleaving fails closed. The steward stages
+    /// a promotion batch (a mob copy plus the origin's tombstone) and only
+    /// then persists its gate mapping; an operator review, release or
+    /// tombstone, can commit in between, because no mapping exists yet to
+    /// invalidate or wait for. A later approval of that gate cannot publish
+    /// anything: the staged batch still tombstones the origin the review
+    /// already tombstoned, the validator refuses it, and the mapping expires.
+    #[tokio::test]
+    async fn gate_approved_after_an_operator_review_expires_without_publishing() {
+        use crate::memory::review::QuarantineDecision;
+
+        let fixture = build_fixture(vec![], vec![]);
+        for (decision, title, pending_id) in [
+            (
+                QuarantineDecision::Release,
+                "Shared convention",
+                "gate-late-release",
+            ),
+            (
+                QuarantineDecision::Tombstone,
+                "Discarded convention",
+                "gate-late-tombstone",
+            ),
+        ] {
+            let body = "page the secondary first after hours";
+            let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+            let token = stage_gated_promotion_batch(&fixture, &origin).await;
+            let reviewed = fixture
+                .store
+                .review_quarantined(operator_review(&origin, title, body, decision))
+                .await
+                .expect("review commits while no mapping exists");
+            assert!(reviewed.applied(), "{reviewed:?}");
+            assert!(
+                reviewed.decision().review.invalidated_promotions.is_empty(),
+                "a mapping registered later is not one the review knew"
+            );
+
+            map_gate(&fixture, pending_id, &origin, &token).await;
+            fixture
+                .engine
+                .resolve_gating_notice(gate_notice(pending_id, true, None))
+                .await;
+            assert_eq!(gate_status(&fixture, pending_id), "expired");
+            if decision == QuarantineDecision::Release {
+                assert_eq!(
+                    fixture
+                        .store
+                        .records_by_ids(
+                            REALM,
+                            &[crate::memory::review::release_successor_id(&origin)]
+                        )
+                        .await
+                        .expect("read")
+                        .remove(0)
+                        .status,
+                    RecordStatus::Active,
+                    "the review's release stands"
+                );
+            }
+        }
+        assert!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .is_empty(),
+            "the promotions never publish"
+        );
+    }
+
+    /// An operator's tombstone invalidates a live gate (operator
+    /// invalidation) while a release stays refused. Every late resolution
+    /// of the invalidated gate loses: an approval publishes nothing (also
+    /// for a resolver already holding the staged batch, which the validator
+    /// refuses against the tombstoned origin), and a denial or escalation
+    /// neither overwrites the expired mapping nor revives it.
+    #[tokio::test]
+    async fn operator_tombstone_invalidates_a_live_gate_and_late_resolutions_lose() {
+        use crate::memory::review::{
+            QuarantineDecision, QuarantineReviewError, QuarantineReviewRefusal,
+        };
+
+        let fixture = build_fixture(vec![], vec![]);
+        let (title, body) = ("Shared convention", "page the secondary first after hours");
+        let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+        let token = stage_gated_promotion_batch(&fixture, &origin).await;
+        // The batch a resolver already read before the tombstone commits.
+        let held = stage_gated_promotion_batch(&fixture, &origin).await;
+        map_gate(&fixture, "gate-live", &origin, &token).await;
+
+        let refused = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Release,
+            ))
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(QuarantineReviewError::Refused(QuarantineReviewRefusal::GatePending { pending_id, .. }))
+                    if pending_id == "gate-live"
+            ),
+            "{refused:?}"
+        );
+        let discarded = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await
+            .expect("an operator tombstone invalidates the gate");
+        assert_eq!(discarded.outcome_str(), "tombstoned");
+        assert_eq!(
+            discarded.decision().review.invalidated_promotions,
+            vec!["gate-live".to_string()]
+        );
+        assert_eq!(gate_status(&fixture, "gate-live"), "expired");
+
+        // Late approve, deny and escalate through the resolver: none of them
+        // finds a pending gate.
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", true, None))
+            .await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", false, None))
+            .await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", false, Some("gate-next")))
+            .await;
+        // A resolver that looked the gate up before the tombstone: its writes
+        // lose, and the batch it holds no longer validates.
+        assert!(
+            !fixture
+                .store
+                .resolve_pending_promotion(REALM, "gate-live", "denied")
+                .await
+                .expect("resolve")
+        );
+        assert!(
+            !fixture
+                .store
+                .rekey_pending_promotion(REALM, "gate-live", "gate-next")
+                .await
+                .expect("rekey")
+        );
+        fixture
+            .store
+            .commit(held)
+            .await
+            .expect_err("the held batch cannot publish over the tombstone");
+
+        assert_eq!(gate_status(&fixture, "gate-live"), "expired");
+        assert!(
+            fixture
+                .store
+                .pending_promotion_by_id(REALM, "gate-next")
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .is_empty(),
+            "nothing publishes after the tombstone"
+        );
+    }
+
+    /// The other commit order: a gate approved before the operator decides
+    /// publishes, and the later tombstone gets the record's actual state
+    /// (tombstoned by the promotion, never reviewed) without touching the
+    /// committed gate or claiming it prevented anything.
+    #[tokio::test]
+    async fn a_promotion_committed_before_an_operator_tombstone_stands() {
+        use crate::memory::review::{
+            QuarantineDecision, QuarantineReviewError, QuarantineReviewRefusal,
+        };
+
+        let fixture = build_fixture(vec![], vec![]);
+        let (title, body) = ("Shared convention", "page the secondary first after hours");
+        let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+        let token = stage_gated_promotion_batch(&fixture, &origin).await;
+        map_gate(&fixture, "gate-first", &origin, &token).await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-first", true, None))
+            .await;
+        assert_eq!(gate_status(&fixture, "gate-first"), "committed");
+
+        let late = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await;
+        assert!(
+            matches!(
+                &late,
+                Err(QuarantineReviewError::Refused(
+                    QuarantineReviewRefusal::NotQuarantined {
+                        status: "tombstoned",
+                        released_as: None,
+                    }
+                ))
+            ),
+            "{late:?}"
+        );
+        assert_eq!(gate_status(&fixture, "gate-first"), "committed");
+        assert_eq!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .len(),
+            1,
+            "the approved promotion stands"
         );
     }
 

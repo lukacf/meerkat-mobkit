@@ -50,12 +50,16 @@ pub enum MemoryTimelineEvent {
         proposal_id: Option<String>,
         gated: bool,
     },
-    /// A dream reviewed a quarantined record.
+    /// A quarantine verdict on a record. A review transaction emits it once
+    /// its decision has committed, with `successor_id` naming a release's
+    /// successor; who decided and why stay in the review's protected audit
+    /// rows and receipt, never on this system-wide timeline.
     QuarantineVerdict {
         realm: String,
         record_id: String,
         verdict: String,
         rationale: Option<String>,
+        successor_id: Option<String>,
     },
     /// A quarantine release/promotion verdict was blocked before staging:
     /// the record's content matches a §10.4 secret pattern class, which
@@ -241,12 +245,21 @@ impl MemoryTimelineEvent {
                 record_id,
                 verdict,
                 rationale,
-            } => json!({
-                "realm": realm,
-                "record_id": record_id,
-                "verdict": verdict,
-                "rationale": rationale,
-            }),
+                successor_id,
+            } => {
+                let mut data = json!({
+                    "realm": realm,
+                    "record_id": record_id,
+                    "verdict": verdict,
+                    "rationale": rationale,
+                });
+                // Added only when present, so verdicts without a successor
+                // keep their payload shape.
+                if let (Some(successor_id), Some(object)) = (successor_id, data.as_object_mut()) {
+                    object.insert("successor_id".to_string(), json!(successor_id));
+                }
+                data
+            }
             Self::QuarantineReleaseBlocked {
                 realm,
                 record_id,
