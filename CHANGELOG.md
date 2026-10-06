@@ -835,6 +835,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The gateway's agent-memory recorder (`memory`) reaches members whenever
+  memory is enabled, not only when the host also supplies an
+  `AgentCustomizer`. With memory enabled and no host customizer, members
+  had `memory_search` but no recorder. There were two causes:
+  - A member materialized outside the roster bootstrap (lazily on first
+    dispatch, or repaired at delivery) ran no customizer, because the
+    gateway never installed its composed customizer (the host's and/or the
+    agent-memory one) as the identity runtime's own. It now does, as the
+    library builder already did.
+  - A member restored natively at start (persistent mob storage), whose
+    later customized resume attaches the restored occupant, only receives
+    customizer tools through the per-identity customizer tool registry.
+    The gateway created that registry only for a host customizer. It now
+    creates it whenever a customizer is composed.
+  - Custody, grants and taint are unchanged. A profile with memory
+    disabled still never carries the recorder.
+
 - The console's Approvals inbox shows the gating owner's recorded audit
   outcomes as recorded (#594, shipped in 0.8.46).
   - **Audit rows:** each shows its tier (`r0` to `r3`, or "Unknown" with the

@@ -13783,9 +13783,14 @@ external_addressable = true
 
     // `customize_build` tools follow each identity member across meerkat-side
     // rebuilds (restart restore, adoption, respawn, delivery-time repair)
-    // through one stable dispatcher per identity (#563).
+    // through one stable dispatcher per identity (#563). The registry follows
+    // whether a customizer is composed at all: the host's, or the agent-memory
+    // customizer that wraps it (and runs without one). Gating it on the host
+    // flag alone dropped the memory recorder from members of hosts that
+    // enable memory without their own customizer.
+    let composes_agent_customizer = has_agent_customizer || gateway_options.agent_memory.is_some();
     let customizer_tool_registry =
-        has_agent_customizer.then(meerkat_mobkit::identity_first::CustomizerToolRegistry::new);
+        composes_agent_customizer.then(meerkat_mobkit::identity_first::CustomizerToolRegistry::new);
     let mob_spec = match customizer_tool_registry.as_ref() {
         Some(registry) => mob_spec.with_spawn_member_customizer(Arc::new(
             meerkat_mobkit::identity_first::CustomizerToolsSpawnCustomizer::new(registry.clone()),
@@ -14372,6 +14377,12 @@ external_addressable = true
             None
         };
         irt.set_agent_memory(agent_memory_injector).await;
+        // Install the composed customizer (host and/or agent memory) as the
+        // runtime's own, as the library builder does: a member materialized
+        // outside the roster bootstrap (lazy materialization on first
+        // dispatch, delivery-time repair) carries no per-call override and
+        // runs the installed customizer, so without this it ran none.
+        irt.set_agent_customizer(customizer.clone()).await;
 
         init_progress.enter(InitPhase::Roster);
         if shutdown_requested.load(Ordering::Acquire) {
