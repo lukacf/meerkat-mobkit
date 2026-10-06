@@ -3445,7 +3445,8 @@ async function runCheckedSaveBrowserProof(mode) {
       assert(await save.isEnabled());
       checkpoints.push({ step: "reviewed-without-save", writes: writes.length, draft: await draft.inputValue() });
       await save.click();
-      if (mode === "group") await page.getByTestId("access-group:ops").getByText("carol@example.test", { exact: true }).waitFor();
+      // A member chip also carries its Inspect access control, so match the member text within it.
+      if (mode === "group") await page.getByTestId("access-group:ops").getByText("carol@example.test").waitFor();
       else await page.getByTestId("access-admins-input").waitFor({ state: "detached" });
       assert.equal(writes.length, 2);
       const lastPayload = mode === "group" ? { name: "ops", group: { ...newerGroup, members: ["carol@example.test"] } } : { config: { ...original, admins: draftText.split(", "), rules: [newerRule] } };
