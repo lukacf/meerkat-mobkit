@@ -737,6 +737,37 @@ writes are the system's only path for:
   **quarantine-promote into Mob or Operator scope requires an operator approval
   through the existing gating flow**; the steward proposes, it does not commit
   those.
+
+  > **As built (operator review).** The review transaction is store-owned:
+  > `StewardStore::review_quarantined` decides one quarantined record in its
+  > own scope (release = successor `<id>-released` at `agent_observed`,
+  > `derived_from` the origin, origin tombstoned; a quarantined update
+  > supersedes its still-active prior; tombstone = discard) in one
+  > transaction through the staged validator, refusing typed on a live
+  > pending gate, a secret-shaped body, a changed content hash, a stale
+  > update or an occupied successor id. Replays are recognized from the
+  > review's own audit evidence (`detail.review`), never from a
+  > successor-shaped row. Gated promotions past their seven-day expiry are
+  > expired by the review itself, so a persisted orphan blocks review only
+  > until then, with no steward needed.
+  > A live gate blocks a release, never an operator's tombstone: the
+  > tombstone invalidates the record's pending promotions in the same
+  > transaction (mapping expired, staged batch discarded, ids in
+  > `detail.review.invalidated_promotions`), and gating resolutions change
+  > only a still-pending promotion, so a late approval, denial or
+  > escalation can neither publish, overwrite nor revive it. A gate
+  > registered after a review has committed loses too: its approval fails
+  > validation against the tombstoned origin and its mapping expires,
+  > publishing nothing.
+  > A review emits `memory.quarantine.verdict` only for a committed
+  > decision, with no reviewer or rationale, and the steward's open-loop
+  > nudge carries no rationale either; quarantined content stays
+  > reviewer-only after a release, tombstone or forget retires it.
+  > Operators reach it through the console's
+  > `mobkit/memory/quarantine/decide`, identity scope only, with
+  > `memory.quarantine.review` plus the identity's read/view and
+  > write (release) or delete (tombstone) grants (§10.3). Cross-scope
+  > promotion still rides the gating flow.
 - **Retention**: when a scope approaches its floors, the dream consolidates or
   tombstones; deterministic code never silently evicts.
 - **Usage audit** (§9.2) and **exit interviews**: a retiring identity's store is
