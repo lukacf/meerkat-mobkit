@@ -2703,7 +2703,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.8.46",
+        "CARGO_PKG_VERSION": "0.8.47",
         "CARGO_BIN_NAME": "extension_state",
         "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
