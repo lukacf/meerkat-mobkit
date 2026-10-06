@@ -289,7 +289,7 @@ Deciding needs `memory.quarantine.review` plus `agent.view` and `agent.memory.re
 
 Quarantined content stays reviewer-only after it is decided: a released or tombstoned original, and a quarantined write removed by `forget`, still need `memory.quarantine.review` to read, while a released successor is ordinary memory. A review emits its `memory.quarantine.verdict` timeline event only once the decision has committed; the event names the record, the verdict and any successor, never the reviewer or the rationale. The steward's open-loop nudge (verdict `open_loop_escalated`) uses the same event and names only the record, without the dream's rationale.
 
-The store operation behind it is `StewardStore::review_quarantined`, which the bundled SQLite store implements.
+The store operation behind it is `StewardStore::review_quarantined`, which the bundled SQLite store implements. The memory steward's dream runs the same operation for its `release` and `tombstone` verdicts, recorded with reviewer `{"kind": "steward", "run_id": ...}`: whichever reviewer commits first decides the record, and the other gets the replay or a refusal. A steward `hold` changes nothing and emits no verdict event; a `promote_pending_gate` verdict reports through its gate (`memory.promotion.pending_gate`).
 
 ## Console Memory panel
 

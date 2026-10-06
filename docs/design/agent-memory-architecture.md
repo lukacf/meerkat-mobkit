@@ -767,7 +767,10 @@ writes are the system's only path for:
   > `mobkit/memory/quarantine/decide`, identity scope only, with
   > `memory.quarantine.review` plus the identity's read/view and
   > write (release) or delete (tombstone) grants (§10.3). Cross-scope
-  > promotion still rides the gating flow.
+  > promotion still rides the gating flow. The steward's `release` and
+  > `tombstone` verdicts run the same review (reviewer `steward`), so a
+  > record is decided at most once whichever reviewer gets there first,
+  > and a dream reports a verdict only once it is applied.
 - **Retention**: when a scope approaches its floors, the dream consolidates or
   tombstones; deterministic code never silently evicts.
 - **Usage audit** (§9.2) and **exit interviews**: a retiring identity's store is

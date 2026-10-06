@@ -170,9 +170,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Authorized `/console/experience` responses provide an opaque `storage_scope`
   for runtime/principal-separated browser drafts and queues. Explicit host
   `storageNamespace` values continue to take precedence.
+- The memory steward's `memory.quarantine.verdict` frames report applied
+  releases and tombstones only, with `rationale` null; its `hold` and
+  `promote_pending_gate` verdicts no longer emit one (see Changed).
 
 ### Changed
 
+- The memory steward's quarantine `release` and `tombstone` verdicts run the
+  operator review's store transaction (`StewardStore::review_quarantined`,
+  reviewer `steward`; see Added), so a record is decided once, by whichever
+  reviewer commits first; the other is skipped or replays.
+  - A release's successor is `<memory_id>-released` instead of a fresh id,
+    and a quarantined update is released as a supersede of the record it
+    updates instead of leaving two active versions. When that record is
+    gone, the release is refused (`stale_update`) and skipped loudly; the
+    update stays quarantined, tombstone remaining its exit.
+  - `memory.quarantine.verdict` comes from the store once the review
+    commits, without the steward's rationale (its audit row keeps it).
+    `hold` changes nothing and `promote_pending_gate` reports through
+    `memory.promotion.pending_gate`, so neither emits a verdict any more.
 - CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
   `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
   (actions/runner-images#14748). The move to 26 will be validated
