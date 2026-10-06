@@ -379,24 +379,90 @@ mod tests {
         ));
     }
 
-    /// Ops-capable half for the binding tests: records what it was bound to.
+    type BoundTo = (
+        Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        meerkat_core::types::SessionId,
+    );
+
+    /// A context-entry dispatch as an ops-capable half saw it: the tool name,
+    /// the context's runtime origin session, and its `witness` turn metadata.
+    type ContextDispatch = (
+        String,
+        Option<meerkat_core::types::SessionId>,
+        Option<serde_json::Value>,
+    );
+
+    /// Everything an ops-capable half observed. It lives outside the half, so
+    /// a test holds no extra handle to the half itself.
+    #[derive(Default)]
+    struct OpsObservations {
+        bound: Option<BoundTo>,
+        plain_dispatches: Vec<String>,
+        context_dispatches: Vec<ContextDispatch>,
+    }
+
+    /// Ops-capable half for the binding tests.
     struct OpsHalf {
-        name: &'static str,
-        bound: Arc<std::sync::Mutex<Option<meerkat_core::types::SessionId>>>,
+        names: Vec<&'static str>,
+        seen: Arc<std::sync::Mutex<OpsObservations>>,
+    }
+
+    impl OpsHalf {
+        fn observed(
+            names: Vec<&'static str>,
+        ) -> (
+            Arc<dyn AgentToolDispatcher>,
+            Arc<std::sync::Mutex<OpsObservations>>,
+        ) {
+            let seen = Arc::new(std::sync::Mutex::new(OpsObservations::default()));
+            let half = Arc::new(Self {
+                names,
+                seen: Arc::clone(&seen),
+            });
+            (half, seen)
+        }
     }
 
     #[async_trait::async_trait]
     impl AgentToolDispatcher for OpsHalf {
         fn tools(&self) -> Arc<[Arc<ToolDef>]> {
-            Arc::from([Arc::new(ToolDef {
-                name: self.name.into(),
-                description: String::new(),
-                input_schema: json!({"type": "object"}),
-                provenance: None,
-            })])
+            self.names
+                .iter()
+                .map(|name| {
+                    Arc::new(ToolDef {
+                        name: (*name).into(),
+                        description: String::new(),
+                        input_schema: json!({"type": "object"}),
+                        provenance: None,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into()
         }
 
         async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+            self.seen
+                .lock()
+                .expect("ops lock")
+                .plain_dispatches
+                .push(call.name.to_string());
+            Err(ToolError::not_found(call.name))
+        }
+
+        async fn dispatch_with_context(
+            &self,
+            call: ToolCallView<'_>,
+            context: &meerkat_core::ToolDispatchContext,
+        ) -> Result<ToolDispatchOutcome, ToolError> {
+            self.seen
+                .lock()
+                .expect("ops lock")
+                .context_dispatches
+                .push((
+                    call.name.to_string(),
+                    context.origin_session_id().cloned(),
+                    context.turn_metadata("witness").cloned(),
+                ));
             Err(ToolError::not_found(call.name))
         }
 
@@ -408,11 +474,11 @@ mod tests {
 
         fn bind_ops_lifecycle(
             self: Arc<Self>,
-            _registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
             owner_bridge_session_id: meerkat_core::types::SessionId,
         ) -> Result<BindOutcome, OpsLifecycleBindError> {
             let this = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
-            *this.bound.lock().expect("bound lock") = Some(owner_bridge_session_id);
+            this.seen.lock().expect("ops lock").bound = Some((registry, owner_bridge_session_id));
             Ok(BindOutcome::Bound(Arc::new(this)))
         }
     }
@@ -421,57 +487,175 @@ mod tests {
         Arc::new(meerkat_runtime::RuntimeOpsLifecycleRegistry::new())
     }
 
-    /// The composition reports an ops-capable half and rebinds it, keeping
-    /// the other half and the precedence: binding a composed slot must reach
-    /// the ops-capable dispatcher behind it, not stop at the wrapper.
-    #[test]
-    fn a_composition_reports_and_binds_its_ops_capable_half() {
-        let bound = Arc::new(std::sync::Mutex::new(None));
-        let ops: Arc<dyn AgentToolDispatcher> = Arc::new(OpsHalf {
-            name: "ops_tool",
-            bound: Arc::clone(&bound),
-        });
-        let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
-        assert!(composed.capabilities().ops_lifecycle);
-        let owner = meerkat_core::types::SessionId::new();
-        let outcome = composed
-            .bind_ops_lifecycle(registry(), owner.clone())
-            .expect("an exclusively owned composition binds");
-        assert!(outcome.was_bound());
-        assert_eq!(bound.lock().expect("bound lock").clone(), Some(owner));
-        let rebound = outcome.into_dispatcher();
-        let names: Vec<String> = rebound.tools().iter().map(|t| t.name.to_string()).collect();
-        assert_eq!(names, vec!["weather".to_string(), "ops_tool".to_string()]);
+    /// The half was bound to exactly `registry`, with `owner` as owner.
+    fn assert_bound_to(
+        seen: &std::sync::Mutex<OpsObservations>,
+        registry: &Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        owner: &meerkat_core::types::SessionId,
+    ) {
+        let (bound_registry, bound_owner) = seen
+            .lock()
+            .expect("ops lock")
+            .bound
+            .clone()
+            .expect("the ops-capable half was bound");
+        assert!(Arc::ptr_eq(&bound_registry, registry), "the given registry");
+        assert_eq!(&bound_owner, owner);
     }
 
-    /// A shared ops-capable half, or a shared composition, refuses typed
-    /// instead of running with the half silently unbound.
+    fn tool_names(dispatcher: &Arc<dyn AgentToolDispatcher>) -> Vec<String> {
+        dispatcher
+            .tools()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    /// The composition reports an ops-capable FALLBACK and rebinds it,
+    /// keeping the other half and the precedence: binding a composed slot
+    /// must reach the ops-capable dispatcher behind it, not stop at the
+    /// wrapper.
+    #[test]
+    fn a_composition_reports_and_binds_its_ops_capable_fallback() {
+        let (ops, seen) = OpsHalf::observed(vec!["ops_tool"]);
+        let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
+        assert!(composed.capabilities().ops_lifecycle);
+        let registry = registry();
+        let owner = meerkat_core::types::SessionId::new();
+        let outcome = composed
+            .bind_ops_lifecycle(Arc::clone(&registry), owner.clone())
+            .expect("an exclusively owned composition binds");
+        assert!(outcome.was_bound());
+        assert_bound_to(&seen, &registry, &owner);
+        assert_eq!(
+            tool_names(&outcome.into_dispatcher()),
+            vec!["weather".to_string(), "ops_tool".to_string()]
+        );
+    }
+
+    /// The same for an ops-capable PRIMARY over a non-ops fallback: the
+    /// capability is reported from the primary alone, and the primary is the
+    /// half that binds.
+    #[test]
+    fn a_composition_reports_and_binds_its_ops_capable_primary() {
+        let (ops, seen) = OpsHalf::observed(vec!["ops_tool"]);
+        let composed = ComposedExternalTools::over(ops, Some(Probe::new(vec!["weather"])));
+        assert!(composed.capabilities().ops_lifecycle);
+        let registry = registry();
+        let owner = meerkat_core::types::SessionId::new();
+        let outcome = composed
+            .bind_ops_lifecycle(Arc::clone(&registry), owner.clone())
+            .expect("an exclusively owned composition binds");
+        assert!(outcome.was_bound());
+        assert_bound_to(&seen, &registry, &owner);
+        assert_eq!(
+            tool_names(&outcome.into_dispatcher()),
+            vec!["ops_tool".to_string(), "weather".to_string()]
+        );
+    }
+
+    /// With BOTH halves ops-capable, both bind to the same registry and owner,
+    /// and the rebound composition keeps its routing: the primary still wins
+    /// a colliding name, and the context entry point still forwards the
+    /// caller's (non-default) context to whichever half owns the name.
+    #[tokio::test]
+    async fn a_composition_binds_both_ops_halves_and_keeps_its_routing() {
+        let (primary, primary_seen) = OpsHalf::observed(vec!["shared", "primary_ops"]);
+        let (fallback, fallback_seen) = OpsHalf::observed(vec!["shared", "fallback_ops"]);
+        let composed = ComposedExternalTools::over(primary, Some(fallback));
+        assert!(composed.capabilities().ops_lifecycle);
+        let registry = registry();
+        let owner = meerkat_core::types::SessionId::new();
+        let outcome = composed
+            .bind_ops_lifecycle(Arc::clone(&registry), owner.clone())
+            .expect("an exclusively owned composition binds");
+        assert!(outcome.was_bound());
+        assert_bound_to(&primary_seen, &registry, &owner);
+        assert_bound_to(&fallback_seen, &registry, &owner);
+        let rebound = outcome.into_dispatcher();
+        assert_eq!(
+            tool_names(&rebound),
+            vec![
+                "shared".to_string(),
+                "primary_ops".to_string(),
+                "fallback_ops".to_string()
+            ]
+        );
+
+        let args = serde_json::value::RawValue::from_string("{}".to_string()).expect("raw");
+        let _ = rebound.dispatch(call("shared", &args)).await;
+
+        let origin = meerkat_core::types::SessionId::new();
+        let context = meerkat_core::ToolDispatchContext::default()
+            .with_runtime_identity(origin.clone(), None)
+            .with_turn_metadata(std::collections::BTreeMap::from([(
+                "witness".to_string(),
+                json!("attention-7"),
+            )]));
+        let _ = rebound
+            .dispatch_with_context(call("fallback_ops", &args), &context)
+            .await;
+        let _ = rebound
+            .dispatch_with_context(call("shared", &args), &context)
+            .await;
+
+        let expected = |name: &str| {
+            (
+                name.to_string(),
+                Some(origin.clone()),
+                Some(json!("attention-7")),
+            )
+        };
+        let primary_seen = primary_seen.lock().expect("ops lock");
+        let fallback_seen = fallback_seen.lock().expect("ops lock");
+        assert_eq!(
+            primary_seen.plain_dispatches,
+            vec!["shared".to_string()],
+            "the primary wins the colliding name after the rebind"
+        );
+        assert_eq!(primary_seen.context_dispatches, vec![expected("shared")]);
+        assert!(
+            fallback_seen.plain_dispatches.is_empty(),
+            "context calls must not degrade to plain dispatch, and the shadowed copy is never reached"
+        );
+        assert_eq!(
+            fallback_seen.context_dispatches,
+            vec![expected("fallback_ops")]
+        );
+    }
+
+    /// A shared ops-capable half (either one) or a shared composition refuses
+    /// typed instead of running with a half silently unbound.
     #[test]
     fn a_shared_ops_half_or_composition_refuses_with_shared_ownership() {
-        let ops: Arc<dyn AgentToolDispatcher> = Arc::new(OpsHalf {
-            name: "ops_tool",
-            bound: Arc::new(std::sync::Mutex::new(None)),
-        });
-        let retained_half = Arc::clone(&ops);
+        let (ops, seen) = OpsHalf::observed(vec!["ops_tool"]);
+        let retained_fallback = Arc::clone(&ops);
         let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
         assert!(matches!(
             composed.bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new()),
             Err(OpsLifecycleBindError::SharedOwnership)
         ));
-        drop(retained_half);
+        assert!(seen.lock().expect("ops lock").bound.is_none());
+        drop(retained_fallback);
 
-        let composed = ComposedExternalTools::over(
-            Probe::new(vec!["weather"]),
-            Some(Arc::new(OpsHalf {
-                name: "ops_tool",
-                bound: Arc::new(std::sync::Mutex::new(None)),
-            })),
-        );
+        let (ops, seen) = OpsHalf::observed(vec!["ops_tool"]);
+        let retained_primary = Arc::clone(&ops);
+        let composed = ComposedExternalTools::over(ops, Some(Probe::new(vec!["weather"])));
+        assert!(matches!(
+            composed.bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new()),
+            Err(OpsLifecycleBindError::SharedOwnership)
+        ));
+        assert!(seen.lock().expect("ops lock").bound.is_none());
+        drop(retained_primary);
+
+        let (ops, seen) = OpsHalf::observed(vec!["ops_tool"]);
+        let composed = ComposedExternalTools::over(Probe::new(vec!["weather"]), Some(ops));
         let retained_composition = Arc::clone(&composed);
         assert!(matches!(
             composed.bind_ops_lifecycle(registry(), meerkat_core::types::SessionId::new()),
             Err(OpsLifecycleBindError::SharedOwnership)
         ));
+        assert!(seen.lock().expect("ops lock").bound.is_none());
         drop(retained_composition);
     }
 

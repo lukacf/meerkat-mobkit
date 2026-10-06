@@ -6386,22 +6386,35 @@ comms = true
         }
     }
 
-    struct OwnedBuildFixture {
-        _temp: tempfile::TempDir,
-        builder: StdioCallbackAgentBuilder,
-        request: CreateSessionRequest,
-        session_id: meerkat_core::SessionId,
-        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
-        _responder: Option<tokio::task::JoinHandle<()>>,
+    /// How the scripted SDK host is configured for an owned-build test.
+    enum SdkBuildHost {
+        /// No SDK SessionBuilder: the gateway builder takes its no-callback
+        /// branch. The host still answers, so a stray callback is recorded
+        /// instead of hanging.
+        Absent,
+        /// An SDK SessionBuilder answering every `callback/build_agent` with
+        /// this response.
+        Answers(Value),
     }
 
-    /// A session-owned build request carrying `external` as its external
-    /// tools, through the gateway builder. With `callback_tools`, the builder
-    /// takes the SDK callback branch and the SDK answers with those tools, so
-    /// they compose OVER `external`.
+    struct OwnedBuildFixture {
+        _temp: tempfile::TempDir,
+        service: EphemeralSessionService<StdioCallbackAgentBuilder>,
+        request: CreateSessionRequest,
+        session_id: meerkat_core::SessionId,
+        machine: meerkat_runtime::MeerkatMachine,
+        builds: Arc<std::sync::Mutex<Vec<Value>>>,
+        _responder: tokio::task::JoinHandle<()>,
+    }
+
+    /// A session-owned create request carrying `external` as its external
+    /// tools, and the gateway's non-persistent service composition (the
+    /// gateway builder inside an `EphemeralSessionService`) to create it
+    /// through. The service's own create path decides how the request
+    /// reaches the builder, as it does in the gateway.
     async fn owned_build_fixture(
         external: Arc<dyn meerkat_core::AgentToolDispatcher>,
-        callback_tools: Option<Value>,
+        host: SdkBuildHost,
     ) -> OwnedBuildFixture {
         let temp = tempfile::tempdir().expect("temp dir");
         let mut inner = FactoryAgentBuilder::new(
@@ -6409,14 +6422,13 @@ comms = true
             Config::default(),
         );
         inner.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
-        let runtime_adapter = meerkat_runtime::MeerkatMachine::ephemeral();
+        let machine = meerkat_runtime::MeerkatMachine::ephemeral();
         let session = meerkat_core::Session::new();
         let session_id = session.id().clone();
-        let bindings = runtime_adapter
+        let bindings = machine
             .prepare_bindings(session_id.clone())
             .await
             .expect("prepare bindings");
-        let registry = Arc::clone(bindings.ops_lifecycle());
         let request = CreateSessionRequest {
             injected_context: Vec::new(),
             model: "claude-sonnet-4-5".to_string(),
@@ -6436,138 +6448,207 @@ comms = true
         };
         let (stdout_tx, stdout_rx) = mpsc::channel(16);
         let bridge = StdioCallbackBridge::new(stdout_tx);
-        let (has_session_builder, responder) = match callback_tools {
-            Some(tools) => {
-                let (_builds, responder) =
-                    answer_build_callbacks(stdout_rx, bridge.clone(), json!({ "tools": tools }));
-                (true, Some(responder))
-            }
-            None => (false, None),
+        let (has_session_builder, response) = match host {
+            SdkBuildHost::Absent => (false, json!({})),
+            SdkBuildHost::Answers(response) => (true, response),
+        };
+        let (builds, responder) = answer_build_callbacks(stdout_rx, bridge.clone(), response);
+        let builder = StdioCallbackAgentBuilder {
+            inner,
+            bridge,
+            has_session_builder,
+            session_store: None,
+            detached_jobs: None,
         };
         OwnedBuildFixture {
             _temp: temp,
-            builder: StdioCallbackAgentBuilder {
-                inner,
-                bridge,
-                has_session_builder,
-                session_store: None,
-                detached_jobs: None,
-            },
+            service: EphemeralSessionService::new(builder, 4),
             request,
             session_id,
-            registry,
+            machine,
+            builds,
             _responder: responder,
         }
     }
 
-    fn assert_bound_to_session(seen: &ObservedBinding, fixture: &OwnedBuildFixture) {
+    fn weather_callback_tools() -> Value {
+        json!({ "tools": [{
+            "name": "weather",
+            "description": "Look up the weather",
+            "input_schema": {"type": "object"}
+        }]})
+    }
+
+    fn build_callbacks_seen(builds: &std::sync::Mutex<Vec<Value>>) -> usize {
+        builds.lock().expect("build log").len()
+    }
+
+    /// The source was bound to the registry the runtime machine holds for
+    /// the created session, with the created session as owner.
+    async fn assert_bound_to_created_session(
+        seen: &ObservedBinding,
+        machine: &meerkat_runtime::MeerkatMachine,
+        created: &meerkat_core::SessionId,
+    ) {
         let (registry, owner) = seen
             .lock()
             .expect("source lock")
             .clone()
             .expect("the ops-capable external source was bound");
-        assert!(Arc::ptr_eq(&registry, &fixture.registry));
-        assert_eq!(owner, fixture.session_id);
+        let session_registry = machine
+            .ops_lifecycle_registry(created)
+            .await
+            .expect("the created session has a runtime ops registry");
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&registry), Arc::as_ptr(&session_registry)),
+            "bound to the created session's own ops registry"
+        );
+        assert_eq!(&owner, created);
     }
 
-    /// No SDK SessionBuilder: the gateway builder hands the owned request
-    /// straight to the factory, so an ops-capable external source moves into
-    /// the agent and binds to the session's registry with the session as
-    /// owner. Through the borrowed path it stayed shared and was refused.
+    async fn visible_tool_names(
+        service: &EphemeralSessionService<StdioCallbackAgentBuilder>,
+        session_id: &meerkat_core::SessionId,
+    ) -> Vec<String> {
+        service
+            .live_visible_tool_defs(session_id)
+            .await
+            .expect("the created session is live")
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    /// No SDK SessionBuilder: creating the session through the service hands
+    /// the owned request straight to the factory, so the ops-capable external
+    /// source moves into the created session's agent and binds to that
+    /// session's registry. Through the borrowed path it stayed shared and
+    /// was refused.
     #[tokio::test]
-    async fn the_owned_build_binds_an_ops_capable_external_source() {
+    async fn a_session_created_without_a_callback_binds_its_ops_capable_external_source() {
         let seen = Arc::new(std::sync::Mutex::new(None));
-        let mut fixture = owned_build_fixture(
+        let fixture = owned_build_fixture(
             Arc::new(ObservedOpsSource {
                 seen: Arc::clone(&seen),
             }),
-            None,
+            SdkBuildHost::Absent,
         )
         .await;
-        let (event_tx, _event_rx) = mpsc::channel(8);
-        let agent = fixture
-            .builder
-            .build_agent_taking_tools(&mut fixture.request, event_tx)
-            .await
-            .expect("the owned build binds, no SharedOwnership");
-        drop(agent);
-        assert_bound_to_session(&seen, &fixture);
-        assert!(
-            fixture
-                .request
-                .build
-                .as_ref()
-                .is_some_and(|build| build.external_tools.is_none()),
-            "the external source moved out of the caller's request"
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            0,
+            "no SDK SessionBuilder, so no build callback"
         );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
     }
 
-    /// With an SDK SessionBuilder whose callback adds its own tools, the
-    /// callback tools compose OVER the ops-capable external source, and the
-    /// composed slot still binds it: the original request's slot is drained
-    /// before the transform, and the composition forwards the binding.
+    /// An SDK SessionBuilder whose callback answers without `tools` takes the
+    /// callback branch but installs nothing: the drained external source is
+    /// put back into the transformed request uncomposed, and the created
+    /// session binds it.
     #[tokio::test]
-    async fn the_owned_callback_build_binds_an_ops_source_under_callback_tools() {
+    async fn a_session_created_through_a_callback_without_tools_binds_its_ops_source() {
         let seen = Arc::new(std::sync::Mutex::new(None));
-        let mut fixture = owned_build_fixture(
+        let fixture = owned_build_fixture(
             Arc::new(ObservedOpsSource {
                 seen: Arc::clone(&seen),
             }),
-            Some(json!([{
-                "name": "weather",
-                "description": "Look up the weather",
-                "input_schema": {"type": "object"}
-            }])),
+            SdkBuildHost::Answers(json!({})),
         )
         .await;
-        let (event_tx, _event_rx) = mpsc::channel(8);
-        let agent = fixture
-            .builder
-            .build_agent_taking_tools(&mut fixture.request, event_tx)
-            .await
-            .expect("the owned callback build binds, no SharedOwnership");
-        drop(agent);
-        assert_bound_to_session(&seen, &fixture);
-        assert!(
-            fixture
-                .request
-                .build
-                .as_ref()
-                .is_some_and(|build| build.external_tools.is_none()),
-            "the original request no longer holds the source"
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the build callback ran and answered without tools"
         );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "weather"), "{names:?}");
+    }
+
+    /// An SDK SessionBuilder whose callback adds its own tools: they compose
+    /// OVER the ops-capable external source, and the created session still
+    /// binds it, because the original request's slot is drained before the
+    /// transform and the composition forwards the binding.
+    #[tokio::test]
+    async fn a_session_created_through_a_callback_adding_tools_binds_its_ops_source() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            SdkBuildHost::Answers(weather_callback_tools()),
+        )
+        .await;
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the build callback ran"
+        );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "weather"), "{names:?}");
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
     }
 
     /// A host that keeps its own handle to the ops-capable source cannot have
-    /// it rebound: the callback build fails typed instead of running it
-    /// silently unbound.
+    /// it rebound: creation fails typed after the callback ran, instead of
+    /// running the session with the source silently unbound, and no session
+    /// is left behind.
     #[tokio::test]
-    async fn a_retained_ops_source_fails_the_owned_callback_build_with_shared_ownership() {
+    async fn a_retained_ops_source_fails_session_creation_with_shared_ownership() {
         let seen = Arc::new(std::sync::Mutex::new(None));
         let external: Arc<dyn meerkat_core::AgentToolDispatcher> = Arc::new(ObservedOpsSource {
             seen: Arc::clone(&seen),
         });
         let retained = Arc::clone(&external);
-        let mut fixture = owned_build_fixture(
-            external,
-            Some(json!([{
-                "name": "weather",
-                "description": "Look up the weather",
-                "input_schema": {"type": "object"}
-            }])),
+        let fixture =
+            owned_build_fixture(external, SdkBuildHost::Answers(weather_callback_tools())).await;
+        let error = match meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
         )
-        .await;
-        let (event_tx, _event_rx) = mpsc::channel(8);
-        let error = match fixture
-            .builder
-            .build_agent_taking_tools(&mut fixture.request, event_tx)
-            .await
+        .await
         {
             Ok(_) => panic!("a shared ops-capable source must not build"),
             Err(error) => error.to_string(),
         };
         assert!(error.contains("shared ownership"), "{error}");
         assert!(seen.lock().expect("source lock").is_none());
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the callback ran; binding refused the build"
+        );
+        assert!(matches!(
+            meerkat_core::service::SessionService::read(&fixture.service, &fixture.session_id)
+                .await,
+            Err(SessionError::NotFound { .. })
+        ));
         drop(retained);
     }
 
