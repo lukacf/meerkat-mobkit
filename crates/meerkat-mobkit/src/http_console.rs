@@ -57,7 +57,7 @@ use crate::mob_handle_runtime::{
 use crate::rpc::memory_methods::{
     parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
     parse_agent_memory_recall_params, parse_agent_memory_remember_params,
-    parse_agent_memory_update_params,
+    parse_agent_memory_update_params, parse_memory_quarantine_decide_params,
 };
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
@@ -97,8 +97,10 @@ pub struct ConsoleJsonState {
     /// console surface byte-for-byte compatible with the pre-access world.
     pub(crate) access: Option<AccessController>,
     /// Optional panel-capable store handle for the console Memory panel's
-    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (recall-only
-    /// provider, no memory configured) leaves those methods unadvertised.
+    /// read-only `mobkit/memory/panel/*` RPCs (§9.3) and the operator
+    /// quarantine decision (`mobkit/memory/quarantine/decide`). `None`
+    /// (recall-only provider, no memory configured) leaves those methods
+    /// unadvertised.
     pub(crate) memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     /// §16 Q1 provisional operator keying: the console send path notes
     /// "authenticated principal P addressed identity I" through this
@@ -2082,6 +2084,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/agent_memory/remember"
             | "mobkit/agent_memory/update"
             | "mobkit/agent_memory/forget"
+            | "mobkit/memory/quarantine/decide"
             | "mobkit/gating/decide"
             | "mobkit/mob_labels/set"
             | "mobkit/mob_labels/delete"
@@ -2479,6 +2482,9 @@ fn console_rpc_access_requirements(
         "mobkit/memory/panel/injections" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/harvests" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/quarantine" => one(ACTION_MEMORY_QUARANTINE_REVIEW, None),
+        "mobkit/memory/quarantine/decide" => {
+            Some(memory_quarantine_decide_requirements(params, identity))
+        }
         // `mob.memory.propose` gates future propose surfaces and
         // `mob.memory.commit` is reserved for a future direct-commit RPC —
         // steward promotions ride the existing gating flow (gating.decide),
@@ -2713,9 +2719,9 @@ fn memory_panel_scope_action(scope: &crate::memory::records::MemoryScope) -> &'s
 /// `mob.memory.read`; operator rows require the explicit
 /// `operator.memory.read` grant (cross-mob personal facts — an unscoped
 /// `agent.memory.read` deliberately does NOT cover them); realm rows
-/// require the unscoped read grant. Quarantined rows are additionally
-/// reviewer-only — their bodies are exactly the content the quarantine
-/// gate exists for.
+/// require the unscoped read grant. Quarantine evidence is additionally
+/// reviewer-only (its bodies are exactly the content the quarantine gate
+/// exists for), including after a review or forget tombstones it.
 fn memory_panel_record_visible(
     view: Option<&AccessView>,
     record: &crate::memory::records::MemoryRecord,
@@ -2737,13 +2743,25 @@ fn memory_panel_record_visible(
     if !scope_allowed {
         return false;
     }
-    if matches!(
-        record.status,
-        crate::memory::records::RecordStatus::Quarantined { .. }
-    ) {
+    if memory_panel_record_is_quarantine_evidence(record) {
         return view.allows(ACTION_MEMORY_QUARANTINE_REVIEW);
     }
     true
+}
+
+/// Quarantined content is reviewer-only, and stays so across the status
+/// transitions that retire it: a quarantined record, and a tombstoned one
+/// that was ever quarantined (a released or discarded origin, a forgotten
+/// quarantined write, or anything forgotten that descends from one). An
+/// active released successor is ordinary memory again and is not covered.
+fn memory_panel_record_is_quarantine_evidence(
+    record: &crate::memory::records::MemoryRecord,
+) -> bool {
+    match record.status {
+        crate::memory::records::RecordStatus::Quarantined { .. } => true,
+        crate::memory::records::RecordStatus::Tombstoned => record.ever_quarantined,
+        _ => false,
+    }
 }
 
 /// Per-row visibility for pending-promotion queue rows, mirroring
@@ -2773,15 +2791,26 @@ fn memory_panel_promotion_visible(
 }
 
 /// Serialize a record for the panel. List rows are body-free (`body_bytes`
-/// stands in); only the record-detail surface carries the body.
+/// stands in); only the record-detail surface carries the body, together
+/// with the `content_hash` a quarantine decision binds to.
 fn memory_panel_record_json(
     record: &crate::memory::records::MemoryRecord,
     include_body: bool,
 ) -> Value {
     let mut value = serde_json::to_value(record).unwrap_or(Value::Null);
-    if !include_body && let Some(object) = value.as_object_mut() {
-        object.remove("body");
-        object.insert("body_bytes".to_string(), json!(record.body.len()));
+    if let Some(object) = value.as_object_mut() {
+        if include_body {
+            object.insert(
+                "content_hash".to_string(),
+                json!(crate::memory::records::content_hash(
+                    &record.title,
+                    &record.body
+                )),
+            );
+        } else {
+            object.remove("body");
+            object.insert("body_bytes".to_string(), json!(record.body.len()));
+        }
     }
     value
 }
@@ -2944,12 +2973,10 @@ async fn handle_memory_panel_record(
     // Scope is only known post-load, so the entry gate lives here rather
     // than in the requirements table.
     if !memory_panel_record_visible(view, &record) {
-        let action = if matches!(
-            record.status,
-            crate::memory::records::RecordStatus::Quarantined { .. }
-        ) && view
-            .is_some_and(|view| view.enforced() && !view.allows(ACTION_MEMORY_QUARANTINE_REVIEW))
-        {
+        let action = if memory_panel_record_is_quarantine_evidence(&record)
+            && view.is_some_and(|view| {
+                view.enforced() && !view.allows(ACTION_MEMORY_QUARANTINE_REVIEW)
+            }) {
             ACTION_MEMORY_QUARANTINE_REVIEW
         } else {
             memory_panel_scope_action(&record.scope)
@@ -3069,6 +3096,181 @@ async fn handle_memory_panel_quarantine(
         })),
         None,
     )
+}
+
+/// `mobkit/memory/quarantine/decide` authority (§10.3): the reviewer grant
+/// (whoever decides must be allowed to read quarantined bodies), the panel's
+/// per-row read grants on the identity, and the identity's existing grant
+/// for the verdict's effect - `agent.memory.write` to release (it writes the
+/// successor), `agent.memory.delete` to tombstone. Any other verdict needs
+/// both, then fails parameter validation.
+fn memory_quarantine_decide_requirements(
+    params: &Value,
+    identity: Option<String>,
+) -> Vec<(&'static str, Option<String>)> {
+    let effect: &[&'static str] =
+        match normalized_console_rpc_string_param(params, "verdict").as_deref() {
+            Some("release") => &[ACTION_AGENT_MEMORY_WRITE],
+            Some("tombstone") => &[ACTION_AGENT_MEMORY_DELETE],
+            _ => &[ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+        };
+    let mut requirements = vec![
+        (ACTION_MEMORY_QUARANTINE_REVIEW, None),
+        (ACTION_AGENT_VIEW, identity.clone()),
+        (ACTION_AGENT_MEMORY_READ, identity.clone()),
+    ];
+    requirements.extend(effect.iter().map(|action| (*action, identity.clone())));
+    requirements
+}
+
+/// The reviewer recorded on a quarantine decision: the authenticated console
+/// principal only, never a name the caller asserts. This is attribution, not
+/// authorization: grants were already enforced for whoever called, an
+/// anonymous caller included, whenever access control is on. Only a host
+/// that runs without app auth reaches here with no principal, and the
+/// decision then records that none was known.
+fn memory_quarantine_reviewer(
+    authenticated_principal: Option<&str>,
+) -> crate::memory::review::QuarantineReviewer {
+    crate::memory::review::QuarantineReviewer::Operator {
+        principal: authenticated_principal
+            .map(str::trim)
+            .filter(|principal| !principal.is_empty())
+            .map(str::to_string),
+    }
+}
+
+/// The operator half of quarantine review (§10.1 "until steward/operator
+/// review"): one decision over a quarantined record in the identity's scope.
+/// Access was enforced up front; the store binds the decision to that scope
+/// and to the reviewed content, and refuses anything it cannot decide.
+async fn handle_memory_quarantine_decide(
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
+    authenticated_principal: Option<&str>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let request = match parse_memory_quarantine_decide_params(params) {
+        Ok(request) => request,
+        Err(err) => {
+            return invalid_params(response_id, format!("Invalid params: {}", err.message()));
+        }
+    };
+    let realm = request.realm.clone();
+    let reviewer = memory_quarantine_reviewer(authenticated_principal);
+    let outcome = store
+        .review_quarantined(crate::memory::review::QuarantineReviewRequest {
+            scope: crate::memory::records::MemoryScope::Identity {
+                realm: request.realm,
+                identity: request.identity.as_str().to_string(),
+            },
+            memory_id: request.memory_id,
+            decision: request.decision,
+            expected_content_hash: request.expected_content_hash,
+            reviewer,
+            rationale: request.rationale,
+        })
+        .await;
+    match outcome {
+        Ok(outcome) => response_value(
+            response_id,
+            Some(memory_quarantine_outcome_json(&realm, &outcome)),
+            None,
+        ),
+        Err(crate::memory::review::QuarantineReviewError::Refused(refusal)) => response_value(
+            response_id,
+            None,
+            Some(memory_quarantine_refusal_error(&refusal)),
+        ),
+        Err(crate::memory::review::QuarantineReviewError::Store(err)) => response_value(
+            response_id,
+            None,
+            Some(crate::rpc::agent_memory_rpc_error("quarantine review", err)),
+        ),
+    }
+}
+
+/// Receipts for both records as they stand now, plus the committed
+/// decision (verdict, reviewer, rationale, quarantine reason, audit token).
+/// A replay returns the original decision; this caller already holds the
+/// reviewer and read grants the decision's details are protected by.
+fn memory_quarantine_outcome_json(
+    realm: &str,
+    outcome: &crate::memory::review::QuarantineReviewOutcome,
+) -> Value {
+    let mut result = json!({
+        "outcome": outcome.outcome_str(),
+        "realm": realm,
+        "origin": serde_json::to_value(outcome.origin()).unwrap_or(Value::Null),
+        "successor": outcome
+            .successor()
+            .and_then(|successor| serde_json::to_value(successor).ok()),
+        "decision": serde_json::to_value(outcome.decision()).unwrap_or(Value::Null),
+    });
+    if let (
+        crate::memory::review::QuarantineReviewOutcome::Released {
+            superseded_prior, ..
+        },
+        Some(object),
+    ) = (outcome, result.as_object_mut())
+    {
+        object.insert("superseded_prior".to_string(), json!(superseded_prior));
+    }
+    result
+}
+
+/// A typed refusal: `data.reason` plus the refusal's own fields. The secret
+/// class is named; matched text never appears. A content mismatch carries no
+/// hash: echoing the stored one would let a caller decide without reading
+/// the record.
+fn memory_quarantine_refusal_error(
+    refusal: &crate::memory::review::QuarantineReviewRefusal,
+) -> JsonRpcError {
+    use crate::memory::review::QuarantineReviewRefusal;
+    let mut data = json!({
+        "kind": "memory_quarantine_review_refused",
+        "reason": refusal.reason_str(),
+    });
+    if let Some(object) = data.as_object_mut() {
+        match refusal {
+            QuarantineReviewRefusal::NotFound | QuarantineReviewRefusal::ContentMismatch => {}
+            QuarantineReviewRefusal::NotQuarantined {
+                status,
+                released_as,
+            } => {
+                object.insert("status".to_string(), json!(status));
+                object.insert("released_as".to_string(), json!(released_as));
+            }
+            QuarantineReviewRefusal::GatePending {
+                pending_id,
+                expires_at_ms,
+            } => {
+                object.insert("pending_id".to_string(), json!(pending_id));
+                object.insert("expires_at_ms".to_string(), json!(expires_at_ms));
+            }
+            QuarantineReviewRefusal::SuccessorConflict { successor_id } => {
+                object.insert("successor_id".to_string(), json!(successor_id));
+            }
+            QuarantineReviewRefusal::SecretDetected { class } => {
+                object.insert("class".to_string(), json!(class));
+            }
+            QuarantineReviewRefusal::StaleUpdate {
+                prior,
+                prior_status,
+            } => {
+                object.insert("prior".to_string(), json!(prior));
+                object.insert("prior_status".to_string(), json!(prior_status));
+            }
+        }
+    }
+    JsonRpcError {
+        code: crate::rpc::MEMORY_QUARANTINE_REVIEW_REFUSED_CODE,
+        message: format!("quarantine review refused: {refusal}"),
+        data: Some(data),
+    }
 }
 
 async fn handle_memory_panel_dreams(
@@ -6227,6 +6429,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/memory/panel/harvests",
                     "mobkit/memory/panel/quarantine",
                 ]);
+                if can_mutate {
+                    // The operator half of quarantine review; the probe below
+                    // strips it for callers without the reviewer grant.
+                    methods.push("mobkit/memory/quarantine/decide");
+                }
             }
             if workgraph.is_some() {
                 methods.extend_from_slice(crate::rpc::workgraph_methods::WORKGRAPH_READ_METHODS);
@@ -6672,6 +6879,18 @@ async fn handle_console_runtime_rpc_with_visibility(
         .await,
         "mobkit/memory/panel/harvests" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_harvests(memory_panel, &request.params, response_id).await
+        })
+        .await,
+        // The operator half of quarantine review: a mutation, so a read-only
+        // console refused it before dispatch.
+        "mobkit/memory/quarantine/decide" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
+            handle_memory_quarantine_decide(
+                memory_panel,
+                authenticated_principal,
+                &request.params,
+                response_id,
+            )
+            .await
         })
         .await,
         // Read-only state-directory diagnosis (registered as a read method:
@@ -12485,6 +12704,64 @@ comms = true
         assert_eq!(response["result"], Value::Null);
         assert_eq!(response["error"]["code"], json!(-32010));
         assert_eq!(response["error"]["data"]["kind"], json!("read_only"));
+    }
+
+    #[test]
+    fn memory_quarantine_decide_composes_existing_grants() {
+        use crate::access::{
+            ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
+            ACTION_AGENT_VIEW, ACTION_MEMORY_QUARANTINE_REVIEW,
+        };
+        let identity = Some("lead:main".to_string());
+        let base = [
+            (ACTION_MEMORY_QUARANTINE_REVIEW, None),
+            (ACTION_AGENT_VIEW, identity.clone()),
+            (ACTION_AGENT_MEMORY_READ, identity.clone()),
+        ];
+        for (verdict, effect) in [
+            (json!("release"), vec![ACTION_AGENT_MEMORY_WRITE]),
+            (json!("tombstone"), vec![ACTION_AGENT_MEMORY_DELETE]),
+            // Anything else fails closed on both effects.
+            (
+                json!("hold"),
+                vec![ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+            ),
+            (
+                Value::Null,
+                vec![ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+            ),
+        ] {
+            let params = json!({ "identity": "lead:main", "verdict": verdict });
+            let mut expected = base.to_vec();
+            expected.extend(effect.into_iter().map(|action| (action, identity.clone())));
+            assert_eq!(
+                super::console_rpc_access_requirements("mobkit/memory/quarantine/decide", &params),
+                Some(expected),
+                "verdict {verdict}"
+            );
+        }
+        assert!(super::is_console_mutating_rpc_method(
+            "mobkit/memory/quarantine/decide"
+        ));
+    }
+
+    #[test]
+    fn memory_quarantine_reviewer_is_only_the_authenticated_principal() {
+        use crate::memory::review::QuarantineReviewer;
+        assert_eq!(
+            super::memory_quarantine_reviewer(Some(" alice@example.test ")),
+            QuarantineReviewer::Operator {
+                principal: Some("alice@example.test".to_string())
+            }
+        );
+        assert_eq!(
+            super::memory_quarantine_reviewer(Some("  ")),
+            QuarantineReviewer::Operator { principal: None }
+        );
+        assert_eq!(
+            super::memory_quarantine_reviewer(None),
+            QuarantineReviewer::Operator { principal: None }
+        );
     }
 
     #[test]

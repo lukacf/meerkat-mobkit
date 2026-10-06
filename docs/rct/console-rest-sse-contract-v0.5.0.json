@@ -1316,6 +1316,56 @@
             }
           ]
         },
+        "mobkit/memory/quarantine/decide": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
+          "request": {
+            "required_fields": [
+              "identity",
+              "memory_id",
+              "verdict",
+              "expected_content_hash"
+            ],
+            "optional_fields": [
+              "realm",
+              "rationale"
+            ],
+            "verdict_values": [
+              "release",
+              "tombstone"
+            ],
+            "note": "expected_content_hash is the record.content_hash returned by mobkit/memory/panel/record. The reviewer recorded in audit is the authenticated console principal; no reviewer field is accepted."
+          },
+          "success": {
+            "required_fields": [
+              "outcome",
+              "realm",
+              "origin",
+              "successor",
+              "decision"
+            ],
+            "outcome_values": [
+              "released",
+              "already_released",
+              "tombstoned",
+              "already_tombstoned"
+            ],
+            "note": "decision.review records the verdict, reviewer, bound hash, quarantine reason and rationale, plus expired_promotions (gated promotions past their expiry) and invalidated_promotions (live gated promotions an operator tombstone invalidated in the same transaction)."
+          },
+          "errors": [
+            {
+              "codes": [
+                -32043,
+                -32602,
+                -32603,
+                -32601
+              ],
+              "note": "-32043 is a typed refusal (data.kind memory_quarantine_review_refused, data.reason not_found | content_mismatch | not_quarantined | gate_pending | successor_conflict | secret_detected | stale_update); nothing was written. gate_pending refuses a release while a live gated promotion owns the record; an operator tombstone invalidates the promotion instead."
+            }
+          ]
+        },
         "mobkit/workgraph/snapshot": {
           "request": {
             "optional_fields": [

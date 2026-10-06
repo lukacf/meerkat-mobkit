@@ -50,6 +50,7 @@ export const CONSOLE_RPC_METHODS = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphEvents: "mobkit/workgraph/events",
   workgraphGet: "mobkit/workgraph/get",

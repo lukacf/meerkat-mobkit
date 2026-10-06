@@ -119,6 +119,7 @@ import type {
   MemoryDreamRun,
   MemoryDreamRunSheet,
   MemoryEvidenceRef,
+  MemoryFullRecord,
   MemoryHarvestEntry,
   MemoryLedgerEntry,
   MemoryPanelAuditVerdictsResult,
@@ -134,6 +135,8 @@ import type {
   MemoryPanelRecordsResult,
   MemoryPendingPromotion,
   MemoryProposalEntry,
+  MemoryQuarantineDecideResult,
+  MemoryQuarantineVerdict,
   WorkGraphEventsResult,
   WorkGraphSnapshotResult,
   WorkGraphWireEvent,
@@ -254,6 +257,10 @@ type MemoryPanelData = {
   dreamRunsDenied: boolean;
   auditVerdicts: MemoryAuditVerdictEntry[];
   auditVerdictsDenied: boolean;
+  /// The caller is advertised mobkit/memory/quarantine/decide (reviewer
+  /// grant, mutable console). Per-identity grants are still enforced per
+  /// call.
+  canDecideQuarantine: boolean;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
@@ -840,6 +847,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     dreamRunsDenied: false,
     auditVerdicts: [],
     auditVerdictsDenied: false,
+    canDecideQuarantine: false,
   });
   const [workGraphData, setWorkGraphData] = React.useState<WorkGraphPanelData>({
     items: [],
@@ -2750,7 +2758,18 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
       let quarantineRecords: MemoryPanelRecord[] = [];
       let pendingPromotions: MemoryPendingPromotion[] = [];
+      let canDecideQuarantine = false;
       if (experience?.memory?.can_review_quarantine === true) {
+        // The decision is advertised only to reviewers on a mutable console;
+        // a capabilities failure leaves the queue read-only.
+        try {
+          const capabilities = await consoleTransport.capabilities();
+          canDecideQuarantine = capabilities.methods.includes(
+            consoleCommandMethod(CONSOLE_COMMAND_NAMES.decideMemoryQuarantine),
+          );
+        } catch {
+          canDecideQuarantine = false;
+        }
         try {
           const quarantineResult = (await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES.listMemoryQuarantine,
@@ -2853,6 +2872,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         dreamRunsDenied: dreamRuns.denied,
         auditVerdicts: auditVerdicts.value,
         auditVerdictsDenied: auditVerdicts.denied,
+        canDecideQuarantine,
         unavailable: false,
         error: null,
       }));
@@ -3020,6 +3040,37 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl],
+  );
+
+  /// One quarantine decision (mobkit/memory/quarantine/decide), bound to the
+  /// content hash of the record the reviewer is looking at. Rejects with the
+  /// transport's typed error; the panel renders refusals. The queue is
+  /// re-read after every decision.
+  const decideMemoryQuarantine = React.useCallback(
+    async (
+      realm: string,
+      record: MemoryFullRecord,
+      verdict: MemoryQuarantineVerdict,
+      rationale: string | undefined,
+    ): Promise<MemoryQuarantineDecideResult> => {
+      const identity = record.scope.scope === "identity" ? record.scope.identity : undefined;
+      const result = (await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.decideMemoryQuarantine,
+        controlWorkbenchTarget("memory"),
+        {
+          realm,
+          identity,
+          memory_id: record.id,
+          verdict,
+          expected_content_hash: record.content_hash,
+          ...(rationale ? { rationale } : {}),
+        },
+      )) as MemoryQuarantineDecideResult;
+      void refreshMemoryData();
+      return result;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshMemoryData],
   );
 
   const runAccessMutation = React.useCallback(
@@ -5187,6 +5238,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           }
           onQueryRecords={queryMemoryRecords}
           onLoadEvidence={loadMemoryEvidence}
+          onDecideQuarantine={
+            memoryData.canDecideQuarantine &&
+            !frontendReadOnly &&
+            experience?.console_policy?.read_only !== true
+              ? decideMemoryQuarantine
+              : undefined
+          }
           onOpenGating={
             // Only offered where the nav itself offers gating — on runtimes
             // without a mob control surface (or with gating hidden) the

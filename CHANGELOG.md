@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `StewardStore` gains the required method `review_quarantined` (see Added).
+  Implementors must add it; a store without a quarantine queue can return
+  `QuarantineReviewError::Store(AgentMemoryError::Unsupported(..))`.
+- `StewardStore::resolve_pending_promotion` and `rekey_pending_promotion`
+  return `Result<bool, AgentMemoryError>`: whether the promotion was still
+  pending and changed. Implementors must report it and must leave a
+  resolved promotion (including one an operator's tombstone invalidated)
+  as it is.
+- `MemoryTimelineEvent::QuarantineVerdict` gains `successor_id:
+  Option<String>` (see Added). Code constructing it must set it; the console
+  payload omits it when absent.
+- `MemoryRecord` gains `ever_quarantined: bool` (serde default `false`), the
+  durable taint marker the store already kept. Code building the struct with
+  a literal must set it.
 - `AccessConfigError` gains `RevisionExhausted` (see Added): the access owner
   refuses a mutation that would overflow its `u64` revision before persisting
   or publishing it. The enum is public and not `#[non_exhaustive]`, so
@@ -113,6 +127,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- Memory panel reads (`mobkit/memory/panel/*`) treat a tombstoned record
+  that was ever quarantined as quarantine evidence: a caller without
+  `memory.quarantine.review` no longer receives it, as it never received a
+  quarantined one. `memory.quarantine.verdict` frames may carry
+  `successor_id`, and the steward's open-loop nudges
+  (`verdict: "open_loop_escalated"`) no longer carry the dream's rationale
+  (`rationale` is null).
 - `mobkit/access/*` failures are typed and no longer echo server detail (see
   Added). A failed save of the access file answers `-32000` with
   `data.kind = "access_persistence_failed"` instead of `-32602`; an exhausted
@@ -164,9 +185,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Authorized `/console/experience` responses provide an opaque `storage_scope`
   for runtime/principal-separated browser drafts and queues. Explicit host
   `storageNamespace` values continue to take precedence.
+- The memory steward's `memory.quarantine.verdict` frames report applied
+  releases and tombstones only, with `rationale` null; its `hold` and
+  `promote_pending_gate` verdicts no longer emit one (see Changed).
 
 ### Changed
 
+- The memory steward's quarantine `release` and `tombstone` verdicts run the
+  operator review's store transaction (`StewardStore::review_quarantined`,
+  reviewer `steward`; see Added), so a record is decided once, by whichever
+  reviewer commits first; the other is skipped or replays.
+  - A release's successor is `<memory_id>-released` instead of a fresh id,
+    and a quarantined update is released as a supersede of the record it
+    updates instead of leaving two active versions. When that record is
+    gone, the release is refused (`stale_update`) and skipped loudly; the
+    update stays quarantined, tombstone remaining its exit.
+  - `memory.quarantine.verdict` comes from the store once the review
+    commits, without the steward's rationale (its audit row keeps it).
+    `hold` changes nothing and `promote_pending_gate` reports through
+    `memory.promotion.pending_gate`, so neither emits a verdict any more.
 - CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
   `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
   (actions/runner-images#14748). The move to 26 will be validated
@@ -515,6 +552,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Operators can decide quarantined agent memory from the console:
+  `mobkit/memory/quarantine/decide` releases or tombstones one quarantined
+  identity-scope record, without the memory steward or the gating flow.
+  - Until now only the steward's dream could decide a quarantined record.
+    With the steward disabled, a write quarantined by session taint could
+    never become memory, and the console's quarantine queue was read-only.
+  - A release keeps the native review semantics. The content is re-staged
+    in the same scope at `agent_observed` as `<memory_id>-released`, with
+    `derived_from` the original, which is tombstoned and kept with its
+    provenance. The successor stays capped at `agent_observed` forever, the
+    secret gate refuses secret-shaped content, and a quarantined update is
+    released as a supersede of its still-active prior instead of forking.
+  - The decision binds the record's `content_hash` (now returned by
+    `mobkit/memory/panel/record`), refuses typed with `-32043`
+    (`MEMORY_QUARANTINE_REVIEW_REFUSED_CODE`; `not_found`,
+    `content_mismatch`, `not_quarantined`, `gate_pending`,
+    `successor_conflict`, `secret_detected`, `stale_update`) and records
+    the review (verdict, authenticated reviewer, bound hash, quarantine
+    reason, rationale) in each audit row.
+  - Replays (`already_released`, `already_tombstoned`) are recognized from
+    that audit evidence alone and return the original decision without
+    writing; a row merely holding the successor id is refused.
+  - Gated promotions expire after seven days (shared with the steward's
+    dream as `GATED_PROMOTION_EXPIRY_MS`). Until then a pending promotion
+    blocks a release of its record (`gate_pending`, with `expires_at_ms`);
+    after that a review expires it itself, so a promotion orphaned by a
+    restart blocks a release only until its expiry, whether or not a
+    steward runs.
+  - An operator's tombstone is never blocked by a pending promotion: it
+    invalidates the record's pending promotions in the same transaction
+    (mappings expired, staged batches discarded, listed as
+    `invalidated_promotions` in the decision), so a later approval
+    publishes nothing. Gating resolutions now change only a still-pending
+    promotion, so a late approval, denial or escalation can neither
+    overwrite an invalidated promotion nor revive it.
+  - Quarantined content stays reviewer-only after a review or `forget`
+    tombstones it: the Memory panel gates tombstoned records that were ever
+    quarantined behind `memory.quarantine.review`, as it gates quarantined
+    ones. The released successor is ordinary memory.
+  - A review emits `memory.quarantine.verdict` only once its decision
+    commits, and the event never carries the reviewer or the rationale.
+  - Authority composes existing grants: `memory.quarantine.review`,
+    `agent.view` and `agent.memory.read` on the identity, plus
+    `agent.memory.write` to release or `agent.memory.delete` to tombstone.
+    Read-only consoles refuse it.
+  - The store operation is `StewardStore::review_quarantined`; the Memory
+    panel offers Release and Tombstone on a quarantined record.
 
 - Checked access saves (`checked_v1`). `mobkit/access/get`, and
   `mobkit/access/status` for a caller who can administer, advertise

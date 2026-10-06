@@ -46,6 +46,9 @@ use crate::memory::records::{
     InjectionLogEntry, MemoryAuthor, MemoryId, MemoryRecord, MemoryScope, NewMemoryRecord,
     ProposalId,
 };
+use crate::memory::review::{
+    QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRequest,
+};
 use crate::memory::staged::{StageToken, StagedMemoryStore};
 use crate::memory::taint::LlmWriteGate;
 
@@ -136,6 +139,15 @@ pub struct PendingHarvest {
     pub retired_at_ms: u64,
 }
 
+/// Gated promotions unresolved after this long are expired and their stage
+/// tokens discarded: the backstop for a gate whose decision or timeout this
+/// store never saw (gating entries live in process memory and do not
+/// survive a restart). The steward's dream applies it to every pending
+/// promotion; a quarantine review applies it to the promotion of the record
+/// it decides, so a persisted orphan blocks review only until it expires,
+/// whether or not a steward runs.
+pub const GATED_PROMOTION_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
 /// One gated quarantine-promotion (§10.2): the staged batch commits only on
 /// gating approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +234,17 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
         limit: usize,
     ) -> Result<Vec<MemoryRecord>, AgentMemoryError>;
 
+    /// The quarantine review transaction (§8.5 quarantine review, §10.1
+    /// "until steward/operator review"): decide one quarantined record in
+    /// the request's scope, atomically, through the staged validator.
+    /// Releases follow [`crate::memory::review`]; repeating a decision
+    /// returns the `Already*` outcome without writing; anything that cannot
+    /// be decided is a typed refusal.
+    async fn review_quarantined(
+        &self,
+        request: QuarantineReviewRequest,
+    ) -> Result<QuarantineReviewOutcome, QuarantineReviewError>;
+
     /// Records by id, any status — the gather phase's bounded body fetch.
     /// Missing ids are skipped (the model may cite stale ids).
     async fn records_by_ids(
@@ -293,22 +316,26 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
         realm: &str,
     ) -> Result<Vec<PendingPromotion>, AgentMemoryError>;
 
-    /// Resolve a gated promotion: `committed`, `denied`, or `expired`.
+    /// Resolve a still-pending gated promotion: `committed`, `denied`, or
+    /// `expired`. Returns whether this call resolved it. A promotion already
+    /// resolved (an expiry, or an operator's tombstone that invalidated it)
+    /// keeps its state: a late resolution never overwrites or revives it.
     async fn resolve_pending_promotion(
         &self,
         realm: &str,
         pending_id: &str,
         status: &str,
-    ) -> Result<(), AgentMemoryError>;
+    ) -> Result<bool, AgentMemoryError>;
 
-    /// Re-key a gated promotion after a gating escalation minted a
-    /// successor pending entry.
+    /// Re-key a still-pending gated promotion after a gating escalation
+    /// minted a successor pending entry. Returns whether it was re-keyed; a
+    /// resolved promotion is never re-keyed back into the pending set.
     async fn rekey_pending_promotion(
         &self,
         realm: &str,
         old_pending_id: &str,
         new_pending_id: &str,
-    ) -> Result<(), AgentMemoryError>;
+    ) -> Result<bool, AgentMemoryError>;
 
     /// Discard a staged-but-uncommitted batch (denied/expired gated
     /// promotions; §8.5 crash semantics keep this safe — an unapplied stage

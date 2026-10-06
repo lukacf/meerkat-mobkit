@@ -186,7 +186,9 @@ pub use memory::{
     HygieneOutcome, HygienistConfig, HygienistEngine, ManifestTier, MemberAgentEventSink,
     MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryPanelStore,
     MemoryRecord, MemoryScope, MemorySpawnCustomizer, MemoryTimelineEvent, MobPurposeSource,
-    NewMemoryRecord, OperatorResolver, PromotionGateResolver, RecordMeta,
+    NewMemoryRecord, OperatorResolver, PromotionGateResolver, QuarantineDecision,
+    QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRefusal,
+    QuarantineReviewRequest, QuarantineReviewer, RecordMeta, ReviewDecision, ReviewedRecordReceipt,
     SessionStoreEvidenceResolver, SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore,
     StagedMutationBatch, StagedOp, StewardConfig, StewardEngine, StewardStore, StewardTriggers,
     TaintLlmWriteGate, TaintObserverGuard, TaintableStore, TrustTier, spawn_member_event_observer,
@@ -209,9 +211,9 @@ pub use rpc::{
     CAPABILITY_UNAVAILABLE_CODE, COMPOSITION_PROVENANCE_CODE,
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, INIT_IN_PROGRESS_CODE, IdentityFirstContext,
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE,
-    MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION, STORAGE_RESOLUTION_CODE,
-    SerializedRpcResponseDelivery, handle_console_ingress_json, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, handle_unified_rpc_json_arc,
+    MEMORY_QUARANTINE_REVIEW_REFUSED_CODE, MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION,
+    STORAGE_RESOLUTION_CODE, SerializedRpcResponseDelivery, handle_console_ingress_json,
+    handle_mobkit_rpc_json, handle_unified_rpc_json, handle_unified_rpc_json_arc,
     handle_unified_rpc_json_with_live_arc_delivery,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
