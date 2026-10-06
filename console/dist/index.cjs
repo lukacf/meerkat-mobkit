@@ -45187,7 +45187,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -45600,7 +45600,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
