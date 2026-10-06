@@ -10540,28 +10540,35 @@ where
 {
     use futures::StreamExt as _;
     let read_authority = &read_authority;
-    futures::stream::iter(session_ids)
-        .map(|session_id| async move {
-            // The constructor owns the `rt:session:` convention; formatting it
-            // here would be a second spelling of the same fact.
-            let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
-            let observed = runtime_id.clone();
-            match read_authority(runtime_id).await {
-                Ok(()) => 1usize,
-                Err(error) => {
-                    tracing::debug!(
-                        runtime_id = %observed,
-                        error = %error,
-                        "prewarming persisted runtime authority failed; the bounded resume \
-                         performs this read itself and owns the typed outcome"
-                    );
-                    0
-                }
+    // The async closure takes an OWNED runtime id: a closure taking
+    // `&SessionId` and returning an async block that holds it makes every
+    // future that awaits this one fail `Send` ("not general enough"), up to
+    // `UnifiedRuntimeBuilder::build()`.
+    // The constructor owns the `rt:session:` convention; formatting it here
+    // would be a second spelling of the same fact.
+    futures::stream::iter(
+        session_ids
+            .iter()
+            .map(meerkat_runtime::LogicalRuntimeId::for_session),
+    )
+    .map(|runtime_id| async move {
+        let observed = runtime_id.clone();
+        match read_authority(runtime_id).await {
+            Ok(()) => 1usize,
+            Err(error) => {
+                tracing::debug!(
+                    runtime_id = %observed,
+                    error = %error,
+                    "prewarming persisted runtime authority failed; the bounded resume \
+                     performs this read itself and owns the typed outcome"
+                );
+                0
             }
-        })
-        .buffer_unordered(PREWARM_CONCURRENCY)
-        .fold(0usize, |read, one| async move { read + one })
-        .await
+        }
+    })
+    .buffer_unordered(PREWARM_CONCURRENCY)
+    .fold(0usize, |read, one| async move { read + one })
+    .await
 }
 
 impl MobRuntime {

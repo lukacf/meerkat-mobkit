@@ -835,6 +835,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `UnifiedRuntimeBuilder::build()` now returns a `Send` future, so a host
+  can `tokio::spawn(builder.build())` or drive it under a harness that
+  requires `Send`. Two causes, both present since at least 0.8.44:
+  - The builder kept its `PreSpawnHook` (`Send`, not `Sync`) as a plain
+    field while `build` held `&self` across awaits, which made the builder
+    `!Sync` (E0277). The hook now sits behind an uncontended mutex. The
+    public `PreSpawnHook` type is unchanged.
+  - The persisted-authority prewarm that `build` awaits mapped borrowed
+    session ids through an async closure, which the compiler cannot prove
+    `Send` for every lifetime ("implementation of `Send` is not general
+    enough"). It now maps to owned runtime ids first.
+  - A compile-time test pins both: the builder is `Send + Sync`, `build()`'s
+    future is `Send`, and a builder carrying a pre-spawn hook can be spawned.
+
 - The gateway now builds one runtime delivery inbox and shares it between
   the shell job projector and the detached-job delivery runtime. Before,
   each built its own `RuntimeDeliveryInbox` over the same runtime store. An
