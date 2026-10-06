@@ -5610,6 +5610,13 @@ async fn handle_console_aggregator_rpc(
     {
         return response_value(response_id, None, Some(error));
     }
+    // Each awaiting arm runs as its own boxed future, built in
+    // `box_in_own_frame`'s frame. At opt-level 0 LLVM gives every local of
+    // every arm its own stack slot, so with the arms inline this poll frame
+    // reserved the SUM of all arms' futures (about 1.17 MB, more than half a
+    // 2 MiB worker stack) though only one arm runs. Wrapped, each arm leaves
+    // a closure of references and one pointer here.
+    let request = &request;
     match request.method.as_str() {
         "mobkit/capabilities" => {
             let mut methods = vec![
@@ -5934,7 +5941,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     }
 
     match request.method.as_str() {
-        "mobkit/capabilities" => {
+        "mobkit/capabilities" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let mut methods = vec![
                 "mobkit/status",
                 "mobkit/capabilities",
@@ -6162,8 +6169,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })),
                 None,
             )
-        }
-        crate::rpc::topology_methods::TOPOLOGY_QUERY_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_QUERY_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6185,8 +6193,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_PLAN_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_PLAN_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6208,8 +6217,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_APPLY_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_APPLY_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6232,8 +6242,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_OPERATION_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_OPERATION_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6255,8 +6266,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_AUDIT_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_AUDIT_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6278,8 +6290,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        "mobkit/agent_memory/remember" => {
+        })
+        .await,
+        "mobkit/agent_memory/remember" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6315,8 +6328,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/forget" => {
+        })
+        .await,
+        "mobkit/agent_memory/forget" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6352,8 +6366,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/recall" => {
+        })
+        .await,
+        "mobkit/agent_memory/recall" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6383,8 +6398,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/update" => {
+        })
+        .await,
+        "mobkit/agent_memory/update" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6424,8 +6440,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/manifest" => {
+        })
+        .await,
+        "mobkit/agent_memory/manifest" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6459,48 +6476,59 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
+        })
+        .await,
         // §9.3 Memory panel reads. Read-only mode allows all of these (they
         // are reads); the ACL mapping lives in
         // `console_rpc_access_requirements` plus per-row scope filtering in
         // the handlers.
-        "mobkit/memory/panel/records" => {
+        "mobkit/memory/panel/records" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_records(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/record" => {
+        })
+        .await,
+        "mobkit/memory/panel/record" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_record(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/quarantine" => {
+        })
+        .await,
+        "mobkit/memory/panel/quarantine" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_quarantine(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/dreams" => {
+        })
+        .await,
+        "mobkit/memory/panel/dreams" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_dreams(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/dream_runs" => {
+        })
+        .await,
+        "mobkit/memory/panel/dream_runs" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_dream_runs(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/audit_verdicts" => {
+        })
+        .await,
+        "mobkit/memory/panel/audit_verdicts" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_audit_verdicts(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/overview" => {
+        })
+        .await,
+        "mobkit/memory/panel/overview" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_overview(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/proposals" => {
+        })
+        .await,
+        "mobkit/memory/panel/proposals" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_proposals(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/injections" => {
+        })
+        .await,
+        "mobkit/memory/panel/injections" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_injections(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/harvests" => {
+        })
+        .await,
+        "mobkit/memory/panel/harvests" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_harvests(memory_panel, &request.params, response_id).await
-        }
+        })
+        .await,
         // Read-only state-directory diagnosis (registered as a read method:
         // allowed in read-only mode, admin-gated in
         // `console_rpc_access_requirements`).
-        "mobkit/storage/doctor" => {
+        "mobkit/storage/doctor" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             match crate::rpc::storage_methods::parse_storage_doctor_params(&request.params) {
                 Ok(Some(params)) => {
                     let result = crate::rpc::storage_methods::run_storage_doctor(
@@ -6517,7 +6545,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(reason) => invalid_params(response_id, reason),
             }
-        }
+        })
+        .await,
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
             let mut result = serde_json::json!({
@@ -6538,7 +6567,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             result["storage"]["doctor_available"] = serde_json::json!(true);
             response_value(response_id, Some(result), None)
         }
-        "mobkit/console/list_identities" => {
+        "mobkit/console/list_identities" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(aggregator) = &console_aggregator else {
                 return response_value(
                     response_id,
@@ -6557,8 +6586,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
             }
-        }
-        "mobkit/console/inspect_identity" => {
+        })
+        .await,
+        "mobkit/console/inspect_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -6590,8 +6620,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("inspect_identity failed: {err}")),
             }
-        }
-        "mobkit/console/query_timeline" => {
+        })
+        .await,
+        "mobkit/console/query_timeline" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let query: ConsoleTimelineWindowQuery =
                 match serde_json::from_value(request.params.clone()) {
                     Ok(query) => query,
@@ -6621,8 +6652,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_timeline_query_rpc_error(response_id, err),
             }
-        }
-        "mobkit/console/send" => {
+        })
+        .await,
+        "mobkit/console/send" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let send_request: ConsoleSendRequest =
                 match serde_json::from_value(request.params.clone()) {
                     Ok(request) => request,
@@ -6670,8 +6702,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     response_value(response_id, None, Some(console_send_json_rpc_error(err)))
                 }
             }
-        }
-        "mobkit/blob/get" => {
+        })
+        .await,
+        "mobkit/blob/get" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(blob_id) = request
                 .params
                 .get("blob_id")
@@ -6708,8 +6741,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("blob get failed: {err}")),
             }
-        }
-        "mobkit/list_members" => {
+        })
+        .await,
+        "mobkit/list_members" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let handle = runtime.handle();
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
@@ -6730,8 +6764,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             retain_visible_member_rows(&mut members, access_view);
             response_value(response_id, Some(Value::Array(members)), None)
-        }
-        "mobkit/get_member" => {
+        })
+        .await,
+        "mobkit/get_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -6755,8 +6790,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
             }
-        }
-        "mobkit/find_members" => {
+        })
+        .await,
+        "mobkit/find_members" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(label_key) = request.params.get("label_key").and_then(Value::as_str) else {
                 return invalid_params(response_id, "label_key required");
             };
@@ -6797,8 +6833,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             retain_visible_member_rows(&mut matches, access_view);
             response_value(response_id, Some(Value::Array(matches)), None)
-        }
-        "mobkit/status_identity" => {
+        })
+        .await,
+        "mobkit/status_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -6931,8 +6968,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 )),
                 None,
             )
-        }
-        "mobkit/inspect_identity" => {
+        })
+        .await,
+        "mobkit/inspect_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7067,8 +7105,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 )),
                 None,
             )
-        }
-        "mobkit/retire" => {
+        })
+        .await,
+        "mobkit/retire" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7288,8 +7327,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("retire failed: {err}")),
             }
-        }
-        "mobkit/respawn" => {
+        })
+        .await,
+        "mobkit/respawn" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7423,8 +7463,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 response_id,
             ))
             .await
-        }
-        "mobkit/reset" => {
+        })
+        .await,
+        "mobkit/reset" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7577,8 +7618,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "reset", err),
             }
-        }
-        "mobkit/delete_identity" => {
+        })
+        .await,
+        "mobkit/delete_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7715,8 +7757,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "delete_identity", err),
             }
-        }
-        "mobkit/reset_all" => {
+        })
+        .await,
+        "mobkit/reset_all" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             match Box::pin(reset_all_live_console_agents(
                 runtime,
                 console_events.as_ref(),
@@ -7747,8 +7790,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("reset_all failed: {err}")),
             }
-        }
-        "mobkit/routing/routes/list" => {
+        })
+        .await,
+        "mobkit/routing/routes/list" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7762,8 +7806,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let routes = module_runtime.lock().await.list_runtime_routes();
             response_value(response_id, Some(json!({ "routes": routes })), None)
-        }
-        "mobkit/delivery/history" => {
+        })
+        .await,
+        "mobkit/delivery/history" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7793,8 +7838,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::to_value(history).unwrap_or(Value::Null)),
                 None,
             )
-        }
-        "mobkit/gating/pending" => {
+        })
+        .await,
+        "mobkit/gating/pending" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7818,8 +7864,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })
                 .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "pending": pending })), None)
-        }
-        "mobkit/gating/audit" => {
+        })
+        .await,
+        "mobkit/gating/audit" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7853,8 +7900,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })
                 .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "entries": entries })), None)
-        }
-        "mobkit/gating/decide" => {
+        })
+        .await,
+        "mobkit/gating/decide" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7926,8 +7974,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => gating_decision_failed_error(response_id, err),
             }
-        }
-        "mobkit/ensure_member" => {
+        })
+        .await,
+        "mobkit/ensure_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(role) = request.params.get("role").and_then(Value::as_str) else {
                 return invalid_params(response_id, "role required");
             };
@@ -8162,8 +8211,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("ensure_member failed: {err}")),
             }
-        }
-        "mobkit/retire_member" => {
+        })
+        .await,
+        "mobkit/retire_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8283,8 +8333,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("retire_member failed: {err}")),
             }
-        }
-        "mobkit/respawn_member" => {
+        })
+        .await,
+        "mobkit/respawn_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8387,8 +8438,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
             }
-        }
-        "mobkit/reload_member" => {
+        })
+        .await,
+        "mobkit/reload_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8454,8 +8506,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "reload_member", err),
             }
-        }
-        "mobkit/member_health" => {
+        })
+        .await,
+        "mobkit/member_health" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request
                 .params
                 .get("member_id")
@@ -8519,8 +8572,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("member_health failed: {err}")),
             }
-        }
-        "mobkit/reconcile_edges" => {
+        })
+        .await,
+        "mobkit/reconcile_edges" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Previously a hardcoded noop ("console runtime routes directly
             // to MobRuntime") — which left declared definition wiring
             // unreconcilable from the console surface while the stdin
@@ -8531,8 +8585,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
                 None,
             )
-        }
-        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
+        })
+        .await,
+        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let query: EventQuery = if request.params.is_null() {
                 EventQuery::default()
             } else {
@@ -8626,9 +8681,10 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }) => stale_event_cursor_response(response_id, after_cursor, latest_cursor),
                 Err(err) => internal_error(response_id, format!("mob_events query failed: {err}")),
             }
-        }
+        })
+        .await,
         // 0.5 API methods
-        "mobkit/member_status" => {
+        "mobkit/member_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8660,8 +8716,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("member_status failed: {err}")),
             }
-        }
-        "mobkit/identity/resolved_tools" => {
+        })
+        .await,
+        "mobkit/identity/resolved_tools" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request
                 .params
                 .get("identity")
@@ -8713,11 +8770,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("resolved_tools failed: {err}")),
             }
-        }
+        })
+        .await,
         // The console plane carries its own dispatch; a method wired only in
         // `rpc.rs` is unreachable from the browser console, which is where
         // this status is actually read.
-        "mobkit/identity/routing_status" => {
+        "mobkit/identity/routing_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let identity =
                 match crate::rpc::mob_methods::routing_status_identity_param(&request.params) {
                     Ok(identity) => identity,
@@ -8768,8 +8826,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => routing_status_error_value(response_id, &identity, &err),
             }
-        }
-        "mobkit/force_cancel_member" => {
+        })
+        .await,
+        "mobkit/force_cancel_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8826,8 +8885,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     internal_error(response_id, format!("force_cancel_member failed: {err}"))
                 }
             }
-        }
-        "mobkit/stop_member_run" => {
+        })
+        .await,
+        "mobkit/stop_member_run" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Run-fenced Stop of one exact member run: the member's runtime
             // stops `run_id` and terminalizes every input already bound to it.
             // A stale `run_id` is meerkat's typed `not_current` receipt.
@@ -8926,8 +8986,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }),
                 Err(err) => internal_error(response_id, format!("stop_member_run failed: {err}")),
             }
-        }
-        "mobkit/wait_ready" => {
+        })
+        .await,
+        "mobkit/wait_ready" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Omit `timeout_ms` => mobkit's generous default ceiling (the SDK
             // contract is "wait until ready"), not meerkat-mob 0.7.9's lowered
             // 60s internal default that `None` would otherwise inherit.
@@ -8984,8 +9045,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
             }
-        }
-        "mobkit/collect_completed" => {
+        })
+        .await,
+        "mobkit/collect_completed" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let completed = runtime.handle().collect_completed().await;
             let entries: Vec<Value> = completed
                 .into_iter()
@@ -9009,8 +9071,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::json!({ "completed": entries })),
                 None,
             )
-        }
-        "mobkit/cancel_flow" => {
+        })
+        .await,
+        "mobkit/cancel_flow" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
@@ -9026,8 +9089,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("cancel_flow failed: {err}")),
             }
-        }
-        "mobkit/flow_status" => {
+        })
+        .await,
+        "mobkit/flow_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
@@ -9044,7 +9108,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(None) => response_value(response_id, Some(Value::Null), None),
                 Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
             }
-        }
+        })
+        .await,
         "mobkit/list_flows" => {
             let flows: Vec<String> = runtime
                 .handle()
@@ -9058,7 +9123,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 None,
             )
         }
-        "mobkit/list_runs" => {
+        "mobkit/list_runs" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let flow_id = request
                 .params
                 .get("flow_id")
@@ -9075,8 +9140,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("list_runs failed: {err}")),
             }
-        }
-        "mobkit/run_flow" => {
+        })
+        .await,
+        "mobkit/run_flow" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "flow_id required");
             };
@@ -9101,8 +9167,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => invalid_params(response_id, format!("run_flow failed: {err}")),
             }
-        }
-        "mobkit/spawn_helper" => {
+        })
+        .await,
+        "mobkit/spawn_helper" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
             else {
                 return invalid_params(response_id, "agent_identity required");
@@ -9163,8 +9230,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("spawn_helper failed: {err}")),
             }
-        }
-        "mobkit/fork_helper" => {
+        })
+        .await,
+        "mobkit/fork_helper" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(source) = request
                 .params
                 .get("source_member_id")
@@ -9317,8 +9385,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("fork_helper failed: {err}")),
             }
-        }
-        "mobkit/attach_existing_session" => {
+        })
+        .await,
+        "mobkit/attach_existing_session" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(role) = request.params.get("role").and_then(Value::as_str) else {
                 return invalid_params(response_id, "role required");
             };
@@ -9371,8 +9440,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     format!("attach_existing_session failed: {err}"),
                 ),
             }
-        }
-        "mobkit/cross_mob/wire_local" => {
+        })
+        .await,
+        "mobkit/cross_mob/wire_local" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_console_wire_local(
                 runtime,
                 identity_runtime.as_ref(),
@@ -9381,8 +9451,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 true,
             )
             .await
-        }
-        "mobkit/cross_mob/unwire_local" => {
+        })
+        .await,
+        "mobkit/cross_mob/unwire_local" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_console_wire_local(
                 runtime,
                 identity_runtime.as_ref(),
@@ -9391,7 +9462,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 false,
             )
             .await
-        }
+        })
+        .await,
         "mobkit/peer_pubkey" => match gateway_peer_keys {
             Some(keys) => response_value(
                 response_id,
@@ -9408,7 +9480,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }),
             ),
         },
-        "mobkit/cross_mob/peer_info" => {
+        "mobkit/cross_mob/peer_info" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let member_id = request.params.get("member_id").and_then(Value::as_str);
             match member_id {
                 Some(mid) if !mid.is_empty() => {
@@ -9456,7 +9528,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 _ => invalid_params(response_id, "member_id required".to_string()),
             }
-        }
+        })
+        .await,
         "mobkit/cross_mob/directory" => {
             let entries: Vec<Value> = contact_directory
                 .map(|dir| {
@@ -9482,7 +9555,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     | "mobkit/run_labels/get"
                     | "mobkit/run_labels/delete",
             ) =>
-        {
+        meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             dispatch_console_label_method(
                 method,
                 metadata_table.as_deref(),
@@ -9491,8 +9564,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 &request.params,
             )
             .await
-        }
-        method if crate::rpc::workgraph_methods::is_workgraph_method(method) => {
+        })
+        .await,
+        method if crate::rpc::workgraph_methods::is_workgraph_method(method) => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // The read-only gate and the workgraph.view/manage ABAC checks
             // already ran above; the surface carries the authenticated
             // console principal, which goal/confirm promotes into the
@@ -9516,7 +9590,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(result) => response_value(response_id, Some(result), None),
                 Err(error) => response_value(response_id, None, Some(error)),
             }
-        }
+        })
+        .await,
         _ => response_value(
             response_id,
             None,
@@ -14146,6 +14221,52 @@ comms = true
         );
 
         let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// The console RPC handler's future stays small: each awaiting method arm
+    /// is its own boxed future (`box_in_own_frame`), so the handler embeds
+    /// one pointer per arm rather than every arm's future. With the arms
+    /// inline the handler's state machine and its debug poll frame carried
+    /// every arm at once (a 1.17 MB poll frame on the console send path,
+    /// more than half a 2 MiB worker stack).
+    #[tokio::test]
+    async fn the_console_rpc_handler_future_stays_small()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-rpc-handler-future-size").await?;
+        let handler = handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &HideMemberPolicy("nobody:hidden"),
+            rpc_request("mobkit/status"),
+            true,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // 52,248 bytes with the arms inline (MobKit 0.8.46, debug), 6,256
+        // boxed. The bound fails if arms are inlined again, with headroom
+        // for ordinary growth.
+        let size = std::mem::size_of_val(&handler);
+        drop(handler);
+        assert!(
+            size <= 16 * 1024,
+            "the console RPC handler future grew to {size} bytes; box the new \
+             method arm in its own frame (box_in_own_frame)"
+        );
         Ok(())
     }
 
