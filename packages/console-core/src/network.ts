@@ -381,7 +381,8 @@ async function rpc<T>(
     const typedError = normalizeConsoleInteractionRejectedError(result.error) as ConsoleGatewayInteractionRejectedError | null;
     if (typedError) {
       const error = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
-      (error as Error & { rpcError?: ConsoleGatewayInteractionRejectedError }).rpcError = typedError;
+      (error as Error & { rpcError?: ConsoleGatewayInteractionRejectedError & { data?: unknown } }).rpcError =
+        result.error.data === undefined ? typedError : { ...typedError, data: result.error.data };
       throw error;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data) as ConsoleReplayUnavailablePayload | null;

@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+use rand_core::RngCore;
+
 use super::engine::{
     AccessDecision, AccessPrincipal, AccessResource, evaluate_access, groups_for_subject,
     principal_may_perform,
@@ -27,12 +29,89 @@ pub struct AgentResourceAttributes {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Administrative edit precondition, never an authorization grant.
+pub(crate) struct AccessEditPrecondition {
+    pub owner_instance: String,
+    pub expected_revision: u64,
+}
+
+pub(crate) enum AccessMutation {
+    Replace(AccessControlConfig),
+    UpsertRule(AccessRule),
+    DeleteRule(String),
+    SetGroup(String, AccessGroup),
+    DeleteGroup(String),
+    SetEnabled(bool),
+}
+
+impl AccessMutation {
+    fn apply(self, config: &mut AccessControlConfig) -> Result<(), AccessConfigError> {
+        match self {
+            Self::Replace(replacement) => *config = replacement,
+            Self::UpsertRule(rule) => {
+                match config
+                    .rules
+                    .iter_mut()
+                    .find(|existing| existing.id == rule.id)
+                {
+                    Some(existing) => *existing = rule,
+                    None => config.rules.push(rule),
+                }
+            }
+            Self::DeleteRule(id) => {
+                let before = config.rules.len();
+                config.rules.retain(|rule| rule.id != id);
+                if config.rules.len() == before {
+                    return Err(AccessConfigError::UnknownRule(id));
+                }
+            }
+            Self::SetGroup(name, group) => {
+                config.groups.insert(name, group);
+            }
+            Self::DeleteGroup(name) => {
+                config.groups.remove(&name);
+            }
+            Self::SetEnabled(enabled) => config.enabled = enabled,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum AccessEditError {
+    Denied,
+    Unavailable,
+    OwnerChanged,
+    RevisionConflict { expected: u64, actual: u64 },
+    Config(AccessConfigError),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CheckedMutationStage {
+    Attempt,
+    Acquired,
+}
+#[cfg(test)]
+type CheckedMutationProbe = dyn Fn(CheckedMutationStage) + Send + Sync;
+
+fn new_edit_identity() -> Option<String> {
+    let mut bytes = [0_u8; 16];
+    // This is a one-time owner incarnation, not a permission or durable ID.
+    // Failed entropy leaves checked editing unavailable, with no fallback.
+    rand_core::OsRng.try_fill_bytes(&mut bytes).ok()?;
+    Some(format!("{:032x}", u128::from_be_bytes(bytes)))
+}
+
 struct AccessState {
     config: Arc<AccessControlConfig>,
     revision: u64,
 }
 
 struct AccessControllerInner {
+    owner_instance: Option<String>,
+    #[cfg(test)]
+    checked_probe: Mutex<Option<Arc<CheckedMutationProbe>>>,
     state: RwLock<AccessState>,
     persist_path: RwLock<Option<PathBuf>>,
     attributes: RwLock<BTreeMap<String, Arc<AgentResourceAttributes>>>,
@@ -66,7 +145,14 @@ impl std::fmt::Debug for AccessController {
 
 impl AccessController {
     /// Create a controller from a validated config.
-    pub fn new(mut config: AccessControlConfig) -> Result<Self, AccessConfigError> {
+    pub fn new(config: AccessControlConfig) -> Result<Self, AccessConfigError> {
+        Self::with_edit_identity(config, new_edit_identity())
+    }
+
+    fn with_edit_identity(
+        mut config: AccessControlConfig,
+        owner_instance: Option<String>,
+    ) -> Result<Self, AccessConfigError> {
         // §10.3 migration: memory-naive configs (written before the memory
         // read actions existed) get `agent.memory.read` alongside
         // `agent.view`; see `normalize_access_config_for_memory_actions`.
@@ -74,6 +160,9 @@ impl AccessController {
         validate_access_config(&config)?;
         Ok(Self {
             inner: Arc::new(AccessControllerInner {
+                owner_instance,
+                #[cfg(test)]
+                checked_probe: Mutex::new(None),
                 state: RwLock::new(AccessState {
                     config: Arc::new(config),
                     revision: 0,
@@ -137,90 +226,145 @@ impl AccessController {
         self.snapshot().0.enabled
     }
 
-    /// Replace the whole configuration (admin surface).
+    /// Replace the whole configuration (trusted direct compatibility API).
     pub fn replace_config(&self, config: AccessControlConfig) -> Result<u64, AccessConfigError> {
-        self.mutate(move |current| {
-            *current = config;
-            Ok(())
-        })
+        self.mutate(AccessMutation::Replace(config))
     }
 
     /// Insert or update one rule by id.
     pub fn upsert_rule(&self, rule: AccessRule) -> Result<u64, AccessConfigError> {
-        self.mutate(move |config| {
-            match config
-                .rules
-                .iter_mut()
-                .find(|existing| existing.id == rule.id)
-            {
-                Some(existing) => *existing = rule,
-                None => config.rules.push(rule),
-            }
-            Ok(())
-        })
+        self.mutate(AccessMutation::UpsertRule(rule))
     }
 
     /// Delete one rule by id.
     pub fn delete_rule(&self, rule_id: &str) -> Result<u64, AccessConfigError> {
-        self.mutate(|config| {
-            let before = config.rules.len();
-            config.rules.retain(|rule| rule.id != rule_id);
-            if config.rules.len() == before {
-                return Err(AccessConfigError::UnknownRule(rule_id.to_string()));
-            }
-            Ok(())
-        })
+        self.mutate(AccessMutation::DeleteRule(rule_id.to_string()))
     }
 
     /// Create or replace a group (the live per-user assignment surface).
     pub fn set_group(&self, name: &str, group: AccessGroup) -> Result<u64, AccessConfigError> {
-        self.mutate(move |config| {
-            config.groups.insert(name.to_string(), group);
-            Ok(())
-        })
+        self.mutate(AccessMutation::SetGroup(name.to_string(), group))
     }
 
     /// Delete a group. Fails while rules still reference it.
     pub fn delete_group(&self, name: &str) -> Result<u64, AccessConfigError> {
-        self.mutate(|config| {
-            config.groups.remove(name);
-            Ok(())
-        })
+        self.mutate(AccessMutation::DeleteGroup(name.to_string()))
     }
 
     /// Toggle enforcement. Enabling validates the anti-lockout invariant.
     pub fn set_enabled(&self, enabled: bool) -> Result<u64, AccessConfigError> {
-        self.mutate(move |config| {
-            config.enabled = enabled;
-            Ok(())
-        })
+        self.mutate(AccessMutation::SetEnabled(enabled))
     }
 
-    /// Serialized read-modify-write. Holds the mutation lock across the
-    /// snapshot, the caller's edit, validation, persistence, and the
-    /// in-memory swap, so concurrent mutations can neither lose an update
-    /// nor diverge memory from disk.
-    fn mutate<F>(&self, mutator: F) -> Result<u64, AccessConfigError>
-    where
-        F: FnOnce(&mut AccessControlConfig) -> Result<(), AccessConfigError>,
-    {
+    pub(crate) fn edit_identity(&self) -> Option<&str> {
+        self.inner.owner_instance.as_deref()
+    }
+
+    /// The authorization decision and returned config/revision use one read.
+    pub(crate) fn admin_config(
+        &self,
+        subject: Option<&str>,
+    ) -> Result<(Arc<AccessControlConfig>, u64), AccessEditError> {
+        let (view, revision) = self.view_and_revision(subject);
+        if !view.can_administer() {
+            return Err(AccessEditError::Denied);
+        }
+        Ok((view.config, revision))
+    }
+
+    /// Authorize the caller and construct the target preview from one config
+    /// snapshot. The returned view retains the existing attribute owner.
+    pub(crate) fn admin_preview(
+        &self,
+        caller: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<AccessView, AccessEditError> {
+        let (config, _) = self.snapshot();
+        let caller_view = self.view_from_config(Arc::clone(&config), caller);
+        if !caller_view.can_administer() {
+            return Err(AccessEditError::Denied);
+        }
+        Ok(self.view_from_config(config, target))
+    }
+
+    /// Every HTTP write reevaluates current administration under the same
+    /// mutex as trusted direct mutations. Only checked writes compare an
+    /// owner/revision precondition; legacy writes remain unconditional.
+    pub(crate) fn mutate_admin(
+        &self,
+        subject: Option<&str>,
+        expected: Option<AccessEditPrecondition>,
+        mutation: AccessMutation,
+    ) -> Result<u64, AccessEditError> {
+        #[cfg(test)]
+        self.observe_checked_mutation(CheckedMutationStage::Attempt);
         let _mutation = self
             .inner
             .mutation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut config = (*self.snapshot().0).clone();
-        mutator(&mut config)?;
-        // Same §10.3 compat rewrite as construction, so a memory-naive
-        // config replaced over the admin RPC behaves like one loaded from
-        // disk. Self-limiting: normalized configs mention memory actions
-        // and pass through untouched.
+        #[cfg(test)]
+        self.observe_checked_mutation(CheckedMutationStage::Acquired);
+        let (config, revision) = self.admin_config(subject)?;
+        if let Some(expected) = expected {
+            let instance = self.edit_identity().ok_or(AccessEditError::Unavailable)?;
+            if instance != expected.owner_instance {
+                return Err(AccessEditError::OwnerChanged);
+            }
+            if revision != expected.expected_revision {
+                return Err(AccessEditError::RevisionConflict {
+                    expected: expected.expected_revision,
+                    actual: revision,
+                });
+            }
+        }
+        self.edit_and_commit((*config).clone(), mutation)
+            .map_err(AccessEditError::Config)
+    }
+
+    #[cfg(test)]
+    fn observe_checked_mutation(&self, stage: CheckedMutationStage) {
+        let probe = self
+            .inner
+            .checked_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(probe) = probe {
+            probe(stage);
+        }
+    }
+
+    /// Serialized direct compatibility mutation; shares the exact edit and
+    /// persist-before-publish path with checked administrative writes.
+    fn mutate(&self, mutation: AccessMutation) -> Result<u64, AccessConfigError> {
+        let _mutation = self
+            .inner
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.edit_and_commit((*self.snapshot().0).clone(), mutation)
+    }
+
+    fn edit_and_commit(
+        &self,
+        mut config: AccessControlConfig,
+        mutation: AccessMutation,
+    ) -> Result<u64, AccessConfigError> {
+        mutation.apply(&mut config)?;
         super::model::normalize_access_config_for_memory_actions(&mut config);
         validate_access_config(&config)?;
         self.commit(config)
     }
 
     fn commit(&self, config: AccessControlConfig) -> Result<u64, AccessConfigError> {
+        // Every caller retains the mutation mutex. Refuse exhaustion before
+        // persistence or publication so a checked precondition cannot wrap.
+        let next_revision = self
+            .snapshot()
+            .1
+            .checked_add(1)
+            .ok_or(AccessConfigError::RevisionExhausted)?;
         let persist_path = self
             .inner
             .persist_path
@@ -236,14 +380,26 @@ impl AccessController {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.config = Arc::new(config);
-        state.revision += 1;
+        state.revision = next_revision;
         Ok(state.revision)
     }
 
     /// Build the per-request view for an authenticated subject (or `None`
     /// for an open/unauthenticated console).
     pub fn view_for_subject(&self, subject: Option<&str>) -> AccessView {
-        let (config, _) = self.snapshot();
+        self.view_and_revision(subject).0
+    }
+
+    pub(crate) fn view_and_revision(&self, subject: Option<&str>) -> (AccessView, u64) {
+        let (config, revision) = self.snapshot();
+        (self.view_from_config(config, subject), revision)
+    }
+
+    fn view_from_config(
+        &self,
+        config: Arc<AccessControlConfig>,
+        subject: Option<&str>,
+    ) -> AccessView {
         let principal = match subject {
             Some(subject) => AccessPrincipal {
                 subject: Some(subject.to_string()),
@@ -1015,5 +1171,473 @@ mod tests {
         );
         let reloaded = AccessController::load_or_default(&path).expect("reload");
         assert!(reloaded.enabled());
+    }
+
+    // Candidate-only tests: the private owner probe and constructor seam do
+    // not exist on the old source. The four external wire fixtures stay exact.
+    mod checked_http {
+        use super::*;
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode, header};
+        use serde_json::{Value, json};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Condvar, mpsc};
+        use std::thread::JoinHandle;
+        use std::time::Duration;
+        use tower::ServiceExt;
+
+        const A: &str = "root@example.test";
+        const B: &str = "alice@example.test";
+        const PRIVATE: &str = "PRIVATE_QUEUED_CONFIG_CANARY";
+        const ISSUER: &str = "https://trusted.mobkit.localhost";
+
+        fn app(controller: &AccessController) -> axum::Router {
+            let decisions = crate::build_runtime_decision_state(crate::RuntimeDecisionInputs {
+                bigquery: crate::BigQueryNaming { dataset: "access_dataset".into(), table: "access_table".into() },
+                trusted_mobkit_toml: "[[modules]]\nid = \"router\"\ncommand = \"router-bin\"\nargs = []\nrestart_policy = \"always\"\n".into(),
+                auth: crate::AuthPolicy { default_provider: crate::AuthProvider::GoogleOAuth,
+                    email_allowlist: vec![A.into(), B.into(), "carol@example.test".into()] },
+                trusted_oidc: crate::TrustedOidcRuntimeConfig {
+                    discovery_json: json!({"issuer": ISSUER, "jwks_uri": format!("{ISSUER}/.well-known/jwks.json")}).to_string(),
+                    jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"}]}"#.into(),
+                    audience: "meerkat-console".into(), require_verified_email: false,
+                },
+                console: crate::ConsolePolicy { require_app_auth: true, ..Default::default() },
+                ops: crate::RuntimeOpsPolicy::default(),
+                release_metadata_json: include_str!("../../assets/release-targets.json").into(),
+            }).expect("real decisions");
+            crate::console_json_router_with_aggregator_and_access(
+                decisions,
+                crate::MobKitConsoleAggregator::new(Arc::new(
+                    crate::InMemoryConsoleLogStore::default(),
+                )),
+                Some(controller.clone()),
+            )
+        }
+
+        fn rpc(app: axum::Router, subject: &str, method: &str, params: Value) -> Value {
+            let mut h = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+            h.kid = Some("kid-current".into());
+            let jwt = jsonwebtoken::encode(
+                &h,
+                &json!({"iss": ISSUER, "aud": "meerkat-console",
+                "sub": subject, "email": subject, "provider": "google_oauth",
+                "exp": chrono::Utc::now().timestamp() + 300}),
+                &jsonwebtoken::EncodingKey::from_secret(b"phase7-trusted-current-secret"),
+            )
+            .expect("JWT");
+            let request = Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"queued-admin","method":method,"params":params})
+                        .to_string(),
+                ))
+                .expect("request");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(async {
+                    let response = app.oneshot(request).await.expect("real HTTP route");
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+                        .await
+                        .expect("body");
+                    let value: Value = serde_json::from_slice(&bytes).expect("JSON");
+                    assert_eq!(value["id"], json!("queued-admin"));
+                    value
+                })
+        }
+
+        fn config() -> AccessControlConfig {
+            AccessControlConfig {
+                enabled: true,
+                admins: vec![A.into(), B.into()],
+                rules: vec![AccessRule {
+                    id: "private-rule".into(),
+                    description: Some(PRIVATE.into()),
+                    actions: vec!["agent.send".into()],
+                    subjects: vec![B.into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn payload(owner: &str, revision: u64, config: &AccessControlConfig) -> Value {
+            json!({"checked_v1":{"owner_instance":owner,"expected_revision":revision,"config":config}})
+        }
+
+        #[derive(Default)]
+        struct Gate {
+            released: Mutex<bool>,
+            wake: Condvar,
+            used: AtomicBool,
+            timed_out: AtomicBool,
+        }
+        impl Gate {
+            fn release(&self) {
+                *self
+                    .released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                self.wake.notify_all();
+            }
+            fn park_once(&self) {
+                if self.used.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let locked = self
+                    .released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (released, _) = self
+                    .wake
+                    .wait_timeout_while(locked, Duration::from_secs(10), |ready| !*ready)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !*released {
+                    self.timed_out.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        struct Workers {
+            gates: [Arc<Gate>; 2],
+            joins: Vec<JoinHandle<Value>>,
+        }
+        impl Drop for Workers {
+            fn drop(&mut self) {
+                for gate in &self.gates {
+                    gate.release();
+                }
+                // Joining follows release even during assertion unwinding. A
+                // product deadlock is fatal at the outer process timeout.
+                for task in self.joins.drain(..) {
+                    let _ = task.join();
+                }
+            }
+        }
+        fn checkpoint(
+            controller: &AccessController,
+            path: &Path,
+        ) -> (AccessControlConfig, u64, Vec<u8>) {
+            let (config, revision) = controller.snapshot();
+            let bytes = std::fs::read(path).expect("persisted bytes");
+            let disk: AccessControlConfig =
+                toml::from_str(std::str::from_utf8(&bytes).expect("UTF8")).expect("TOML");
+            assert_eq!(disk, *config);
+            ((*config).clone(), revision, bytes)
+        }
+
+        #[test]
+        fn queued_revoked_administrator_is_denied_before_matching_checked_write() {
+            run_queued_revocation(true);
+        }
+
+        #[test]
+        fn queued_revoked_administrator_is_denied_before_legacy_write() {
+            run_queued_revocation(false);
+        }
+
+        fn run_queued_revocation(checked: bool) {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("access.toml");
+            let initial = config();
+            std::fs::write(&path, toml::to_string_pretty(&initial).expect("seed"))
+                .expect("persist seed");
+            let owner = AccessController::load_or_default(&path).expect("stored owner");
+            let route = app(&owner);
+            let read = rpc(route.clone(), A, "mobkit/access/get", json!({}));
+            let instance = if checked {
+                read["result"]["owner_instance"]
+                    .as_str()
+                    .expect("instance")
+                    .to_string()
+            } else {
+                String::new()
+            };
+            let revision = read["result"]["revision"].as_u64().expect("revision");
+            assert_eq!(revision, 0);
+            let write = |revision, config: &AccessControlConfig| {
+                if checked {
+                    payload(&instance, revision, config)
+                } else {
+                    json!({"config": config})
+                }
+            };
+            let a_gate = Arc::new(Gate::default());
+            let b_gate = Arc::new(Gate::default());
+            let (tx, rx) = mpsc::channel();
+            let mut workers = Workers {
+                gates: [Arc::clone(&a_gate), Arc::clone(&b_gate)],
+                joins: Vec::new(),
+            };
+            let ag = Arc::clone(&a_gate);
+            let bg = Arc::clone(&b_gate);
+            let acquired = AtomicUsize::new(0);
+            *owner.inner.checked_probe.lock().expect("probe slot") = Some(Arc::new(move |stage| {
+                let _ = tx.send(stage);
+                if stage == CheckedMutationStage::Acquired {
+                    match acquired.fetch_add(1, Ordering::SeqCst) {
+                        0 => bg.park_once(),
+                        1 => ag.park_once(),
+                        _ => {}
+                    }
+                }
+            }));
+            let mut revoked = initial.clone();
+            revoked.admins.retain(|admin| admin != A);
+            let b_route = route.clone();
+            let b_body = write(revision, &revoked);
+            workers.joins.push(std::thread::spawn(move || {
+                rpc(b_route, B, "mobkit/access/set", b_body)
+            }));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).expect("B attempt"),
+                CheckedMutationStage::Attempt
+            );
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5))
+                    .expect("B holds real mutation lock"),
+                CheckedMutationStage::Acquired
+            );
+            assert_eq!(checkpoint(&owner, &path).0, initial);
+            let a_route = route.clone();
+            // The checked case knows the future matching revision; legacy
+            // has no version condition. Neither captured view confers a
+            // post-revocation right after acquiring the actual owner lock.
+            let a_body = write(revision + 1, &initial);
+            workers.joins.push(std::thread::spawn(move || {
+                rpc(a_route, A, "mobkit/access/set", a_body)
+            }));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5))
+                    .expect("A reached actual mutex acquisition"),
+                CheckedMutationStage::Attempt
+            );
+            assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            assert!(!workers.joins[1].is_finished());
+            b_gate.release();
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5))
+                    .expect("A acquired after B commit"),
+                CheckedMutationStage::Acquired
+            );
+            let b_response = workers.joins.remove(0).join().expect("B worker");
+            assert_eq!(b_response["error"], Value::Null, "{b_response}");
+            assert_eq!(b_response["result"]["revision"], json!(revision + 1));
+            let after_b = checkpoint(&owner, &path);
+            assert_eq!(after_b.0, revoked);
+            assert_eq!(after_b.1, revision + 1);
+            assert!(!owner.view_for_subject(Some(A)).can_administer());
+            a_gate.release();
+            let denied = workers.joins.remove(0).join().expect("A worker");
+            assert_eq!(denied["error"]["code"], json!(-32030), "{denied}");
+            assert_eq!(denied["error"]["data"], json!({"kind":"access_denied"}));
+            assert_eq!(denied["result"], Value::Null);
+            for private in [
+                A,
+                B,
+                PRIVATE,
+                instance.as_str(),
+                path.to_str().expect("path"),
+            ]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            {
+                assert!(!denied["error"].to_string().contains(private));
+            }
+            assert_eq!(checkpoint(&owner, &path), after_b);
+            assert!(!a_gate.timed_out.load(Ordering::SeqCst));
+            assert!(!b_gate.timed_out.load(Ordering::SeqCst));
+            let healthy = rpc(route, B, "mobkit/access/set", write(revision + 1, &initial));
+            assert_eq!(healthy["error"], Value::Null, "{healthy}");
+            assert_eq!(healthy["result"]["revision"], json!(revision + 2));
+            let final_state = checkpoint(&owner, &path);
+            assert_eq!(final_state.0, initial);
+            assert_eq!(final_state.1, revision + 2);
+        }
+
+        #[test]
+        fn unavailable_edit_identity_keeps_reads_and_legacy_edits_without_false_capability() {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("access.toml");
+            let initial = config();
+            std::fs::write(&path, toml::to_string_pretty(&initial).expect("seed"))
+                .expect("seed bytes");
+            let owner = AccessController::with_edit_identity(initial.clone(), None)
+                .expect("constructor failure branch")
+                .with_persist_path(&path);
+            let cloned = owner.clone();
+            let route = app(&cloned);
+            for method in ["mobkit/access/status", "mobkit/access/get"] {
+                let read = rpc(route.clone(), A, method, json!({}));
+                assert_eq!(read["error"], Value::Null, "{read}");
+                assert!(read["result"].get("conditional_mutations").is_none());
+                assert!(read["result"].get("owner_instance").is_none());
+                if method.ends_with("/get") {
+                    assert_eq!(read["result"]["config"], json!(initial));
+                }
+            }
+            let before = checkpoint(&owner, &path);
+            let checked = payload("not-an-owner-token", 0, &initial);
+            let denied = rpc(
+                route.clone(),
+                "carol@example.test",
+                "mobkit/access/set",
+                checked.clone(),
+            );
+            assert_eq!(denied["error"]["code"], json!(-32030));
+            assert_eq!(denied["error"]["data"], json!({"kind":"access_denied"}));
+            let unavailable = rpc(route.clone(), A, "mobkit/access/set", checked);
+            assert_eq!(unavailable["error"]["code"], json!(-32004));
+            assert_eq!(
+                unavailable["error"]["data"],
+                json!({"kind":"access_mutation_unavailable"})
+            );
+            for private in [
+                A,
+                PRIVATE,
+                "not-an-owner-token",
+                path.to_str().expect("path"),
+            ] {
+                assert!(!unavailable["error"].to_string().contains(private));
+            }
+            assert_eq!(checkpoint(&owner, &path), before);
+            cloned
+                .set_group(
+                    "legacy-direct",
+                    AccessGroup {
+                        members: vec![B.into()],
+                        ..Default::default()
+                    },
+                )
+                .expect("existing direct path");
+            assert_eq!(checkpoint(&owner, &path).1, 1);
+            assert!(owner.snapshot().0.groups.contains_key("legacy-direct"));
+            let legacy = rpc(
+                route,
+                A,
+                "mobkit/access/groups/set",
+                json!({
+                    "name": "legacy-http", "group": {"members": [B]}
+                }),
+            );
+            assert_eq!(legacy["error"], Value::Null, "{legacy}");
+            assert_eq!(legacy["result"]["revision"], json!(2));
+            assert_eq!(checkpoint(&owner, &path).1, 2);
+            assert!(owner.snapshot().0.groups.contains_key("legacy-http"));
+        }
+
+        #[test]
+        fn exhausted_revision_refuses_direct_and_http_without_mutation() {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("access.toml");
+            let initial = config();
+            std::fs::write(&path, toml::to_string_pretty(&initial).expect("seed"))
+                .expect("seed bytes");
+            let owner = AccessController::load_or_default(&path).expect("stored owner");
+            // Private boundary setup, before concurrent use; no production setter.
+            owner.inner.state.write().expect("state").revision = u64::MAX;
+            let before = checkpoint(&owner, &path);
+            let route = app(&owner);
+            let read = rpc(route.clone(), A, "mobkit/access/get", json!({}));
+            let instance = read["result"]["owner_instance"].as_str().expect("instance");
+            assert_eq!(read["result"]["revision"], json!(u64::MAX));
+            let mut changed = initial.clone();
+            changed
+                .groups
+                .insert("must-not-publish".into(), AccessGroup::default());
+            assert_eq!(
+                owner.replace_config(changed.clone()),
+                Err(AccessConfigError::RevisionExhausted)
+            );
+            assert_eq!(checkpoint(&owner, &path), before);
+            for body in [
+                payload(instance, u64::MAX, &changed),
+                json!({"config": changed}),
+            ] {
+                let response = rpc(route.clone(), A, "mobkit/access/set", body);
+                assert_eq!(response["error"]["code"], json!(-32004), "{response}");
+                assert_eq!(
+                    response["error"]["data"],
+                    json!({"kind":"access_mutation_unavailable"})
+                );
+                assert_eq!(checkpoint(&owner, &path), before);
+                assert!(!path.with_file_name("access.toml.tmp").exists());
+            }
+            // Revoked/non-admin callers learn no instance, conflict or exhaustion detail.
+            let denied = rpc(
+                route,
+                "carol@example.test",
+                "mobkit/access/set",
+                payload("wrong-instance", 0, &initial),
+            );
+            assert_eq!(denied["error"]["code"], json!(-32030));
+            assert_eq!(denied["error"]["data"], json!({"kind":"access_denied"}));
+            assert_eq!(checkpoint(&owner, &path), before);
+        }
+
+        #[test]
+        fn checked_http_persistence_failure_is_finite_and_does_not_publish() {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("PRIVATE_PERSIST_PATH.toml");
+            let initial = config();
+            std::fs::write(&path, toml::to_string_pretty(&initial).expect("seed"))
+                .expect("seed bytes");
+            let owner = AccessController::load_or_default(&path).expect("stored owner");
+            let route = app(&owner);
+            let read = rpc(route.clone(), A, "mobkit/access/get", json!({}));
+            let instance = read["result"]["owner_instance"].as_str().expect("instance");
+            let before = checkpoint(&owner, &path);
+            let temp_path = path.with_file_name("PRIVATE_PERSIST_PATH.toml.tmp");
+            // A directory at the actual sibling temporary-write path forces a
+            // real filesystem failure while the original file stays intact.
+            std::fs::create_dir(&temp_path).expect("block actual temp write");
+            let mut changed = initial;
+            changed
+                .groups
+                .insert("new-group".into(), AccessGroup::default());
+            let failed = rpc(
+                route.clone(),
+                A,
+                "mobkit/access/set",
+                payload(instance, 0, &changed),
+            );
+            assert_eq!(failed["error"]["code"], json!(-32000), "{failed}");
+            assert_eq!(
+                failed["error"]["data"],
+                json!({"kind":"access_persistence_failed"})
+            );
+            assert_eq!(
+                failed["error"]["message"],
+                json!("Access configuration could not be saved.")
+            );
+            for private in [
+                A,
+                PRIVATE,
+                instance,
+                path.to_str().expect("path"),
+                "PRIVATE_PERSIST_PATH",
+            ] {
+                assert!(!failed["error"].to_string().contains(private));
+            }
+            assert_eq!(checkpoint(&owner, &path), before);
+            std::fs::remove_dir(&temp_path).expect("remove fault");
+            let healthy = rpc(
+                route,
+                A,
+                "mobkit/access/set",
+                payload(instance, 0, &changed),
+            );
+            assert_eq!(healthy["error"], Value::Null, "{healthy}");
+            assert_eq!(healthy["result"]["revision"], json!(1));
+            let after = checkpoint(&owner, &path);
+            assert_eq!(after.0, changed);
+            assert_eq!(after.1, 1);
+            assert!(!temp_path.exists());
+        }
     }
 }

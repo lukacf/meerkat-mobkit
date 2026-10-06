@@ -356,6 +356,8 @@ export interface ConsoleAccessSection {
 }
 
 export interface ConsoleAccessStatus extends ConsoleAccessSection {
+  conditional_mutations?: string;
+  owner_instance?: string;
   revision?: number;
   is_admin?: boolean;
   actions?: string[];
@@ -384,6 +386,19 @@ export interface ConsoleAccessConfig {
   groups?: Record<string, ConsoleAccessGroup>;
   rules?: ConsoleAccessRule[];
 }
+
+/** Captured with the protected config read, never rebased by a display refresh. */
+export interface ConsoleAccessEditBase {
+  owner_instance: string;
+  revision: number;
+  config: ConsoleAccessConfig;
+}
+
+export interface ConsoleAccessSaveFailure {
+  kind: "revision_conflict" | "owner_changed" | "unavailable" | "invalid" | "failed";
+}
+
+export type ConsoleAccessSaveResult = void | boolean | ConsoleAccessSaveFailure;
 
 // ── Memory panel (read-only) ──────────────────────────────────────────────
 // Shapes mirror the server contract for the `mobkit/memory/panel/*`

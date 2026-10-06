@@ -826,7 +826,12 @@
               "available",
               "enabled",
               "actions"
-            ]
+            ],
+            "optional_fields": [
+              "owner_instance",
+              "conditional_mutations"
+            ],
+            "note": "owner_instance and conditional_mutations (\"checked_v1\") are present only for a caller who can administer access on an owner that supports checked writes."
           },
           "errors": [
             {
@@ -842,7 +847,12 @@
             "required_fields": [
               "config",
               "revision"
-            ]
+            ],
+            "optional_fields": [
+              "owner_instance",
+              "conditional_mutations"
+            ],
+            "note": "owner_instance and conditional_mutations (\"checked_v1\") are present only for a caller who can administer access on an owner that supports checked writes."
           },
           "errors": [
             {
@@ -863,7 +873,9 @@
           "request": {
             "required_fields": [
               "config"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -875,6 +887,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601
@@ -890,7 +903,9 @@
           "request": {
             "required_fields": [
               "enabled"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -902,6 +917,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601
@@ -917,7 +933,9 @@
           "request": {
             "required_fields": [
               "rule"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -929,6 +947,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601
@@ -944,7 +963,9 @@
           "request": {
             "required_fields": [
               "id"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -956,6 +977,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601
@@ -972,7 +994,9 @@
             "required_fields": [
               "name",
               "group"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -984,6 +1008,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601
@@ -999,7 +1024,9 @@
           "request": {
             "required_fields": [
               "name"
-            ]
+            ],
+            "fields_location": "params.checked_v1 for a checked write, together with owner_instance and expected_revision; otherwise params",
+            "note": "A checked write sends only params.checked_v1. A mixed, malformed or unknown checked envelope fails with -32602 and never falls back to the unchecked write."
           },
           "success": {
             "required_fields": [
@@ -1011,6 +1038,7 @@
               "codes": [
                 -32030,
                 -32004,
+                -32009,
                 -32602,
                 -32000,
                 -32601

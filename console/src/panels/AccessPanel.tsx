@@ -1,9 +1,13 @@
 import React from "react";
 import type {
   ConsoleAccessConfig,
+  ConsoleAccessEditBase,
+  ConsoleAccessSaveFailure,
+  ConsoleAccessSaveResult,
   ConsoleAccessRule,
   ConsoleAccessStatus,
 } from "../types";
+import { accessSaveNotice } from "../lib/errors";
 
 export interface AccessPreviewResult {
   allowed?: boolean;
@@ -20,16 +24,17 @@ interface AccessPanelProps {
   readOnly?: boolean;
   agents: { identity: string; label: string }[];
   onRefresh: () => void | boolean | Promise<void | boolean>;
-  onSetEnabled: (enabled: boolean) => void | boolean | Promise<void | boolean>;
-  onSaveAdmins: (admins: string[]) => void | boolean | Promise<void | boolean>;
-  onUpsertRule: (rule: ConsoleAccessRule) => void | boolean | Promise<void | boolean>;
-  onDeleteRule: (id: string) => void | boolean | Promise<void | boolean>;
-  onSaveGroup: (name: string, group: { description?: string; members: string[] }) => void | boolean | Promise<void | boolean>;
-  onDeleteGroup: (name: string) => void | boolean | Promise<void | boolean>;
+  onSetEnabled: (enabled: boolean, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onSaveAdmins: (admins: string[], base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onUpsertRule: (rule: ConsoleAccessRule, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onDeleteRule: (id: string, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onSaveGroup: (name: string, group: { description?: string; members: string[] }, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onDeleteGroup: (name: string, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
   onPreview: (subject: string, action: string, identity?: string) => Promise<AccessPreviewResult | null>;
 }
 
 type Tab = "overview" | "groups" | "rules" | "preview";
+type EditKind = "admins" | "rule" | "group" | "immediate";
 
 
 export function parseListInput(raw: string): string[] {
@@ -174,28 +179,38 @@ export function AccessPanel({
   const [previewSubject, setPreviewSubject] = React.useState("");
   const [previewAction, setPreviewAction] = React.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = React.useState("");
-  const [previewResult, setPreviewResult] = React.useState<AccessPreviewResult | null>(null);
+  const [previewFeedback, setPreviewFeedback] = React.useState<{
+    scope: string; result?: AccessPreviewResult; error?: string;
+  } | null>(null);
   const previewSubjectInput = React.useRef<HTMLInputElement>(null);
   const inspectFocusPending = React.useRef(false);
 
   const actions = status?.actions ?? [];
   const [saving, setSaving] = React.useState(false);
-  const [mutationError, setMutationError] = React.useState<string | null>(null);
+  const [saveFailure, setSaveFailure] = React.useState<(ConsoleAccessSaveFailure & { edit: EditKind }) | null>(null);
+  const [adminsBase, setAdminsBase] = React.useState<ConsoleAccessEditBase | null>(null);
+  const [ruleBase, setRuleBase] = React.useState<ConsoleAccessEditBase | null>(null);
+  const [groupBase, setGroupBase] = React.useState<ConsoleAccessEditBase | null>(null);
   const [previewPending, setPreviewPending] = React.useState(false);
-  const [previewError, setPreviewError] = React.useState<string | null>(null);
   const previewVersion = React.useRef(0);
   const mayView = status?.available === true && status.can_administer === true;
   const current = mayView && !loading && !error && Boolean(config);
   const actionCatalogKey = JSON.stringify(actions);
   const scope = JSON.stringify([status?.subject, status?.available, status?.can_administer]);
-  const previewScope = JSON.stringify([scope, status?.revision, status?.enabled,
-    actionCatalogKey, loading, error, readOnly, previewSubject, previewAction, previewIdentity]);
+  const mutationScope = React.useRef(scope);
+  mutationScope.current = scope;
+  // Refresh hides the observation until current state is available. An
+  // unchanged snapshot must not discard an answer racing that refresh.
+  const previewScope = JSON.stringify([scope, status?.owner_instance, status?.revision, status?.enabled, config,
+    actionCatalogKey, error, readOnly, previewSubject, previewAction, previewIdentity]);
+  const currentPreview = current && previewFeedback?.scope === previewScope ? previewFeedback : null;
+  const previewResult = currentPreview?.result;
+  const previewError = currentPreview?.error;
   const latestPreviewScope = React.useRef(previewScope);
   latestPreviewScope.current = previewScope;
   React.useEffect(() => {
     previewVersion.current += 1;
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     setPreviewPending(false);
   }, [previewScope]);
   React.useEffect(() => {
@@ -203,7 +218,8 @@ export function AccessPanel({
   }, [actionCatalogKey]);
   React.useEffect(() => {
     setRuleDraft(null); setAdminsDraft(null); setGroupNameDraft("");
-    setGroupMembersDraft(""); setEditingGroup(null); setMutationError(null);
+    setGroupMembersDraft(""); setEditingGroup(null); setSaveFailure(null);
+    setAdminsBase(null); setRuleBase(null); setGroupBase(null);
   }, [scope]);
   React.useEffect(() => () => { previewVersion.current += 1; }, []);
   React.useEffect(() => {
@@ -215,18 +231,43 @@ export function AccessPanel({
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
-  const canEdit = current && !readOnly && !saving;
-  async function mutate(action: () => void | boolean | Promise<void | boolean>, done = () => {}) {
-    if (!canEdit) return;
-    setSaving(true); setMutationError(null);
+  const checked = status?.conditional_mutations === "checked_v1"
+    && typeof status.owner_instance === "string" && status.owner_instance.length > 0
+    && Number.isSafeInteger(status.revision) && status.revision! >= 0;
+  const canReview = current && checked && !readOnly && !saving;
+  // An invalid draft or an ordinary failure stays editable against its own
+  // base; owner, revision and capability failures need an explicit review.
+  const requiresReview = saveFailure !== null && saveFailure.kind !== "failed" && saveFailure.kind !== "invalid";
+  const canEdit = canReview && !requiresReview;
+  function captureBase(): ConsoleAccessEditBase | null {
+    if (!canReview || !config) return null;
+    return { owner_instance: status!.owner_instance!, revision: status!.revision!, config: structuredClone(config) };
+  }
+  async function mutate(edit: EditKind, base: ConsoleAccessEditBase | null,
+    action: (base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>, done = () => {}) {
+    if (!canEdit || !base) return;
+    const requestedScope = scope;
+    setSaving(true); setSaveFailure(null);
     try {
-      if (await action() !== false) done();
+      const result = await action(base);
+      if (requestedScope !== mutationScope.current) return;
+      if (result && typeof result === "object") setSaveFailure({ ...result, edit });
+      else if (result !== false) done();
     } catch {
-      setMutationError("Changes were not saved. Your draft is retained; refresh Console access before trying again.");
+      if (requestedScope === mutationScope.current) setSaveFailure({ kind: "failed", edit });
     } finally { setSaving(false); }
+  }
+  function reviewAndReapply() {
+    const base = captureBase();
+    if (!base || !saveFailure || !requiresReview) return;
+    if (saveFailure.edit === "admins") setAdminsBase(base);
+    if (saveFailure.edit === "rule") setRuleBase(base);
+    if (saveFailure.edit === "group") setGroupBase(base);
+    setSaveFailure(null);
   }
 
   function startGroupEdit(name: string, members: string[] | undefined) {
+    setGroupBase(captureBase());
     setEditingGroup(name);
     setGroupNameDraft(name);
     setGroupMembersDraft(formatListInput(members));
@@ -235,7 +276,7 @@ export function AccessPanel({
   function inspectSubject(subject: string) {
     if (!current || saving) return;
     previewVersion.current += 1;
-    setPreviewResult(null); setPreviewError(null); setPreviewPending(false);
+    setPreviewFeedback(null); setPreviewPending(false);
     setPreviewSubject(subject);
     inspectFocusPending.current = true;
     setTab("preview");
@@ -244,8 +285,8 @@ export function AccessPanel({
   function submitGroup() {
     const name = groupNameDraft.trim();
     if (!name) return;
-    void mutate(() => onSaveGroup(name, { members: parseListInput(groupMembersDraft) }), () => {
-      setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft("");
+    void mutate("group", groupBase, base => onSaveGroup(name, { ...base.config.groups?.[name], members: parseListInput(groupMembersDraft) }, base), () => {
+      setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); setGroupBase(null);
     });
   }
 
@@ -254,16 +295,16 @@ export function AccessPanel({
     if (!current || !subject || !actions.includes(previewAction) || previewPending) return;
     const version = ++previewVersion.current;
     const requestedScope = previewScope;
-    setPreviewPending(true); setPreviewResult(null); setPreviewError(null);
+    setPreviewPending(true); setPreviewFeedback(null);
     try {
       const result = await onPreview(subject, previewAction, previewIdentity.trim() || undefined);
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        if (result?.allowed === true || result?.allowed === false) setPreviewResult(result);
-        else setPreviewError("Access preview unavailable. No decision was returned.");
+        if (result?.allowed === true || result?.allowed === false) setPreviewFeedback({ scope: requestedScope, result });
+        else setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. No decision was returned." });
       }
     } catch {
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        setPreviewError("Access preview unavailable. Refresh and try again.");
+        setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. Refresh and try again." });
       }
     } finally {
       if (version === previewVersion.current) setPreviewPending(false);
@@ -292,7 +333,8 @@ export function AccessPanel({
         </p>
       </div>
       {loading ? <p role="status">Refreshing owner state. Changes are temporarily unavailable.</p> : null}
-      {error || mutationError ? <div className="gating__empty" role="alert" data-testid="access-error">{error || mutationError}</div> : null}
+      {error || saveFailure ? <div className="gating__empty" role="alert" data-testid="access-error">{error || (saveFailure ? accessSaveNotice(saveFailure) : null)}</div> : null}
+      {requiresReview && canReview ? <button onClick={reviewAndReapply}>Review and reapply</button> : null}
       {error ? <p style={{ padding: "0 24px" }}>Last loaded configuration may be out of date. Refresh before making changes.</p> : null}
       {readOnly ? <p role="status">This connection is read-only.</p> : null}
       <div className="gating__tabs">
@@ -334,7 +376,7 @@ export function AccessPanel({
                 <div className="gpolicy__stats">
                   <button
                     data-testid="access-toggle-enabled"
-                    onClick={() => void mutate(() => onSetEnabled(!enabled))}
+                    onClick={() => void mutate("immediate", captureBase(), base => onSetEnabled(!enabled, base))}
                   >
                     {enabled ? "Disable enforcement" : "Enable enforcement"}
                   </button>
@@ -363,7 +405,7 @@ export function AccessPanel({
                     <div className="gpolicy__stats">
                       <button
                         data-testid="access-edit-admins"
-                        onClick={() => setAdminsDraft(formatListInput(config?.admins))}
+                        onClick={() => { setAdminsBase(captureBase()); setAdminsDraft(formatListInput(config?.admins)); }}
                       >
                         Edit admins
                       </button>
@@ -386,12 +428,12 @@ export function AccessPanel({
                       className="approve"
                       data-testid="access-save-admins"
                       onClick={() => {
-                        void mutate(() => onSaveAdmins(parseListInput(adminsDraft)), () => setAdminsDraft(null));
+                        void mutate("admins", adminsBase, base => onSaveAdmins(parseListInput(adminsDraft), base), () => { setAdminsDraft(null); setAdminsBase(null); });
                       }}
                     >
                       Save
                     </button>
-                    <button onClick={() => setAdminsDraft(null)}>Cancel</button>
+                    <button onClick={() => { setAdminsDraft(null); setAdminsBase(null); }}>Cancel</button>
                   </div>
                 </div>
               )}
@@ -450,7 +492,7 @@ export function AccessPanel({
                         data-testid={`access-group-delete:${name}`}
                         onClick={() => {
                           if (window.confirm(`Delete group "${name}"?`)) {
-                            void mutate(() => onDeleteGroup(name));
+                            void mutate("immediate", captureBase(), base => onDeleteGroup(name, base));
                           }
                         }}
                       >
@@ -461,22 +503,24 @@ export function AccessPanel({
                 </div>
               ),
             )}
-            {canEdit ? (
+            {canEdit || groupBase ? (
               <div className="gpolicy" data-state="active">
                 <div className="gpolicy__head">
                   <span className="gpolicy__action">
                     {editingGroup ? `Edit ${editingGroup}` : "New group"}
                   </span>
                 </div>
+                {/* Member inspection keeps this tab's fieldset enabled, so a
+                    retained draft is disabled here until it can be saved. */}
                 <div className="access-panel__form">
                   <label>
                     Group name
                     <input
                       data-testid="access-group-name"
                       value={groupNameDraft}
-                      onChange={(event) => setGroupNameDraft(event.target.value)}
+                      onChange={(event) => { if (!groupBase) setGroupBase(captureBase()); setGroupNameDraft(event.target.value); }}
                       placeholder="ops"
-                      disabled={editingGroup !== null}
+                      disabled={!canEdit || editingGroup !== null}
                     />
                   </label>
                   <label>
@@ -484,16 +528,17 @@ export function AccessPanel({
                     <input
                       data-testid="access-group-members"
                       value={groupMembersDraft}
-                      onChange={(event) => setGroupMembersDraft(event.target.value)}
+                      onChange={(event) => { if (!groupBase) setGroupBase(captureBase()); setGroupMembersDraft(event.target.value); }}
                       placeholder="alice@example.com, bob@example.com"
+                      disabled={!canEdit}
                     />
                   </label>
                   <div className="access-panel__form-actions">
-                    <button className="approve" data-testid="access-group-save" onClick={submitGroup}>
+                    <button className="approve" data-testid="access-group-save" onClick={submitGroup} disabled={!canEdit}>
                       {editingGroup ? "Save members" : "Create group"}
                     </button>
                     {editingGroup ? (
-                      <button onClick={() => { setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); }}>
+                      <button onClick={() => { setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); setGroupBase(null); }} disabled={!canEdit}>
                         Cancel
                       </button>
                     ) : null}
@@ -536,7 +581,7 @@ export function AccessPanel({
                     <div className="gpolicy__stats">
                       <button
                         data-testid={`access-rule-edit:${rule.id}`}
-                        onClick={() => setRuleDraft(draftFromRule(rule))}
+                        onClick={() => { setRuleBase(captureBase()); setRuleDraft(draftFromRule(rule)); }}
                       >
                         Edit
                       </button>
@@ -545,7 +590,7 @@ export function AccessPanel({
                         data-testid={`access-rule-delete:${rule.id}`}
                         onClick={() => {
                           if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
-                            void mutate(() => onDeleteRule(rule.id));
+                            void mutate("immediate", captureBase(), base => onDeleteRule(rule.id, base));
                           }
                         }}
                       >
@@ -558,7 +603,7 @@ export function AccessPanel({
             )}
             {canEdit && !ruleDraft ? (
               <div className="gpolicy__stats">
-                <button data-testid="access-rule-new" onClick={() => setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) })}>
+                <button data-testid="access-rule-new" onClick={() => { setRuleBase(captureBase()); setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) }); }}>
                   New rule
                 </button>
               </div>
@@ -675,12 +720,12 @@ export function AccessPanel({
                       data-testid="access-rule-save"
                       disabled={!canEdit || !ruleDraft.id.trim() || ruleDraft.actions.length === 0 || ruleDraft.actions.some(action => !actions.includes(action))}
                       onClick={() => {
-                        void mutate(() => onUpsertRule(ruleFromDraft(ruleDraft)), () => setRuleDraft(null));
+                        void mutate("rule", ruleBase, base => onUpsertRule(ruleFromDraft(ruleDraft), base), () => { setRuleDraft(null); setRuleBase(null); });
                       }}
                     >
                       Save rule
                     </button>
-                    <button onClick={() => setRuleDraft(null)}>Cancel</button>
+                    <button onClick={() => { setRuleDraft(null); setRuleBase(null); }}>Cancel</button>
                   </div>
                 </div>
               </div>

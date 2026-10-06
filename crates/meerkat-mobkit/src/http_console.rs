@@ -2648,18 +2648,6 @@ fn access_unavailable_rpc_error(response_id: Value) -> Value {
     )
 }
 
-fn access_config_rpc_error(response_id: Value, err: crate::access::AccessConfigError) -> Value {
-    response_value(
-        response_id,
-        None,
-        Some(JsonRpcError {
-            code: -32602,
-            message: err.to_string(),
-            data: Some(json!({ "kind": "invalid_access_config" })),
-        }),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Console Memory panel (§9.3): read-only `mobkit/memory/panel/*` RPCs
 // ---------------------------------------------------------------------------
@@ -3596,11 +3584,144 @@ async fn handle_memory_panel_harvests(
     )
 }
 
+fn access_edit_rpc_error(response_id: Value, error: crate::access::AccessEditError) -> Value {
+    use crate::access::AccessEditError;
+    let (code, message, data) = match error {
+        AccessEditError::Denied => {
+            return access_denied_rpc_error(response_id, "access denied: access.admin");
+        }
+        AccessEditError::Unavailable
+        | AccessEditError::Config(crate::access::AccessConfigError::RevisionExhausted) => (
+            -32004,
+            "Access changes are temporarily unavailable.",
+            json!({"kind":"access_mutation_unavailable"}),
+        ),
+        AccessEditError::OwnerChanged => (
+            -32009,
+            "The access configuration owner changed.",
+            json!({"kind":"access_owner_changed"}),
+        ),
+        AccessEditError::RevisionConflict { expected, actual } => (
+            -32009,
+            "Access configuration changed.",
+            json!({"kind":"access_revision_conflict", "expected_revision":expected, "actual_revision":actual}),
+        ),
+        AccessEditError::Config(crate::access::AccessConfigError::Io(_)) => (
+            -32000,
+            "Access configuration could not be saved.",
+            json!({"kind":"access_persistence_failed"}),
+        ),
+        AccessEditError::Config(_) => (
+            -32602,
+            "Invalid access configuration.",
+            json!({"kind":"invalid_access_config"}),
+        ),
+    };
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code,
+            message: message.to_string(),
+            data: Some(data),
+        }),
+    )
+}
+
+/// Returns None only for a legacy payload with no checked-version key. Any
+/// malformed, mixed or unknown checked envelope is terminal invalid params.
+fn checked_access_mutation(
+    method: &str,
+    params: &Value,
+) -> Result<
+    Option<(
+        crate::access::AccessEditPrecondition,
+        crate::access::AccessMutation,
+    )>,
+    (),
+> {
+    use crate::access::{AccessEditPrecondition, AccessMutation};
+    let keys: &[&str] = match method {
+        "mobkit/access/set" => &["config"],
+        "mobkit/access/rules/upsert" => &["rule"],
+        "mobkit/access/rules/delete" => &["id"],
+        "mobkit/access/groups/set" => &["name", "group"],
+        "mobkit/access/groups/delete" => &["name"],
+        "mobkit/access/enable" => &["enabled"],
+        _ => return Ok(None),
+    };
+    let Some(outer) = params.as_object() else {
+        return Ok(None);
+    };
+    if !outer.keys().any(|key| key.starts_with("checked_")) {
+        return Ok(None);
+    }
+    if outer.len() != 1 {
+        return Err(());
+    }
+    let inner = outer
+        .get("checked_v1")
+        .and_then(Value::as_object)
+        .ok_or(())?;
+    if inner.len() != keys.len() + 2 || !keys.iter().all(|key| inner.contains_key(*key)) {
+        return Err(());
+    }
+    let owner = inner
+        .get("owner_instance")
+        .and_then(Value::as_str)
+        .filter(|owner| !owner.is_empty())
+        .ok_or(())?;
+    let expected_revision = inner
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or(())?;
+    let required = |key: &str| inner.get(key).cloned().ok_or(());
+    let text = |key: &str| {
+        inner
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or(())
+    };
+    let mutation = match method {
+        "mobkit/access/set" => {
+            AccessMutation::Replace(serde_json::from_value(required("config")?).map_err(|_| ())?)
+        }
+        "mobkit/access/rules/upsert" => {
+            AccessMutation::UpsertRule(serde_json::from_value(required("rule")?).map_err(|_| ())?)
+        }
+        "mobkit/access/rules/delete" => AccessMutation::DeleteRule(text("id")?),
+        "mobkit/access/groups/set" => AccessMutation::SetGroup(
+            text("name")?,
+            serde_json::from_value(required("group")?).map_err(|_| ())?,
+        ),
+        "mobkit/access/groups/delete" => AccessMutation::DeleteGroup(text("name")?),
+        "mobkit/access/enable" => {
+            AccessMutation::SetEnabled(inner.get("enabled").and_then(Value::as_bool).ok_or(())?)
+        }
+        _ => return Err(()),
+    };
+    Ok(Some((
+        AccessEditPrecondition {
+            owner_instance: owner.to_string(),
+            expected_revision,
+        },
+        mutation,
+    )))
+}
+
+fn add_access_edit_metadata(controller: &AccessController, value: &mut Value) {
+    if let Some(instance) = controller.edit_identity() {
+        value["owner_instance"] = json!(instance);
+        value["conditional_mutations"] = json!("checked_v1");
+    }
+}
+
 fn access_status_result(access: Option<&AccessController>, view: Option<&AccessView>) -> Value {
     match (access, view) {
         (Some(controller), Some(view)) => {
-            let (_, revision) = controller.snapshot();
-            json!({
+            let (view, revision) = controller.view_and_revision(view.subject());
+            let mut result = json!({
                 "available": true,
                 "enabled": view.enforced(),
                 "revision": revision,
@@ -3609,7 +3730,11 @@ fn access_status_result(access: Option<&AccessController>, view: Option<&AccessV
                 "is_admin": view.is_admin(),
                 "can_administer": view.can_administer(),
                 "actions": ACCESS_ACTIONS,
-            })
+            });
+            if view.can_administer() {
+                add_access_edit_metadata(controller, &mut result);
+            }
+            result
         }
         _ => json!({
             "available": false,
@@ -3651,22 +3776,53 @@ fn handle_access_admin_rpc(
             controller
         }
     };
+    // Only the authenticated view's subject is forwarded. Its captured admin
+    // decision is not the final authority at either serialized write boundary.
+    match checked_access_mutation(&request.method, &request.params) {
+        Ok(Some((expected, mutation))) => {
+            return Some(
+                match controller.mutate_admin(
+                    view.and_then(AccessView::subject),
+                    Some(expected),
+                    mutation,
+                ) {
+                    Ok(revision) => {
+                        response_value(response_id, Some(json!({"revision":revision})), None)
+                    }
+                    Err(error) => access_edit_rpc_error(response_id, error),
+                },
+            );
+        }
+        Err(()) => {
+            return Some(invalid_params(
+                response_id,
+                "Invalid checked access request.",
+            ));
+        }
+        Ok(None) => {}
+    }
+    let legacy_write = |mutation| {
+        controller
+            .mutate_admin(view.and_then(AccessView::subject), None, mutation)
+            .map(|revision| json!({ "revision": revision }))
+    };
     let result = match request.method.as_str() {
         "mobkit/access/get" => {
-            let (config, revision) = controller.snapshot();
-            Ok(json!({ "config": &*config, "revision": revision }))
+            let (config, revision) =
+                match controller.admin_config(view.and_then(AccessView::subject)) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return Some(access_edit_rpc_error(response_id, error)),
+                };
+            let mut result = json!({ "config": &*config, "revision": revision });
+            add_access_edit_metadata(controller, &mut result);
+            Ok(result)
         }
         "mobkit/access/set" => {
             match serde_json::from_value(request.params.get("config").cloned().unwrap_or_default())
             {
-                Ok(config) => controller
-                    .replace_config(config)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access config: {err}"),
-                    ));
+                Ok(config) => legacy_write(crate::access::AccessMutation::Replace(config)),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access config."));
                 }
             }
         }
@@ -3674,14 +3830,9 @@ fn handle_access_admin_rpc(
             match serde_json::from_value::<AccessRule>(
                 request.params.get("rule").cloned().unwrap_or_default(),
             ) {
-                Ok(rule) => controller
-                    .upsert_rule(rule)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access rule: {err}"),
-                    ));
+                Ok(rule) => legacy_write(crate::access::AccessMutation::UpsertRule(rule)),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access rule."));
                 }
             }
         }
@@ -3689,9 +3840,9 @@ fn handle_access_admin_rpc(
             let Some(rule_id) = request.params.get("id").and_then(Value::as_str) else {
                 return Some(invalid_params(response_id, "id required"));
             };
-            controller
-                .delete_rule(rule_id)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::DeleteRule(
+                rule_id.to_string(),
+            ))
         }
         "mobkit/access/groups/set" => {
             let Some(name) = request.params.get("name").and_then(Value::as_str) else {
@@ -3700,14 +3851,12 @@ fn handle_access_admin_rpc(
             match serde_json::from_value::<AccessGroup>(
                 request.params.get("group").cloned().unwrap_or_default(),
             ) {
-                Ok(group) => controller
-                    .set_group(name, group)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access group: {err}"),
-                    ));
+                Ok(group) => legacy_write(crate::access::AccessMutation::SetGroup(
+                    name.to_string(),
+                    group,
+                )),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access group."));
                 }
             }
         }
@@ -3715,17 +3864,13 @@ fn handle_access_admin_rpc(
             let Some(name) = request.params.get("name").and_then(Value::as_str) else {
                 return Some(invalid_params(response_id, "name required"));
             };
-            controller
-                .delete_group(name)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::DeleteGroup(name.to_string()))
         }
         "mobkit/access/enable" => {
             let Some(enabled) = request.params.get("enabled").and_then(Value::as_bool) else {
                 return Some(invalid_params(response_id, "enabled (bool) required"));
             };
-            controller
-                .set_enabled(enabled)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::SetEnabled(enabled))
         }
         "mobkit/access/preview" => {
             let subject = request.params.get("subject").and_then(Value::as_str);
@@ -3733,7 +3878,11 @@ fn handle_access_admin_rpc(
                 return Some(invalid_params(response_id, "action required"));
             };
             let identity = request.params.get("identity").and_then(Value::as_str);
-            let preview_view = controller.view_for_subject(subject);
+            let preview_view =
+                match controller.admin_preview(view.and_then(AccessView::subject), subject) {
+                    Ok(preview) => preview,
+                    Err(error) => return Some(access_edit_rpc_error(response_id, error)),
+                };
             let decision = match identity {
                 Some(identity) => preview_view.decide_agent(action, identity),
                 None => preview_view.decide(action, &AccessResource::none()),
@@ -3762,7 +3911,7 @@ fn handle_access_admin_rpc(
     };
     Some(match result {
         Ok(value) => response_value(response_id, Some(value), None),
-        Err(err) => access_config_rpc_error(response_id, err),
+        Err(err) => access_edit_rpc_error(response_id, err),
     })
 }
 
@@ -19422,5 +19571,160 @@ comms = true
                 "health": "unknown",
             })
         );
+    }
+
+    mod current_admin_preview {
+        use super::*;
+        use crate::access::{
+            AccessControlConfig, AccessGroup, AccessRule, AccessView, AgentResourceAttributes,
+        };
+
+        const REVOKED: &str = "former-admin@example.test";
+        const ADMIN: &str = "current-admin@example.test";
+        const TARGET: &str = "preview-target@example.test";
+        const PRIVATE_GROUP: &str = "PRIVATE_CURRENT_PREVIEW_GROUP";
+        const PRIVATE_RULE: &str = "PRIVATE_CURRENT_PREVIEW_RULE";
+
+        fn fixture() -> (AccessController, AccessView, AccessView) {
+            let owner = AccessController::new(AccessControlConfig {
+                enabled: true,
+                admins: vec![REVOKED.to_string(), ADMIN.to_string()],
+                groups: BTreeMap::from([(
+                    "old-group".to_string(),
+                    AccessGroup {
+                        members: vec![TARGET.to_string()],
+                        ..AccessGroup::default()
+                    },
+                )]),
+                ..AccessControlConfig::default()
+            })
+            .expect("initial actual owner");
+            let cached_revoked = owner.view_for_subject(Some(REVOKED));
+            let cached_admin = owner.view_for_subject(Some(ADMIN));
+            assert!(cached_revoked.can_administer());
+            assert!(cached_admin.can_administer());
+            owner
+                .replace_config(AccessControlConfig {
+                    enabled: true,
+                    admins: vec![ADMIN.to_string()],
+                    groups: BTreeMap::from([(
+                        PRIVATE_GROUP.to_string(),
+                        AccessGroup {
+                            members: vec![TARGET.to_string()],
+                            ..AccessGroup::default()
+                        },
+                    )]),
+                    rules: vec![AccessRule {
+                        id: PRIVATE_RULE.to_string(),
+                        actions: vec!["agent.send".to_string()],
+                        groups: vec![PRIVATE_GROUP.to_string()],
+                        match_labels: BTreeMap::from([(
+                            "zone".to_string(),
+                            "private-zone".to_string(),
+                        )]),
+                        ..AccessRule::default()
+                    }],
+                })
+                .expect("actual revocation and newer target policy");
+            owner.record_agent_attributes(AgentResourceAttributes {
+                identity: "preview-agent".to_string(),
+                labels: BTreeMap::from([("zone".to_string(), "private-zone".to_string())]),
+                ..AgentResourceAttributes::default()
+            });
+            assert!(!owner.view_for_subject(Some(REVOKED)).can_administer());
+            assert!(owner.view_for_subject(Some(ADMIN)).can_administer());
+            assert!(
+                owner
+                    .view_for_subject(Some(TARGET))
+                    .decide_agent("agent.send", "preview-agent")
+                    .is_allow()
+            );
+            (owner, cached_revoked, cached_admin)
+        }
+
+        fn request(subject: &str, identity: &str) -> JsonRpcRequest {
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0", "id": "preview-read", "method": "mobkit/access/preview",
+                "params": {"subject": subject, "identity": identity, "action": "agent.send"},
+            }))
+            .expect("actual request type")
+        }
+
+        #[test]
+        fn revoked_cached_administrator_cannot_preview_current_policy() {
+            let (owner, cached_revoked, _) = fixture();
+            let before = owner.snapshot();
+            let response = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_revoked),
+                &request(TARGET, "preview-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(response["id"], json!("preview-read"));
+            assert_eq!(response["error"]["code"], json!(-32030), "{response:#?}");
+            assert_eq!(response["error"]["data"], json!({"kind": "access_denied"}));
+            assert_eq!(response["result"], Value::Null);
+            for private in [
+                REVOKED,
+                ADMIN,
+                TARGET,
+                PRIVATE_GROUP,
+                PRIVATE_RULE,
+                "private-zone",
+            ] {
+                assert!(
+                    !response.to_string().contains(private),
+                    "private preview output: {response:#?}"
+                );
+            }
+            assert_eq!(
+                owner.snapshot(),
+                before,
+                "refused read does not mutate the owner"
+            );
+        }
+
+        #[test]
+        fn current_administrator_preview_uses_actual_target_policy_and_attribute_owner() {
+            let (owner, _, cached_admin) = fixture();
+            let before = owner.snapshot();
+            let allowed = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(TARGET, "preview-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(allowed["error"], Value::Null, "{allowed:#?}");
+            assert_eq!(allowed["result"]["subject"], json!(TARGET));
+            assert_eq!(allowed["result"]["identity"], json!("preview-agent"));
+            assert_eq!(allowed["result"]["action"], json!("agent.send"));
+            assert_eq!(allowed["result"]["groups"], json!([PRIVATE_GROUP]));
+            assert_eq!(allowed["result"]["is_admin"], json!(false));
+            assert_eq!(allowed["result"]["allowed"], json!(true));
+            let denied = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(TARGET, "unknown-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(denied["error"], Value::Null, "{denied:#?}");
+            assert_eq!(denied["result"]["allowed"], json!(false));
+            assert_eq!(denied["result"]["groups"], json!([PRIVATE_GROUP]));
+            let admin = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(ADMIN, "unknown-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(admin["error"], Value::Null, "{admin:#?}");
+            assert_eq!(admin["result"]["is_admin"], json!(true));
+            assert_eq!(admin["result"]["allowed"], json!(true));
+            assert_eq!(admin["result"]["groups"], json!([]));
+            assert_eq!(
+                owner.snapshot(),
+                before,
+                "preview reads do not mutate the owner"
+            );
+        }
     }
 }

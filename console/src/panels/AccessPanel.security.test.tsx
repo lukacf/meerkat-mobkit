@@ -5,7 +5,7 @@ import { AccessPanel, type AccessPreviewResult } from "./AccessPanel";
 
 function props() {
   return {
-    status: { available: true, enabled: true, revision: 1, subject: "admin@example.test", can_administer: true, actions: ["agent.view", "agent.send"] },
+    status: { available: true, enabled: true, revision: 1, owner_instance: "panel-owner", conditional_mutations: "checked_v1", subject: "admin@example.test", can_administer: true, actions: ["agent.view", "agent.send"] },
     config: { enabled: true, admins: ["admin@example.test"], rules: [], groups: {} },
     agents: [{ identity: "identity:agent", label: "Agent" }],
     onRefresh: vi.fn(), onSetEnabled: vi.fn(), onSaveAdmins: vi.fn(), onUpsertRule: vi.fn(),
@@ -105,6 +105,81 @@ describe("backend-owned access affordances", () => {
 });
 
 describe("preview decision and error scope", () => {
+  it.each(["before", "during"])("preserves a read-only preview completed %s an unchanged refresh", async (completion) => {
+    const input = props();
+    let resolve!: (value: AccessPreviewResult) => void;
+    input.onPreview = vi.fn(() => new Promise(done => { resolve = done; }));
+    const view = render(<AccessPanel {...input} readOnly />);
+    fireEvent.click(screen.getByTestId("access-tab:preview"));
+    fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "reader" } });
+    fireEvent.click(screen.getByTestId("access-preview-run"));
+    if (completion === "before") {
+      await act(async () => { resolve({ allowed: false, reason: "Current denial" }); });
+      expect(screen.getByTestId("access-preview-result")).toHaveAttribute("data-allowed", "false");
+    }
+    view.rerender(<AccessPanel {...input} readOnly loading />);
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    expect(screen.getByTestId("access-preview-run")).toBeDisabled();
+    if (completion === "during") {
+      await act(async () => { resolve({ allowed: false, reason: "Current denial" }); });
+      expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    }
+    view.rerender(<AccessPanel {...input} readOnly />);
+    expect(screen.getByTestId("access-preview-result")).toHaveAttribute("data-allowed", "false");
+    expect(input.onPreview).toHaveBeenCalledTimes(1);
+    expect(input.onSetEnabled).not.toHaveBeenCalled();
+  });
+
+  it.each(["owner", "revision", "config", "error"])("discards a pending preview when refresh changes %s", async (change) => {
+    const input = props();
+    let resolve!: (value: AccessPreviewResult) => void;
+    input.onPreview = vi.fn(() => new Promise(done => { resolve = done; }));
+    const view = render(<AccessPanel {...input} />);
+    fireEvent.click(screen.getByTestId("access-tab:preview"));
+    fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "reader" } });
+    fireEvent.click(screen.getByTestId("access-preview-run"));
+    view.rerender(<AccessPanel {...input} loading />);
+    const refreshed = {
+      ...input,
+      ...(change === "owner" ? { status: { ...input.status, owner_instance: "replacement-owner" } } : {}),
+      ...(change === "revision" ? { status: { ...input.status, revision: 2 } } : {}),
+      ...(change === "config" ? { config: { ...input.config, enabled: false } } : {}),
+      ...(change === "error" ? { error: "Refresh unavailable" } : {}),
+    };
+    view.rerender(<AccessPanel {...refreshed} />);
+    await act(async () => { resolve({ allowed: true, reason: "Old decision" }); });
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+    view.rerender(<AccessPanel {...input} />);
+    expect(screen.queryByTestId("access-preview-result")).toBeNull();
+  });
+
+  it.each(["owner", "revision", "config"])("never commits a retained preview under changed %s", async (change) => {
+    const input = props();
+    let resolve!: (value: AccessPreviewResult) => void;
+    input.onPreview = vi.fn(() => new Promise(done => { resolve = done; }));
+    let decisionAtCommit: string | null | undefined;
+    function CommitProbe({ value }: { value: React.ComponentProps<typeof AccessPanel> }) {
+      React.useLayoutEffect(() => {
+        decisionAtCommit = document.querySelector('[data-testid="access-preview-result"]')?.textContent ?? null;
+      });
+      return <AccessPanel {...value} />;
+    }
+    const view = render(<CommitProbe value={input} />);
+    fireEvent.click(screen.getByTestId("access-tab:preview"));
+    fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "reader" } });
+    fireEvent.click(screen.getByTestId("access-preview-run"));
+    view.rerender(<CommitProbe value={{ ...input, loading: true }} />);
+    await act(async () => { resolve({ allowed: true, reason: "Old decision" }); });
+    const refreshed = {
+      ...input,
+      ...(change === "owner" ? { status: { ...input.status, owner_instance: "replacement-owner" } } : {}),
+      ...(change === "revision" ? { status: { ...input.status, revision: 2 } } : {}),
+      ...(change === "config" ? { config: { ...input.config, enabled: false } } : {}),
+    };
+    view.rerender(<CommitProbe value={refreshed} />);
+    expect(decisionAtCommit).toBeNull();
+  });
+
   it.each(["missing", "rejected"])("keeps %s decision unavailable without exposing private payload", async (kind) => {
     const input = props();
     input.onPreview = kind === "missing" ? vi.fn(async () => ({ reason: "PRIVATE_PREVIEW_ERROR" })) : vi.fn().mockRejectedValue(new Error("PRIVATE_PREVIEW_ERROR"));
@@ -233,5 +308,118 @@ describe("group member access inspection", () => {
     await act(async () => { finish(true); });
     expect(screen.getByRole("button", { name: `Inspect access for ${subject}` })).toBeEnabled();
     expect(input.onSaveGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe("checked access edits", () => {
+  it.each([
+    ["no checked capability", { conditional_mutations: undefined }],
+    ["an unknown checked capability", { conditional_mutations: "checked_v2" }],
+    ["an empty owner instance", { owner_instance: "" }],
+    ["no revision", { revision: undefined }],
+    ["a negative revision", { revision: -1 }],
+  ])("keeps authorized reads and inspection but offers no edit with %s", async (_label, change) => {
+    const input = props();
+    const config = { ...input.config, groups: { ops: { members: ["reader@example.test"] } } };
+    render(<AccessPanel {...input} config={config} status={{ ...input.status, ...change }} />);
+    expect(screen.getByText("admin@example.test")).toBeVisible();
+    expect(screen.queryByTestId("access-toggle-enabled")).toBeNull();
+    expect(screen.queryByTestId("access-edit-admins")).toBeNull();
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    expect(screen.queryByTestId("access-rule-new")).toBeNull();
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    expect(screen.queryByTestId("access-group-edit:ops")).toBeNull();
+    expect(screen.queryByTestId("access-group-save")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Inspect access for reader@example.test" }));
+    await act(async () => { fireEvent.click(screen.getByTestId("access-preview-run")); });
+    expect(input.onPreview).toHaveBeenCalledExactlyOnceWith("reader@example.test", "agent.view", undefined);
+    for (const write of [input.onSetEnabled, input.onSaveAdmins, input.onUpsertRule, input.onDeleteRule, input.onSaveGroup, input.onDeleteGroup]) {
+      expect(write).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["revision_conflict", "Access configuration changed. Review the latest settings before saving again.", true],
+    ["owner_changed", "The access configuration owner changed. Review the latest settings before saving again.", true],
+    ["unavailable", "Changes were not saved. Checked access saves are unavailable; your draft is retained.", true],
+    ["invalid", "Changes were not saved. The resulting access configuration is not valid; your draft is retained for correction.", false],
+    ["failed", "Changes were not saved. Your draft is retained; refresh Console access before trying again.", false],
+  ] as const)("keeps the admins draft after %s with its finite notice and review requirement", async (kind, notice, review) => {
+    const input = props();
+    input.onSaveAdmins = vi.fn(async () => ({ kind }));
+    render(<AccessPanel {...input} />);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: "admin@example.test, new@example.test" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    expect(input.onSaveAdmins).toHaveBeenCalledExactlyOnceWith(["admin@example.test", "new@example.test"],
+      { owner_instance: "panel-owner", revision: 1, config: input.config });
+    expect(screen.getByTestId("access-error").textContent).toBe(notice);
+    expect(screen.getByTestId("access-admins-input")).toHaveValue("admin@example.test, new@example.test");
+    const reviewButton = screen.queryByRole("button", { name: "Review and reapply", exact: true });
+    if (review) {
+      expect(reviewButton).toBeVisible();
+      expect(screen.getByTestId("access-save-admins")).toBeDisabled();
+    } else {
+      expect(reviewButton).toBeNull();
+      expect(screen.getByTestId("access-save-admins")).toBeEnabled();
+    }
+  });
+
+  it("keeps an invalid rule draft editable against its own base without a review step", async () => {
+    const input = props();
+    input.onUpsertRule = vi.fn().mockResolvedValueOnce({ kind: "invalid" }).mockResolvedValueOnce(true);
+    render(<AccessPanel {...input} />);
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    fireEvent.click(screen.getByTestId("access-rule-new"));
+    fireEvent.change(screen.getByTestId("access-rule-id"), { target: { value: "ops-rule" } });
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "missing-group" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    expect(screen.getByTestId("access-error")).toHaveTextContent("The resulting access configuration is not valid");
+    expect(screen.queryByRole("button", { name: "Review and reapply", exact: true })).toBeNull();
+    expect(screen.getByTestId("access-rule-groups")).toHaveValue("missing-group");
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    const base = { owner_instance: "panel-owner", revision: 1, config: input.config };
+    expect(input.onUpsertRule).toHaveBeenNthCalledWith(1, { id: "ops-rule", effect: "allow", actions: ["agent.view"], groups: ["missing-group"] }, base);
+    expect(input.onUpsertRule).toHaveBeenNthCalledWith(2, { id: "ops-rule", effect: "allow", actions: ["agent.view"] }, base);
+    expect(screen.queryByTestId("access-rule-editor")).toBeNull();
+    expect(screen.queryByTestId("access-error")).toBeNull();
+  });
+
+  it("disables a conflicted group draft beside live member inspection until an explicit review", async () => {
+    const input = props();
+    const member = "reader@example.test";
+    const config = { ...input.config, groups: {
+      ops: { description: "Original description", members: ["alice@example.test"] },
+      readers: { members: [member] },
+    } };
+    input.onSaveGroup = vi.fn().mockResolvedValueOnce({ kind: "revision_conflict" }).mockResolvedValueOnce(true);
+    const view = render(<AccessPanel {...input} config={config} />);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByTestId("access-group-edit:ops"));
+    fireEvent.change(screen.getByTestId("access-group-members"), { target: { value: "carol@example.test" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    expect(input.onSaveGroup).toHaveBeenLastCalledWith("ops", { description: "Original description", members: ["carol@example.test"] },
+      { owner_instance: "panel-owner", revision: 1, config });
+
+    const newer = { ...config, groups: { ...config.groups, ops: { description: "Newer description", members: ["alice@example.test"] } } };
+    view.rerender(<AccessPanel {...input} config={newer} status={{ ...input.status, revision: 2 }} />);
+    expect(screen.getByTestId("access-error")).toHaveTextContent("Access configuration changed.");
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    expect(screen.getByTestId("access-group-members")).toBeDisabled();
+    expect(screen.getByTestId("access-group-save")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    expect(screen.getByRole("button", { name: `Inspect access for ${member}` })).toBeEnabled();
+    fireEvent.click(screen.getByTestId("access-group-save"));
+    expect(input.onSaveGroup).toHaveBeenCalledTimes(1);
+
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review and reapply", exact: true })); });
+    expect(input.onSaveGroup).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    expect(screen.getByTestId("access-group-save")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    expect(input.onSaveGroup).toHaveBeenLastCalledWith("ops", { description: "Newer description", members: ["carol@example.test"] },
+      { owner_instance: "panel-owner", revision: 2, config: newer });
+    expect(screen.queryByTestId("access-group-members")).toHaveValue("");
   });
 });
