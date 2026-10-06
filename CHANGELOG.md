@@ -835,6 +835,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The gateway delivers Event-kind detached job deliveries again. These come
+  from `monitors/start` in event-steer or event-queue mode and from
+  `jobs/subscribe` with an `event` kind.
+  - **The bug:** the delivery path admitted event inputs on the machine its
+    session service built for itself, not on the machine that serves the
+    sessions. Admission failed ("Runtime not ready: destroyed"). Delivery
+    rows queue under the session that started the job, so that failed row
+    blocked every later delivery for jobs of the same origin session,
+    notifications included, retried without a warning every second.
+  - **The fix:** the delivery path now admits on the serving machine, which
+    the gateway passes explicitly. Both gateway compositions also bind
+    their persistent session service's runtime machine to it.
+  - **A blocked delivery queue is now visible.** It is logged once at WARN
+    with the origin session, the row and the reason, reported in the job
+    health projection under `detached_jobs.blocked_deliveries`, and it
+    degrades that projection's status.
+  - **Not affected:** host-level notification and record deliveries to
+    sessions without an event row ahead of them. `fork_off` and `council`
+    were not affected either.
+
 - The gateway's agent-memory recorder (`memory`) reaches members whenever
   memory is enabled, not only when the host also supplies an
   `AgentCustomizer`. With memory enabled and no host customizer, members
@@ -867,6 +887,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     projection of one audit record (not execution state).
   - The console guide documents the Approvals tabs and audit records
     (#603).
+
+- The console RPC handler no longer reserves a 1.17 MB stack frame. At
+  opt-level 0 LLVM gives every local of every branch its own stack slot, so
+  the handler's poll frame reserved every method arm's future at once, while
+  only one arm runs. On the console send path that left under 0.5 MB of a
+  2 MiB worker stack for everything beneath it.
+  - Each awaiting arm is now its own boxed future, built in
+    `box_in_own_frame`'s frame.
+  - Measured on the `api-routine-tool-owner` console scenario (debug,
+    default worker stack):
+    - the handler frame drops from 1,168,696 to 30,336 bytes, and the send
+      arm adds a 9,872-byte frame of its own;
+    - the stack in use where the path reaches its deepest native frame
+      drops from 1,983,704 to 809,256 bytes;
+    - the handler's future drops from 52,248 to 6,256 bytes, and a test
+      fails it above 16 KiB.
 
 - `UnifiedRuntimeBuilder::build()` now returns a `Send` future, so a host
   can `tokio::spawn(builder.build())` or drive it under a harness that
