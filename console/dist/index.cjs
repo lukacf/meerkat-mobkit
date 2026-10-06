@@ -6710,6 +6710,7 @@ function useConversationScrollController(options) {
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
         lastScrollTop: null,
+        lastGesture: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false
@@ -6747,7 +6748,8 @@ function useConversationScrollController(options) {
       }
       session.expectedScrollTop = null;
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
-      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5;
+      const downwardSettle = session.lastGesture === "down" && previous3 !== null && previous3 - observed <= 1;
+      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !downwardSettle;
       session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
@@ -6757,12 +6759,18 @@ function useConversationScrollController(options) {
       publish();
     };
     const canLeaveLiveEdge = (delta) => sessionRef.current?.mode !== "following-end" || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
+    const noteGesture = (delta) => {
+      const session = sessionRef.current;
+      if (session && delta !== 0) session.lastGesture = delta < 0 ? "up" : "down";
+    };
     const onWheel = (event) => {
+      noteGesture(event.deltaY);
       if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || event.key === " " && event.shiftKey ? -1 : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
+      noteGesture(delta);
       if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
@@ -6771,6 +6779,7 @@ function useConversationScrollController(options) {
     };
     const onPointerDown = () => {
       const session = sessionRef.current;
+      if (session) session.lastGesture = null;
       if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         session.expectedScrollTop = viewport.scrollTop;

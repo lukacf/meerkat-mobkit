@@ -61,6 +61,11 @@ type Session = {
   /// The last position seen, written or observed, so a scroll event can tell
   /// which way it moved.
   lastScrollTop: number | null;
+  /// The direction of the reader's last explicit vertical gesture (wheel or
+  /// key); a pointer press clears it. A downward gesture at the end can settle
+  /// a pixel above the computed end (scrollHeight and clientHeight are rounded,
+  /// the scroll range is not); that settle is not the reader moving up.
+  lastGesture: "up" | "down" | null;
   requestedAnchor: string | null;
   awaitingAnchor: boolean;
   missingAnchor: boolean;
@@ -330,6 +335,7 @@ export function useConversationScrollController(options: ConversationScrollContr
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
         lastScrollTop: null,
+        lastGesture: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false,
@@ -382,7 +388,8 @@ export function useConversationScrollController(options: ConversationScrollContr
       // down. Staying in the band on the way up let the next streamed layout
       // pass snap the reader back to the end.
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
-      const movedUp = previous !== null && observed < previous - 0.5 && end - observed > 0.5;
+      const downwardSettle = session.lastGesture === "down" && previous !== null && previous - observed <= 1;
+      const movedUp = previous !== null && observed < previous - 0.5 && end - observed > 0.5 && !downwardSettle;
       session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
@@ -396,13 +403,19 @@ export function useConversationScrollController(options: ConversationScrollContr
     };
     const canLeaveLiveEdge = (delta: number) => sessionRef.current?.mode !== "following-end"
       || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
+    const noteGesture = (delta: number) => {
+      const session = sessionRef.current;
+      if (session && delta !== 0) session.lastGesture = delta < 0 ? "up" : "down";
+    };
     const onWheel = (event: WheelEvent) => {
+      noteGesture(event.deltaY);
       if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey) ? -1
         : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
+      noteGesture(delta);
       if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
@@ -416,6 +429,9 @@ export function useConversationScrollController(options: ConversationScrollContr
       // Clicking a tool or copy control at the live edge does not request
       // history. Actual scrolling and selection retain their own handlers.
       const session = sessionRef.current;
+      // A press (a click, or the start of a scrollbar drag) is not a scroll
+      // gesture: a move that follows it is judged on its own.
+      if (session) session.lastGesture = null;
       if (session?.mode !== "following-end"
         || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
