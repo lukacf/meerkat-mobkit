@@ -1,5 +1,17 @@
 export const CONVERSATION_LIVE_EDGE_PX = 32;
 export const CONVERSATION_ANCHOR_OFFSET_PX = 24;
+/**
+ * How far the browser's own end of the scroll range can sit above the
+ * computed end, `scrollHeight - clientHeight`. Both heights are whole numbers
+ * rounded from fractional layout sizes (fractional device pixel ratios, zoom,
+ * sub-pixel line heights), so each is off by at most half a pixel and their
+ * difference by less than one. The browser clamps to the true, unrounded end
+ * and snaps scrollTop to a whole pixel, and different paths (a wheel, a key, a
+ * reveal before a click) can snap that same end differently. A position within
+ * this distance of the computed end is therefore the end itself, as far as
+ * integer geometry can tell.
+ */
+export const CONVERSATION_END_ROUNDING_PX = 1;
 export const CONVERSATION_POSITION_LIMIT = 100;
 
 export type ConversationScrollMode = "following-end" | "anchoring-submitted-turn" | "reading-history";

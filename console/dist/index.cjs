@@ -6440,6 +6440,7 @@ var import_react4 = require("react");
 // ../packages/console-components/src/conversation/scroll-geometry.ts
 var CONVERSATION_LIVE_EDGE_PX = 32;
 var CONVERSATION_ANCHOR_OFFSET_PX = 24;
+var CONVERSATION_END_ROUNDING_PX = 1;
 var CONVERSATION_POSITION_LIMIT = 100;
 function conversationScrollEnd(scrollHeight, clientHeight) {
   return Math.max(0, scrollHeight - clientHeight);
@@ -6754,8 +6755,8 @@ function useConversationScrollController(options) {
       }
       session.expectedScrollTop = null;
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
-      const downwardSettle = session.lastGesture === "down" && previous3 !== null && previous3 - observed <= 1;
-      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !downwardSettle;
+      const settle = previous3 !== null && previous3 - observed <= CONVERSATION_END_ROUNDING_PX && (session.lastGesture === "down" || session.lastGesture === "content-press" && session.mode === "following-end" && end - observed <= CONVERSATION_END_ROUNDING_PX);
+      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !settle;
       session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
@@ -6783,9 +6784,11 @@ function useConversationScrollController(options) {
       const selection = viewport.ownerDocument.getSelection();
       if (selection && !selection.isCollapsed && selection.anchorNode && viewport.contains(selection.anchorNode)) readHistory();
     };
-    const onPointerDown = () => {
+    const onPointerDown = (event) => {
       const session = sessionRef.current;
-      if (session) session.lastGesture = null;
+      if (session) {
+        session.lastGesture = event.target !== viewport && event.button === 0 && event.pointerType !== "touch" && event.pointerType !== "pen" ? "content-press" : null;
+      }
       if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         session.expectedScrollTop = viewport.scrollTop;
