@@ -835,6 +835,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The gateway delivers Event-kind detached job deliveries again. These come
+  from `monitors/start` in event-steer or event-queue mode and from
+  `jobs/subscribe` with an `event` kind.
+  - **The bug:** the delivery path admitted event inputs on the machine its
+    session service built for itself, not on the machine that serves the
+    sessions. Admission failed ("Runtime not ready: destroyed"). Delivery
+    rows queue under the session that started the job, so that failed row
+    blocked every later delivery for jobs of the same origin session,
+    notifications included, retried without a warning every second.
+  - **The fix:** the delivery path now admits on the serving machine, which
+    the gateway passes explicitly. Both gateway compositions also bind
+    their persistent session service's runtime machine to it.
+  - **A blocked delivery queue is now visible.** It is logged once at WARN
+    with the origin session, the row and the reason, reported in the job
+    health projection under `detached_jobs.blocked_deliveries`, and it
+    degrades that projection's status.
+  - **Not affected:** host-level notification and record deliveries to
+    sessions without an event row ahead of them. `fork_off` and `council`
+    were not affected either.
+
 - The console's Approvals inbox shows the gating owner's recorded audit
   outcomes as recorded (#594, shipped in 0.8.46).
   - **Audit rows:** each shows its tier (`r0` to `r3`, or "Unknown" with the
