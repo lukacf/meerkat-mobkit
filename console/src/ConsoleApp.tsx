@@ -2051,7 +2051,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [baseUrl, experience?.runtime_id, experience?.console_config?.title],
   );
 
-  React.useEffect(() => {
+  // A layout effect, so the saved layout lands in the same commit that first
+  // draws the experience-gated chrome. As a passive effect it ran a task
+  // later, and a click in between (opening a nav panel) was overwritten by
+  // the restore.
+  React.useLayoutEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {

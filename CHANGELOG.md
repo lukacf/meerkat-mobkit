@@ -869,6 +869,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: a workbench click made right as the console first loads is no
+  longer undone. The saved dock layout was restored a moment after the
+  sidebar appeared, so opening a panel in that gap (for example Access) was
+  replaced by the restored layout. The layout is now restored in the same
+  render that first shows the sidebar.
+
 - Console: a downward wheel or End at the bottom of a transcript no longer
   stops following the live edge. Such a gesture can leave the scroll position
   a pixel above the computed end (scrollHeight and clientHeight are rounded,

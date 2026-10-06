@@ -45187,7 +45187,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
