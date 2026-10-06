@@ -64,7 +64,7 @@ import {
   type OptimisticUserMessage,
   type TimelineDerivation,
 } from "./lib/adapters";
-import { errorMessage, jsonRpcErrorCode } from "./lib/errors";
+import { accessSaveFailure, errorMessage, jsonRpcErrorCode } from "./lib/errors";
 import { createSingleFlight } from "./lib/single-flight";
 import { sanitizeConversationEntries } from "./lib/conversation-visibility";
 import {
@@ -104,6 +104,8 @@ import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
 import type {
   ConsoleAccessConfig,
+  ConsoleAccessEditBase,
+  ConsoleAccessSaveFailure,
   ConsoleAccessRule,
   ConsoleAccessStatus,
   ConsoleActionsUiConfig,
@@ -2681,9 +2683,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!isCurrent()) return;
       let config: ConsoleAccessConfig | null = null;
       if (status?.available && status?.can_administer) {
-        const result = (await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.getAccessConfig, accessTarget)) as { config?: ConsoleAccessConfig; revision?: number } | null;
+        const result = (await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.getAccessConfig, accessTarget)) as { config?: ConsoleAccessConfig; revision?: number; owner_instance?: string; conditional_mutations?: string } | null;
         config = result?.config || null;
-        if (result?.revision !== undefined) status = { ...status, revision: result.revision };
+        // Config and its edit token must come from the same protected read.
+        status = { ...status, revision: result?.revision, owner_instance: result?.owner_instance,
+          conditional_mutations: status.conditional_mutations === "checked_v1" ? result?.conditional_mutations : undefined };
       }
       if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
@@ -3028,25 +3032,33 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         | typeof CONSOLE_COMMAND_NAMES.setAccessGroup
         | typeof CONSOLE_COMMAND_NAMES.deleteAccessGroup,
       params: Record<string, unknown>,
+      base: ConsoleAccessEditBase,
     ) => {
       if (accessData.scope !== accessScope || accessData.loading || accessData.error
           || accessData.status?.available !== true || accessData.status.can_administer !== true
+          || accessData.status.conditional_mutations !== "checked_v1"
+          || typeof accessData.status.owner_instance !== "string" || !accessData.status.owner_instance
+          || !Number.isSafeInteger(accessData.status.revision) || accessData.status.revision! < 0
+          || typeof base.owner_instance !== "string" || !base.owner_instance
+          || !Number.isSafeInteger(base.revision) || base.revision < 0
           || experience?.access?.can_administer !== true || frontendReadOnly
           || experience?.console_policy?.read_only === true) return false;
-      let mutationError: string | null = null;
+      // The draft's own token travels with the edit; the owner, not this
+      // client, decides whether it is still current.
+      let failure: ConsoleAccessSaveFailure | null = null;
       try {
-        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), {
+          checked_v1: { ...params, owner_instance: base.owner_instance, expected_revision: base.revision },
+        });
       } catch (err) {
-        mutationError = errorMessage(err);
+        failure = accessSaveFailure(err);
       }
       if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
       if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {});
-      if (mutationError && accessScope === accessScopeRef.current) {
-        setAccessData(current => ({ ...current, error: mutationError }));
-      }
-      return mutationError === null;
+      if (accessScope !== accessScopeRef.current) return false;
+      return failure ?? true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only],
@@ -5110,27 +5122,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             label: agent.label,
           }))}
           onRefresh={() => void refreshAccessData()}
-          onSetEnabled={(enabled) =>
-            runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
+          onSetEnabled={(enabled, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled }, base)
           }
-          onSaveAdmins={(admins) => {
-            const config = {
-              ...(accessData.config || {}),
-              admins,
-            };
-            return runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
-          }}
-          onUpsertRule={(rule) =>
-            runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
+          onSaveAdmins={(admins, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config: { ...base.config, admins } }, base)
           }
-          onDeleteRule={(id) =>
-            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
+          onUpsertRule={(rule, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule }, base)
           }
-          onSaveGroup={(name, group) =>
-            runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
+          onDeleteRule={(id, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id }, base)
           }
-          onDeleteGroup={(name) =>
-            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
+          onSaveGroup={(name, group, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group }, base)
+          }
+          onDeleteGroup={(name, base) =>
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name }, base)
           }
           onPreview={async (subject, action, identity) =>
             ((await executeHeadlessCommand(

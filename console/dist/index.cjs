@@ -30001,6 +30001,29 @@ function httpStatusCode(error) {
   const status = error?.httpStatus;
   return typeof status === "number" ? status : null;
 }
+function accessSaveFailure(error) {
+  const rpc2 = error?.rpcError;
+  if (rpc2?.code === -32009 && rpc2.data?.kind === "access_revision_conflict") return { kind: "revision_conflict" };
+  if (rpc2?.code === -32009 && rpc2.data?.kind === "access_owner_changed") return { kind: "owner_changed" };
+  if (rpc2?.code === -32004 && rpc2.data?.kind === "access_mutation_unavailable") return { kind: "unavailable" };
+  if (rpc2?.code === -32602 && rpc2.data?.kind === "invalid_access_config") return { kind: "invalid" };
+  if (rpc2?.code === -32602 || rpc2?.code === -32601) return { kind: "unavailable" };
+  return { kind: "failed" };
+}
+function accessSaveNotice(failure) {
+  switch (failure.kind) {
+    case "revision_conflict":
+      return "Access configuration changed. Review the latest settings before saving again.";
+    case "owner_changed":
+      return "The access configuration owner changed. Review the latest settings before saving again.";
+    case "unavailable":
+      return "Changes were not saved. Checked access saves are unavailable; your draft is retained.";
+    case "invalid":
+      return "Changes were not saved. The resulting access configuration is not valid; your draft is retained for correction.";
+    case "failed":
+      return "Changes were not saved. Your draft is retained; refresh Console access before trying again.";
+  }
+}
 
 // src/lib/single-flight.ts
 function createSingleFlight() {
@@ -30422,7 +30445,7 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
       const error2 = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
-      error2.rpcError = typedError;
+      error2.rpcError = result.error.data === void 0 ? typedError : { ...typedError, data: result.error.data };
       throw error2;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
@@ -32663,37 +32686,44 @@ function AccessPanel({
   const [previewSubject, setPreviewSubject] = import_react28.default.useState("");
   const [previewAction, setPreviewAction] = import_react28.default.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = import_react28.default.useState("");
-  const [previewResult, setPreviewResult] = import_react28.default.useState(null);
+  const [previewFeedback, setPreviewFeedback] = import_react28.default.useState(null);
   const previewSubjectInput = import_react28.default.useRef(null);
   const inspectFocusPending = import_react28.default.useRef(false);
   const actions = status?.actions ?? [];
   const [saving, setSaving] = import_react28.default.useState(false);
-  const [mutationError, setMutationError] = import_react28.default.useState(null);
+  const [saveFailure, setSaveFailure] = import_react28.default.useState(null);
+  const [adminsBase, setAdminsBase] = import_react28.default.useState(null);
+  const [ruleBase, setRuleBase] = import_react28.default.useState(null);
+  const [groupBase, setGroupBase] = import_react28.default.useState(null);
   const [previewPending, setPreviewPending] = import_react28.default.useState(false);
-  const [previewError, setPreviewError] = import_react28.default.useState(null);
   const previewVersion = import_react28.default.useRef(0);
   const mayView = status?.available === true && status.can_administer === true;
   const current = mayView && !loading && !error && Boolean(config);
   const actionCatalogKey = JSON.stringify(actions);
   const scope = JSON.stringify([status?.subject, status?.available, status?.can_administer]);
+  const mutationScope = import_react28.default.useRef(scope);
+  mutationScope.current = scope;
   const previewScope = JSON.stringify([
     scope,
+    status?.owner_instance,
     status?.revision,
     status?.enabled,
+    config,
     actionCatalogKey,
-    loading,
     error,
     readOnly,
     previewSubject,
     previewAction,
     previewIdentity
   ]);
+  const currentPreview = current && previewFeedback?.scope === previewScope ? previewFeedback : null;
+  const previewResult = currentPreview?.result;
+  const previewError = currentPreview?.error;
   const latestPreviewScope = import_react28.default.useRef(previewScope);
   latestPreviewScope.current = previewScope;
   import_react28.default.useEffect(() => {
     previewVersion.current += 1;
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     setPreviewPending(false);
   }, [previewScope]);
   import_react28.default.useEffect(() => {
@@ -32705,7 +32735,10 @@ function AccessPanel({
     setGroupNameDraft("");
     setGroupMembersDraft("");
     setEditingGroup(null);
-    setMutationError(null);
+    setSaveFailure(null);
+    setAdminsBase(null);
+    setRuleBase(null);
+    setGroupBase(null);
   }, [scope]);
   import_react28.default.useEffect(() => () => {
     previewVersion.current += 1;
@@ -32719,21 +32752,41 @@ function AccessPanel({
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
-  const canEdit = current && !readOnly && !saving;
-  async function mutate(action, done = () => {
+  const checked = status?.conditional_mutations === "checked_v1" && typeof status.owner_instance === "string" && status.owner_instance.length > 0 && Number.isSafeInteger(status.revision) && status.revision >= 0;
+  const canReview = current && checked && !readOnly && !saving;
+  const requiresReview = saveFailure !== null && saveFailure.kind !== "failed" && saveFailure.kind !== "invalid";
+  const canEdit = canReview && !requiresReview;
+  function captureBase() {
+    if (!canReview || !config) return null;
+    return { owner_instance: status.owner_instance, revision: status.revision, config: structuredClone(config) };
+  }
+  async function mutate(edit, base, action, done = () => {
   }) {
-    if (!canEdit) return;
+    if (!canEdit || !base) return;
+    const requestedScope = scope;
     setSaving(true);
-    setMutationError(null);
+    setSaveFailure(null);
     try {
-      if (await action() !== false) done();
+      const result = await action(base);
+      if (requestedScope !== mutationScope.current) return;
+      if (result && typeof result === "object") setSaveFailure({ ...result, edit });
+      else if (result !== false) done();
     } catch {
-      setMutationError("Changes were not saved. Your draft is retained; refresh Console access before trying again.");
+      if (requestedScope === mutationScope.current) setSaveFailure({ kind: "failed", edit });
     } finally {
       setSaving(false);
     }
   }
+  function reviewAndReapply() {
+    const base = captureBase();
+    if (!base || !saveFailure || !requiresReview) return;
+    if (saveFailure.edit === "admins") setAdminsBase(base);
+    if (saveFailure.edit === "rule") setRuleBase(base);
+    if (saveFailure.edit === "group") setGroupBase(base);
+    setSaveFailure(null);
+  }
   function startGroupEdit(name2, members) {
+    setGroupBase(captureBase());
     setEditingGroup(name2);
     setGroupNameDraft(name2);
     setGroupMembersDraft(formatListInput(members));
@@ -32741,8 +32794,7 @@ function AccessPanel({
   function inspectSubject(subject) {
     if (!current || saving) return;
     previewVersion.current += 1;
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     setPreviewPending(false);
     setPreviewSubject(subject);
     inspectFocusPending.current = true;
@@ -32751,10 +32803,11 @@ function AccessPanel({
   function submitGroup() {
     const name2 = groupNameDraft.trim();
     if (!name2) return;
-    void mutate(() => onSaveGroup(name2, { members: parseListInput(groupMembersDraft) }), () => {
+    void mutate("group", groupBase, (base) => onSaveGroup(name2, { ...base.config.groups?.[name2], members: parseListInput(groupMembersDraft) }, base), () => {
       setEditingGroup(null);
       setGroupNameDraft("");
       setGroupMembersDraft("");
+      setGroupBase(null);
     });
   }
   async function runPreview() {
@@ -32763,17 +32816,16 @@ function AccessPanel({
     const version = ++previewVersion.current;
     const requestedScope = previewScope;
     setPreviewPending(true);
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     try {
       const result = await onPreview(subject, previewAction, previewIdentity.trim() || void 0);
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        if (result?.allowed === true || result?.allowed === false) setPreviewResult(result);
-        else setPreviewError("Access preview unavailable. No decision was returned.");
+        if (result?.allowed === true || result?.allowed === false) setPreviewFeedback({ scope: requestedScope, result });
+        else setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. No decision was returned." });
       }
     } catch {
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        setPreviewError("Access preview unavailable. Refresh and try again.");
+        setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. Refresh and try again." });
       }
     } finally {
       if (version === previewVersion.current) setPreviewPending(false);
@@ -32804,7 +32856,8 @@ function AccessPanel({
       ] })
     ] }),
     loading ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "Refreshing owner state. Changes are temporarily unavailable." }) : null,
-    error || mutationError ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", role: "alert", "data-testid": "access-error", children: error || mutationError }) : null,
+    error || saveFailure ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", role: "alert", "data-testid": "access-error", children: error || (saveFailure ? accessSaveNotice(saveFailure) : null) }) : null,
+    requiresReview && canReview ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: reviewAndReapply, children: "Review and reapply" }) : null,
     error ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { style: { padding: "0 24px" }, children: "Last loaded configuration may be out of date. Refresh before making changes." }) : null,
     readOnly ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "This connection is read-only." }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__tabs", children: [
@@ -32836,7 +32889,7 @@ function AccessPanel({
             "button",
             {
               "data-testid": "access-toggle-enabled",
-              onClick: () => void mutate(() => onSetEnabled(!enabled)),
+              onClick: () => void mutate("immediate", captureBase(), (base) => onSetEnabled(!enabled, base)),
               children: enabled ? "Disable enforcement" : "Enable enforcement"
             }
           ) }) : null
@@ -32850,7 +32903,10 @@ function AccessPanel({
               "button",
               {
                 "data-testid": "access-edit-admins",
-                onClick: () => setAdminsDraft(formatListInput(config?.admins)),
+                onClick: () => {
+                  setAdminsBase(captureBase());
+                  setAdminsDraft(formatListInput(config?.admins));
+                },
                 children: "Edit admins"
               }
             ) }) : null
@@ -32874,12 +32930,18 @@ function AccessPanel({
                   className: "approve",
                   "data-testid": "access-save-admins",
                   onClick: () => {
-                    void mutate(() => onSaveAdmins(parseListInput(adminsDraft)), () => setAdminsDraft(null));
+                    void mutate("admins", adminsBase, (base) => onSaveAdmins(parseListInput(adminsDraft), base), () => {
+                      setAdminsDraft(null);
+                      setAdminsBase(null);
+                    });
                   },
                   children: "Save"
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => setAdminsDraft(null), children: "Cancel" })
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
+                setAdminsDraft(null);
+                setAdminsBase(null);
+              }, children: "Cancel" })
             ] })
           ] })
         ] })
@@ -32919,7 +32981,7 @@ function AccessPanel({
                   "data-testid": `access-group-delete:${name2}`,
                   onClick: () => {
                     if (window.confirm(`Delete group "${name2}"?`)) {
-                      void mutate(() => onDeleteGroup(name2));
+                      void mutate("immediate", captureBase(), (base) => onDeleteGroup(name2, base));
                     }
                   },
                   children: "Delete"
@@ -32928,7 +32990,7 @@ function AccessPanel({
             ] }) : null
           ] }, name2)
         ),
-        canEdit ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
+        canEdit || groupBase ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: editingGroup ? `Edit ${editingGroup}` : "New group" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
             /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("label", { children: [
@@ -32938,9 +33000,12 @@ function AccessPanel({
                 {
                   "data-testid": "access-group-name",
                   value: groupNameDraft,
-                  onChange: (event) => setGroupNameDraft(event.target.value),
+                  onChange: (event) => {
+                    if (!groupBase) setGroupBase(captureBase());
+                    setGroupNameDraft(event.target.value);
+                  },
                   placeholder: "ops",
-                  disabled: editingGroup !== null
+                  disabled: !canEdit || editingGroup !== null
                 }
               )
             ] }),
@@ -32951,18 +33016,23 @@ function AccessPanel({
                 {
                   "data-testid": "access-group-members",
                   value: groupMembersDraft,
-                  onChange: (event) => setGroupMembersDraft(event.target.value),
-                  placeholder: "alice@example.com, bob@example.com"
+                  onChange: (event) => {
+                    if (!groupBase) setGroupBase(captureBase());
+                    setGroupMembersDraft(event.target.value);
+                  },
+                  placeholder: "alice@example.com, bob@example.com",
+                  disabled: !canEdit
                 }
               )
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form-actions", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-group-save", onClick: submitGroup, children: editingGroup ? "Save members" : "Create group" }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-group-save", onClick: submitGroup, disabled: !canEdit, children: editingGroup ? "Save members" : "Create group" }),
               editingGroup ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
                 setEditingGroup(null);
                 setGroupNameDraft("");
                 setGroupMembersDraft("");
-              }, children: "Cancel" }) : null
+                setGroupBase(null);
+              }, disabled: !canEdit, children: "Cancel" }) : null
             ] })
           ] })
         ] }) : null
@@ -32999,7 +33069,10 @@ function AccessPanel({
                     "button",
                     {
                       "data-testid": `access-rule-edit:${rule.id}`,
-                      onClick: () => setRuleDraft(draftFromRule(rule)),
+                      onClick: () => {
+                        setRuleBase(captureBase());
+                        setRuleDraft(draftFromRule(rule));
+                      },
                       children: "Edit"
                     }
                   ),
@@ -33010,7 +33083,7 @@ function AccessPanel({
                       "data-testid": `access-rule-delete:${rule.id}`,
                       onClick: () => {
                         if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
-                          void mutate(() => onDeleteRule(rule.id));
+                          void mutate("immediate", captureBase(), (base) => onDeleteRule(rule.id, base));
                         }
                       },
                       children: "Delete"
@@ -33022,7 +33095,10 @@ function AccessPanel({
             rule.id
           )
         ),
-        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) }), children: "New rule" }) }) : null,
+        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => {
+          setRuleBase(captureBase());
+          setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) });
+        }, children: "New rule" }) }) : null,
         ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? `Edit ${ruleDraft.id}` : "New rule" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
@@ -33149,12 +33225,18 @@ function AccessPanel({
                   "data-testid": "access-rule-save",
                   disabled: !canEdit || !ruleDraft.id.trim() || ruleDraft.actions.length === 0 || ruleDraft.actions.some((action) => !actions.includes(action)),
                   onClick: () => {
-                    void mutate(() => onUpsertRule(ruleFromDraft(ruleDraft)), () => setRuleDraft(null));
+                    void mutate("rule", ruleBase, (base) => onUpsertRule(ruleFromDraft(ruleDraft), base), () => {
+                      setRuleDraft(null);
+                      setRuleBase(null);
+                    });
                   },
                   children: "Save rule"
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => setRuleDraft(null), children: "Cancel" })
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
+                setRuleDraft(null);
+                setRuleBase(null);
+              }, children: "Cancel" })
             ] })
           ] })
         ] }) : null
@@ -45686,7 +45768,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (status?.available && status?.can_administer) {
         const result = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.getAccessConfig, accessTarget);
         config = result?.config || null;
-        if (result?.revision !== void 0) status = { ...status, revision: result.revision };
+        status = {
+          ...status,
+          revision: result?.revision,
+          owner_instance: result?.owner_instance,
+          conditional_mutations: status.conditional_mutations === "checked_v1" ? result?.conditional_mutations : void 0
+        };
       }
       if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
@@ -45964,23 +46051,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [baseUrl]
   );
   const runAccessMutation = import_react45.default.useCallback(
-    async (command, params) => {
-      if (accessData.scope !== accessScope || accessData.loading || accessData.error || accessData.status?.available !== true || accessData.status.can_administer !== true || experience?.access?.can_administer !== true || frontendReadOnly || experience?.console_policy?.read_only === true) return false;
-      let mutationError = null;
+    async (command, params, base) => {
+      if (accessData.scope !== accessScope || accessData.loading || accessData.error || accessData.status?.available !== true || accessData.status.can_administer !== true || accessData.status.conditional_mutations !== "checked_v1" || typeof accessData.status.owner_instance !== "string" || !accessData.status.owner_instance || !Number.isSafeInteger(accessData.status.revision) || accessData.status.revision < 0 || typeof base.owner_instance !== "string" || !base.owner_instance || !Number.isSafeInteger(base.revision) || base.revision < 0 || experience?.access?.can_administer !== true || frontendReadOnly || experience?.console_policy?.read_only === true) return false;
+      let failure = null;
       try {
-        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), {
+          checked_v1: { ...params, owner_instance: base.owner_instance, expected_revision: base.revision }
+        });
       } catch (err) {
-        mutationError = errorMessage(err);
+        failure = accessSaveFailure(err);
       }
       if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
       if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {
       });
-      if (mutationError && accessScope === accessScopeRef.current) {
-        setAccessData((current) => ({ ...current, error: mutationError }));
-      }
-      return mutationError === null;
+      if (accessScope !== accessScopeRef.current) return false;
+      return failure ?? true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only]
@@ -47530,18 +47617,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             label: agent.label
           })),
           onRefresh: () => void refreshAccessData(),
-          onSetEnabled: (enabled) => runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
-          onSaveAdmins: (admins) => {
-            const config = {
-              ...accessData.config || {},
-              admins
-            };
-            return runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
-          },
-          onUpsertRule: (rule) => runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
-          onDeleteRule: (id) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
-          onSaveGroup: (name2, group) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }),
-          onDeleteGroup: (name2) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }),
+          onSetEnabled: (enabled, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }, base),
+          onSaveAdmins: (admins, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config: { ...base.config, admins } }, base),
+          onUpsertRule: (rule, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }, base),
+          onDeleteRule: (id, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }, base),
+          onSaveGroup: (name2, group, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }, base),
+          onDeleteGroup: (name2, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }, base),
           onPreview: async (subject, action, identity) => await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES2.previewAccess,
             controlWorkbenchTarget("access"),

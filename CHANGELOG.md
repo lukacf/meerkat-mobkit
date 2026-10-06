@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `AccessConfigError` gains `RevisionExhausted` (see Added): the access owner
+  refuses a mutation that would overflow its `u64` revision before persisting
+  or publishing it. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add the arm.
 - `MobCompositionProvenanceError` gains `CandidateDivergent { fields }`
   (see Changed). Exhaustive matches must handle it. `MobBootstrapSpec` gains
   the pub field `candidate_definition: CandidateDefinition`; code that builds
@@ -109,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- `mobkit/access/*` failures are typed and no longer echo server detail (see
+  Added). A failed save of the access file answers `-32000` with
+  `data.kind = "access_persistence_failed"` instead of `-32602`; an exhausted
+  revision answers `-32004` with `access_mutation_unavailable`. Invalid
+  configurations keep `-32602` and `invalid_access_config` with the fixed
+  message "Invalid access configuration.", and unparseable payloads answer
+  "Invalid access config.", "Invalid access rule." or "Invalid access
+  group." instead of the parser text. `mobkit/access/get`, `preview` and
+  every write recheck the caller's current administrator access at the owner
+  instead of the request's captured view. Unchecked top-level writes
+  otherwise keep their shape.
 - `mobkit/init` composition provenance refusals now answer `-32019` with
   refusal `data` instead of `-32603` (see Added). A client that matched these
   refusals on `-32603` must match `-32019`; an SDK older than this release
@@ -501,6 +516,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Checked access saves (`checked_v1`). `mobkit/access/get`, and
+  `mobkit/access/status` for a caller who can administer, advertise
+  `conditional_mutations: "checked_v1"` with an opaque `owner_instance` for
+  the controller lifetime. The six access writes accept a nested
+  `params.checked_v1` carrying `owner_instance`, `expected_revision` and the
+  write's payload. The owner rechecks the caller's administrator access, its
+  instance and its revision inside the serialized mutation, and answers
+  `-32009` with `access_revision_conflict` (expected and actual revisions) or
+  `access_owner_changed` without writing. Malformed, mixed or unknown checked
+  envelopes fail with `-32602` and never fall back to an unchecked write. A
+  controller that could not draw an instance identity advertises no checked
+  capability and refuses checked writes with `-32004`
+  `access_mutation_unavailable`; unchecked writes stay available.
+- Console Access saves are checked. Each edit keeps the owner instance,
+  revision and configuration from when it began. A conflict, owner change or
+  unavailable checked save keeps the draft with a fixed notice and requires
+  **Review and reapply** before another explicit save; an invalid
+  configuration keeps the draft editable for correction. Refreshing never
+  rebases or resends a draft, and edits stay disabled while owner state is
+  loading or stale, or when the owner does not advertise `checked_v1`. A
+  preview survives an unchanged refresh and is discarded when the owner,
+  revision or configuration changes. The real-browser scenario
+  `real-checked-save-recovery` drives this flow against the acceptance
+  fixture's real access owner.
 - A typed `mobkit/init` code for mob composition provenance refusals: `-32019`
   (`COMPOSITION_PROVENANCE_CODE`), with Python and TypeScript
   `CompositionProvenanceError` (#613).
