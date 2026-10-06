@@ -635,3 +635,43 @@ describe("leaving the live edge upward", () => {
     expect(viewport.scrollTop).toBe(1000);
   });
 });
+
+describe("a downward gesture's sub-pixel settle at the live edge", () => {
+  // A downward wheel or End at the end of the transcript can leave scrollTop a
+  // pixel above the computed end: scrollHeight and clientHeight are rounded,
+  // the scroll range is not. That settle is not the reader moving up, and must
+  // not leave the live edge (browser-e2e "opening the actual tool at live edge
+  // remains following" read top 2225 -> 2224 after a down-wheel).
+  const grown = [...baseRows, { id: "streamed", height: 160 }];
+  test.each(["wheel", "End"])("a 1 px upward settle after a downward %s keeps following content growth", (gesture) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    if (gesture === "wheel") fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    else fireEvent.keyDown(viewport, { key: "End" });
+    userScroll(viewport, 799);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={grown} />);
+    expect(viewport.scrollTop).toBe(960);
+  });
+  test("a larger upward move after a downward wheel still leaves the live edge", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    userScroll(viewport, 798);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(798);
+  });
+  test("a pointer press clears the downward gesture: a 1 px move up after it leaves", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    // A scrollbar drag starts with a press on the viewport.
+    fireEvent.pointerDown(viewport);
+    userScroll(viewport, 799);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(799);
+  });
+});

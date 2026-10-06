@@ -310,3 +310,75 @@ async fn inspections_of_different_identities_are_read_separately() {
         mail_view.expect("mail").output_preview
     );
 }
+
+/// `wait_for_output*` never polls. Under a paused clock with no completion,
+/// a wait reads the member exactly once and then sleeps to its deadline; a
+/// sleep-and-retry loop would read once per interval (1200 reads for a
+/// 500 ms poll over ten minutes) and fail this.
+#[tokio::test(start_paused = true)]
+async fn an_output_wait_with_nothing_committed_reads_once_and_times_out() {
+    let bridge = Arc::new(CountingInspectBridge::new(Duration::ZERO));
+    let runtime = make_runtime(Arc::clone(&bridge));
+    let calendar = register_active(&runtime, "calendar").await;
+
+    // The guard is virtual time too: a loop whose deadline is not on the
+    // tokio clock, or that keeps re-reading, overruns it and fails here.
+    let error = tokio::time::timeout(
+        Duration::from_mins(11),
+        runtime.wait_for_output_containing(&calendar, "DONE", Duration::from_mins(10)),
+    )
+    .await
+    .expect("the wait ends at its own deadline")
+    .expect_err("nothing ever contains DONE");
+    assert!(error.to_string().contains("timed out"), "{error}");
+    assert_eq!(
+        bridge.reads(),
+        1,
+        "one read, then a typed wait to the deadline"
+    );
+}
+
+/// A completion wakes the wait, which reads the new output and returns it,
+/// without a timer.
+#[tokio::test(start_paused = true)]
+async fn an_output_wait_wakes_on_the_completion_that_commits_the_output() {
+    let bridge = Arc::new(CountingInspectBridge::new(Duration::ZERO));
+    let runtime = make_runtime(Arc::clone(&bridge));
+    let calendar = register_active(&runtime, "calendar").await;
+
+    let wait = runtime.wait_for_output_containing(&calendar, "DONE", Duration::from_mins(10));
+    let commit = async {
+        tokio::task::yield_now().await;
+        bridge.commit_output("all DONE");
+        runtime.record_turn_completed(&calendar).await;
+    };
+    let (output, ()) = tokio::join!(wait, commit);
+    assert_eq!(output.expect("woken by the completion"), "all DONE");
+    assert!(
+        (1..=2).contains(&bridge.reads()),
+        "at most one read before and one after the completion: {}",
+        bridge.reads()
+    );
+}
+
+/// A wait started before the identity is registered reads again when the
+/// registration (an identity-table write) lands.
+#[tokio::test(start_paused = true)]
+async fn an_output_wait_started_before_registration_reads_once_it_registers() {
+    let bridge = Arc::new(CountingInspectBridge::new(Duration::ZERO));
+    let runtime = make_runtime(Arc::clone(&bridge));
+    let late = AgentIdentity::parse("late").unwrap();
+
+    let wait = runtime.wait_for_output(&late, Duration::from_mins(10));
+    let register = async {
+        tokio::task::yield_now().await;
+        register_active(&runtime, "late").await;
+    };
+    let (output, ()) = tokio::join!(wait, register);
+    assert_eq!(output.expect("woken by the registration"), "rt:late read 1");
+    assert_eq!(
+        bridge.reads(),
+        1,
+        "the unregistered reads never reached the bridge"
+    );
+}

@@ -16,6 +16,7 @@ import warnings
 import pytest
 
 from meerkat_mobkit.errors import (
+    CompletionCursorUnavailableError,
     MobKitError,
     TurnFailedError,
     TurnNotDeliveredError,
@@ -655,7 +656,8 @@ class TestDefaultPathCustody:
             sends=[_sent(None, unavailable="autonomous_host")],
             outcome="untracked", cursor=None,
         ))
-        assert type(error) is RuntimeError
+        assert type(error) is CompletionCursorUnavailableError
+        assert isinstance(error, RuntimeError)
         assert isinstance(error.admission, DispatchResult)
         assert error.ticket is None
 

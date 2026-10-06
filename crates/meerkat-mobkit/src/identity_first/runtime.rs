@@ -15096,7 +15096,7 @@ impl IdentityRuntime {
         }
     }
 
-    /// Poll until the identity produces an output_preview, or timeout.
+    /// Wait until the identity produces an output_preview, or timeout.
     ///
     /// **Unsound as a completion barrier.** `output_preview` is the last
     /// committed assistant text, so this returns immediately when a PREVIOUS
@@ -15106,48 +15106,108 @@ impl IdentityRuntime {
     /// [`Self::send_admission_tracked`] / [`Self::dispatch_admission_tracked`]
     /// when you need to wait for a specific turn. Retained for callers that
     /// only need "has this identity ever spoken".
+    ///
+    /// Event-driven, as [`Self::wait_for_output_where`].
     pub async fn wait_for_output(
         &self,
         identity: &AgentIdentity,
         timeout: Duration,
     ) -> Result<String, IdentityRuntimeError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Ok(inspection) = self.inspect(identity).await
-                && let Some(preview) = inspection.output_preview
-            {
-                return Ok(preview);
-            }
-            if Instant::now() >= deadline {
-                return Err(IdentityRuntimeError::Internal(format!(
-                    "timed out waiting for output from {identity}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
+        self.wait_for_output_where(identity, timeout, |_| true)
+            .await
+            .map_err(|ended| ended.into_error(identity, "output"))
     }
 
-    /// Poll until output_preview contains the given substring, or timeout.
+    /// Wait until the identity's output_preview contains `needle`, or
+    /// timeout. Event-driven, as [`Self::wait_for_output_where`].
     pub async fn wait_for_output_containing(
         &self,
         identity: &AgentIdentity,
         needle: &str,
         timeout: Duration,
     ) -> Result<String, IdentityRuntimeError> {
-        let deadline = Instant::now() + timeout;
+        self.wait_for_output_where(identity, timeout, |preview| preview.contains(needle))
+            .await
+            .map_err(|ended| ended.into_error(identity, &format!("output containing '{needle}'")))
+    }
+
+    /// Read the identity's output_preview whenever it can have changed, until
+    /// `accept` takes it or `timeout` elapses.
+    ///
+    /// No sleep or poll: the preview is the last committed assistant text,
+    /// and a commit is recorded as a completion, which wakes the identity
+    /// table's change signal ([`Self::await_completion`] waits on the same
+    /// one). Registration, lease changes, Broken, retire and delete are table
+    /// writes too, so a wait started before the identity materializes reads
+    /// again once it does. The subscription is taken before each read, so a
+    /// completion landing during the read still wakes the next one. A read
+    /// that fails (the identity is not active yet, say) is kept as the
+    /// timeout's detail and retried on the next wake, never on a timer.
+    async fn wait_for_output_where(
+        &self,
+        identity: &AgentIdentity,
+        timeout: Duration,
+        accept: impl Fn(&str) -> bool,
+    ) -> Result<String, OutputWaitEnded> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut changes = self.entries.subscribe();
+        let mut shutdown = self.foreground_cancel.subscribe();
+        let mut last_error = None;
         loop {
-            if let Ok(inspection) = self.inspect(identity).await
-                && let Some(ref preview) = inspection.output_preview
-                && preview.contains(needle)
-            {
-                return Ok(preview.clone());
+            changes.borrow_and_update();
+            match self.inspect(identity).await {
+                Ok(inspection) => {
+                    if let Some(preview) = inspection.output_preview
+                        && accept(&preview)
+                    {
+                        return Ok(preview);
+                    }
+                }
+                Err(error) => last_error = Some(error.to_string()),
             }
-            if Instant::now() >= deadline {
-                return Err(IdentityRuntimeError::Internal(format!(
-                    "timed out waiting for output containing '{needle}' from {identity}"
-                )));
+            if *shutdown.borrow_and_update() {
+                return Err(OutputWaitEnded::ShuttingDown);
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::select! {
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return Err(OutputWaitEnded::ShuttingDown);
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return Err(OutputWaitEnded::ShuttingDown);
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(OutputWaitEnded::TimedOut { last_error });
+                }
+            }
+        }
+    }
+}
+
+/// Why [`IdentityRuntime::wait_for_output_where`] ended without an accepted
+/// preview.
+enum OutputWaitEnded {
+    TimedOut { last_error: Option<String> },
+    ShuttingDown,
+}
+
+impl OutputWaitEnded {
+    fn into_error(self, identity: &AgentIdentity, what: &str) -> IdentityRuntimeError {
+        match self {
+            Self::TimedOut { last_error: None } => IdentityRuntimeError::Internal(format!(
+                "timed out waiting for {what} from {identity}"
+            )),
+            Self::TimedOut {
+                last_error: Some(error),
+            } => IdentityRuntimeError::Internal(format!(
+                "timed out waiting for {what} from {identity} (last read failed: {error})"
+            )),
+            Self::ShuttingDown => IdentityRuntimeError::Internal(format!(
+                "runtime shutting down while waiting for {what} from {identity}"
+            )),
         }
     }
 }

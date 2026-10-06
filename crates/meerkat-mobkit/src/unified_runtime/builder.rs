@@ -149,7 +149,12 @@ pub struct UnifiedRuntimeBuilder {
     event_log_config: Option<EventLogConfig>,
     drain_timeout: Option<Duration>,
     discovery: Option<Box<dyn Discovery>>,
-    pre_spawn_hook: Option<PreSpawnHook>,
+    /// Behind a mutex only so the builder is `Sync`: the public
+    /// [`PreSpawnHook`] is `Send` but not `Sync`, and `build` holds `&self`
+    /// across awaits, so a plain field made `build()`'s future `!Send`. The
+    /// hook is only ever moved in and out by value; the lock is never
+    /// contended.
+    pre_spawn_hook: std::sync::Mutex<Option<PreSpawnHook>>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     control_listen: Option<String>,
@@ -914,7 +919,10 @@ impl UnifiedRuntimeBuilder {
     }
 
     pub fn pre_spawn_hook(mut self, hook: PreSpawnHook) -> Self {
-        self.pre_spawn_hook = Some(hook);
+        *self
+            .pre_spawn_hook
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
         self
     }
 
@@ -1698,7 +1706,11 @@ impl UnifiedRuntimeBuilder {
         // ordinary-drop return would leave the name occupied and block any
         // same-process rebuild of this mob id. Failure must follow the same
         // cooperative shutdown path as the later bootstrap errors.
-        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
+        let pre_spawn_hook = self
+            .pre_spawn_hook
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pre_spawn_context = if let Some(hook) = pre_spawn_hook {
             match hook().await {
                 Ok(context) => context,
                 Err(err) => {
