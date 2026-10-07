@@ -241,7 +241,8 @@ mod completion_delivery {
     use std::time::Duration;
 
     use futures::StreamExt as _;
-    use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest, LlmStream};
+    use meerkat_client::types::LlmStream;
+    use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest};
     use meerkat_core::event::BackgroundJobTerminalStatus;
     use meerkat_core::types::{SystemNoticeBlock, SystemNoticeKind, ToolCallView};
     use meerkat_core::{AgentToolDispatcher, Message, SessionId};
@@ -503,7 +504,7 @@ mod completion_delivery {
                 .expect("bounded completion fixture bootstrap")
                 .expect("bootstrap completion fixture");
             for member in members {
-                let mut spawn = SpawnMemberSpec::new("general".into(), (*member).into());
+                let mut spawn = SpawnMemberSpec::new("general", *member);
                 spawn.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
                 tokio::time::timeout(WAIT, runtime.handle().spawn_spec(spawn))
                     .await
@@ -688,7 +689,7 @@ mod completion_delivery {
                 WAIT,
                 handle.start_work_for_identity_bounded(
                     identity,
-                    meerkat_mob::WorkSpec::new(FOLLOW_UP.into(), meerkat_mob::WorkOrigin::Internal),
+                    meerkat_mob::WorkSpec::new(FOLLOW_UP, meerkat_mob::WorkOrigin::Internal),
                     meerkat_core::HandlingMode::Queue,
                     bounded.clone(),
                 ),

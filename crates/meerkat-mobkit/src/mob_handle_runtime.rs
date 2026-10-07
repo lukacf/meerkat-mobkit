@@ -6999,6 +6999,14 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
                 self.inner.load_persisted_session_metadata(session_id).await
             }
+            // Retained metadata includes archived sessions and is read only
+            // from the inner authority, never through ordinary session reads.
+            async fn load_retained_session_metadata(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+                self.inner.load_retained_session_metadata(session_id).await
+            }
             async fn authorize_revivable_retired_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -8100,6 +8108,14 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
         self.inner.load_persisted_session_metadata(session_id).await
+    }
+    // Preserve the inner retained authority, including archived metadata,
+    // absence, unsupported authority and read faults.
+    async fn load_retained_session_metadata(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+        self.inner.load_retained_session_metadata(session_id).await
     }
     async fn authorize_revivable_retired_session(
         &self,
@@ -16032,6 +16048,9 @@ comms = true
         turn_admission: tokio::sync::Notify,
         turn_terminal: tokio::sync::Notify,
         turn_outcome: std::sync::atomic::AtomicU8,
+        retained_metadata_reply:
+            Mutex<Option<Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError>>>,
+        retained_metadata_requests: Mutex<Vec<meerkat_core::SessionId>>,
     }
 
     impl ForwardingProbe {
@@ -16109,6 +16128,7 @@ comms = true
             &self,
             id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_core::service::SessionView, SessionError> {
+            self.record("read");
             Err(SessionError::NotFound { id: id.clone() })
         }
 
@@ -16185,6 +16205,7 @@ comms = true
             id: &meerkat_core::types::SessionId,
             _query: meerkat_core::service::SessionHistoryQuery,
         ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+            self.record("read_history");
             Err(SessionError::NotFound { id: id.clone() })
         }
 
@@ -16209,6 +16230,42 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn load_retained_session_metadata(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+            self.record("load_retained_session_metadata");
+            self.retained_metadata_requests
+                .lock()
+                .expect("retained requests")
+                .push(session_id.clone());
+            self.retained_metadata_reply
+                .lock()
+                .expect("retained reply")
+                .take()
+                .unwrap_or_else(|| {
+                    Err(SessionError::Unsupported(
+                        "probe has no configured retained metadata authority".to_string(),
+                    ))
+                })
+        }
+
+        async fn load_persisted_session_metadata(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+            self.record("load_persisted_session_metadata");
+            Ok(None)
+        }
+
+        async fn load_persisted_session(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<Option<meerkat_core::Session>, SessionError> {
+            self.record("load_persisted_session");
+            Ok(None)
+        }
+
         async fn subscribe_session_activity(
             &self,
             _session_id: &meerkat_core::SessionId,
@@ -16904,6 +16961,119 @@ comms = true
             vec!["observe_live_durable_source", "observe_live_durable_source"],
             "each wrapper forwards exactly once and adds no read of its own"
         );
+    }
+
+    #[tokio::test]
+    async fn wrappers_preserve_retained_metadata_without_ordinary_or_transcript_reads() {
+        for after_create in [false, true] {
+            for outcome in ["active", "archived", "absent", "unsupported", "fault"] {
+                let probe = Arc::new(ForwardingProbe::default());
+                let session_id = meerkat_core::SessionId::new();
+                let expected = meerkat_core::PersistedSessionMetadataView {
+                    session_id: session_id.clone(),
+                    session_metadata: Some(meerkat_core::SessionMetadata {
+                        schema_version: meerkat_core::SESSION_METADATA_SCHEMA_VERSION,
+                        model: "retained-model".to_string(),
+                        model_fallback: None,
+                        max_tokens: 1024,
+                        structured_output_retries:
+                            meerkat_core::config::default_structured_output_retries(),
+                        provider: meerkat_core::Provider::Anthropic,
+                        self_hosted_server_id: None,
+                        provider_params: None,
+                        tooling: meerkat_core::SessionTooling::default(),
+                        keep_alive: false,
+                        comms_name: Some("retained-peer".to_string()),
+                        peer_meta: None,
+                        realm_id: Some(
+                            meerkat_core::RealmId::parse("retained-realm").expect("realm"),
+                        ),
+                        instance_id: None,
+                        backend: None,
+                        config_generation: None,
+                        auth_binding: None,
+                        mob_member_binding: Some(meerkat_core::MobMemberBinding {
+                            mob_id: "retained-mob".to_string(),
+                            role: "worker".to_string(),
+                            member: "source-member".to_string(),
+                        }),
+                    }),
+                    lifecycle_terminal: (outcome == "archived")
+                        .then_some(meerkat_core::SessionLifecycleTerminal::Archived),
+                };
+                let reply = match outcome {
+                    "active" | "archived" => Ok(Some(expected.clone())),
+                    "absent" => Ok(None),
+                    "unsupported" => Err(SessionError::Unsupported(
+                        "fixture retained authority unavailable".to_string(),
+                    )),
+                    "fault" => Err(SessionError::Store(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "fixture retained metadata corrupt",
+                    )))),
+                    _ => unreachable!(),
+                };
+                *probe.retained_metadata_reply.lock().expect("reply") = Some(reply);
+                let wrapper: Arc<dyn MobSessionService> = if after_create {
+                    Arc::new(AfterCreateMobSessionService {
+                        inner: probe.clone(),
+                        after_hook: Arc::new(|_, _| {
+                            panic!("retained reads must not run an after-create hook")
+                        }),
+                    })
+                } else {
+                    Arc::new(PreBuildMobSessionService {
+                        inner: probe.clone(),
+                        hook: Arc::new(|_| panic!("retained reads must not run a pre-build hook")),
+                        dispatch_taint: None,
+                        after_create_hook: None,
+                        runtime_adapter_override: None,
+                        session_read_absorber: None,
+                        archived_terminal_authority: None,
+                    })
+                };
+                let actual = wrapper.load_retained_session_metadata(&session_id).await;
+                match outcome {
+                    "active" | "archived" => {
+                        let actual = actual.expect("retained read").expect("exact session");
+                        assert_eq!(actual.session_id, expected.session_id);
+                        assert_eq!(actual.lifecycle_terminal, expected.lifecycle_terminal);
+                        assert_eq!(
+                            serde_json::to_value(actual.session_metadata).expect("actual metadata"),
+                            serde_json::to_value(expected.session_metadata)
+                                .expect("expected metadata")
+                        );
+                    }
+                    "absent" => assert!(actual.expect("absent read").is_none()),
+                    "unsupported" => assert!(matches!(
+                        actual,
+                        Err(SessionError::Unsupported(message))
+                            if message == "fixture retained authority unavailable"
+                    )),
+                    "fault" => match actual {
+                        Err(SessionError::Store(error)) => {
+                            let error = error
+                                .downcast_ref::<std::io::Error>()
+                                .expect("original typed read fault");
+                            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+                            assert_eq!(error.to_string(), "fixture retained metadata corrupt");
+                        }
+                        other => panic!("retained read fault changed: {other:?}"),
+                    },
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    *probe.retained_metadata_requests.lock().expect("requests"),
+                    vec![session_id],
+                    "the exact session id reaches the retained authority once"
+                );
+                assert_eq!(
+                    probe.calls(),
+                    vec!["load_retained_session_metadata"],
+                    "retained reads never use ordinary metadata, live reads or transcripts"
+                );
+            }
+        }
     }
 
     /// meerkat 0.8.50 made `subscribe_session_activity` required: a mob Stop

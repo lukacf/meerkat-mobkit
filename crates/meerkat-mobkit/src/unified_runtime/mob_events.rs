@@ -751,6 +751,11 @@ pub(crate) fn extract_structural_fields(
             None,
             Some(decode_member_id(event.agent_identity.as_str())),
         ),
+        // The job was run by the child. Its owner's session and job id are
+        // not flow coordinates or a different member identity.
+        MobEventKind::ForkJobTerminal(event) => {
+            (None, None, Some(decode_member_id(event.child.as_str())))
+        }
         MobEventKind::MemberRetirementStarted { agent_identity, .. }
         | MobEventKind::MemberRetired { agent_identity, .. }
         | MobEventKind::RespawnTopologyAbandoned { agent_identity, .. }
@@ -878,6 +883,34 @@ mod tests {
             definition: Box::new(meerkat_mob::MobDefinition::explicit("fields-oracle")),
         };
         assert_eq!(extract_structural_fields(&kind), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn projects_fork_terminal_for_child_without_inventing_authority() {
+        let alias = "rt:fork-child:singleton:0";
+        let encoded = crate::member_comms_id::mob_member_id_str(alias).into_owned();
+        assert_ne!(encoded, alias);
+        let outcome = serde_json::json!({"text": "child result"});
+        let kind = MobEventKind::ForkJobTerminal(meerkat_mob::ForkJobTerminalEvent {
+            job_id: "fork-projection-job".to_string(),
+            child: AgentIdentity::from(encoded.as_str()),
+            owner_session_id: meerkat_core::SessionId::new(),
+            retained_work: None,
+            status: meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+            result_digest: meerkat_mob::detached_outcome_digest(&outcome),
+            outcome,
+        });
+        let data = serde_json::to_value(&kind).expect("fork terminal serializes");
+        let projected = MobEventsStore::new()
+            .project_event_with_authority(&mob_event(12, kind))
+            .await;
+
+        assert_eq!(projected.envelope.kind, "fork_job_terminal");
+        assert_eq!(projected.envelope.agent_identity.as_deref(), Some(alias));
+        assert_eq!(projected.envelope.run_id, None);
+        assert_eq!(projected.envelope.step_id, None);
+        assert_eq!(projected.member_authority, None);
+        assert_eq!(projected.envelope.data, data);
     }
 
     #[tokio::test]
