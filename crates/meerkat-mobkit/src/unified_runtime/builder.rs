@@ -2304,6 +2304,9 @@ fn storage_resolution_builder_error(
         crate::storage_health::StorageResolutionError::Runtime(error) => {
             UnifiedRuntimeBuilderError::Runtime(error)
         }
+        crate::storage_health::StorageResolutionError::Delivery(error) => {
+            UnifiedRuntimeBuilderError::Delivery(error)
+        }
     }
 }
 #[cfg(test)]

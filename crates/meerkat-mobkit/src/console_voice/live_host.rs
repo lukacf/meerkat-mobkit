@@ -967,6 +967,13 @@ pub(crate) mod tests {
             let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), config.clone());
             builder.default_llm_client = Some(client.clone());
             builder.default_blob_store = Some(blobs.clone());
+            let jobs: Arc<dyn meerkat::DetachedJobStore> =
+                Arc::new(meerkat::MemoryDetachedJobStore::new());
+            builder.default_detached_job_store = Some(Arc::clone(&jobs));
+            let delivery = crate::mob_handle_runtime::MobRuntimeDelivery::new(
+                Arc::clone(&runtime_store),
+                jobs,
+            );
             let mob_tools = Arc::clone(&builder.default_mob_tools);
             let service = Arc::new(PersistentSessionService::new(
                 builder,
@@ -1005,6 +1012,7 @@ pub(crate) mod tests {
                 default_llm_client: Some(client),
             });
             spec = spec
+                .with_runtime_delivery(delivery)
                 .with_agent_mob_tools(mob_tools)
                 .expect("install the live voice fixture's agent mob tools");
             spec.runtime_adapter = Some(machine.clone());

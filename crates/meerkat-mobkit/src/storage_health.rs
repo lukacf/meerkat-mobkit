@@ -515,6 +515,7 @@ pub enum StorageResolutionError {
     /// The composition's runtime machine could not be built or acquired over
     /// its store because execution custody or controller readiness was refused.
     Runtime(meerkat_runtime::RuntimeDriverError),
+    Delivery(crate::mob_handle_runtime::MobRuntimeDeliveryError),
 }
 
 impl std::fmt::Display for StorageResolutionError {
@@ -525,6 +526,7 @@ impl std::fmt::Display for StorageResolutionError {
             Self::JobStore(error) => error.fmt(f),
             Self::Council(error) => error.fmt(f),
             Self::Runtime(error) => error.fmt(f),
+            Self::Delivery(error) => error.fmt(f),
         }
     }
 }

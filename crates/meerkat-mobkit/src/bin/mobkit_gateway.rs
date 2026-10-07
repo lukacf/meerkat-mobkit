@@ -68,6 +68,7 @@ type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
     Arc<dyn meerkat_runtime::RuntimeStore>,
     ConsoleLiveInputs,
+    meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery,
 );
 type ConsoleLiveInputs = (
     Arc<PersistentSessionService<FactoryAgentBuilder>>,
@@ -641,6 +642,27 @@ fn build_persistent_session_service(
     let live_config = config.clone();
     let mut builder = FactoryAgentBuilder::new(factory, config);
     builder.default_blob_store = Some(blob_store.clone());
+    let jobs_path = meerkat_store::realm_paths_in(
+        layout.state_dir(),
+        meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+    )
+    .jobs_sqlite_path;
+    let jobs: Arc<dyn meerkat::DetachedJobStore> = Arc::new(
+        meerkat::SqliteDetachedJobStore::open(jobs_path.clone())
+            .with_context(|| format!("failed to open {}", jobs_path.display()))?,
+    );
+    let runtime_delivery = meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(
+        Arc::clone(&runtime_store),
+        Arc::clone(&jobs),
+    );
+    builder.default_detached_job_store = Some(Arc::clone(&jobs));
+    builder.default_shell_job_delivery_projector =
+        Some(meerkat::JobOutboxProjector::new_for_realm(
+            jobs,
+            runtime_delivery.inbox(),
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+        ));
+
     // Attach meerkat's per-session schedule tools so members whose profile sets
     // tools.schedule=true get the meerkat_schedule_* surface; the returned
     // service backs the firing host spawned once the runtime has booted.
@@ -741,6 +763,10 @@ fn build_persistent_session_service(
         ),
         schedule_slot,
         workgraph_slot,
+        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+            "jobs",
+            "SqliteDetachedJobStore",
+        ),
     ];
     slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
     // Heal seam (2026-07-29 incident): the CONCRETE persistent service is the
@@ -776,6 +802,7 @@ fn build_persistent_session_service(
         committed_boundary_recoverer,
         runtime_store,
         voice_inputs,
+        runtime_delivery,
     ))
 }
 
@@ -1701,6 +1728,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             committed_boundary_recoverer,
             runtime_store,
             voice_inputs,
+            runtime_delivery,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1749,6 +1777,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             .with_workgraph_service(workgraph_service.clone())
             // This is the persistent session builder's shared agent-tool slot.
             // Identity activation needs it even when console voice is absent.
+            .with_runtime_delivery(runtime_delivery)
             .with_agent_mob_tools(Arc::clone(&voice_inputs.4))
             .context("failed to install gateway agent mob tools")?;
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
@@ -1822,6 +1851,21 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             session_store.clone(),
         )));
         builder.default_blob_store = Some(blob_store.clone());
+        let jobs: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let runtime_delivery = meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(
+            Arc::clone(&runtime_store),
+            Arc::clone(&jobs),
+        );
+        builder.default_detached_job_store = Some(Arc::clone(&jobs));
+        builder.default_shell_job_delivery_projector =
+            Some(meerkat::JobOutboxProjector::new_for_realm(
+                jobs,
+                runtime_delivery.inbox(),
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            ));
+        let agent_mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+
         // The default TUX launch is ephemeral: a memory-backed workgraph
         // keeps the feature available (tools stay profile-gated). Memory
         // store = single process, so no admission sidecar.
@@ -1850,7 +1894,10 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             .with_session_runtime_adapter(adapter.clone())
             .context("failed to acquire the gateway session runtime owner")?
             .with_workgraph_service(workgraph_service.clone())
-            .with_workgraph_admission_slot(workgraph_admission_slot);
+            .with_workgraph_admission_slot(workgraph_admission_slot)
+            .with_runtime_delivery(runtime_delivery)
+            .with_agent_mob_tools(agent_mob_tools_slot)
+            .context("failed to install ephemeral gateway agent mob tools")?;
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         // The service's session and blob stores are explicitly process-local;
@@ -1885,6 +1932,13 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
                 "declared by the default ephemeral launch",
             ),
         ];
+        slots.push(
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "jobs",
+                "MemoryDetachedJobStore",
+                "declared by the ephemeral launch mode",
+            ),
+        );
         slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
         // Declared, not silent: this launch keeps mob state in memory by
         // design, and the census now says so rather than omitting the slot.

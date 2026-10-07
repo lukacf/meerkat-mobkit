@@ -3362,6 +3362,11 @@ external_addressable = true
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
+        let jobs: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        inner_builder.default_detached_job_store = Some(Arc::clone(&jobs));
+        let delivery =
+            crate::mob_handle_runtime::MobRuntimeDelivery::new(Arc::clone(&runtime_store), jobs);
         let attached = attach_schedule_tools_with_identity_targets(&inner_builder, &state)
             .expect("schedule tools attach");
         let inner_builder_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
@@ -3410,6 +3415,7 @@ schedule = true
         )
         .with_session_runtime_adapter(adapter.clone())
         .expect("acquire the fixture session runtime owner")
+        .with_runtime_delivery(delivery)
         .with_agent_mob_tools(agent_mob_tools_slot)
         .expect("install the schedule delivery fixture's agent mob tools")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {

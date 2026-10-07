@@ -9,13 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- Custom specs that install agent mob tools must explicitly provide
+  `MobRuntimeDelivery` with `with_runtime_delivery` before `with_agent_mob_tools`.
+  Use the session service's exact runtime-store facade and the agent builder's
+  detached-job store. Stock constructors supply this composition themselves.
+  `StorageResolutionError`, `MobRuntimeError` and `UnifiedRuntimeBuilderError`
+  gain typed delivery errors. `MobRuntimeError::DeliveryStartup` retains the
+  stop report if owner arming fails after a mob handle was acquired.
+- Gateway job health now exposes `detached_jobs.runtime_delivery_pass` from
+  the native delivery owner. Row-level `blocked_deliveries` is `null` with
+  `blocked_deliveries_reading: "unavailable"`; the native owner exposes blocked
+  sessions, runtimes and failures, but does not expose row identities. The
+  separate `runtime_inbox_backlog` remains an exact store census.
+
 - Meerkat's fallible runtime acquisition (Meerkat 0.8.52) reaches MobKit's
   composition. Building a runtime machine can now refuse, and so can the
   agent mob tools' runtime adapter:
   - `MobBootstrapSpec::ephemeral` and `ephemeral_with_hook` return
     `Result<Self, StorageResolutionError>`. `with_agent_mob_tools` returns
-    `Result<Self, RuntimeDriverError>`, and `with_session_runtime_adapter`
-    is fallible the same way.
+    `Result<Self, MobRuntimeDeliveryError>`, preserving native acquisition
+    and continuation-binding errors. `with_session_runtime_adapter` returns
+    `Result<Self, RuntimeDriverError>`.
   - `StorageResolutionError`, `MobRuntimeError` and
     `UnifiedRuntimeBuilderError` each gain `Runtime(RuntimeDriverError)`.
     Exhaustive matches must add the arm.

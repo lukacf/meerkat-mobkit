@@ -2209,115 +2209,6 @@ default_binding = "local"
     }
 
     #[test]
-    fn callback_context_delivery_preserves_native_dispositions() {
-        use meerkat::JobDeliveryApplyError as DeliveryError;
-        use meerkat_core::{
-            OperationAuthorizationError, OperationRefusalKind, OperationRefused,
-            OperationReviewRefusal, SessionControlError, SessionError,
-        };
-
-        let session_id = meerkat_core::SessionId::new();
-        let refusal = OperationRefused::new(OperationRefusalKind::Denied);
-        let review = OperationReviewRefusal::Unsatisfied {
-            kind: meerkat_core::approval::review::ReviewUnsatisfiedKind::HumanConsentRequired,
-        };
-        let review_unavailable = OperationReviewRefusal::Unavailable {
-            kind: meerkat_core::approval::review::ReviewUnavailableKind::UnsupportedEntry,
-        };
-        for (error, expected) in [
-            (
-                SessionControlError::Authorization(OperationAuthorizationError::Refused(refusal)),
-                DeliveryError::Authorization(OperationAuthorizationError::Refused(refusal)),
-            ),
-            (
-                SessionControlError::Authorization(OperationAuthorizationError::Unavailable),
-                DeliveryError::Authorization(OperationAuthorizationError::Unavailable),
-            ),
-            (
-                SessionControlError::Review(review),
-                DeliveryError::Review(review),
-            ),
-            (
-                SessionControlError::Review(review_unavailable),
-                DeliveryError::Review(review_unavailable),
-            ),
-            (
-                SessionControlError::Session(SessionError::ServedElsewhere {
-                    id: session_id.clone(),
-                }),
-                DeliveryError::ServedElsewhere {
-                    session_id: session_id.clone(),
-                },
-            ),
-            (
-                SessionControlError::Session(SessionError::HostingUnavailable {
-                    id: session_id.clone(),
-                }),
-                DeliveryError::HostingUnavailable { session_id },
-            ),
-        ] {
-            assert_eq!(callback_context_delivery_error(error), expected);
-        }
-
-        let error = SessionControlError::InvalidRequest {
-            message: "input refused; served elsewhere".to_string(),
-        };
-        let diagnostic = error.to_string();
-        assert_eq!(
-            callback_context_delivery_error(error),
-            DeliveryError::Infrastructure(diagnostic)
-        );
-    }
-
-    #[test]
-    fn callback_event_delivery_preserves_native_dispositions() {
-        use meerkat::JobDeliveryApplyError as DeliveryError;
-        use meerkat_core::{OperationAuthorizationError, OperationRefusalKind, OperationRefused};
-        use meerkat_runtime::RuntimeDriverError;
-
-        let session_id = meerkat_core::SessionId::new();
-        let refusal = OperationRefused::new(OperationRefusalKind::MalformedFacts);
-        for (error, expected) in [
-            (
-                RuntimeDriverError::InputRefused { refusal },
-                DeliveryError::Authorization(OperationAuthorizationError::Refused(refusal)),
-            ),
-            (
-                RuntimeDriverError::ControllerReadinessUnavailable {
-                    reason:
-                        meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable,
-                },
-                DeliveryError::Authorization(OperationAuthorizationError::Unavailable),
-            ),
-            (
-                RuntimeDriverError::ServedElsewhere {
-                    session_id: session_id.clone(),
-                },
-                DeliveryError::ServedElsewhere {
-                    session_id: session_id.clone(),
-                },
-            ),
-            (
-                RuntimeDriverError::HostingUnavailable {
-                    session_id: session_id.clone(),
-                },
-                DeliveryError::HostingUnavailable { session_id },
-            ),
-        ] {
-            assert_eq!(callback_event_delivery_error(error), expected);
-        }
-
-        let error = RuntimeDriverError::ValidationFailed {
-            reason: "input refused; hosting claim unavailable".to_string(),
-        };
-        let diagnostic = error.to_string();
-        assert_eq!(
-            callback_event_delivery_error(error),
-            DeliveryError::Infrastructure(diagnostic)
-        );
-    }
-
-    #[test]
     fn callback_event_delivery_builds_stable_runtime_owned_ingress() {
         let job_id = meerkat::JobId::new("019f74fb-1907-7b21-932d-ab22c4d1f500").expect("job id");
         let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f501")
@@ -2334,7 +2225,7 @@ default_binding = "local"
                 .expect("lineage");
         let content = meerkat::JobDeliveryContent::Terminal(meerkat::JobTerminalResult::WorkerLost);
 
-        let input = callback_job_event_input(
+        let input = meerkat::job_delivery_event_input(
             &job_id,
             7,
             &subscription,
@@ -2543,12 +2434,15 @@ default_binding = "local"
     ) -> DetachedCallbackJobRuntime {
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
+        let jobs: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let delivery = GatewayRuntimeDelivery::new(runtime_store, Arc::clone(&jobs));
         DetachedCallbackJobRuntime::new(
             meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
-            Arc::new(meerkat::MemoryDetachedJobStore::new()),
+            jobs,
             blobs,
         )
-        .with_runtime_delivery(&GatewayRuntimeDelivery::new(runtime_store))
+        .with_runtime_delivery(&delivery)
     }
 
     /// The shell job projector and the detached-job delivery runtime share
@@ -2561,7 +2455,7 @@ default_binding = "local"
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let job_store = Arc::new(meerkat::MemoryDetachedJobStore::new());
-        let delivery = GatewayRuntimeDelivery::new(runtime_store);
+        let delivery = GatewayRuntimeDelivery::new(runtime_store, job_store.clone());
         let projector = delivery.shell_job_projector(job_store.clone());
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
@@ -2640,6 +2534,7 @@ default_binding = "local"
             DetachedCallbackJobRuntime,
             Arc<meerkat_runtime::MeerkatMachine>,
             meerkat_core::SessionId,
+            meerkat_mobkit::MobRuntime,
         ),
         Box<dyn std::error::Error + Send + Sync>,
     > {
@@ -2659,8 +2554,11 @@ default_binding = "local"
             )
             .expect("acquire the RPC gateway fixture runtime machine"),
         );
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
         let factory = meerkat::AgentFactory::new(temp);
-        let builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
+        builder.default_detached_job_store = Some(Arc::clone(&job_store));
         let concrete: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -2684,8 +2582,6 @@ default_binding = "local"
             serving.register_session(subscriber.clone()).await?;
         }
 
-        let job_store: Arc<dyn meerkat::DetachedJobStore> =
-            Arc::new(meerkat::MemoryDetachedJobStore::new());
         let jobs = meerkat::DetachedJobService::new(Arc::clone(&job_store));
         let receipt = jobs
             .submit(meerkat::JobSpec::new(
@@ -2730,14 +2626,30 @@ default_binding = "local"
         )
         .await?;
 
+        let delivery = GatewayRuntimeDelivery::new(runtime_store, Arc::clone(&job_store));
         let runtime = DetachedCallbackJobRuntime::new(
             meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
             job_store,
             blob_store,
         )
-        .with_runtime_delivery(&GatewayRuntimeDelivery::new(runtime_store));
-        runtime.attach_delivery_service(concrete, Arc::clone(&serving));
-        Ok((runtime, serving, subscriber))
+        .with_runtime_delivery(&delivery);
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"delivery-{}\"\n",
+            uuid::Uuid::new_v4()
+        ))?;
+        let owner = meerkat_mobkit::MobRuntime::bootstrap(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), concrete)
+                .with_session_runtime_adapter(Arc::clone(&serving))?
+                .with_runtime_delivery(delivery.composition.clone()),
+        )
+        .await?;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while delivery.composition.last_pass().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok((runtime, serving, subscriber, owner))
     }
 
     /// A job Event delivery is admitted on the machine that serves the
@@ -2747,8 +2659,8 @@ default_binding = "local"
     async fn a_job_event_delivery_is_admitted_on_the_serving_machine()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp = tempfile::tempdir()?;
-        let (runtime, serving, subscriber) = event_delivery_fixture(temp.path(), true).await?;
-        runtime.drain_deliveries().await?;
+        let (runtime, serving, subscriber, _owner) =
+            event_delivery_fixture(temp.path(), true).await?;
 
         let admitted = meerkat_runtime::SessionServiceRuntimeExt::list_active_inputs(
             serving.as_ref(),
@@ -2760,49 +2672,42 @@ default_binding = "local"
             1,
             "the job's Event delivery must be admitted on the serving machine"
         );
-        assert!(runtime.blocked_deliveries().is_empty());
+        let pass = runtime
+            .runtime_delivery
+            .as_ref()
+            .expect("delivery")
+            .last_pass()
+            .expect("native pass");
+        assert!(pass.blocked_sessions.is_empty(), "{pass:?}");
         Ok(())
     }
 
-    /// A delivery that cannot be applied is visible: the drain records the
-    /// blocked row (session, row, reason), the health projection reports it
-    /// and degrades, and the WARN fires once, not on every retry.
+    /// Native owner health reports the blocked address and exact failures;
+    /// unavailable row-level diagnostics must never masquerade as an empty list.
     #[tokio::test]
-    async fn a_blocked_job_delivery_is_reported_once_and_degrades_health()
+    async fn a_blocked_job_delivery_degrades_native_owner_health()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp = tempfile::tempdir()?;
-        // Not registered on the serving machine: admission is refused.
-        let (runtime, _serving, _subscriber) = event_delivery_fixture(temp.path(), false).await?;
-        let writer = CaptureWriter::default();
-        let subscriber_log = tracing_subscriber::fmt()
-            .with_writer(writer.clone())
-            .with_max_level(tracing::Level::WARN)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber_log);
-
-        runtime.drain_deliveries().await?;
-        runtime.drain_deliveries().await?;
-
-        let blocked = runtime.blocked_deliveries();
-        // Rows queue per ORIGIN session (the job's), whatever session they
-        // address: the origin's queue is the one blocked.
-        assert_eq!(blocked.len(), 1, "one origin queue is blocked: {blocked:?}");
-        let (blocked_session, block) = blocked.iter().next().expect("one blocked row");
-        assert!(!block.error.is_empty(), "the block names its reason");
+        let (runtime, _serving, _subscriber, _owner) =
+            event_delivery_fixture(temp.path(), false).await?;
+        let pass = runtime
+            .runtime_delivery
+            .as_ref()
+            .expect("delivery")
+            .last_pass()
+            .expect("native pass");
+        assert!(!pass.blocked_runtimes.is_empty(), "{pass:?}");
+        assert!(!pass.failures.is_empty(), "{pass:?}");
         let projection = runtime.health_projection().await?;
         assert_eq!(projection["detached_jobs"]["status"], json!("degraded"));
-        let rows = projection["detached_jobs"]["blocked_deliveries"]
-            .as_array()
-            .expect("blocked_deliveries is a list");
-        assert_eq!(rows.len(), 1, "{projection:#}");
-        assert_eq!(rows[0]["origin_session_id"], json!(blocked_session));
-        assert_eq!(rows[0]["delivery_id"], json!(block.delivery_id));
-        let logs = writer.contents();
+        assert!(projection["detached_jobs"]["blocked_deliveries"].is_null());
         assert_eq!(
-            logs.matches("callback job delivery is blocked at this row")
-                .count(),
-            1,
-            "one WARN for one blocked row across two passes: {logs}"
+            projection["detached_jobs"]["blocked_deliveries_reading"],
+            "unavailable"
+        );
+        assert_eq!(
+            projection["detached_jobs"]["runtime_delivery_pass"]["failures"],
+            json!(pass.failures)
         );
         Ok(())
     }
@@ -10250,20 +10155,27 @@ fn classify_runtime_inbox_backlog(
 /// projector and the detached-job delivery runtime therefore both take clones
 /// of this one inbox, so a delivery committed through either path wakes every
 /// subscriber of the other. Build it once per gateway.
+#[derive(Clone)]
 struct GatewayRuntimeDelivery {
-    inbox: meerkat_runtime::RuntimeDeliveryInbox,
+    composition: meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery,
 }
 
 impl GatewayRuntimeDelivery {
-    fn new(runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>) -> Self {
+    fn new(
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+        jobs: Arc<dyn meerkat::DetachedJobStore>,
+    ) -> Self {
         Self {
-            inbox: meerkat_runtime::RuntimeDeliveryInbox::new(runtime_store),
+            composition: meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(
+                runtime_store,
+                jobs,
+            ),
         }
     }
 
     /// A clone sharing the commit signal.
     fn inbox(&self) -> meerkat_runtime::RuntimeDeliveryInbox {
-        self.inbox.clone()
+        self.composition.inbox()
     }
 
     /// The default shell job projector over this inbox. Per-session builds
@@ -10291,13 +10203,7 @@ struct DetachedCallbackJobRuntime {
     /// backlog read; the WARN naming the operation fires on that transition
     /// only. See [`Self::runtime_inbox_backlog`].
     runtime_inbox_unsupported_announced: Arc<AtomicBool>,
-    delivery_service: Arc<std::sync::RwLock<Option<CallbackDeliveryTarget>>>,
-    /// The row each origin session's delivery queue is blocked at, as of the
-    /// last drain pass (keyed by origin session id: a job's delivery rows
-    /// queue under the session that started it, whatever session they
-    /// address). A blocked row holds every later delivery in that queue; see
-    /// [`Self::record_blocked_deliveries`].
-    blocked_deliveries: Arc<std::sync::Mutex<BTreeMap<String, CallbackDeliveryBlock>>>,
+    runtime_delivery: Option<meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery>,
     delivery_driver_started: Arc<AtomicBool>,
     monitor_recovery_completed: Arc<AtomicBool>,
     monitor_shell_config: Option<meerkat_tools::builtin::shell::ShellConfig>,
@@ -10318,8 +10224,7 @@ impl DetachedCallbackJobRuntime {
             blob_store,
             runtime_inbox: None,
             runtime_inbox_unsupported_announced: Arc::new(AtomicBool::new(false)),
-            delivery_service: Arc::new(std::sync::RwLock::new(None)),
-            blocked_deliveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            runtime_delivery: None,
             delivery_driver_started: Arc::new(AtomicBool::new(false)),
             monitor_recovery_completed: Arc::new(AtomicBool::new(false)),
             monitor_shell_config: None,
@@ -10330,6 +10235,7 @@ impl DetachedCallbackJobRuntime {
 
     fn with_runtime_delivery(mut self, delivery: &GatewayRuntimeDelivery) -> Self {
         self.runtime_inbox = Some(delivery.inbox());
+        self.runtime_delivery = Some(delivery.composition.clone());
         self
     }
 
@@ -10452,23 +10358,6 @@ impl DetachedCallbackJobRuntime {
         Ok(())
     }
 
-    /// Wire the delivery target: the session service for notifications and
-    /// its acquired serving machine for event admission. The gateway acquires
-    /// that explicit owner before attaching the delivery target.
-    fn attach_delivery_service(
-        &self,
-        service: Arc<dyn meerkat_mob::MobSessionService>,
-        serving_machine: Arc<meerkat_runtime::MeerkatMachine>,
-    ) {
-        *self
-            .delivery_service
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CallbackDeliveryTarget {
-            service,
-            serving_machine,
-        });
-    }
-
     fn arm_delivery_driver(&self, unified_runtime: Arc<UnifiedRuntime>) {
         if self
             .delivery_driver_started
@@ -10478,19 +10367,20 @@ impl DetachedCallbackJobRuntime {
             return;
         }
         let runtime = self.clone();
+        let unified_runtime = Arc::downgrade(&unified_runtime);
         tokio::spawn(async move {
             loop {
+                let Some(host) = unified_runtime.upgrade() else {
+                    break;
+                };
                 if let Err(error) = runtime.recover_monitor_jobs().await {
                     tracing::warn!(%error, "durable monitor recovery failed");
                 }
-                if let Err(error) = runtime.drain_deliveries().await {
-                    tracing::warn!(%error, "durable callback delivery drain failed");
-                }
                 match runtime.health_projection().await {
-                    Ok(projection) => unified_runtime.set_job_health_projection(Some(projection)),
+                    Ok(projection) => host.set_job_health_projection(Some(projection)),
                     Err(error) => {
                         tracing::warn!(%error, "durable callback health projection failed");
-                        unified_runtime.set_job_health_projection(Some(json!({
+                        host.set_job_health_projection(Some(json!({
                             "status": "degraded",
                             "detached_jobs": {
                                 "status": "degraded",
@@ -10499,120 +10389,10 @@ impl DetachedCallbackJobRuntime {
                         })));
                     }
                 }
+                drop(host);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
-    }
-
-    async fn drain_deliveries(&self) -> Result<(), String> {
-        let Some(runtime_inbox) = self.runtime_inbox.clone() else {
-            return Ok(());
-        };
-        let delivery_service = self
-            .delivery_service
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let Some(CallbackDeliveryTarget {
-            service: delivery_service,
-            serving_machine,
-        }) = delivery_service
-        else {
-            return Ok(());
-        };
-        let projector = meerkat::JobOutboxProjector::new_for_realm(
-            Arc::clone(&self.store),
-            runtime_inbox.clone(),
-            self.realm_id.clone(),
-        );
-        projector
-            .project_pending(256)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let sink: Arc<dyn meerkat::JobDeliverySink> = Arc::new(CallbackJobDeliverySink {
-            delivery_service,
-            serving_machine,
-        });
-        let applier = meerkat::JobRuntimeDeliveryApplier::new(runtime_inbox, sink);
-        let mut blocked = BTreeMap::new();
-        for session_id in self.delivery_origin_sessions().await? {
-            let drain = applier
-                .apply_pending(
-                    &meerkat_runtime::LogicalRuntimeId::for_session(&session_id),
-                    256,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            if let Some(row) = drain.blocked {
-                blocked.insert(
-                    session_id.to_string(),
-                    CallbackDeliveryBlock {
-                        delivery_id: row.delivery_id.to_string(),
-                        runtime_sequence: row.runtime_sequence,
-                        error: row.error,
-                    },
-                );
-            }
-        }
-        self.record_blocked_deliveries(blocked);
-        Ok(())
-    }
-
-    /// Publish this pass's blocked rows. A row that newly blocks (or blocks
-    /// with a different row or reason) is logged at WARN once, naming the
-    /// session, the row and the reason: a blocked row holds every later
-    /// delivery for its session, and before this it was invisible. A session
-    /// that drains again is logged at INFO. Unchanged blocks stay quiet, so a
-    /// row retried every pass does not repeat the WARN.
-    fn record_blocked_deliveries(&self, current: BTreeMap<String, CallbackDeliveryBlock>) {
-        let mut published = self
-            .blocked_deliveries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (session_id, block) in &current {
-            if published.get(session_id) != Some(block) {
-                tracing::warn!(
-                    origin_session_id = %session_id,
-                    delivery_id = %block.delivery_id,
-                    runtime_sequence = block.runtime_sequence,
-                    reason = %block.error,
-                    "callback job delivery is blocked at this row; later deliveries for jobs of \
-                     this origin session wait behind it"
-                );
-            }
-        }
-        for session_id in published.keys() {
-            if !current.contains_key(session_id) {
-                tracing::info!(origin_session_id = %session_id, "callback job delivery unblocked");
-            }
-        }
-        *published = current;
-    }
-
-    /// The rows session delivery queues are blocked at, as of the last pass.
-    fn blocked_deliveries(&self) -> BTreeMap<String, CallbackDeliveryBlock> {
-        self.blocked_deliveries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    async fn delivery_origin_sessions(&self) -> Result<Vec<meerkat_core::SessionId>, String> {
-        Ok(self
-            .store
-            .list_all(usize::MAX)
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|job| job.spec.realm_id == self.realm_id)
-            .map(|job| {
-                let origin = job.spec.origin_session_id;
-                (origin.to_string(), origin)
-            })
-            .collect::<BTreeMap<_, _>>()
-            .into_values()
-            .collect())
     }
 
     /// The exact host-store total behind `JobHealthSummary.runtime_inbox_backlog`.
@@ -10693,13 +10473,42 @@ impl DetachedCallbackJobRuntime {
         // operator is told to look rather than told a rung. An unsupported
         // store lands on that rung too: it never established a count.
         let reading = health.reading().worst(runtime_inbox_backlog.reading());
-        let blocked_deliveries = self.blocked_deliveries();
-        // A blocked delivery queue is a wedge: never report it as `ok`.
-        let reading = if blocked_deliveries.is_empty() {
-            reading
-        } else {
-            reading.worst(meerkat::JobHealthReading::Degraded)
+        let delivery_pass = self
+            .runtime_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.last_pass());
+        let owner_running = self
+            .runtime_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.is_running());
+        let reading = match delivery_pass.as_ref() {
+            Some(pass) if owner_running => {
+                if !pass.blocked_sessions.is_empty()
+                    || !pass.blocked_runtimes.is_empty()
+                    || !pass.failures.is_empty()
+                    || pass.cross_process_wake_unavailable.is_some()
+                {
+                    reading.worst(meerkat::JobHealthReading::Degraded)
+                } else {
+                    reading
+                }
+            }
+            _ => reading.worst(meerkat::JobHealthReading::Unreadable),
         };
+        let delivery_pass = delivery_pass.map(|pass| {
+            json!({
+                "generation": pass.generation,
+                "projected": pass.projected,
+                "applied": pass.applied,
+                "refused": pass.refused,
+                "blocked_sessions": pass.blocked_sessions,
+                "blocked_runtimes": pass.blocked_runtimes,
+                "failures": pass.failures,
+                "awaiting_other_hosts": pass.awaiting_other_hosts,
+                "applies_cold_deliveries": pass.applies_cold_deliveries,
+                "cross_process_wake_unavailable": pass.cross_process_wake_unavailable,
+            })
+        });
         let status = match reading {
             meerkat::JobHealthReading::Ok => "ok",
             meerkat::JobHealthReading::Degraded => "degraded",
@@ -10766,214 +10575,13 @@ impl DetachedCallbackJobRuntime {
                 "pending_outbox_jobs": health.pending_outbox_jobs,
                 "runtime_inbox_backlog": runtime_inbox_backlog.count_value(),
                 "runtime_inbox_backlog_reading": runtime_inbox_backlog.reading_label(),
-                "blocked_deliveries": blocked_deliveries
-                    .iter()
-                    .map(|(session_id, block)| json!({
-                        "origin_session_id": session_id,
-                        "delivery_id": block.delivery_id,
-                        "runtime_sequence": block.runtime_sequence,
-                        "reason": block.error,
-                    }))
-                    .collect::<Vec<_>>()
+                "blocked_deliveries": null,
+                "blocked_deliveries_reading": "unavailable",
+                "runtime_delivery_owner_running": owner_running,
+                "runtime_delivery_pass": delivery_pass
             },
             "by_session": by_session
         }))
-    }
-}
-
-/// The row a session's callback delivery queue is blocked at.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CallbackDeliveryBlock {
-    delivery_id: String,
-    runtime_sequence: u64,
-    error: String,
-}
-
-/// Where callback job deliveries land: the session service (notifications)
-/// and the machine serving its sessions (event admission).
-#[derive(Clone)]
-struct CallbackDeliveryTarget {
-    service: Arc<dyn meerkat_mob::MobSessionService>,
-    serving_machine: Arc<meerkat_runtime::MeerkatMachine>,
-}
-
-struct CallbackJobDeliverySink {
-    delivery_service: Arc<dyn meerkat_mob::MobSessionService>,
-    /// The machine that serves the owners' sessions; event inputs are
-    /// admitted here.
-    serving_machine: Arc<meerkat_runtime::MeerkatMachine>,
-}
-
-#[async_trait]
-impl meerkat::JobDeliverySink for CallbackJobDeliverySink {
-    async fn apply(
-        &self,
-        application: meerkat::JobDeliveryApplication,
-    ) -> Result<(), meerkat::JobDeliveryApplyError> {
-        match application {
-            meerkat::JobDeliveryApplication::Record { .. } => Ok(()),
-            meerkat::JobDeliveryApplication::Notification {
-                job_id,
-                delivery_sequence,
-                subscription,
-                content,
-            } => {
-                let mut request = meerkat_core::service::AppendSystemContextRequest::from_text(
-                    callback_job_delivery_text(&job_id, &content),
-                );
-                request.source = Some(format!("detached_job:{job_id}"));
-                request.idempotency_key = Some(format!(
-                    "job:{job_id}:{delivery_sequence}:{}",
-                    subscription.subscription_id()
-                ));
-                self.delivery_service
-                    .append_system_context(subscription.session_id(), request)
-                    .await
-                    .map(|_| ())
-                    .map_err(callback_context_delivery_error)
-            }
-            meerkat::JobDeliveryApplication::Event {
-                job_id,
-                delivery_sequence,
-                subscription,
-                interaction_lineage_id,
-                handling_mode,
-                content,
-            } => {
-                let input = callback_job_event_input(
-                    &job_id,
-                    delivery_sequence,
-                    &subscription,
-                    &interaction_lineage_id,
-                    handling_mode,
-                    &content,
-                );
-                meerkat_runtime::SessionServiceRuntimeExt::accept_input(
-                    self.serving_machine.as_ref(),
-                    subscription.session_id(),
-                    input,
-                )
-                .await
-                .map(|_| ())
-                .map_err(callback_event_delivery_error)
-            }
-        }
-    }
-}
-
-fn callback_context_delivery_error(
-    error: meerkat_core::SessionControlError,
-) -> meerkat::JobDeliveryApplyError {
-    match error {
-        meerkat_core::SessionControlError::Authorization(error) => {
-            meerkat::JobDeliveryApplyError::Authorization(error)
-        }
-        meerkat_core::SessionControlError::Review(error) => {
-            meerkat::JobDeliveryApplyError::Review(error)
-        }
-        meerkat_core::SessionControlError::Session(
-            meerkat_core::SessionError::ServedElsewhere { id },
-        ) => meerkat::JobDeliveryApplyError::ServedElsewhere { session_id: id },
-        meerkat_core::SessionControlError::Session(
-            meerkat_core::SessionError::HostingUnavailable { id },
-        ) => meerkat::JobDeliveryApplyError::HostingUnavailable { session_id: id },
-        other => meerkat::JobDeliveryApplyError::Infrastructure(other.to_string()),
-    }
-}
-
-fn callback_event_delivery_error(
-    error: meerkat_runtime::RuntimeDriverError,
-) -> meerkat::JobDeliveryApplyError {
-    match error {
-        meerkat_runtime::RuntimeDriverError::InputRefused { refusal } => {
-            meerkat::JobDeliveryApplyError::Authorization(refusal.into())
-        }
-        meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable { .. } => {
-            meerkat::JobDeliveryApplyError::Authorization(
-                meerkat_core::OperationAuthorizationError::Unavailable,
-            )
-        }
-        meerkat_runtime::RuntimeDriverError::ServedElsewhere { session_id } => {
-            meerkat::JobDeliveryApplyError::ServedElsewhere { session_id }
-        }
-        meerkat_runtime::RuntimeDriverError::HostingUnavailable { session_id } => {
-            meerkat::JobDeliveryApplyError::HostingUnavailable { session_id }
-        }
-        other => meerkat::JobDeliveryApplyError::Infrastructure(other.to_string()),
-    }
-}
-
-fn callback_job_event_input(
-    job_id: &meerkat::JobId,
-    delivery_sequence: u64,
-    subscription: &meerkat::JobSubscription,
-    interaction_lineage_id: &meerkat::InteractionLineageId,
-    handling_mode: meerkat_core::HandlingMode,
-    content: &meerkat::JobDeliveryContent,
-) -> meerkat_runtime::Input {
-    let event_type = match content {
-        meerkat::JobDeliveryContent::Notification(_) => "job.notification",
-        meerkat::JobDeliveryContent::Terminal(_) => "job.terminal",
-    };
-    let content_value = match content {
-        meerkat::JobDeliveryContent::Notification(notification) => json!({
-            "kind": "notification",
-            "notification": notification,
-        }),
-        meerkat::JobDeliveryContent::Terminal(result) => json!({
-            "kind": "terminal",
-            "result": result,
-        }),
-    };
-    let correlation_id = uuid::Uuid::parse_str(interaction_lineage_id.as_str())
-        .ok()
-        .map(meerkat_runtime::CorrelationId::from_uuid);
-    let idempotency_key = format!(
-        "job:{job_id}:{delivery_sequence}:{}",
-        subscription.subscription_id()
-    );
-    meerkat_runtime::Input::ExternalEvent(meerkat_runtime::ExternalEventInput {
-        objective_id: None,
-        header: meerkat_runtime::InputHeader {
-            ingress_context: None,
-            retained_resume: None,
-            authority_association: None,
-            id: meerkat_core::lifecycle::InputId::new(),
-            timestamp: chrono::Utc::now(),
-            source: meerkat_runtime::InputOrigin::External {
-                source_name: event_type.to_string(),
-            },
-            durability: meerkat_runtime::InputDurability::Durable,
-            visibility: meerkat_runtime::InputVisibility::default(),
-            idempotency_key: Some(meerkat_runtime::IdempotencyKey::new(idempotency_key)),
-            supersession_key: None,
-            correlation_id,
-        },
-        event_type: event_type.to_string(),
-        payload: json!({
-            "job_id": job_id.to_string(),
-            "delivery_sequence": delivery_sequence,
-            "content": content_value,
-        }),
-        blocks: None,
-        handling_mode,
-        render_metadata: None,
-    })
-}
-
-fn callback_job_delivery_text(
-    job_id: &meerkat::JobId,
-    content: &meerkat::JobDeliveryContent,
-) -> String {
-    match content {
-        meerkat::JobDeliveryContent::Notification(notification) => format!(
-            "Detached job {job_id}: {}\n\n{}",
-            notification.title(),
-            notification.body()
-        ),
-        meerkat::JobDeliveryContent::Terminal(result) => {
-            format!("Detached job {job_id} reached terminal state: {result:?}")
-        }
     }
 }
 
@@ -14138,7 +13746,16 @@ external_addressable = true
         inner_builder.default_detached_job_store = callback_job_store.clone();
         // One inbox for every delivery consumer in this gateway, so each sees
         // the others' commits ([`GatewayRuntimeDelivery`]).
-        let runtime_delivery = GatewayRuntimeDelivery::new(Arc::clone(&runtime_store));
+        let runtime_delivery = GatewayRuntimeDelivery::new(
+            Arc::clone(&runtime_store),
+            callback_job_store.clone().unwrap_or_else(|| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    "persistent launch did not resolve its detached job store".to_string(),
+                )
+            }),
+        );
         if let Some(job_store) = callback_job_store.as_ref() {
             // meerkat 0.8.22 (F4): the projector slot is a Clone value, not a
             // shared Arc - per-session builds rebind its realm authority via
@@ -14288,11 +13905,6 @@ external_addressable = true
                     ),
                 )
             });
-        if let Some(detached_jobs) = detached_jobs.as_ref() {
-            let delivery_service: Arc<dyn meerkat_mob::MobSessionService> =
-                concrete_service.clone();
-            detached_jobs.attach_delivery_service(delivery_service, Arc::clone(&adapter));
-        }
         let schedule_host_inputs = schedule_tools.map(|tools| {
             (
                 tools.service,
@@ -14359,6 +13971,7 @@ external_addressable = true
             // Agent mob tools + the schedule host's mob authority (HomeCore
             // 0.7.26 last-link fix): without this, agent-authored schedules
             // can't rewrite to mob-member targets or deliver them.
+            .with_runtime_delivery(runtime_delivery.composition.clone())
             .with_agent_mob_tools(agent_mob_tools_slot)
             .unwrap_or_else(|error| {
                 fail_init(
@@ -14518,6 +14131,11 @@ external_addressable = true
         );
         let process_local_session_store: Arc<dyn meerkat::SessionStore> =
             Arc::new(meerkat::MemoryStore::new());
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let runtime_delivery =
+            GatewayRuntimeDelivery::new(Arc::clone(&runtime_store), Arc::clone(&job_store));
+        let agent_mob_tools_slot = Arc::new(std::sync::RwLock::new(None));
         let mut factory = AgentFactory::new(agent_workspace)
             .builtins(false)
             .shell(shell)
@@ -14537,6 +14155,10 @@ external_addressable = true
             process_local_session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
+        inner_builder.default_detached_job_store = Some(Arc::clone(&job_store));
+        inner_builder.default_mob_tools = Arc::clone(&agent_mob_tools_slot);
+        inner_builder.default_shell_job_delivery_projector =
+            Some(runtime_delivery.shell_job_projector(Arc::clone(&job_store)));
         // No-persistent_state launches default to a memory-backed
         // workgraph (tools stay profile-gated, so nothing changes for
         // members that do not opt in); an explicit directory gets the
@@ -14665,6 +14287,10 @@ external_addressable = true
                     meerkat_store::StoreAdapter::new(session_store.clone()),
                 ));
                 inner_builder.default_blob_store = Some(blob_store.clone());
+                inner_builder.default_detached_job_store = Some(Arc::clone(&job_store));
+                inner_builder.default_mob_tools = Arc::clone(&agent_mob_tools_slot);
+                inner_builder.default_shell_job_delivery_projector =
+                    Some(runtime_delivery.shell_job_projector(Arc::clone(&job_store)));
                 if let Some(service) = workgraph_service.as_ref() {
                     workgraph_admission_slots.push(
                         meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
@@ -14744,6 +14370,15 @@ external_addressable = true
                 )
             })
             .with_workgraph_service(workgraph_service.clone())
+            .with_runtime_delivery(runtime_delivery.composition.clone())
+            .with_agent_mob_tools(agent_mob_tools_slot)
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to install gateway agent mob tools: {error}"),
+                )
+            })
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -14799,8 +14434,8 @@ external_addressable = true
             ephemeral_workgraph_slot,
             meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
                 "jobs",
-                "disabled",
-                "semantic detached admission is unavailable in ephemeral gateway mode",
+                "MemoryDetachedJobStore",
+                "declared by the ephemeral launch mode",
             ),
             gateway_event_log_slot(&gateway_options),
         ];

@@ -141,6 +141,7 @@ pub enum UnifiedRuntimeBuilderError {
     },
     /// The composition's runtime machine could not be built or acquired.
     Runtime(meerkat_runtime::RuntimeDriverError),
+    Delivery(crate::mob_handle_runtime::MobRuntimeDeliveryError),
 }
 
 impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
@@ -182,6 +183,7 @@ impl Display for UnifiedRuntimeBuilderError {
                  it from the store your wrapper wraps)"
             ),
             Self::Runtime(err) => write!(f, "{err}"),
+            Self::Delivery(err) => write!(f, "{err}"),
         }
     }
 }
