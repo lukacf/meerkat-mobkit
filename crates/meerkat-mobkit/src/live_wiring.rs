@@ -5389,7 +5389,8 @@ mod tests {
             Arc::new(meerkat::MemoryStore::new()),
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
             Arc::new(meerkat_store::MemoryBlobStore::new()),
-        );
+        )
+        .expect("post-close fixture persistence");
         let temp = tempfile::tempdir().expect("post-close fixture state");
         let factory = AgentFactory::new(temp.path()).builtins(false);
         let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
@@ -6508,7 +6509,8 @@ mod tests {
             Arc::new(meerkat::MemoryStore::new()),
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
             Arc::new(meerkat_store::MemoryBlobStore::new()),
-        );
+        )
+        .expect("owner-loss fixture persistence");
         let temp = tempfile::tempdir().expect("owner-loss fixture state");
         let factory = AgentFactory::new(temp.path()).builtins(false);
         let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
