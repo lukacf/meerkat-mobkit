@@ -3797,8 +3797,9 @@ mod tests {
     /// session envelope (v2) held by a continuity store must import exactly
     /// once on the adapter load path - the seam every external whole-blob
     /// store traverses - and adopt durably, so the second load takes the
-    /// already-current path. The fixture is a frozen 0.8.10-written document
-    /// (tests/fixtures/README.md); current code cannot and must not mint it.
+    /// already-current path. The fixture keeps the frozen 0.8.10 envelope
+    /// shape with synthetic content (tests/fixtures/README.md); current code
+    /// cannot and must not mint it.
     #[tokio::test]
     async fn released_v2_snapshot_imports_once_on_adapter_load() {
         const RELEASED: &[u8] =

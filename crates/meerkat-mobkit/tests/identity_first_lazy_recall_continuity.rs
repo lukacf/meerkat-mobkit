@@ -1338,7 +1338,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
     // prompt. Resume authors nothing (the bridge clears the prompt
     // override), so its presence in post-mint request bytes proves the
     // imported document reached the model's working context.
-    const RELEASED_MARKER: &str = "OB3 Summary Agent";
+    const RELEASED_MARKER: &str = "Example Review Agent";
     let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
     let released_session_id =
         meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))

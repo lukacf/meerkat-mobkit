@@ -4,10 +4,17 @@ fixture re-synthesized by the pinned writer silently passes exactly the
 writer-drift bugs these tests exist to catch (the 0.8.11 fleet-import
 regression shipped past a synthetic 26-chain test for that reason).
 
-- v0_8_10_released_session.json - an exact meerkat 0.8.10-written session
-  envelope (v2), copied from meerkat-core/tests/fixtures/
-  v0_8_10_ob3_recovery_migration_session.json at pin 2bd60a1a. Used by the
-  adapter import-on-load regression.
+- v0_8_10_released_session.json - SYNTHETIC: a meerkat 0.8.10 (producer
+  version) system-only session envelope, byte-identical to Meerkat core's
+  synthetic recovery-migration fixture. It keeps the released envelope
+  shape: version 2, exactly one system message, no transcript-history key,
+  the seven released metadata keys, a legacy recovery_migration checkpoint
+  stamp (schema 1, generation 0, revision 6) and the four usage token keys.
+  Its system prompt, roughly 12 KB build state, tool catalogue, labels and
+  identifiers are synthetic; the prompt carries the marker phrase
+  `Example Review Agent`. Excluded from the published crate. Used by the
+  adapter import-on-load regression and the released-v2 import leg of
+  identity_first_lazy_recall_continuity.rs.
 
 - v0_8_10_zero_rewrite_supervisor_session.json - a released-minted 0.8.10
   mob-supervisor snapshot envelope (zero-rewrite transcript graph: one
