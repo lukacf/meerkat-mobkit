@@ -252,7 +252,7 @@ mod completion_delivery {
     use super::*;
     use crate::mob_handle_runtime::{MobBootstrapOptions, MobRuntime};
 
-    const WAIT: Duration = Duration::from_secs(60);
+    const WAIT: Duration = Duration::from_mins(1);
     const CHILD_TASK: &str = "MOBKIT-HELD-FORK-TASK";
     const CHILD_REPLY: &str = "MOBKIT-FORK-RESULT";
     const COUNCIL_SUMMARY: &str = "MOBKIT-COUNCIL-SUMMARY";

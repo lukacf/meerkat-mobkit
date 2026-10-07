@@ -2469,6 +2469,10 @@ type InstalledAgentMobTools = (
 
 /// Install the agent mob tools with no child policy yet; the spec applies its
 /// final child policy at bootstrap (see `MobBootstrapSpec::apply_agent_mob_child_policy`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "composition passes each host-owned service and delivery handle explicitly"
+)]
 fn install_agent_mob_tools(
     definition: &MobDefinition,
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
@@ -10282,8 +10286,8 @@ pub enum MobRuntimeError {
     /// Startup acquired a handle but the native delivery owner refused. The
     /// full stop outcome states which members remain unsettled or unholdable.
     DeliveryStartup {
-        error: MobRuntimeDeliveryError,
-        stop: Result<meerkat_mob::MobStopReport, MobError>,
+        error: Box<MobRuntimeDeliveryError>,
+        stop: Box<Result<meerkat_mob::MobStopReport, MobError>>,
     },
 }
 
@@ -11130,8 +11134,11 @@ impl MobRuntime {
             ) {
                 Ok(owner) => Some(owner),
                 Err(error) => {
-                    let stop = handle.stop().await;
-                    return Err(MobRuntimeError::DeliveryStartup { error, stop });
+                    let stop = Box::new(handle.stop().await);
+                    return Err(MobRuntimeError::DeliveryStartup {
+                        error: Box::new(error),
+                        stop,
+                    });
                 }
             },
             None => None,

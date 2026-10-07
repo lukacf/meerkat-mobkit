@@ -187,7 +187,7 @@ impl MobRuntimeDelivery {
     ) -> Result<(), MobRuntimeDeliveryError> {
         match replaced {
             Some(generation) => {
-                state.rebind_continuations(generation, self.inbox(), &self.bindings)?
+                state.rebind_continuations(generation, self.inbox(), &self.bindings)?;
             }
             None => state.bind_continuations(self.inbox(), &self.bindings)?,
         }
