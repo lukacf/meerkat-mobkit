@@ -552,3 +552,39 @@ async fn a_removed_or_unknown_tool_is_refused_at_resolution_and_dispatch() {
         Err(meerkat_core::ToolExecutionResolutionError::NotFound { .. })
     ));
 }
+
+/// Only the identity dispatcher's own witness can refuse here: the SAME
+/// non-witnessing dispatcher is republished, so the serving dispatcher (with
+/// no owner witness of its own) accepts any plan, and the plan is dispatched
+/// on this dispatcher directly, without a root fence.
+#[tokio::test]
+async fn the_identity_witness_alone_refuses_a_plan_from_an_earlier_publication() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let scope = Scope::new("customize-1", vec!["lookup"]);
+    let entry = registry.publish(&id, Some(scope.clone()));
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+    let resolution = resolution();
+    let stale = entry
+        .resolve_execution_plan(call("lookup", &args), &context, &resolution)
+        .unwrap();
+
+    // The very same dispatcher, published again.
+    registry.publish(&id, Some(scope.clone()));
+    let refused = entry
+        .dispatch_resolved_with_context(call("lookup", &args), &context, &stale)
+        .await
+        .expect_err("a plan resolved against the earlier publication");
+    assert!(is_owner_changed(&refused), "{refused:?}");
+    assert_eq!(scope.dispatched.load(Ordering::SeqCst), 0);
+
+    let fresh = entry
+        .resolve_execution_plan(call("lookup", &args), &context, &resolution)
+        .unwrap();
+    let outcome = entry
+        .dispatch_resolved_with_context(call("lookup", &args), &context, &fresh)
+        .await
+        .expect("a plan of the current publication");
+    assert_eq!(served_by(&outcome), "customize-1:lookup");
+}
