@@ -641,32 +641,62 @@ mod tests {
 
     #[tokio::test]
     async fn restoring_one_mob_never_applies_or_settles_a_foreign_member_row() {
+        struct ForeignMemberResolver {
+            owner: meerkat::ContinuationOwner,
+            address: meerkat_runtime::LogicalRuntimeId,
+        }
+
+        #[async_trait::async_trait]
+        impl meerkat::ContinuationAddressResolver for ForeignMemberResolver {
+            async fn current_address(
+                &self,
+                owner: &meerkat::ContinuationOwner,
+            ) -> Result<Option<meerkat_runtime::LogicalRuntimeId>, String> {
+                if owner == &self.owner {
+                    Ok(Some(self.address.clone()))
+                } else {
+                    Err("unexpected fixture owner".to_string())
+                }
+            }
+
+            async fn resolve_address(
+                &self,
+                address: &meerkat_runtime::LogicalRuntimeId,
+            ) -> Result<meerkat::AddressResolution, String> {
+                if address == &self.address {
+                    Ok(meerkat::AddressResolution::NotServed)
+                } else {
+                    Err("unexpected fixture address".to_string())
+                }
+            }
+        }
+
         let dir = tempfile::tempdir().expect("temp");
         let fixture = memory_fixture(dir.path());
         let spec = fixture
             .spec
             .with_agent_mob_tools(Arc::new(std::sync::RwLock::new(None)))
             .expect("tools");
+        let owner = meerkat::ContinuationOwner::Member {
+            mob_id: "foreign-mob".to_string(),
+            identity: "foreign-member".to_string(),
+        };
         let address = meerkat::member_delivery_address("foreign-mob", "foreign-member", 1)
             .expect("foreign address");
-        let id = meerkat_runtime::RuntimeDeliveryId::new("foreign-completion").expect("id");
-        fixture
-            .delivery
-            .inbox()
-            .submit(
-                &address,
-                meerkat_runtime::RuntimeDeliverySubmission::new(
-                    id.clone(),
-                    meerkat_runtime::RuntimeDeliveryKind::Continuation,
-                    "host:mobkit-test",
-                    1,
-                    "foreign-key",
-                    serde_json::to_vec(&completion("foreign-key")).expect("payload"),
-                )
-                .expect("submission"),
-            )
+        let continuations = meerkat::ContinuationOwnerService::new(
+            fixture.delivery.inbox(),
+            Arc::new(ForeignMemberResolver {
+                owner: owner.clone(),
+                address: address.clone(),
+            }),
+            Arc::clone(&fixture.machine),
+        );
+        let receipt = continuations
+            .submit(&owner, completion("foreign-key"), 1)
             .await
-            .expect("pending row");
+            .expect("commit native foreign continuation");
+        let id = meerkat_runtime::RuntimeDeliveryId::new(receipt.delivery_id)
+            .expect("native receipt delivery id");
         let runtime = MobRuntime::bootstrap(spec).await.expect("local root boot");
         let pass = first_pass(&fixture.delivery).await;
         assert_eq!(pass.applied, 0, "{pass:?}");
@@ -689,6 +719,16 @@ mod tests {
                 .expect("admission")
                 .is_none()
         );
+        assert!(matches!(
+            continuations
+                .continuation_status(
+                    &owner,
+                    &meerkat::ContinuationKey::new("foreign-key").expect("key"),
+                )
+                .await
+                .expect("foreign continuation status"),
+            meerkat::ContinuationStatus::Pending { admitted: None, .. }
+        ));
         runtime.handle().shutdown().await.expect("shutdown");
     }
 }
