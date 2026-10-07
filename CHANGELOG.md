@@ -1026,6 +1026,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Identity members: tools published by `customize_build` now resolve their
+  execution plan through the dispatcher that serves them. The identity
+  dispatcher used Meerkat's default resolution from its own catalog, so a
+  published tool set composed through a dynamic composite never added the
+  composite's owner witness, and the composite then refused the forwarded
+  plan: the call failed as `tool_unavailable` ("tool execution owner changed
+  after plan resolution"). The serving dispatcher's plan is now kept whole
+  (its owner witnesses, an argument-chosen mode and the deadline chain),
+  validation goes to the same dispatcher, and the identity dispatcher adds
+  its own witness: a plan resolved before a later publication, even one
+  with identical tool metadata, is refused as `ExecutionOwnerChanged`, and a
+  plan for a tool the current publication no longer advertises is refused
+  as not found.
+
 - Gating: gate IDs are no longer reissued after a restart. A runtime
   restarted without restored gating state minted IDs from the start again,
   so a staged memory promotion keyed by a pending ID from before the

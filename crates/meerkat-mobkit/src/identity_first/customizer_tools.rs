@@ -32,12 +32,15 @@
 //! roster identity's member id does get that identity's current tools.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use meerkat_core::types::{ToolCallView, ToolDef};
 use meerkat_core::{
-    AgentToolDispatcher, ToolCatalogCapabilities, ToolCatalogEntry, ToolDispatchContext,
-    ToolDispatchOutcome, ToolError,
+    AgentToolDispatcher, EphemeralToolBindingFingerprint, ResolvedToolExecutionPlan,
+    ToolCatalogCapabilities, ToolCatalogEntry, ToolDispatchContext, ToolDispatchOutcome, ToolError,
+    ToolExecutionOwnerWitness, ToolExecutionResolutionContext, ToolExecutionResolutionError,
+    ToolUnavailableReason,
 };
 use meerkat_mob::{
     AgentIdentity as MobAgentIdentity, MobError, SpawnCustomizationContext, SpawnMemberCustomizer,
@@ -61,10 +64,22 @@ struct Published {
 /// `customize_build` result. A call to a tool the current publication does
 /// not advertise is refused typed (`ToolError::NotFound`), never routed to a
 /// dispatcher (or handler scope) from an earlier publication.
+///
+/// Execution plans follow the same rule. A plan is resolved by the dispatcher
+/// that serves the tool (so its own owner fencing and its argument-sensitive
+/// mode and deadlines are kept), then witnessed against this publication; a
+/// later publication, even with identical tool metadata, refuses that plan
+/// (`ExecutionOwnerChanged`) and the caller resolves again.
 pub struct IdentityCustomizerTools {
     member_id: MobAgentIdentity,
     current: RwLock<Published>,
+    /// Distinguishes this dispatcher's plan witnesses from every other
+    /// execution authority in the process.
+    execution_authority_id: u64,
 }
+
+/// Process-wide source of execution authority ids for identity dispatchers.
+static NEXT_EXECUTION_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 impl IdentityCustomizerTools {
     fn new(member_id: MobAgentIdentity) -> Self {
@@ -74,6 +89,7 @@ impl IdentityCustomizerTools {
                 generation: 0,
                 dispatcher: None,
             }),
+            execution_authority_id: NEXT_EXECUTION_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -113,6 +129,42 @@ impl IdentityCustomizerTools {
             .iter()
             .any(|tool| tool.name.as_ref() == tool_name)
             .then(|| Arc::clone(dispatcher))
+    }
+
+    /// The binding epoch of `tool_name` in `published`: the publication
+    /// generation over the serving dispatcher's own epoch.
+    fn binding_epoch_in(published: &Published, tool_name: &str) -> u64 {
+        let inner = Self::owner_for(published, tool_name)
+            .map_or(0, |owner| owner.execution_binding_epoch(tool_name));
+        (published.generation << 32) | (inner & 0xFFFF_FFFF)
+    }
+
+    /// The binding fingerprint of `tool_name` in `published`: the serving
+    /// dispatcher's catalog entry under this publication's epoch, with the
+    /// serving dispatcher's own fingerprint as its dependency.
+    fn binding_fingerprint_in(
+        published: &Published,
+        tool_name: &str,
+    ) -> Result<EphemeralToolBindingFingerprint, ToolExecutionResolutionError> {
+        let not_found = || ToolExecutionResolutionError::NotFound {
+            tool_name: tool_name.to_string(),
+        };
+        let owner = Self::owner_for(published, tool_name).ok_or_else(not_found)?;
+        let catalog = owner.tool_catalog();
+        let entry = catalog
+            .iter()
+            .find(|entry| entry.tool.name == tool_name)
+            .ok_or_else(not_found)?;
+        let child = owner.execution_binding_fingerprint(tool_name)?;
+        Ok(
+            meerkat_core::ephemeral_tool_catalog_binding_fingerprint(entry)
+                .with_live_authority(0, Self::binding_epoch_in(published, tool_name))
+                .with_dependency(&child),
+        )
+    }
+
+    fn execution_authority_key(&self) -> String {
+        format!("identity-customizer-tools:{}", self.execution_authority_id)
     }
 
     fn not_advertised(&self, name: &str) -> ToolError {
@@ -174,10 +226,66 @@ impl AgentToolDispatcher for IdentityCustomizerTools {
     /// tool names), so a binding fingerprinted before it is never mistaken
     /// for the current one.
     fn execution_binding_epoch(&self, tool_name: &str) -> u64 {
+        Self::binding_epoch_in(&self.snapshot(), tool_name)
+    }
+
+    fn execution_binding_fingerprint(
+        &self,
+        tool_name: &str,
+    ) -> Result<EphemeralToolBindingFingerprint, ToolExecutionResolutionError> {
+        Self::binding_fingerprint_in(&self.snapshot(), tool_name)
+    }
+
+    /// Resolve through the dispatcher that serves the tool, then witness the
+    /// publication it was resolved against. The serving dispatcher's plan is
+    /// kept whole: its own owner witnesses, its mode and its deadlines.
+    fn resolve_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        dispatch_context: &ToolDispatchContext,
+        resolution_context: &ToolExecutionResolutionContext,
+    ) -> Result<ResolvedToolExecutionPlan, ToolExecutionResolutionError> {
         let published = self.snapshot();
-        let inner = Self::owner_for(&published, tool_name)
-            .map_or(0, |owner| owner.execution_binding_epoch(tool_name));
-        (published.generation << 32) | (inner & 0xFFFF_FFFF)
+        let Some(owner) = Self::owner_for(&published, call.name) else {
+            let _ = self.not_advertised(call.name);
+            return Err(ToolExecutionResolutionError::NotFound {
+                tool_name: call.name.to_string(),
+            });
+        };
+        let before = Self::binding_fingerprint_in(&published, call.name)?;
+        let plan = owner.resolve_execution_plan(call, dispatch_context, resolution_context)?;
+        // A publication (or an owner rebinding) during resolution: the plan
+        // may belong to neither binding.
+        let current = self.snapshot();
+        if current.generation != published.generation
+            || Self::binding_fingerprint_in(&current, call.name).as_ref() != Ok(&before)
+        {
+            return Err(ToolExecutionResolutionError::Unavailable {
+                tool_name: call.name.to_string(),
+                reason: ToolUnavailableReason::ExecutionOwnerChanged,
+            });
+        }
+        let witness = ToolExecutionOwnerWitness::new(
+            self.execution_authority_key(),
+            published.generation.to_string(),
+            before,
+        )?;
+        plan.with_owner_witness(witness)
+    }
+
+    /// Validate against the dispatcher that serves the tool now.
+    fn validate_resolved_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        resolution_context: &ToolExecutionResolutionContext,
+        plan: &ResolvedToolExecutionPlan,
+    ) -> Result<(), ToolExecutionResolutionError> {
+        match Self::owner_for(&self.snapshot(), call.name) {
+            Some(owner) => owner.validate_resolved_execution_plan(call, resolution_context, plan),
+            None => Err(ToolExecutionResolutionError::NotFound {
+                tool_name: call.name.to_string(),
+            }),
+        }
     }
 
     fn pending_catalog_sources(&self) -> Arc<[String]> {
@@ -209,16 +317,29 @@ impl AgentToolDispatcher for IdentityCustomizerTools {
         &self,
         call: ToolCallView<'_>,
         context: &ToolDispatchContext,
-        plan: &meerkat_core::ResolvedToolExecutionPlan,
+        plan: &ResolvedToolExecutionPlan,
     ) -> Result<ToolDispatchOutcome, ToolError> {
-        match Self::owner_for(&self.snapshot(), call.name) {
-            Some(owner) => {
-                owner
-                    .dispatch_resolved_with_context(call, context, plan)
-                    .await
-            }
-            None => Err(self.not_advertised(call.name)),
+        let published = self.snapshot();
+        let Some(owner) = Self::owner_for(&published, call.name) else {
+            return Err(self.not_advertised(call.name));
+        };
+        // Only a plan resolved against THIS publication: an earlier one, even
+        // with identical tool metadata, may name another handler scope.
+        let owner_changed =
+            || ToolError::unavailable(call.name, ToolUnavailableReason::ExecutionOwnerChanged);
+        let witness = plan
+            .owner_witness(&self.execution_authority_key())
+            .ok_or_else(owner_changed)?;
+        let current =
+            Self::binding_fingerprint_in(&published, call.name).map_err(|_| owner_changed())?;
+        if witness.owner_key() != published.generation.to_string()
+            || witness.binding_fingerprint() != &current
+        {
+            return Err(owner_changed());
         }
+        owner
+            .dispatch_resolved_with_context(call, context, plan)
+            .await
     }
 }
 
