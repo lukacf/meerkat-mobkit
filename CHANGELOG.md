@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `GatingDecideError` gains `IdsUnavailable(GatingIdUnavailable)`, and
+  `GatingStateSnapshot` gains `owner_epoch: Option<String>` (see Fixed).
+  Exhaustive matches and struct literals must handle the new variant and
+  field.
 - `StewardStore` gains the required method `review_quarantined` (see Added).
   Implementors must add it; a store without a quarantine queue can return
   `QuarantineReviewError::Store(AgentMemoryError::Unsupported(..))`.
@@ -1022,6 +1026,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Gating: gate IDs are no longer reissued after a restart. A runtime
+  restarted without restored gating state minted IDs from the start again,
+  so a staged memory promotion keyed by a pending ID from before the
+  restart could be committed, discarded or rekeyed by a decision on an
+  unrelated gate that reused the ID; a newly staged promotion whose ID
+  collided with an old mapping also lost its own stage while the old
+  mapping stayed. Each runtime now mints action, pending and audit IDs as
+  `gate-<kind>-v2-<epoch>-<sequence>` under its own random epoch, so new IDs
+  never match earlier, restored or legacy IDs. Treat gate IDs as opaque.
+  Exhausting the sequence, or a missing epoch when the platform's entropy
+  source failed, refuses the evaluation (`safe_draft` with
+  `gating_sequence_exhausted` or `gating_identity_unavailable`) or the
+  decision (`GatingDecideError::IdsUnavailable`) instead of reusing an ID.
+  Over JSON-RPC and the console, that decision refusal is an internal
+  error (`-32603`) with `data.error = "gating_ids_unavailable"` and the
+  reason, not invalid params. Gating snapshots export as version 2 with
+  the owner's epoch; version 1 snapshots still restore, and restored IDs
+  are kept as they are. The agent memory steward no longer lets a
+  decision under a pre-epoch sequential pending ID (`gate-pending-NNNNNN`,
+  including a gate restored from a version 1 snapshot) commit, discard or
+  rekey a staged promotion, because such an ID cannot prove which
+  promotion it was about; those promotions keep their expiry instead.
 - Console: clicking a tool or other control at the bottom of a transcript
   no longer stops the shared conversation pane following the live edge. A
   pointer action can bring its target into view before the press, and the

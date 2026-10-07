@@ -38,9 +38,10 @@ pub(crate) mod workgraph_methods;
 
 pub use console_ingress::handle_console_ingress_json;
 
+pub(crate) use gating_methods::gating_ids_unavailable_rpc_error;
 use gating_methods::{
-    GatingParamsError, parse_gating_audit_params, parse_gating_decide_params,
-    parse_gating_evaluate_params, parse_gating_pending_params,
+    GatingParamsError, gating_decide_rpc_error, parse_gating_audit_params,
+    parse_gating_decide_params, parse_gating_evaluate_params, parse_gating_pending_params,
 };
 use memory_methods::{
     MemoryParamsError, parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
@@ -1152,11 +1153,7 @@ pub fn handle_mobkit_rpc_json(
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {}", err.message()),
-                        data: None,
-                    }),
+                    error: Some(gating_decide_rpc_error(err)),
                 },
             }
         }
@@ -3145,11 +3142,7 @@ async fn handle_unified_rpc_json_inner(
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {}", err.message()),
-                        data: None,
-                    }),
+                    error: Some(gating_decide_rpc_error(err)),
                 },
             }
         }

@@ -921,7 +921,10 @@ fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decision
     restored
         .restore_gating_state(snapshot.clone())
         .expect("pristine restore");
-    assert_eq!(restored.gating_state_snapshot(), snapshot);
+    let restored_snapshot = restored.gating_state_snapshot();
+    assert_eq!(restored_snapshot.pending, snapshot.pending);
+    assert_eq!(restored_snapshot.audit, snapshot.audit);
+    assert_ne!(restored_snapshot.owner_epoch, snapshot.owner_epoch);
     let decision = restored
         .decide_gating_action(GatingDecideRequest {
             pending_id: original_id.clone(),
@@ -957,6 +960,182 @@ fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decision
         .pending_id
         .expect("later request");
     assert_ne!(later_id, successor.pending_id);
+}
+
+/// Gating IDs key durable state outside the owner (staged memory
+/// promotions). An owner restarted without restored gating state must not
+/// reissue any ID an earlier process minted, nor a legacy sequential ID.
+#[test]
+fn restarted_gating_owner_never_reissues_ids() {
+    use meerkat_mobkit::runtime::GatingEvaluateRequest;
+    let request = || {
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Deploy", "actor_id": "worker", "risk_tier": "r3",
+        }))
+        .expect("request")
+    };
+    let ids = |runtime: &mut meerkat_mobkit::MobkitRuntimeHandle| {
+        let result = runtime.evaluate_gating_action(request());
+        let pending_id = result.pending_id.expect("r3 pends");
+        let audit_id = runtime.gating_audit_entries(1).remove(0).audit_id;
+        vec![result.action_id, pending_id, audit_id]
+    };
+    let before_restart = ids(&mut runtime_for_gating());
+    let after_restart = ids(&mut runtime_for_gating());
+    for id in &after_restart {
+        assert!(
+            !before_restart.contains(id),
+            "restarted owner reissued {id} (before restart: {before_restart:?})"
+        );
+        for legacy in [
+            "gate-action-000000",
+            "gate-pending-000001",
+            "gate-audit-000002",
+        ] {
+            assert_ne!(id, legacy, "fresh owner minted a legacy sequential id");
+        }
+    }
+}
+
+fn gating_snapshot_ids(snapshot: &meerkat_mobkit::runtime::GatingStateSnapshot) -> Vec<String> {
+    let mut ids = Vec::new();
+    for entry in &snapshot.pending {
+        ids.push(entry.pending_id.clone());
+        ids.push(entry.action_id.clone());
+    }
+    for entry in &snapshot.audit {
+        ids.push(entry.audit_id.clone());
+        ids.push(entry.action_id.clone());
+        ids.extend(entry.pending_id.clone());
+    }
+    ids
+}
+
+/// Restored IDs stay exactly as they were; the restoring owner mints under its
+/// own fresh epoch, so new IDs cannot alias restored ones.
+#[test]
+fn restored_owner_keeps_restored_ids_and_mints_under_its_own_epoch() {
+    use meerkat_mobkit::runtime::GatingEvaluateRequest;
+    let request = || {
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Deploy", "actor_id": "worker", "risk_tier": "r3",
+        }))
+        .expect("request")
+    };
+    let mut source = runtime_for_gating();
+    source.evaluate_gating_action(request());
+    let snapshot = source.gating_state_snapshot();
+    let source_epoch = snapshot.owner_epoch.clone().expect("source epoch");
+
+    let mut restored = runtime_for_gating();
+    restored
+        .restore_gating_state(snapshot.clone())
+        .expect("restore");
+    let restored_ids = gating_snapshot_ids(&snapshot);
+    let result = restored.evaluate_gating_action(request());
+    let pending_id = result.pending_id.expect("new gate pends");
+    let audit_id = restored.gating_audit_entries(1).remove(0).audit_id;
+    let own_epoch = restored
+        .gating_state_snapshot()
+        .owner_epoch
+        .expect("own epoch");
+    assert_ne!(own_epoch, source_epoch);
+    for id in [&result.action_id, &pending_id, &audit_id] {
+        assert!(!restored_ids.contains(id), "{id} aliases a restored id");
+        assert!(
+            id.contains(&own_epoch) && !id.contains(&source_epoch),
+            "{id}"
+        );
+    }
+
+    // The mixed history validates again in a third owner.
+    let mut third = runtime_for_gating();
+    third
+        .restore_gating_state(restored.gating_state_snapshot())
+        .expect("mixed epochs restore");
+}
+
+/// Version 1 snapshots (sequential IDs) still restore. Version 2 snapshots may
+/// mix legacy IDs, earlier owners' epoch IDs and the exporting owner's IDs.
+/// Anything else is refused.
+#[test]
+fn gating_snapshot_accepts_legacy_and_epoch_ids_and_rejects_malformed_ones() {
+    use meerkat_mobkit::runtime::{
+        GatingEvaluateRequest, GatingStateRestoreError, GatingStateSnapshot,
+    };
+    let mut source = runtime_for_gating();
+    source.evaluate_gating_action(
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Deploy", "actor_id": "worker", "risk_tier": "r3",
+        }))
+        .expect("request"),
+    );
+    let current = source.gating_state_snapshot();
+    assert_eq!(current.version, 2);
+    let epoch = current.owner_epoch.clone().expect("owner epoch");
+
+    let mut v1_json = serde_json::to_value(&current).expect("snapshot json");
+    v1_json["version"] = json!(1);
+    v1_json
+        .as_object_mut()
+        .expect("object")
+        .remove("owner_epoch");
+    v1_json["next_sequence"] = json!(3);
+    v1_json["pending"][0]["action_id"] = json!("gate-action-000000");
+    v1_json["pending"][0]["pending_id"] = json!("gate-pending-000001");
+    v1_json["audit"][0]["action_id"] = json!("gate-action-000000");
+    v1_json["audit"][0]["pending_id"] = json!("gate-pending-000001");
+    v1_json["audit"][0]["audit_id"] = json!("gate-audit-000002");
+    let v1: GatingStateSnapshot = serde_json::from_value(v1_json.clone()).expect("v1 parses");
+    runtime_for_gating()
+        .restore_gating_state(v1.clone())
+        .expect("released version 1 snapshot restores");
+
+    let mut mixed = current.clone();
+    mixed.pending.push(v1.pending[0].clone());
+    mixed.audit[0].audit_id = format!("gate-audit-v2-{}-000007", "0".repeat(32));
+    runtime_for_gating()
+        .restore_gating_state(mixed)
+        .expect("legacy, earlier-owner and own ids restore together");
+
+    let mut invalid = Vec::new();
+    let mut v1_with_epoch_id = v1_json.clone();
+    v1_with_epoch_id["pending"][0]["pending_id"] = json!(current.pending[0].pending_id);
+    invalid.push(serde_json::from_value::<GatingStateSnapshot>(v1_with_epoch_id).expect("parse"));
+    let mut v1_with_owner = v1.clone();
+    v1_with_owner.owner_epoch = Some(epoch.clone());
+    invalid.push(v1_with_owner);
+    for pending_id in [
+        format!("gate-pending-v2-{epoch}-{:06}", current.next_sequence),
+        format!("gate-pending-v3-{epoch}-000001"),
+        "gate-pending-v2-XYZ-000001".to_string(),
+        format!("gate-pending-v2-{}-000001", epoch.to_uppercase()),
+        format!("gate-pending-v2-{}-000001", &epoch[..31]),
+        format!("gate-pending-v2-{epoch}-1"),
+        format!("gate-action-v2-{epoch}-000001"),
+    ] {
+        let mut snapshot = current.clone();
+        snapshot.pending[0].pending_id = pending_id;
+        invalid.push(snapshot);
+    }
+    let mut bad_owner = current.clone();
+    bad_owner.owner_epoch = Some("not-hex".to_string());
+    invalid.push(bad_owner);
+    for snapshot in invalid {
+        assert!(
+            matches!(
+                runtime_for_gating().restore_gating_state(snapshot.clone()),
+                Err(GatingStateRestoreError::InvalidSnapshot(_))
+            ),
+            "accepted {snapshot:?}"
+        );
+    }
+    let mut future = current;
+    future.version = 3;
+    assert_eq!(
+        runtime_for_gating().restore_gating_state(future),
+        Err(GatingStateRestoreError::UnsupportedVersion(3))
+    );
 }
 
 #[test]
@@ -1091,7 +1270,9 @@ fn gating_empty_optional_origin_fields_preserve_identity_authority() {
         restored
             .restore_gating_state(snapshot.clone())
             .expect("normalized snapshot");
-        assert_eq!(restored.gating_state_snapshot(), snapshot);
+        let restored_snapshot = restored.gating_state_snapshot();
+        assert_eq!(restored_snapshot.pending, snapshot.pending);
+        assert_eq!(restored_snapshot.audit, snapshot.audit);
     }
 }
 

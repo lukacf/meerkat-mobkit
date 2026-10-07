@@ -3338,6 +3338,19 @@ impl StewardEngine {
     /// promotions. Called by [`PromotionGateResolver`]; unknown pending
     /// ids are not ours and are ignored.
     pub async fn resolve_gating_notice(&self, notice: GatingResolutionNotice) {
+        // A pre-epoch sequential pending ID was reissued by every restart, so
+        // a decision under one (including a gate restored from such a
+        // snapshot) cannot prove which promotion it was about. It never
+        // commits, discards or rekeys a promotion; the row keeps its own
+        // expiry and history instead.
+        if crate::runtime::is_legacy_sequential_pending_id(&notice.pending_id) {
+            tracing::warn!(
+                pending_id = %notice.pending_id,
+                cause = %notice.cause,
+                "agent memory steward: legacy gate decision cannot resolve a promotion"
+            );
+            return;
+        }
         let promotion = match self
             .store
             .pending_promotion_by_id(&self.realm, &notice.pending_id)
@@ -5257,6 +5270,349 @@ mod tests {
         );
         assert!(consolidate_prompt.contains("body A"));
         assert!(consolidate_prompt.contains("EVIDENCE sess-1"));
+    }
+
+    fn gating_owner() -> crate::MobkitRuntimeHandle {
+        crate::start_mobkit_runtime(
+            crate::MobKitConfig {
+                modules: vec![],
+                discovery: crate::DiscoverySpec {
+                    namespace: "steward-gates".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            vec![],
+            std::time::Duration::from_secs(1),
+        )
+        .expect("gating owner starts")
+    }
+
+    fn steward_r3(action: &str) -> crate::runtime::GatingEvaluateRequest {
+        crate::runtime::GatingEvaluateRequest {
+            action: action.to_string(),
+            actor_id: format!("memory-steward:{REALM}"),
+            risk_tier: crate::runtime::GatingRiskTier::R3,
+            rationale: None,
+            requested_approver: None,
+            approval_recipient: None,
+            approval_channel: None,
+            approval_timeout_ms: None,
+            entity: None,
+            topic: None,
+        }
+    }
+
+    /// Approve `pending_id` on `owner` and return the notice it emits.
+    fn approve_and_capture(
+        owner: &mut crate::MobkitRuntimeHandle,
+        pending_id: String,
+    ) -> GatingResolutionNotice {
+        #[derive(Default)]
+        struct CapturedNotices(StdMutex<Vec<GatingResolutionNotice>>);
+        impl crate::runtime::GatingResolutionObserver for CapturedNotices {
+            fn on_gating_resolution(&self, notice: &GatingResolutionNotice) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(notice.clone());
+            }
+        }
+        let notices = Arc::new(CapturedNotices::default());
+        owner.register_gating_resolution_observer(notices.clone());
+        owner
+            .decide_gating_action(crate::runtime::GatingDecideRequest {
+                pending_id,
+                approver_id: "operator".to_string(),
+                decision: crate::runtime::GatingDecision::Approve,
+                reason: None,
+            })
+            .expect("approve gate");
+        notices
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .expect("approval notice")
+    }
+
+    /// Stage one gated promotion per `(title, body)` in a single dream, in
+    /// order, keyed by the fixture's scripted pending ids.
+    async fn stage_promotions(fixture: &Fixture, facts: &[(&str, &str)]) {
+        let mut verdicts = Vec::new();
+        for (title, body) in facts {
+            let record = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+            verdicts.push(serde_json::json!({
+                "record_id": record, "verdict": "promote_pending_gate",
+                "rationale": "the mob needs this if true", "target_mob": "mob:home"
+            }));
+        }
+        {
+            let mut replies = fixture.llm.replies.lock().unwrap();
+            let slot = replies
+                .iter_mut()
+                .find(|reply| reply.as_str() == "PLACEHOLDER-CONSOLIDATE")
+                .expect("slot");
+            *slot = json_reply(serde_json::json!({
+                "ops": [],
+                "proposal_verdicts": [],
+                "quarantine_verdicts": verdicts,
+                "open_loop_escalations": [], "contradictions": [], "working_set": []
+            }));
+        }
+        fixture.engine.note_session_completed();
+        let DreamOutcome::Completed(_) = fixture.engine.dream_now().await else {
+            panic!("dream must complete");
+        };
+    }
+
+    async fn mob_titles(fixture: &Fixture) -> Vec<String> {
+        fixture
+            .store
+            .manifest(&[mob_scope()], ManifestTier::Full)
+            .await
+            .expect("mob manifest")
+            .into_iter()
+            .map(|meta| meta.title)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn restarted_gating_owner_cannot_resolve_an_earlier_promotion() {
+        // The first gateway process mints the gate the staged promotion is
+        // keyed by, then stops without persisting its gating state.
+        let promotion_gate = gating_owner()
+            .evaluate_gating_action(steward_r3("memory.quarantine_promote"))
+            .pending_id
+            .expect("promotion gate pends");
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![promotion_gate.as_str()],
+        );
+        stage_promotions(&fixture, &[("Quarantined fact", "body")]).await;
+
+        // The restarted process gates and approves an unrelated action.
+        let mut restarted = gating_owner();
+        let unrelated_gate = restarted
+            .evaluate_gating_action(steward_r3("deploy release"))
+            .pending_id
+            .expect("unrelated gate pends");
+        assert_ne!(
+            unrelated_gate, promotion_gate,
+            "a restarted gating owner reissued the promotion's pending id"
+        );
+        let notice = approve_and_capture(&mut restarted, unrelated_gate);
+        fixture.engine.resolve_gating_notice(notice).await;
+
+        // The promotion was never decided: it stays pending and uncommitted.
+        let pending = fixture
+            .store
+            .pending_promotions(REALM)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].pending_id, promotion_gate);
+        assert!(mob_titles(&fixture).await.is_empty());
+    }
+
+    /// The promotion mapping is inserted, never replaced. A restarted owner
+    /// that reissued an earlier promotion's pending id would fail the new
+    /// mapping insert, discard the NEW stage and keep the OLD mapping, so
+    /// approving the new gate would commit the old content. Fresh identities
+    /// make that collision impossible.
+    #[tokio::test]
+    async fn new_promotion_gate_after_restart_never_collides_with_an_old_mapping() {
+        let old_gate = gating_owner()
+            .evaluate_gating_action(steward_r3("memory.quarantine_promote"))
+            .pending_id
+            .expect("old gate pends");
+        let mut restarted = gating_owner();
+        let new_gate = restarted
+            .evaluate_gating_action(steward_r3("memory.quarantine_promote"))
+            .pending_id
+            .expect("new gate pends");
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![old_gate.as_str(), new_gate.as_str()],
+        );
+        stage_promotions(
+            &fixture,
+            &[("Old fact", "old body"), ("New fact", "new body")],
+        )
+        .await;
+        let pending = fixture
+            .store
+            .pending_promotions(REALM)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), 2, "both mappings must be recorded");
+
+        let notice = approve_and_capture(&mut restarted, new_gate.clone());
+        fixture.engine.resolve_gating_notice(notice).await;
+
+        let titles = mob_titles(&fixture).await;
+        assert!(titles.iter().any(|title| title == "New fact"), "{titles:?}");
+        assert!(
+            !titles.iter().any(|title| title == "Old fact"),
+            "{titles:?}"
+        );
+        let pending = fixture
+            .store
+            .pending_promotions(REALM)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].pending_id, old_gate);
+    }
+
+    /// An owner holding a restored version 1 gate under the given legacy
+    /// pending id: an unrelated action from a different old process.
+    fn owner_with_restored_legacy_gate(pending_id: &str) -> crate::MobkitRuntimeHandle {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as u64;
+        let snapshot: crate::runtime::GatingStateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "next_sequence": 3,
+                "pending": [{
+                    "pending_id": pending_id,
+                    "action_id": "gate-action-000000",
+                    "action": "unrelated release",
+                    "actor_id": "worker",
+                    "risk_tier": "r3",
+                    "created_at_ms": now,
+                    "deadline_at_ms": now + 600_000,
+                }],
+                "audit": [{
+                    "audit_id": "gate-audit-000002",
+                    "timestamp_ms": now,
+                    "event_type": "pending_created",
+                    "action_id": "gate-action-000000",
+                    "pending_id": pending_id,
+                    "actor_id": "worker",
+                    "risk_tier": "r3",
+                    "outcome": "pending_approval",
+                    "detail": {},
+                }],
+            }))
+            .expect("version 1 snapshot");
+        let mut owner = gating_owner();
+        owner
+            .restore_gating_state(snapshot)
+            .expect("legacy snapshot restores");
+        owner
+    }
+
+    fn stage_exists(fixture: &Fixture, token: &str) -> bool {
+        rusqlite::Connection::open(fixture.store.path_for_realm(REALM))
+            .expect("open realm db")
+            .query_row(
+                "SELECT COUNT(*) FROM stage WHERE token = ?1",
+                rusqlite::params![token],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("stage count")
+            == 1
+    }
+
+    /// A legacy promotion's custody is ambiguous: every pre-epoch restart
+    /// reissued `gate-pending-000001`. A gate restored from a version 1
+    /// snapshot under the same id is an unrelated decision, so approving,
+    /// rejecting or escalating it must leave the row and its stage alone.
+    #[tokio::test]
+    async fn restored_legacy_gate_cannot_resolve_a_legacy_promotion() {
+        let legacy_gate = "gate-pending-000001";
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![legacy_gate],
+        );
+        stage_promotions(&fixture, &[("Legacy fact", "legacy body")]).await;
+        let staged = fixture
+            .store
+            .pending_promotions(REALM)
+            .await
+            .expect("pending")
+            .remove(0);
+        assert!(stage_exists(&fixture, &staged.stage_token));
+
+        for decision in [
+            crate::runtime::GatingDecision::Approve,
+            crate::runtime::GatingDecision::Reject,
+            crate::runtime::GatingDecision::Escalate,
+        ] {
+            let mut owner = owner_with_restored_legacy_gate(legacy_gate);
+            #[derive(Default)]
+            struct CapturedNotices(StdMutex<Vec<GatingResolutionNotice>>);
+            impl crate::runtime::GatingResolutionObserver for CapturedNotices {
+                fn on_gating_resolution(&self, notice: &GatingResolutionNotice) {
+                    self.0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(notice.clone());
+                }
+            }
+            let notices = Arc::new(CapturedNotices::default());
+            owner.register_gating_resolution_observer(notices.clone());
+            owner
+                .decide_gating_action(crate::runtime::GatingDecideRequest {
+                    pending_id: legacy_gate.to_string(),
+                    approver_id: "operator".to_string(),
+                    decision,
+                    reason: None,
+                })
+                .expect("restored gate decides");
+            let notice = notices
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop()
+                .expect("owner notice");
+            assert_eq!(notice.pending_id, legacy_gate);
+            fixture.engine.resolve_gating_notice(notice).await;
+
+            let pending = fixture
+                .store
+                .pending_promotions(REALM)
+                .await
+                .expect("pending");
+            assert_eq!(pending, vec![staged.clone()]);
+            assert!(stage_exists(&fixture, &staged.stage_token));
+            assert!(mob_titles(&fixture).await.is_empty());
+        }
+    }
+
+    /// A promotion keyed by a legacy sequential id (minted before owner
+    /// epochs) is never matched by a notice from a fresh owner; it keeps its
+    /// own expiry and disposition.
+    #[tokio::test]
+    async fn legacy_promotion_gate_is_never_matched_by_a_fresh_owner() {
+        let legacy_gate = "gate-pending-000001";
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![legacy_gate],
+        );
+        stage_promotions(&fixture, &[("Legacy fact", "legacy body")]).await;
+
+        let mut owner = gating_owner();
+        let first_gate = owner
+            .evaluate_gating_action(steward_r3("deploy release"))
+            .pending_id
+            .expect("first gate pends");
+        assert_ne!(first_gate, legacy_gate);
+        let notice = approve_and_capture(&mut owner, first_gate);
+        fixture.engine.resolve_gating_notice(notice).await;
+
+        let pending = fixture
+            .store
+            .pending_promotions(REALM)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].pending_id, legacy_gate);
+        assert_eq!(pending[0].status, "pending");
+        assert!(mob_titles(&fixture).await.is_empty());
     }
 
     #[tokio::test]
