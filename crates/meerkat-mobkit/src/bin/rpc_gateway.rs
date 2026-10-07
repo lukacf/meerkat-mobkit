@@ -2634,7 +2634,7 @@ default_binding = "local"
         )
         .with_runtime_delivery(&delivery);
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
-            "[mob]\nid = \"delivery-{}\"\n",
+            "[mob]\nid = \"delivery-{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
             uuid::Uuid::new_v4()
         ))?;
         let owner = meerkat_mobkit::MobRuntime::bootstrap(

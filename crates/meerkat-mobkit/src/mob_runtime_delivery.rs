@@ -295,7 +295,7 @@ mod tests {
             blobs,
         ));
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
-            "[mob]\nid = \"delivery-{}\"\n",
+            "[mob]\nid = \"delivery-{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
             uuid::Uuid::new_v4()
         ))
         .expect("definition");
@@ -429,7 +429,7 @@ mod tests {
         first_pass(&fixture.delivery).await;
         let retained = runtime.clone();
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
-            "[mob]\nid = \"duplicate-{}\"\n",
+            "[mob]\nid = \"duplicate-{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
             uuid::Uuid::new_v4()
         ))
         .expect("definition");
