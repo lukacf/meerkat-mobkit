@@ -57,10 +57,13 @@ regression shipped past a synthetic 26-chain test for that reason).
   019fae11-4dd7-7301-9754-67b646603fb3 - the fleet's max-depth 26-rewrite
   chain), with SYNTHETIC content. Built by schema-level synthesis from the
   forensic capture (2026-08-01): the row layout, strand topology (7 strands,
-  26 resume-system-prompt-refresh rewrites, a 57-message head), ids,
-  timestamps and every non-content column are kept; every free-text value
-  is replaced by deterministic synthetic text and the mob namespace is
-  renamed; every strand id, commit digest (revision, parent revision,
+  26 resume-system-prompt-refresh rewrites, a 57-message head), session
+  ids, envelope timestamps and every non-content column are kept; every
+  free-text value is replaced by deterministic synthetic text, the mob
+  namespace is renamed, action argument dates become synthetic dates in the
+  same order and format (time zone UTC), and provider call, response and
+  reasoning ids are remapped consistently (same prefix and length, every
+  reference kept equal); every strand id, commit digest (revision, parent revision,
   original and replacement spans) and the head revision are recomputed
   with meerkat_core::released_0810_transcript_serialized_rows_digest (the
   recomputation reproduced every original digest before synthesis); the

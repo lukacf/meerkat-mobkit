@@ -1541,7 +1541,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
 /// adopted (current-format) head durably.
 ///
 /// FIXTURE PROVENANCE: fixtures/homecore_ledgerv1_closure/ (sha256
-/// 75ec5fa1...) - the forensic closure's exact layout and rewrite topology
+/// 128aee2d...) - the forensic closure's exact layout and rewrite topology
 /// with SYNTHETIC content: free text replaced, and every strand id, commit
 /// digest and head revision recomputed with the released 0.8.10 digest
 /// recomputation (tests/fixtures/README.md). It still goes red on the
