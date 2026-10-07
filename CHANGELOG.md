@@ -19,10 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `StorageResolutionError`, `MobRuntimeError` and
     `UnifiedRuntimeBuilderError` each gain `Runtime(RuntimeDriverError)`.
     Exhaustive matches must add the arm.
-  - Session services that wrap a `MobSessionService` implement
-    `acquire_runtime_adapter(explicit)`. MobKit's wrapper passes the
-    explicit owner, or else its configured override, to the inner
-    service's acquisition and propagates that acquisition's refusal.
+  - Session-service wrappers replace `runtime_adapter()` with
+    `acquire_runtime_adapter(explicit)` and preserve the inner service's
+    `Some`, `None` or error result. MobKit's wrapper supplies the explicit
+    owner when provided, otherwise its configured override; supplying an
+    owner does not turn the inner service's `None` into an acquired
+    adapter.
 - `GatingDecideError` gains `IdsUnavailable(GatingIdUnavailable)`, and
   `GatingStateSnapshot` gains `owner_epoch: Option<String>` (see Fixed).
   Exhaustive matches and struct literals must handle the new variant and
