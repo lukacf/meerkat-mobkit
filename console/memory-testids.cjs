@@ -126,13 +126,25 @@ module.exports = {
   review: (runId, recordId) => `memory-review:${runId}:${recordId}`,
   reviewRecord: (runId, recordId) => `memory-review-record:${runId}:${recordId}`,
   PIPELINE_NO_GRANT: "memory-pipeline-no-grant", // shown without memory.quarantine.review
-  QUARANTINE_NOTE: "memory-quarantine-note", // read-only disclaimer (kept from P3b)
+  QUARANTINE_NOTE: "memory-quarantine-note", // how the queue is decided (kept from P3b)
   quarantineRecord: (memoryId) => `memory-quarantine-record:${memoryId}`, // now a button → Biography
   pendingPromotion: (pendingId) => `memory-pending:${pendingId}`,
   // `memory-pipeline-decide:${pendingId}` — deep link into the Gating inbox.
   // Renders ONLY when the nav offers gating (visibleControls) — on aggregator
   // runtimes without a mob control surface the button is absent.
   pipelineDecide: (pendingId) => `memory-pipeline-decide:${pendingId}`,
+
+  // ── Quarantine decision (Biography of a quarantined identity record) ──
+  // Renders only when mobkit/memory/quarantine/decide is advertised to the
+  // caller on a mutable console. Release/Tombstone send the detail's
+  // content_hash; a refusal or denial renders QUARANTINE_ERROR in place, a
+  // decision opens the resulting Biography with QUARANTINE_OUTCOME.
+  QUARANTINE_DECIDE: "memory-quarantine-decide",
+  QUARANTINE_RATIONALE: "memory-quarantine-rationale",
+  QUARANTINE_RELEASE: "memory-quarantine-release",
+  QUARANTINE_TOMBSTONE: "memory-quarantine-tombstone",
+  QUARANTINE_ERROR: "memory-quarantine-error",
+  QUARANTINE_OUTCOME: "memory-quarantine-outcome",
 
   // ── Live memory-event strip (bottom of Pipeline tab) ──
   LIVE_STRIP: "memory-live-strip",

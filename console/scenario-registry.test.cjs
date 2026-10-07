@@ -40,6 +40,7 @@ test("shipping runners discover every registered scenario and shard default acce
     require("./scenarios/real-startup-lineage.cjs").scenarios,
     require("./scenarios/real-routine-tools.cjs").browserScenarios,
     require("./scenarios/approval-lifecycle.cjs").browserScenarios,
+    require("./scenarios/real-checked-save.cjs").scenarios,
     require("./scenarios/real-workgraph.cjs").browserScenarios,
     require("./scenarios/real-images.cjs").browserScenarios,
     require("./scenarios/real-send-context.cjs").scenarios,

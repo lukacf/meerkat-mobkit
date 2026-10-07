@@ -417,6 +417,20 @@ pub const STORAGE_RESOLUTION_CODE: i64 = -32014;
 /// TypeScript SDKs.
 pub const INIT_IN_PROGRESS_CODE: i64 = -32018;
 
+/// JSON-RPC error code for the mob composition provenance refusals
+/// `rpc_gateway` emits at `mobkit/init`: a persistent mob storage whose
+/// recorded composition the launch cannot be proven to match (a diverged
+/// definition, a rehearsal-created store, a candidate whose definition
+/// differs from the stored one, an unreadable, malformed or unsupported
+/// manifest, or undeclared non-empty storage; an absent manifest is adopted
+/// by an authoritative launch rather than refused). The error `data` is a
+/// [`crate::mob_composition_manifest::CompositionProvenanceRefusal`]: its
+/// `kind` and, where the variant has them, the diverged `fields`. Distinct
+/// from `-32603` so SDKs can reify a deliberate composition refusal instead of
+/// a generic internal error. Keep in sync with `CompositionProvenanceError` in
+/// the Python and TypeScript SDKs.
+pub const COMPOSITION_PROVENANCE_CODE: i64 = -32019;
+
 /// JSON-RPC error code returned by every `mobkit/workgraph/*` method when
 /// the runtime has no WorkGraph service configured
 /// (`data.kind = "workgraph_unavailable"`). Single source of truth — keep
@@ -432,6 +446,14 @@ pub const WORKGRAPH_CONFLICT_CODE: i64 = -32042;
 /// JSON-RPC error code for all other WorkGraph domain failures
 /// (`data.kind = "workgraph_error"`, full detail — K2 disclosure posture).
 pub const WORKGRAPH_ERROR_CODE: i64 = -32000;
+
+/// JSON-RPC error code for a quarantine review the memory store refused
+/// (`mobkit/memory/quarantine/decide`). Nothing was written.
+/// `data.kind = "memory_quarantine_review_refused"`; `data.reason` is the
+/// typed refusal (`not_found`, `content_mismatch`, `not_quarantined`,
+/// `gate_pending`, `successor_conflict`, `secret_detected`, `stale_update`)
+/// with its fields.
+pub const MEMORY_QUARANTINE_REVIEW_REFUSED_CODE: i64 = -32043;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {

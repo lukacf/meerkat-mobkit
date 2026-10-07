@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `StewardStore` gains the required method `review_quarantined` (see Added).
+  Implementors must add it; a store without a quarantine queue can return
+  `QuarantineReviewError::Store(AgentMemoryError::Unsupported(..))`.
+- `StewardStore::resolve_pending_promotion` and `rekey_pending_promotion`
+  return `Result<bool, AgentMemoryError>`: whether the promotion was still
+  pending and changed. Implementors must report it and must leave a
+  resolved promotion (including one an operator's tombstone invalidated)
+  as it is.
+- `MemoryTimelineEvent::QuarantineVerdict` gains `successor_id:
+  Option<String>` (see Added). Code constructing it must set it; the console
+  payload omits it when absent.
+- `MemoryRecord` gains `ever_quarantined: bool` (serde default `false`), the
+  durable taint marker the store already kept. Code building the struct with
+  a literal must set it.
+- `AccessConfigError` gains `RevisionExhausted` (see Added): the access owner
+  refuses a mutation that would overflow its `u64` revision before persisting
+  or publishing it. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add the arm.
 - `MobCompositionProvenanceError` gains `CandidateDivergent { fields }`
   (see Changed). Exhaustive matches must handle it. `MobBootstrapSpec` gains
   the pub field `candidate_definition: CandidateDefinition`; code that builds
@@ -109,6 +127,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- Memory panel reads (`mobkit/memory/panel/*`) treat a tombstoned record
+  that was ever quarantined as quarantine evidence: a caller without
+  `memory.quarantine.review` no longer receives it, as it never received a
+  quarantined one. `memory.quarantine.verdict` frames may carry
+  `successor_id`, and the steward's open-loop nudges
+  (`verdict: "open_loop_escalated"`) no longer carry the dream's rationale
+  (`rationale` is null).
+- `mobkit/access/*` failures are typed and no longer echo server detail (see
+  Added). A failed save of the access file answers `-32000` with
+  `data.kind = "access_persistence_failed"` instead of `-32602`; an exhausted
+  revision answers `-32004` with `access_mutation_unavailable`. Invalid
+  configurations keep `-32602` and `invalid_access_config` with the fixed
+  message "Invalid access configuration.", and unparseable payloads answer
+  "Invalid access config.", "Invalid access rule." or "Invalid access
+  group." instead of the parser text. `mobkit/access/get`, `preview` and
+  every write recheck the caller's current administrator access at the owner
+  instead of the request's captured view. Unchecked top-level writes
+  otherwise keep their shape.
+- `mobkit/init` composition provenance refusals now answer `-32019` with
+  refusal `data` instead of `-32603` (see Added). A client that matched these
+  refusals on `-32603` must match `-32019`; an SDK older than this release
+  raises them as a plain `RpcError` with the new code.
 - `mobkit/console/voice/captions` batches may carry a `playback_hint` entry
   (`{"kind": "playback_hint", "hint": "duck" | "restore"}`) next to
   `caption` and `retracted`. The embedded console ships with the gateway that
@@ -145,9 +185,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Authorized `/console/experience` responses provide an opaque `storage_scope`
   for runtime/principal-separated browser drafts and queues. Explicit host
   `storageNamespace` values continue to take precedence.
+- The memory steward's `memory.quarantine.verdict` frames report applied
+  releases and tombstones only, with `rationale` null; its `hold` and
+  `promote_pending_gate` verdicts no longer emit one (see Changed).
 
 ### Changed
 
+- The memory steward's quarantine `release` and `tombstone` verdicts run the
+  operator review's store transaction (`StewardStore::review_quarantined`,
+  reviewer `steward`; see Added), so a record is decided once, by whichever
+  reviewer commits first; the other is skipped or replays.
+  - A release's successor is `<memory_id>-released` instead of a fresh id,
+    and a quarantined update is released as a supersede of the record it
+    updates instead of leaving two active versions. When that record is
+    gone, the release is refused (`stale_update`) and skipped loudly; the
+    update stays quarantined, tombstone remaining its exit.
+  - `memory.quarantine.verdict` comes from the store once the review
+    commits, without the steward's rationale (its audit row keeps it).
+    `hold` changes nothing and `promote_pending_gate` reports through
+    `memory.promotion.pending_gate`, so neither emits a verdict any more.
+- CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
+  `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
+  (actions/runner-images#14748). The move to 26 will be validated
+  separately (meerkat#1767) instead of being inherited.
 - Candidate launches now refuse a config that differs from the stored mob
   definition. A non-authoritative launch (`runtime_options.mob_composition =
   {"authority": "candidate"}`) resumes on the mob definition stored in its
@@ -492,6 +552,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Operators can decide quarantined agent memory from the console:
+  `mobkit/memory/quarantine/decide` releases or tombstones one quarantined
+  identity-scope record, without the memory steward or the gating flow.
+  - Until now only the steward's dream could decide a quarantined record.
+    With the steward disabled, a write quarantined by session taint could
+    never become memory, and the console's quarantine queue was read-only.
+  - A release keeps the native review semantics. The content is re-staged
+    in the same scope at `agent_observed` as `<memory_id>-released`, with
+    `derived_from` the original, which is tombstoned and kept with its
+    provenance. The successor stays capped at `agent_observed` forever, the
+    secret gate refuses secret-shaped content, and a quarantined update is
+    released as a supersede of its still-active prior instead of forking.
+  - The decision binds the record's `content_hash` (now returned by
+    `mobkit/memory/panel/record`), refuses typed with `-32043`
+    (`MEMORY_QUARANTINE_REVIEW_REFUSED_CODE`; `not_found`,
+    `content_mismatch`, `not_quarantined`, `gate_pending`,
+    `successor_conflict`, `secret_detected`, `stale_update`) and records
+    the review (verdict, authenticated reviewer, bound hash, quarantine
+    reason, rationale) in each audit row.
+  - Replays (`already_released`, `already_tombstoned`) are recognized from
+    that audit evidence alone and return the original decision without
+    writing; a row merely holding the successor id is refused.
+  - Gated promotions expire after seven days (shared with the steward's
+    dream as `GATED_PROMOTION_EXPIRY_MS`). Until then a pending promotion
+    blocks a release of its record (`gate_pending`, with `expires_at_ms`);
+    after that a review expires it itself, so a promotion orphaned by a
+    restart blocks a release only until its expiry, whether or not a
+    steward runs.
+  - An operator's tombstone is never blocked by a pending promotion: it
+    invalidates the record's pending promotions in the same transaction
+    (mappings expired, staged batches discarded, listed as
+    `invalidated_promotions` in the decision), so a later approval
+    publishes nothing. Gating resolutions now change only a still-pending
+    promotion, so a late approval, denial or escalation can neither
+    overwrite an invalidated promotion nor revive it.
+  - Quarantined content stays reviewer-only after a review or `forget`
+    tombstones it: the Memory panel gates tombstoned records that were ever
+    quarantined behind `memory.quarantine.review`, as it gates quarantined
+    ones. The released successor is ordinary memory.
+  - A review emits `memory.quarantine.verdict` only once its decision
+    commits, and the event never carries the reviewer or the rationale.
+  - Authority composes existing grants: `memory.quarantine.review`,
+    `agent.view` and `agent.memory.read` on the identity, plus
+    `agent.memory.write` to release or `agent.memory.delete` to tombstone.
+    Read-only consoles refuse it.
+  - The store operation is `StewardStore::review_quarantined`; the Memory
+    panel offers Release and Tombstone on a quarantined record.
+
+- Checked access saves (`checked_v1`). `mobkit/access/get`, and
+  `mobkit/access/status` for a caller who can administer, advertise
+  `conditional_mutations: "checked_v1"` with an opaque `owner_instance` for
+  the controller lifetime. The six access writes accept a nested
+  `params.checked_v1` carrying `owner_instance`, `expected_revision` and the
+  write's payload. The owner rechecks the caller's administrator access, its
+  instance and its revision inside the serialized mutation, and answers
+  `-32009` with `access_revision_conflict` (expected and actual revisions) or
+  `access_owner_changed` without writing. Malformed, mixed or unknown checked
+  envelopes fail with `-32602` and never fall back to an unchecked write. A
+  controller that could not draw an instance identity advertises no checked
+  capability and refuses checked writes with `-32004`
+  `access_mutation_unavailable`; unchecked writes stay available.
+- Console Access saves are checked. Each edit keeps the owner instance,
+  revision and configuration from when it began. A conflict, owner change or
+  unavailable checked save keeps the draft with a fixed notice and requires
+  **Review and reapply** before another explicit save; an invalid
+  configuration keeps the draft editable for correction. Refreshing never
+  rebases or resends a draft, and edits stay disabled while owner state is
+  loading or stale, or when the owner does not advertise `checked_v1`. A
+  preview survives an unchanged refresh and is discarded when the owner,
+  revision or configuration changes. The real-browser scenario
+  `real-checked-save-recovery` drives this flow against the acceptance
+  fixture's real access owner.
+- A typed `mobkit/init` code for mob composition provenance refusals: `-32019`
+  (`COMPOSITION_PROVENANCE_CODE`), with Python and TypeScript
+  `CompositionProvenanceError` (#613).
+  - Every refusal the gateway raises because a persistent mob storage's
+    recorded composition cannot be proven to match the launch used to reach
+    the client as a generic `-32603`, so an SDK could not tell a deliberate
+    refusal from an internal error without parsing the message. This covers
+    a diverged definition, a candidate launch whose definition differs from
+    the stored one, a rehearsal-created store, an unreadable, malformed,
+    unsupported or unwritten manifest, and undeclared non-empty storage.
+  - The error `data` carries the refusal: `kind` (`divergent`,
+    `candidate_divergent`, `created_by_rehearsal`, `missing`, `unreadable`,
+    `malformed`, `unsupported_version`, `not_recorded`, `unproven_storage`),
+    `fields` (the diverged definition fields as dotted paths, always
+    present), and the manifest path, storage path and manifest versions
+    where the refusal has them. The SDK error exposes `kind` and `fields`.
+  - The message is unchanged, and an accepted init carries the same code and
+    data in its `failed` settlement.
+  - Rust: `MobCompositionProvenanceError::refusal()` returns the data as
+    `CompositionProvenanceRefusal`, and
+    `UnifiedRuntimeBootstrapError::composition_provenance()` finds the
+    refusal behind a bootstrap failure.
+  - `mobkit_gateway` (the console/HTTP binary) still reports these refusals
+    as `-32603`.
 
 - Host-only `mobkit/member_activate_instruction` and
   `mobkit/member_instruction_activations` (Python
@@ -879,6 +1036,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     tools is reported and bound instead of silently skipped. A composition
     or an ops-capable half still held elsewhere refuses with
     `SharedOwnership`, never running unbound.
+
+- Console: clicking a tool or other control at the bottom of a transcript
+  no longer stops the shared conversation pane following the live edge. A
+  pointer action can bring its target into view before the press, and the
+  browser can then settle the scroll position a pixel above the end the
+  console computed (scrollHeight and clientHeight are whole numbers rounded
+  from fractional sizes, so the two ends can differ by under a pixel). After
+  an earlier click that settle read as the reader moving up, so the opened
+  tool was held in place instead of followed. A move of at most that
+  rounding distance, landing at the end while following, after a primary
+  mouse press on the transcript's content, is now a settle. Any larger
+  upward move, and any move after a scrollbar, middle-button, touch or pen
+  press, still leaves the live edge.
+
+- Console: a workbench click made right as the console first loads is no
+  longer undone. The saved dock layout, or with no saved layout the
+  configured initial panel (`layout.initial_control`, `initial_agent`,
+  `initial_preset`), was applied a moment after the sidebar appeared, so a
+  panel opened in that gap (for example Access) was replaced. Both now land
+  in a synchronous follow-up commit before paint, before any input can be
+  handled.
 
 - Console: a downward wheel or End at the bottom of a transcript no longer
   stops following the live edge. Such a gesture can leave the scroll position

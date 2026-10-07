@@ -2,7 +2,7 @@ import React from "react";
 import { CopyButton } from "@console-components";
 import type { ConversationTimelineEntry } from "@console-core";
 import { describeMemoryTimelineEvent } from "../lib/adapters";
-import { jsonRpcErrorCode } from "../lib/errors";
+import { errorMessage, jsonRpcErrorCode } from "../lib/errors";
 import type {
   ConsoleFrame,
   MemoryAuditVerdictEntry,
@@ -20,6 +20,8 @@ import type {
   MemoryPanelRecordsResult,
   MemoryPendingPromotion,
   MemoryProposalEntry,
+  MemoryQuarantineDecideResult,
+  MemoryQuarantineVerdict,
   MemoryRecordScope,
   MemoryRecordStatus,
   MemoryTrust,
@@ -101,6 +103,17 @@ export interface MemoryPanelProps {
   /// Deep-link into the gating inbox — memory promotion verdicts ride the
   /// normal gating flow, never a parallel decision surface here.
   onOpenGating?: () => void;
+  /// The operator half of quarantine review (mobkit/memory/quarantine/decide)
+  /// for quarantined records that no gated promotion is waiting on. Passed
+  /// only when the caller is advertised the method on a mutable console;
+  /// absent, quarantined records stay read-only here. Rejects with the
+  /// transport's typed JSON-RPC error.
+  onDecideQuarantine?: (
+    realm: string,
+    record: MemoryFullRecord,
+    verdict: MemoryQuarantineVerdict,
+    rationale: string | undefined,
+  ) => Promise<MemoryQuarantineDecideResult>;
 }
 
 export type MemoryTab = "holdings" | "records" | "knowledge" | "pipeline" | "dreams";
@@ -1342,6 +1355,89 @@ export function memoryFramePivot(
   return { recordId, realm };
 }
 
+/// A Biography offers the quarantine decision for a quarantined
+/// identity-scope record whose detail carries the content hash to bind.
+function canDecideQuarantinedRecord(record: MemoryFullRecord): boolean {
+  return (
+    record.status.status === "quarantined" &&
+    record.scope.scope === "identity" &&
+    typeof record.content_hash === "string" &&
+    record.content_hash.length > 0
+  );
+}
+
+/// The server's MAX_REVIEW_RATIONALE_BYTES: a review rationale is limited in
+/// UTF-8 bytes of its trimmed text, not in characters.
+const QUARANTINE_RATIONALE_MAX_BYTES = 400;
+
+/// Why a rationale cannot be sent as typed, or null when it fits. Measured
+/// on the trimmed text, which is what the request carries.
+function quarantineRationaleProblem(rationale: string): string | null {
+  const bytes = new TextEncoder().encode(rationale.trim()).length;
+  return bytes > QUARANTINE_RATIONALE_MAX_BYTES
+    ? `The rationale is ${bytes} bytes (UTF-8); the limit is ${QUARANTINE_RATIONALE_MAX_BYTES}.`
+    : null;
+}
+
+/// One line describing what a quarantine decision did.
+function quarantineDecisionSummary(result: MemoryQuarantineDecideResult): string {
+  const successor = result.successor?.memory_id;
+  switch (result.outcome) {
+    case "released":
+      return `Released as ${successor ?? "a new record"} (agent_observed, ever-quarantined); the original is kept, tombstoned.`;
+    case "already_released":
+      return `Already released as ${successor ?? "a new record"}; nothing changed.`;
+    case "tombstoned": {
+      const invalidated = result.decision?.review?.invalidated_promotions ?? [];
+      return invalidated.length > 0
+        ? `Tombstoned; it will never be recalled. Pending promotion ${invalidated.join(", ")} invalidated; it can no longer publish.`
+        : "Tombstoned; it will never be recalled.";
+    }
+    case "already_tombstoned":
+      return "Already tombstoned; nothing changed.";
+    default:
+      return `Decided: ${String(result.outcome)}`;
+  }
+}
+
+/// Human text for a failed quarantine decision: the typed refusal reasons
+/// of mobkit/memory/quarantine/decide, the access denial, or the raw error.
+function quarantineDecisionErrorText(error: unknown): string {
+  const rpcError = (error as { rpcError?: { code?: unknown; data?: unknown } } | null)?.rpcError;
+  if (rpcError?.code === -32030) {
+    return "No grant: deciding needs memory.quarantine.review plus view, memory read and memory write (release) or delete (tombstone) on this identity.";
+  }
+  const data = (rpcError?.data ?? null) as Record<string, unknown> | null;
+  if (data?.kind === "memory_quarantine_review_refused") {
+    switch (data.reason) {
+      case "not_found":
+        return "Refused: no such record in this identity's scope.";
+      case "content_mismatch":
+        return "Refused: the record differs from the one loaded here. Reload it and review again.";
+      case "not_quarantined":
+        return data.released_as
+          ? `Refused: it was already released as ${String(data.released_as)}.`
+          : `Refused: the record is ${String(data.status)}, not quarantined.`;
+      case "gate_pending": {
+        const expires =
+          typeof data.expires_at_ms === "number"
+            ? ` (or wait until it expires, ${new Date(data.expires_at_ms).toISOString()})`
+            : "";
+        return `Refused: gated promotion ${String(data.pending_id)} is waiting on it; decide it in the Gating inbox${expires}. Tombstoning the record instead invalidates that promotion.`;
+      }
+      case "successor_conflict":
+        return `Refused: another record already holds the release id ${String(data.successor_id)}; nothing was changed.`;
+      case "secret_detected":
+        return `Refused: the content matches the ${String(data.class)} secret pattern; tombstone is the only exit.`;
+      case "stale_update":
+        return `Refused: the version this update replaces (${String(data.prior)}) is ${String(data.prior_status)}; tombstone it instead.`;
+      default:
+        break;
+    }
+  }
+  return errorMessage(error);
+}
+
 export const __memoryTest = {
   scopeGroupKey,
   scopeGroupLabel,
@@ -1397,6 +1493,10 @@ export const __memoryTest = {
   formatDurationMs,
   dreamRunDuration,
   normalizeDreamRunDetail,
+  canDecideQuarantinedRecord,
+  quarantineRationaleProblem,
+  quarantineDecisionSummary,
+  quarantineDecisionErrorText,
 };
 
 // ── Presentational sub-components ─────────────────────────────────────────
@@ -1469,18 +1569,101 @@ function evidenceKey(evidence: MemoryEvidenceRef, index: number): string {
   return `${index}:${evidence.session_id || ""}:${evidence.generation ?? ""}`;
 }
 
+/// The decision block on a quarantined record's Biography. The body and
+/// provenance above it are what the reviewer decides on; the request binds
+/// the record's content hash so a changed record is refused, not decided.
+function QuarantineDecisionBlock({
+  realm,
+  record,
+  onDecide,
+}: {
+  realm: string;
+  record: MemoryFullRecord;
+  onDecide: (verdict: MemoryQuarantineVerdict, rationale: string | undefined) => Promise<void>;
+}): React.JSX.Element {
+  const [rationale, setRationale] = React.useState("");
+  const [pending, setPending] = React.useState<MemoryQuarantineVerdict | null>(null);
+  const [failure, setFailure] = React.useState<string | null>(null);
+  const rationaleProblem = quarantineRationaleProblem(rationale);
+  const blocked = pending !== null || rationaleProblem !== null;
+  const notice = rationaleProblem ?? failure;
+  async function decide(verdict: MemoryQuarantineVerdict): Promise<void> {
+    if (rationaleProblem !== null) return;
+    setPending(verdict);
+    setFailure(null);
+    try {
+      await onDecide(verdict, rationale.trim() || undefined);
+    } catch (err) {
+      setFailure(quarantineDecisionErrorText(err));
+    } finally {
+      setPending(null);
+    }
+  }
+  return (
+    <div className="memory-detail__section" data-testid="memory-quarantine-decide">
+      <span className="memory-detail__label">Review</span>
+      <div className="memory-detail__line">
+        Release makes this an active agent_observed record of{" "}
+        {record.scope.scope === "identity" ? record.scope.identity : "this scope"} (realm {realm});
+        it stays capped below verified trust because it was quarantined. Tombstone discards it.
+      </div>
+      <input
+        className="memory-filterbar__input"
+        data-testid="memory-quarantine-rationale"
+        placeholder="Rationale (optional, recorded in the audit)"
+        value={rationale}
+        disabled={pending !== null}
+        onChange={(event) => setRationale(event.target.value)}
+      />
+      <div className="memory-detail__line">
+        <button
+          type="button"
+          className="memory-back"
+          data-testid="memory-quarantine-release"
+          disabled={blocked}
+          onClick={() => void decide("release")}
+        >
+          {pending === "release" ? "Releasing…" : "Release"}
+        </button>{" "}
+        <button
+          type="button"
+          className="memory-back"
+          data-testid="memory-quarantine-tombstone"
+          disabled={blocked}
+          onClick={() => void decide("tombstone")}
+        >
+          {pending === "tombstone" ? "Tombstoning…" : "Tombstone"}
+        </button>
+      </div>
+      {notice ? (
+        <div className="memory-detail__line" data-testid="memory-quarantine-error">
+          {notice}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function BiographyView({
   detail,
   dreams,
   onBack,
   onSelectRecord,
   onLoadEvidence,
+  onDecideQuarantine,
+  decisionNotice,
 }: {
   detail: MemoryRecordDetail;
   dreams: MemoryDreamRun[];
   onBack: () => void;
   onSelectRecord: (realm: string | undefined, memoryId: string) => void;
   onLoadEvidence?: MemoryPanelProps["onLoadEvidence"];
+  onDecideQuarantine?: (
+    record: MemoryFullRecord,
+    verdict: MemoryQuarantineVerdict,
+    rationale: string | undefined,
+  ) => Promise<void>;
+  decisionNotice?: string | null;
 }): React.JSX.Element {
   const { record, chain, injections } = detail;
   const provenance = record.provenance;
@@ -1541,6 +1724,21 @@ function BiographyView({
       ) : null}
 
       <pre className="memory-detail__body" data-testid="memory-detail-body">{record.body}</pre>
+
+      {decisionNotice ? (
+        <div className="memory-note" data-testid="memory-quarantine-outcome">
+          {decisionNotice}
+        </div>
+      ) : null}
+
+      {onDecideQuarantine && canDecideQuarantinedRecord(record) ? (
+        <QuarantineDecisionBlock
+          key={record.id}
+          realm={detail.realm}
+          record={record}
+          onDecide={(verdict, rationale) => onDecideQuarantine(record, verdict, rationale)}
+        />
+      ) : null}
 
       {record.tags && record.tags.length > 0 ? (
         <div className="memory-detail__tags">
@@ -1857,8 +2055,25 @@ export function MemoryPanel({
   onQueryRecords,
   onLoadEvidence,
   onOpenGating,
+  onDecideQuarantine,
 }: MemoryPanelProps): React.JSX.Element {
   const [tab, setTab] = React.useState<MemoryTab>("holdings");
+  // The outcome of the last quarantine decision, shown on the Biography it
+  // navigated to (the successor after a release, the origin otherwise).
+  const [decisionNotice, setDecisionNotice] = React.useState<string | null>(null);
+  const decideQuarantine = onDecideQuarantine
+    ? async (
+        record: MemoryFullRecord,
+        verdict: MemoryQuarantineVerdict,
+        rationale: string | undefined,
+      ): Promise<void> => {
+        if (!detail) return;
+        const realm = detail.realm;
+        const result = await onDecideQuarantine(realm, record, verdict, rationale);
+        setDecisionNotice(quarantineDecisionSummary(result));
+        onSelectRecord(realm, result.successor?.memory_id ?? record.id);
+      }
+    : undefined;
   const [filter, setFilter] = React.useState<MemoryRecordsFilter>({});
   const [sortMode, setSortMode] = React.useState<"recency" | "utility">("recency");
   const [paged, setPaged] = React.useState<MemoryPagedState | null>(null);
@@ -2267,9 +2482,17 @@ export function MemoryPanel({
             <BiographyView
               detail={detail}
               dreams={dreams}
-              onBack={onClearDetail}
-              onSelectRecord={onSelectRecord}
+              onBack={() => {
+                setDecisionNotice(null);
+                onClearDetail();
+              }}
+              onSelectRecord={(realm, memoryId) => {
+                setDecisionNotice(null);
+                onSelectRecord(realm, memoryId);
+              }}
               onLoadEvidence={onLoadEvidence}
+              onDecideQuarantine={decideQuarantine}
+              decisionNotice={decisionNotice}
             />
           ) : detailLoading ? (
             <div className="gating__empty">Loading record…</div>
@@ -2560,8 +2783,9 @@ export function MemoryPanel({
               {canReviewQuarantine ? quarantineRecords.length : "no grant"})
             </div>
             <div className="memory-note" data-testid="memory-quarantine-note">
-              Read-only. Verdicts are decided by the memory steward's dream and the
-              gating flow — this queue cannot be actioned here.
+              {onDecideQuarantine
+                ? "Open a quarantined record to release or tombstone it. Gated promotions are decided in the Gating inbox; the memory steward's dream decides the rest."
+                : "Read-only here. Verdicts come from the memory steward's dream, the gating flow, and reviewers who hold the quarantine review and memory write grants."}
             </div>
             <div className="memory-group" data-testid="memory-pipeline-proposals">
               <div className="memory-group__label">

@@ -675,3 +675,117 @@ describe("a downward gesture's sub-pixel settle at the live edge", () => {
     expect(viewport.scrollTop).toBe(799);
   });
 });
+
+describe("a native settle of the end after a content press", () => {
+  // browser-e2e "opening the actual tool at live edge remains following" on
+  // the shared host, recorded geometry: the controller wrote the computed end
+  // 2225 after a copy click, then the browser settled it to 2224 before the
+  // tool header's press (a pointer action reveals its target first), and the
+  // opened tool was held by an anchor instead of followed. Rows total 2425 px
+  // in a 200 px viewport, so the computed end is 2225.
+  const rows: Row[] = [...Array.from({ length: 24 }, (_, i) => ({ id: `row-${i}`, height: 100 })), { id: "tool", height: 25 }];
+  const opened: Row[] = [...rows.slice(0, -1), { id: "tool", height: 136 }];
+  const row = (viewport: HTMLElement, id: string) => viewport.querySelector(`[data-conversation-row-id="${id}"]`)!;
+  /** A pointer press carrying its pointer type, which jsdom's events lack. */
+  const press = (target: Element, pointerType: string) => {
+    const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "pointerType", { value: pointerType });
+    fireEvent(target, event);
+  };
+
+  test("the recorded 2225 -> 2224 trace keeps following when the tool opens", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    fireEvent.wheel(row(viewport, "tool"), { deltaY: 350 });
+    userScroll(viewport, 2224);
+    fireEvent.keyDown(viewport, { key: "End" });
+    // The copy control's press, then a commit that rewrites the computed end.
+    press(row(viewport, "tool"), "mouse");
+    view.rerender(<Harness rows={[...rows]} />);
+    expect(viewport.scrollTop).toBe(2225);
+    // The browser snaps the end a pixel up before the next press.
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    press(row(viewport, "tool"), "mouse");
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    expect(viewport.scrollTop).toBe(2336);
+  });
+
+  test.each([2, 5, 40])("a %i px upward drag after a content press still leaves the live edge", (distance) => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2225 - distance);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2225 - distance);
+  });
+
+  test.each(["touch", "pen"])("a 1 px move after a %s press on the content leaves the live edge", (pointerType) => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), pointerType);
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2224);
+  });
+
+  test("a 1 px move after a middle press (autoscroll) on the content leaves the live edge", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 1 });
+    Object.defineProperty(event, "pointerType", { value: "mouse" });
+    fireEvent(row(viewport, "tool"), event);
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a 1 px move after a primary mouse press on the viewport (its scrollbar) leaves the live edge", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    press(viewport, "mouse");
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2224);
+  });
+
+  test("a 1 px move after a content press that does not land at the grown end leaves the live edge", () => {
+    // Content grows by 10 px before the controller's write: the move is a
+    // pixel, but it lands inside the live-edge band, not at the end.
+    render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), "mouse");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2435 });
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a content press does not turn a 1 px move at the end into following while reading", () => {
+    render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    // An upward wheel at the end leaves the live edge before it scrolls.
+    fireEvent.wheel(row(viewport, "tool"), { deltaY: -1 });
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2225);
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a content press does not resume following from a reading position near the end", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2223);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+});

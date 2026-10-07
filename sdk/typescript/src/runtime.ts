@@ -31,9 +31,11 @@ import {
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   STORAGE_RESOLUTION_CODE,
   INIT_IN_PROGRESS_CODE,
+  COMPOSITION_PROVENANCE_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
+  CompositionProvenanceError,
   ConsoleTimelineReplayUnavailableError,
   LeaseLostError,
   MemoryBackendUnavailableError,
@@ -710,6 +712,9 @@ function rpcErrorFromPayload(
   }
   if (code === INIT_IN_PROGRESS_CODE) {
     return new InitInProgressError(message, rid, method, err.data);
+  }
+  if (code === COMPOSITION_PROVENANCE_CODE) {
+    return new CompositionProvenanceError(message, rid, method, err.data);
   }
   if (code === WORKGRAPH_UNAVAILABLE_CODE) {
     return new WorkGraphUnavailableError(message, rid, method, err.data);

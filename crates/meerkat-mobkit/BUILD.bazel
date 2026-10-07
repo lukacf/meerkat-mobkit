@@ -37,6 +37,7 @@ rust_library(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -87,6 +88,7 @@ rust_test(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -144,6 +146,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -191,6 +194,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -238,6 +242,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -285,6 +290,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -332,6 +338,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -379,6 +386,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -426,6 +434,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -473,6 +482,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -520,6 +530,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -567,6 +578,7 @@ rust_binary(
     edition = "2024",
     compile_data = [
         "Cargo.toml",
+        "assets/release-targets.json",
         "console-dist/console-app.css",
         "console-dist/console-app.js",
         "console-dist/index.html",
@@ -665,7 +677,9 @@ rust_test(
         "fast",
     ],
     size = "small",
-    data = [],
+    data = [
+        ":package_runfiles",
+    ],
     env = {
         "RUST_MIN_STACK": "16777216",
     },

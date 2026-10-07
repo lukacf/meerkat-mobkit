@@ -15,7 +15,7 @@ env:
 jobs:
   fmt-lint:
     name: fmt-lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -52,7 +52,7 @@ jobs:
 
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # ~88 debug test binaries each statically link the full meerkat stack;
       # with the 0.7.31 realtime deps aboard, full debuginfo blows past the
@@ -110,7 +110,7 @@ jobs:
 
   test-voice:
     name: test-voice
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_BUILD_JOBS: "2"
@@ -131,7 +131,7 @@ jobs:
 
   test-python:
     name: test-python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -170,7 +170,7 @@ jobs:
   # All three are named in `gate`. A job absent from `gate` is not a gate.
   console:
     name: console
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Rust 1.97 incremental compilation can ICE in async identity iteration.
       CARGO_INCREMENTAL: "0"
@@ -238,7 +238,7 @@ jobs:
   # console_customization_fixtures`, which is where its 12 minutes go.
   console-fixtures:
     name: console-fixtures
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -256,7 +256,7 @@ jobs:
   # library_mode_reference or on any step left in `console`.
   console-acceptance:
     name: console-acceptance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -281,7 +281,7 @@ jobs:
 
   flow-editor:
     name: flow-editor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -306,7 +306,7 @@ jobs:
   # these tests import the built `dist/`, not `src/`.
   test-typescript:
     name: test-typescript
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -317,7 +317,7 @@ jobs:
 
   audit:
     name: audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # Pinned to the last-green revision: the floating v2 tag moved to a
@@ -329,7 +329,7 @@ jobs:
     name: gate
     if: always()
     needs: [fmt-lint, test, test-voice, test-python, test-typescript, console, console-fixtures, console-acceptance, flow-editor, audit]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check job results
         run: |

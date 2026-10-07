@@ -86,6 +86,10 @@ use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryRecord, MemoryScope,
     NewMemoryRecord, RecordMeta, RecordStatus, TrustTier, UsageEvent,
 };
+use crate::memory::review::{
+    QuarantineDecision, QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRefusal,
+    QuarantineReviewRequest, QuarantineReviewer, release_copy,
+};
 use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
@@ -132,8 +136,10 @@ const MAX_WORKING_SET: usize = 64;
 
 /// Gated promotions unresolved after this long are expired and their stage
 /// tokens discarded — the backstop for a gating timeout the observer never
-/// saw (timeout sweeps only run when gating endpoints are called).
-const PROMOTION_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// saw (timeout sweeps only run when gating endpoints are called). Shared
+/// with the quarantine review, which applies the same expiry without a
+/// dream.
+const PROMOTION_EXPIRY_MS: u64 = crate::memory::capabilities::GATED_PROMOTION_EXPIRY_MS;
 
 /// Defaults for the config block (§8.5; §16 open question 5 — measured
 /// starting points, not law).
@@ -853,11 +859,12 @@ struct QuarantineVerdict {
     target_mob: Option<String>,
 }
 
+/// An open loop the dream wants nudged. Its free-text rationale is not
+/// kept: the nudge is a system-wide timeline frame, and the escalated record
+/// may be quarantined.
 #[derive(Debug, Deserialize)]
 struct OpenLoopEscalation {
     record_id: String,
-    #[serde(default)]
-    rationale: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1633,11 +1640,17 @@ impl StewardEngine {
                 continue;
             }
             run.verdicts.open_loops_escalated += 1;
+            // The nudge is a system-wide timeline frame, readable with
+            // agent.view alone, and the escalated record may be quarantined:
+            // the dream's free-text rationale (which can quote the record)
+            // stays out of it. It names the record and stays a nudge, not a
+            // quarantine decision.
             self.emit(MemoryTimelineEvent::QuarantineVerdict {
                 realm: self.realm.clone(),
                 record_id: escalation.record_id,
                 verdict: "open_loop_escalated".to_string(),
-                rationale: Some(escalation.rationale),
+                rationale: None,
+                successor_id: None,
             });
         }
 
@@ -1767,15 +1780,16 @@ impl StewardEngine {
                 token: promotion.stage_token.clone(),
             };
             let _ = self.store.discard_stage(token).await;
-            let _ = self
-                .store
-                .resolve_pending_promotion(&self.realm, &promotion.pending_id, "expired")
-                .await;
-            run.skips.push(format!(
-                "gated promotion '{}' expired unresolved after {}d",
-                promotion.pending_id,
-                PROMOTION_EXPIRY_MS / 86_400_000
-            ));
+            if self
+                .settle_promotion(&promotion.pending_id, "expired")
+                .await
+            {
+                run.skips.push(format!(
+                    "gated promotion '{}' expired unresolved after {}d",
+                    promotion.pending_id,
+                    PROMOTION_EXPIRY_MS / 86_400_000
+                ));
+            }
         }
     }
 
@@ -3025,104 +3039,35 @@ impl StewardEngine {
                 ));
                 continue;
             }
-            self.emit(MemoryTimelineEvent::QuarantineVerdict {
-                realm: self.realm.clone(),
-                record_id: record.id.clone(),
-                verdict: verdict.verdict.clone(),
-                rationale: Some(verdict.rationale.clone()),
-            });
-            // §10.4: a release/promotion re-stages the origin content
-            // verbatim, and the staged chokepoint refuses secret-shaped
-            // payloads all-or-nothing — the group would drop every dream
-            // with a generic validation skip. Pre-scan and skip loudly with
-            // the class named (mirroring the markdown-import loud skip) so
-            // the operator can see why the queue never drains this record;
-            // tombstone remains its only exit. The chokepoint refusal law
-            // stays untouched for fresh writes.
-            if matches!(verdict.verdict.as_str(), "release" | "promote_pending_gate")
-                && let Some(class) = crate::memory::secrets::detect_record_secret(
-                    &record.title,
-                    &record.description,
-                    &record.body,
-                    &record.tags,
-                )
-            {
-                tracing::warn!(
-                    run_id,
-                    record_id = %record.id,
-                    class,
-                    "agent memory steward: quarantine {} blocked — record content matches \
-                     secret pattern; tombstone is the only exit",
-                    verdict.verdict
-                );
-                run.skips.push(format!(
-                    "quarantine {} of '{}' blocked: content matches secret pattern \
-                     '{class}' (refused at the write seam; tombstone is the only exit)",
-                    verdict.verdict, record.id
-                ));
-                run.verdicts.quarantine_release_blocked += 1;
-                self.emit(MemoryTimelineEvent::QuarantineReleaseBlocked {
-                    realm: self.realm.clone(),
-                    record_id: record.id.clone(),
-                    verdict: verdict.verdict.clone(),
-                    class: class.to_string(),
-                });
-                continue;
-            }
+            // No verdict event here: a judgment is not an applied outcome.
+            // A release or tombstone is reported by the store once its review
+            // commits, a promotion by its gate, and a hold changes nothing.
             match verdict.verdict.as_str() {
-                // Release into the SAME scope: create (derived_from carries
-                // the §10.2 ceiling forever) + tombstone the original.
-                // Ordered create-first so the tombstone-recreation guard
-                // does not fire on the copy.
+                // Release and tombstone run the store's review transaction,
+                // the one an operator's decision runs (memory/review.rs):
+                // the release successor `<id>-released` derives from the
+                // origin (the §10.2 ceiling walks that edge forever) and a
+                // quarantined update supersedes its prior. Whichever reviewer
+                // commits first decides; the other is refused or replayed.
                 "release" => {
-                    let ops = vec![
-                        StagedOp::Create {
-                            id: None,
-                            scope: record.scope.clone(),
-                            record: release_copy(record),
-                            trust: TrustTier::AgentObserved,
-                            derived_from: vec![record.id.clone()],
-                            rationale: Some(format!("quarantine release: {}", verdict.rationale)),
-                            created_at_ms: None,
-                            updated_at_ms: None,
-                        },
-                        StagedOp::Tombstone {
-                            id: record.id.clone(),
-                            rationale: Some("superseded by quarantine release".to_string()),
-                        },
-                    ];
-                    let committed = self
-                        .commit_group(
-                            ops,
-                            StagedBatchKind::ReviewVerdict,
-                            run_id,
-                            &format!("quarantine:{}", record.id),
-                            run,
-                        )
-                        .await;
-                    if committed > 0 {
-                        run.ops_committed += committed;
-                        run.verdicts.quarantine_released += 1;
-                    }
+                    self.review_quarantined_record(
+                        record,
+                        QuarantineDecision::Release,
+                        &verdict.rationale,
+                        run_id,
+                        run,
+                    )
+                    .await;
                 }
                 "tombstone" => {
-                    let ops = vec![StagedOp::Tombstone {
-                        id: record.id.clone(),
-                        rationale: Some(format!("quarantine tombstone: {}", verdict.rationale)),
-                    }];
-                    let committed = self
-                        .commit_group(
-                            ops,
-                            StagedBatchKind::ReviewVerdict,
-                            run_id,
-                            &format!("quarantine:{}", record.id),
-                            run,
-                        )
-                        .await;
-                    if committed > 0 {
-                        run.ops_committed += committed;
-                        run.verdicts.quarantine_tombstoned += 1;
-                    }
+                    self.review_quarantined_record(
+                        record,
+                        QuarantineDecision::Tombstone,
+                        &verdict.rationale,
+                        run_id,
+                        run,
+                    )
+                    .await;
                 }
                 "hold" => {
                     run.verdicts.quarantine_held += 1;
@@ -3130,6 +3075,27 @@ impl StewardEngine {
                 // Promotion of quarantined content into Mob scope: staged,
                 // never committed here — the gating approval commits (§10.2).
                 "promote_pending_gate" => {
+                    // §10.4: the promotion re-stages the origin content
+                    // verbatim, and the staged chokepoint refuses
+                    // secret-shaped payloads all-or-nothing. Pre-scan and
+                    // skip loudly instead (a release gets the same answer
+                    // from the review's typed refusal). The chokepoint
+                    // refusal law stays untouched for fresh writes.
+                    if let Some(class) = crate::memory::secrets::detect_record_secret(
+                        &record.title,
+                        &record.description,
+                        &record.body,
+                        &record.tags,
+                    ) {
+                        skip_secret_blocked(run_id, &record.id, &verdict.verdict, class, run);
+                        self.emit(MemoryTimelineEvent::QuarantineReleaseBlocked {
+                            realm: self.realm.clone(),
+                            record_id: record.id.clone(),
+                            verdict: verdict.verdict.clone(),
+                            class: class.to_string(),
+                        });
+                        continue;
+                    }
                     let target_scope = verdict
                         .target_mob
                         .clone()
@@ -3157,6 +3123,71 @@ impl StewardEngine {
                     run.skips
                         .push(format!("unknown quarantine verdict '{other}', dropped"));
                 }
+            }
+        }
+    }
+
+    /// Decide one quarantined record through the store's review
+    /// transaction ([`StewardStore::review_quarantined`]) with this run as
+    /// the reviewer, bound to the content the run judged. The store writes
+    /// the audit evidence and emits the applied verdict once it commits;
+    /// anything else leaves the record quarantined and is a loud skip.
+    async fn review_quarantined_record(
+        &self,
+        record: &MemoryRecord,
+        decision: QuarantineDecision,
+        rationale: &str,
+        run_id: &str,
+        run: &mut DreamRun,
+    ) {
+        let request = QuarantineReviewRequest {
+            scope: record.scope.clone(),
+            memory_id: record.id.clone(),
+            decision,
+            expected_content_hash: crate::memory::records::content_hash(
+                &record.title,
+                &record.body,
+            ),
+            reviewer: QuarantineReviewer::Steward {
+                run_id: run_id.to_string(),
+            },
+            rationale: Some(rationale.to_string()),
+        };
+        let verdict = decision.as_str();
+        match self.store.review_quarantined(request).await {
+            Ok(QuarantineReviewOutcome::Released { .. }) => {
+                // The successor (a create, or the supersede of an update's
+                // prior) and the origin's tombstone.
+                run.ops_committed += 2;
+                run.verdicts.quarantine_released += 1;
+            }
+            Ok(QuarantineReviewOutcome::Tombstoned { .. }) => {
+                run.ops_committed += 1;
+                run.verdicts.quarantine_tombstoned += 1;
+            }
+            Ok(replayed) => {
+                run.skips.push(format!(
+                    "quarantine {verdict} of '{}' skipped: an earlier review already \
+                     decided it ({})",
+                    record.id,
+                    replayed.outcome_str()
+                ));
+            }
+            // The store emitted memory.quarantine.release_blocked.
+            Err(QuarantineReviewError::Refused(QuarantineReviewRefusal::SecretDetected {
+                class,
+            })) => skip_secret_blocked(run_id, &record.id, verdict, class, run),
+            Err(err) => {
+                tracing::warn!(
+                    run_id,
+                    record_id = %record.id,
+                    error = %err,
+                    "agent memory steward: quarantine {verdict} not applied"
+                );
+                run.skips.push(format!(
+                    "quarantine {verdict} of '{}' skipped: {err}",
+                    record.id
+                ));
             }
         }
     }
@@ -3330,10 +3361,7 @@ impl StewardEngine {
             };
             match self.store.commit(token).await {
                 Ok(receipt) => {
-                    let _ = self
-                        .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "committed")
-                        .await;
+                    self.settle_promotion(&notice.pending_id, "committed").await;
                     // Proposal-sourced gates (record_id carries the "prop-"
                     // token minted by `propose`) resolve their proposal on
                     // approval — otherwise the proposal re-enters every
@@ -3361,23 +3389,38 @@ impl StewardEngine {
                     });
                 }
                 Err(err) => {
+                    // Nothing was published: the batch is gone (expired, or
+                    // invalidated by an operator's tombstone) or no longer
+                    // validates against its origin.
                     tracing::warn!(
                         pending_id = %notice.pending_id,
                         error = %err,
                         "agent memory steward: gated promotion commit failed; marking expired"
                     );
-                    let _ = self
-                        .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "expired")
-                        .await;
+                    self.settle_promotion(&notice.pending_id, "expired").await;
                 }
             }
         } else if let Some(next_pending_id) = notice.next_pending_id.as_deref() {
-            // Escalation: the gate lives on under a successor pending id.
-            let _ = self
+            // Escalation: the gate lives on under a successor pending id,
+            // unless it was resolved meanwhile; a resolved promotion is never
+            // re-keyed back into the pending set.
+            match self
                 .store
                 .rekey_pending_promotion(&self.realm, &notice.pending_id, next_pending_id)
-                .await;
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => tracing::info!(
+                    pending_id = %notice.pending_id,
+                    next_pending_id,
+                    "agent memory steward: gated promotion was already resolved; not re-keyed"
+                ),
+                Err(err) => tracing::warn!(
+                    pending_id = %notice.pending_id,
+                    error = %err,
+                    "agent memory steward: gated promotion re-key failed"
+                ),
+            }
         } else {
             let token = crate::memory::staged::StageToken {
                 realm: self.realm.clone(),
@@ -3389,10 +3432,9 @@ impl StewardEngine {
             } else {
                 "denied"
             };
-            let _ = self
-                .store
-                .resolve_pending_promotion(&self.realm, &notice.pending_id, status)
-                .await;
+            if !self.settle_promotion(&notice.pending_id, status).await {
+                return;
+            }
             // An explicit operator denial rejects a proposal-sourced gate's
             // proposal (re-gating a denied proposal every dream would spam
             // the operator after a decision). A timeout leaves it held —
@@ -3407,6 +3449,37 @@ impl StewardEngine {
                 cause = %notice.cause,
                 "agent memory steward: gated promotion discarded"
             );
+        }
+    }
+
+    /// Resolve a gated promotion's mapping if it is still pending. False
+    /// when it was not (an expiry, or an operator's tombstone that
+    /// invalidated the gate, resolved it first): the mapping keeps that
+    /// state and this resolution reports nothing as its own doing.
+    async fn settle_promotion(&self, pending_id: &str, status: &str) -> bool {
+        match self
+            .store
+            .resolve_pending_promotion(&self.realm, pending_id, status)
+            .await
+        {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::info!(
+                    pending_id,
+                    status,
+                    "agent memory steward: gated promotion was already resolved; left as it is"
+                );
+                false
+            }
+            Err(err) => {
+                tracing::warn!(
+                    pending_id,
+                    status,
+                    error = %err,
+                    "agent memory steward: gated promotion resolution failed"
+                );
+                false
+            }
         }
     }
 
@@ -3790,19 +3863,29 @@ fn proposal_promotion_copy(proposal: &PendingProposal) -> NewMemoryRecord {
     }
 }
 
-/// The content copy used for quarantine releases and promotions: same
-/// title/body/tags, no evidence (derived_from carries lineage and the
-/// §10.2 ceiling walks it).
-fn release_copy(record: &MemoryRecord) -> NewMemoryRecord {
-    NewMemoryRecord {
-        kind: record.kind,
-        title: record.title.clone(),
-        description: record.description.clone(),
-        body: record.body.clone(),
-        tags: record.tags.clone(),
-        evidence: Vec::new(),
-        verification: record.provenance.verification.clone(),
-    }
+/// §10.4 loud skip for a release or promotion of secret-shaped content,
+/// with the class named (mirroring the markdown-import loud skip) so the
+/// operator can see why the queue never drains this record; tombstone
+/// remains its only exit.
+fn skip_secret_blocked(
+    run_id: &str,
+    record_id: &str,
+    verdict: &str,
+    class: &str,
+    run: &mut DreamRun,
+) {
+    tracing::warn!(
+        run_id,
+        record_id,
+        class,
+        "agent memory steward: quarantine {verdict} blocked: record content matches \
+         secret pattern; tombstone is the only exit"
+    );
+    run.skips.push(format!(
+        "quarantine {verdict} of '{record_id}' blocked: content matches secret pattern \
+         '{class}' (refused at the write seam; tombstone is the only exit)"
+    ));
+    run.verdicts.quarantine_release_blocked += 1;
 }
 
 fn scope_for_realm(
@@ -4548,9 +4631,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SqliteAgentMemoryStore::open(dir.path()).expect("store");
         store.set_llm_write_gate(gate);
+        // One sink for the engine and the store, as production wires it:
+        // a committed review's verdict is the store's to emit.
+        let events = Arc::new(CollectingEventSink::new());
+        store.set_event_sink(events.clone());
         let store = Arc::new(store);
         let llm = Arc::new(ScriptedLlm::new(replies));
-        let events = Arc::new(CollectingEventSink::new());
         let gating = Arc::new(ScriptedGatingBridge::new(pending_ids));
         let conflicts = Arc::new(CapturingConflictBridge::default());
         let transcripts = Arc::new(ScriptedTranscripts::new());
@@ -5019,9 +5105,9 @@ mod tests {
         assert!(types.contains(&"memory.quarantine.verdict"));
         assert!(types.contains(&"memory.conflict.signal"));
         assert!(types.contains(&"memory.harvest.completed"));
-        // The quarantined seed write also emitted through the store sink?
-        // (The store sink is not wired in this fixture; the gate warn is
-        // the surface there.)
+        // The store shares the sink: the quarantined seed write reported
+        // itself, and the tombstone verdict came from the committed review.
+        assert!(types.contains(&"memory.write.quarantined"));
 
         assert!(run.ops_committed >= 3 + 1 + 1 + 3 + 2);
 
@@ -5421,6 +5507,17 @@ mod tests {
         };
         assert_eq!(run.verdicts.quarantine_released, 1, "{:?}", run.skips);
         assert_eq!(run.verdicts.quarantine_gated, 1, "{:?}", run.skips);
+        // Only the applied release reports a verdict; the promotion reports
+        // through its gate.
+        let verdicts = verdict_events(&fixture);
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0]["record_id"], released_origin.as_str());
+        assert!(
+            fixture
+                .events
+                .types()
+                .contains(&"memory.promotion.pending_gate")
+        );
 
         // The release copy landed ACTIVE: the posture did not re-quarantine
         // the steward's review verdict.
@@ -5561,12 +5658,769 @@ mod tests {
         );
     }
 
+    /// Stage the gated promotion of `origin` the steward stages: a mob copy
+    /// plus the origin's tombstone, committed only on gating approval.
+    async fn stage_gated_promotion_batch(
+        fixture: &Fixture,
+        origin: &str,
+    ) -> crate::memory::staged::StageToken {
+        let origin_record = fixture
+            .store
+            .records_by_ids(REALM, &[origin.to_string()])
+            .await
+            .expect("read")
+            .remove(0);
+        fixture
+            .store
+            .stage(StagedMutationBatch {
+                kind: StagedBatchKind::ReviewVerdict,
+                realm: REALM.to_string(),
+                author: MemoryAuthor::Steward {
+                    run_id: "dream-gate".to_string(),
+                },
+                ops: vec![
+                    StagedOp::Create {
+                        id: None,
+                        scope: mob_scope(),
+                        record: release_copy(&origin_record),
+                        trust: TrustTier::AgentObserved,
+                        derived_from: vec![origin.to_string()],
+                        rationale: Some("gated quarantine promotion".to_string()),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                    },
+                    StagedOp::Tombstone {
+                        id: origin.to_string(),
+                        rationale: Some("promoted to mob scope (gated)".to_string()),
+                    },
+                ],
+            })
+            .await
+            .expect("stage promotion")
+    }
+
+    async fn map_gate(
+        fixture: &Fixture,
+        pending_id: &str,
+        origin: &str,
+        token: &crate::memory::staged::StageToken,
+    ) {
+        fixture
+            .store
+            .record_pending_promotion(
+                REALM,
+                PendingPromotion {
+                    pending_id: pending_id.to_string(),
+                    stage_token: token.token.clone(),
+                    record_id: origin.to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "mob:home".to_string(),
+                    rationale: None,
+                    status: "pending".to_string(),
+                    created_at_ms: now_ms(),
+                },
+            )
+            .await
+            .expect("gate mapping");
+    }
+
+    fn gate_notice(pending_id: &str, approved: bool, next: Option<&str>) -> GatingResolutionNotice {
+        GatingResolutionNotice {
+            pending_id: pending_id.to_string(),
+            action_id: format!("action-{pending_id}"),
+            approved,
+            next_pending_id: next.map(str::to_string),
+            cause: "approval_decided".to_string(),
+        }
+    }
+
+    fn operator_review(
+        origin: &str,
+        title: &str,
+        body: &str,
+        decision: crate::memory::review::QuarantineDecision,
+    ) -> crate::memory::review::QuarantineReviewRequest {
+        crate::memory::review::QuarantineReviewRequest {
+            scope: identity_scope("identity:worker"),
+            memory_id: origin.to_string(),
+            decision,
+            expected_content_hash: crate::memory::records::content_hash(title, body),
+            reviewer: crate::memory::review::QuarantineReviewer::Operator {
+                principal: Some("operator@example.test".to_string()),
+            },
+            rationale: None,
+        }
+    }
+
+    /// A gated promotion's mapping status, resolved or not.
+    fn gate_status(fixture: &Fixture, pending_id: &str) -> String {
+        rusqlite::Connection::open(fixture.store.path_for_realm(REALM))
+            .expect("open realm db")
+            .query_row(
+                "SELECT status FROM pending_promotions WHERE pending_id = ?1",
+                rusqlite::params![pending_id],
+                |row| row.get(0),
+            )
+            .expect("gate status")
+    }
+
+    /// The gate-registration interleaving fails closed. The steward stages
+    /// a promotion batch (a mob copy plus the origin's tombstone) and only
+    /// then persists its gate mapping; an operator review, release or
+    /// tombstone, can commit in between, because no mapping exists yet to
+    /// invalidate or wait for. A later approval of that gate cannot publish
+    /// anything: the staged batch still tombstones the origin the review
+    /// already tombstoned, the validator refuses it, and the mapping expires.
+    #[tokio::test]
+    async fn gate_approved_after_an_operator_review_expires_without_publishing() {
+        use crate::memory::review::QuarantineDecision;
+
+        let fixture = build_fixture(vec![], vec![]);
+        for (decision, title, pending_id) in [
+            (
+                QuarantineDecision::Release,
+                "Shared convention",
+                "gate-late-release",
+            ),
+            (
+                QuarantineDecision::Tombstone,
+                "Discarded convention",
+                "gate-late-tombstone",
+            ),
+        ] {
+            let body = "page the secondary first after hours";
+            let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+            let token = stage_gated_promotion_batch(&fixture, &origin).await;
+            let reviewed = fixture
+                .store
+                .review_quarantined(operator_review(&origin, title, body, decision))
+                .await
+                .expect("review commits while no mapping exists");
+            assert!(reviewed.applied(), "{reviewed:?}");
+            assert!(
+                reviewed.decision().review.invalidated_promotions.is_empty(),
+                "a mapping registered later is not one the review knew"
+            );
+
+            map_gate(&fixture, pending_id, &origin, &token).await;
+            fixture
+                .engine
+                .resolve_gating_notice(gate_notice(pending_id, true, None))
+                .await;
+            assert_eq!(gate_status(&fixture, pending_id), "expired");
+            if decision == QuarantineDecision::Release {
+                assert_eq!(
+                    fixture
+                        .store
+                        .records_by_ids(
+                            REALM,
+                            &[crate::memory::review::release_successor_id(&origin)]
+                        )
+                        .await
+                        .expect("read")
+                        .remove(0)
+                        .status,
+                    RecordStatus::Active,
+                    "the review's release stands"
+                );
+            }
+        }
+        assert!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .is_empty(),
+            "the promotions never publish"
+        );
+    }
+
+    /// An operator's tombstone invalidates a live gate (operator
+    /// invalidation) while a release stays refused. Every late resolution
+    /// of the invalidated gate loses: an approval publishes nothing (also
+    /// for a resolver already holding the staged batch, which the validator
+    /// refuses against the tombstoned origin), and a denial or escalation
+    /// neither overwrites the expired mapping nor revives it.
+    #[tokio::test]
+    async fn operator_tombstone_invalidates_a_live_gate_and_late_resolutions_lose() {
+        use crate::memory::review::{
+            QuarantineDecision, QuarantineReviewError, QuarantineReviewRefusal,
+        };
+
+        let fixture = build_fixture(vec![], vec![]);
+        let (title, body) = ("Shared convention", "page the secondary first after hours");
+        let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+        let token = stage_gated_promotion_batch(&fixture, &origin).await;
+        // The batch a resolver already read before the tombstone commits.
+        let held = stage_gated_promotion_batch(&fixture, &origin).await;
+        map_gate(&fixture, "gate-live", &origin, &token).await;
+
+        let refused = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Release,
+            ))
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(QuarantineReviewError::Refused(QuarantineReviewRefusal::GatePending { pending_id, .. }))
+                    if pending_id == "gate-live"
+            ),
+            "{refused:?}"
+        );
+        let discarded = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await
+            .expect("an operator tombstone invalidates the gate");
+        assert_eq!(discarded.outcome_str(), "tombstoned");
+        assert_eq!(
+            discarded.decision().review.invalidated_promotions,
+            vec!["gate-live".to_string()]
+        );
+        assert_eq!(gate_status(&fixture, "gate-live"), "expired");
+
+        // Late approve, deny and escalate through the resolver: none of them
+        // finds a pending gate.
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", true, None))
+            .await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", false, None))
+            .await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-live", false, Some("gate-next")))
+            .await;
+        // A resolver that looked the gate up before the tombstone: its writes
+        // lose, and the batch it holds no longer validates.
+        assert!(
+            !fixture
+                .store
+                .resolve_pending_promotion(REALM, "gate-live", "denied")
+                .await
+                .expect("resolve")
+        );
+        assert!(
+            !fixture
+                .store
+                .rekey_pending_promotion(REALM, "gate-live", "gate-next")
+                .await
+                .expect("rekey")
+        );
+        fixture
+            .store
+            .commit(held)
+            .await
+            .expect_err("the held batch cannot publish over the tombstone");
+
+        assert_eq!(gate_status(&fixture, "gate-live"), "expired");
+        assert!(
+            fixture
+                .store
+                .pending_promotion_by_id(REALM, "gate-next")
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .is_empty(),
+            "nothing publishes after the tombstone"
+        );
+    }
+
+    /// The other commit order: a gate approved before the operator decides
+    /// publishes, and the later tombstone gets the record's actual state
+    /// (tombstoned by the promotion, never reviewed) without touching the
+    /// committed gate or claiming it prevented anything.
+    #[tokio::test]
+    async fn a_promotion_committed_before_an_operator_tombstone_stands() {
+        use crate::memory::review::{
+            QuarantineDecision, QuarantineReviewError, QuarantineReviewRefusal,
+        };
+
+        let fixture = build_fixture(vec![], vec![]);
+        let (title, body) = ("Shared convention", "page the secondary first after hours");
+        let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+        let token = stage_gated_promotion_batch(&fixture, &origin).await;
+        map_gate(&fixture, "gate-first", &origin, &token).await;
+        fixture
+            .engine
+            .resolve_gating_notice(gate_notice("gate-first", true, None))
+            .await;
+        assert_eq!(gate_status(&fixture, "gate-first"), "committed");
+
+        let late = fixture
+            .store
+            .review_quarantined(operator_review(
+                &origin,
+                title,
+                body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await;
+        assert!(
+            matches!(
+                &late,
+                Err(QuarantineReviewError::Refused(
+                    QuarantineReviewRefusal::NotQuarantined {
+                        status: "tombstoned",
+                        released_as: None,
+                    }
+                ))
+            ),
+            "{late:?}"
+        );
+        assert_eq!(gate_status(&fixture, "gate-first"), "committed");
+        assert_eq!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .len(),
+            1,
+            "the approved promotion stands"
+        );
+    }
+
+    /// Script one consolidate reply carrying `verdicts` and dream once.
+    async fn dream_with_quarantine_verdicts(
+        fixture: &Fixture,
+        verdicts: serde_json::Value,
+    ) -> DreamRun {
+        let consolidate = json_reply(serde_json::json!({
+            "ops": [], "proposal_verdicts": [],
+            "quarantine_verdicts": verdicts,
+            "open_loop_escalations": [], "contradictions": [], "working_set": []
+        }));
+        {
+            let mut replies = fixture.llm.replies.lock().unwrap();
+            let slot = replies
+                .iter_mut()
+                .find(|reply| reply.as_str() == "PLACEHOLDER-CONSOLIDATE")
+                .expect("slot");
+            *slot = consolidate;
+        }
+        fixture.engine.note_session_completed();
+        let outcome = fixture.engine.dream_now().await;
+        let DreamOutcome::Completed(run) = outcome else {
+            panic!("dream must complete: {outcome:?}");
+        };
+        run
+    }
+
+    /// Apply `verdicts` to records as a dream gathered them, without
+    /// gathering again: what a dream does when an operator decided in
+    /// between.
+    async fn apply_verdicts_to(
+        fixture: &Fixture,
+        gathered: Vec<MemoryRecord>,
+        verdicts: serde_json::Value,
+    ) -> DreamRun {
+        let signals = SignalPacket {
+            proposals: Vec::new(),
+            quarantine: gathered,
+            harvests: Vec::new(),
+            ledger: Vec::new(),
+            distillates: Vec::new(),
+            tombstones: Vec::new(),
+            manifest: Vec::new(),
+            operator_candidates: Vec::new(),
+            pending_promotions: Vec::new(),
+        };
+        let verdicts: Vec<QuarantineVerdict> = serde_json::from_value(verdicts).expect("verdicts");
+        let mut run = DreamRun {
+            run_id: "dream-late".to_string(),
+            ..DreamRun::default()
+        };
+        fixture
+            .engine
+            .apply_quarantine_verdicts(&signals, verdicts, "dream-late", &mut run)
+            .await;
+        run
+    }
+
+    async fn stored_record(fixture: &Fixture, id: &str) -> MemoryRecord {
+        fixture
+            .store
+            .records_by_ids(REALM, &[id.to_string()])
+            .await
+            .expect("read")
+            .pop()
+            .expect("record exists")
+    }
+
+    /// The `memory.quarantine.verdict` payloads emitted so far.
+    fn verdict_events(fixture: &Fixture) -> Vec<serde_json::Value> {
+        fixture
+            .events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type() == "memory.quarantine.verdict")
+            .map(MemoryTimelineEvent::data)
+            .collect()
+    }
+
+    /// A clean active record and a quarantined update of it written from
+    /// the tainted session (the update leaves its prior active pending
+    /// review). Returns `(prior, update)`.
+    async fn seed_quarantined_update(fixture: &Fixture, body: &str) -> (String, String) {
+        let author = MemoryAuthor::Agent {
+            identity: "identity:worker".to_string(),
+        };
+        let scope = identity_scope("identity:worker");
+        let prior = fixture
+            .store
+            .remember_authored(
+                &scope,
+                new_record("Deploy window", "Deploys happen on Tuesdays."),
+                author.clone(),
+            )
+            .await
+            .expect("clean prior")
+            .memory_id;
+        let mut update = new_record("Deploy window", body);
+        update.evidence = vec![EvidenceRef {
+            session_id: "tainted-sess".to_string(),
+            generation: 0,
+            revision: None,
+            range: None,
+        }];
+        let update = fixture
+            .store
+            .supersede_authored(&scope, &prior, update, author)
+            .await
+            .expect("quarantined update");
+        assert!(matches!(update.status, RecordStatus::Quarantined { .. }));
+        (prior, update.memory_id)
+    }
+
+    /// The steward's release is the review an operator's decision runs:
+    /// the successor is `<origin>-released`, the committed review is the
+    /// audit evidence an operator's replay finds, and the only verdict
+    /// event is the applied one, without the steward's rationale. A hold
+    /// changes nothing and reports nothing.
+    #[tokio::test]
+    async fn steward_release_runs_the_review_an_operator_replay_finds() {
+        use crate::memory::review::release_successor_id;
+
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![],
+        );
+        let (title, body) = ("Clean incident note", "a benign body worth releasing");
+        let origin = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
+        let held = seed_quarantined(
+            &fixture.store,
+            "identity:worker",
+            "Unclear note",
+            "needs a closer look",
+        )
+        .await;
+        let run = dream_with_quarantine_verdicts(
+            &fixture,
+            serde_json::json!([
+                {"record_id": origin, "verdict": "release", "rationale": "benign"},
+                {"record_id": held, "verdict": "hold", "rationale": "unclear"}
+            ]),
+        )
+        .await;
+        assert_eq!(run.verdicts.quarantine_released, 1, "{:?}", run.skips);
+        assert_eq!(run.verdicts.quarantine_held, 1, "{:?}", run.skips);
+
+        let successor_id = release_successor_id(&origin);
+        let successor = stored_record(&fixture, &successor_id).await;
+        assert_eq!(successor.status, RecordStatus::Active);
+        assert_eq!(successor.trust, TrustTier::AgentObserved);
+        assert_eq!(successor.derived_from, vec![origin.clone()]);
+        assert!(successor.ever_quarantined);
+        assert_eq!(
+            successor.provenance.author,
+            MemoryAuthor::Steward {
+                run_id: run.run_id.clone()
+            }
+        );
+        assert_eq!(
+            stored_record(&fixture, &origin).await.status,
+            RecordStatus::Tombstoned
+        );
+        assert!(matches!(
+            stored_record(&fixture, &held).await.status,
+            RecordStatus::Quarantined { .. }
+        ));
+        let verdicts = verdict_events(&fixture);
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0]["record_id"], origin.as_str());
+        assert_eq!(verdicts[0]["verdict"], "release");
+        assert_eq!(verdicts[0]["successor_id"], successor_id.as_str());
+        assert!(verdicts[0]["rationale"].is_null(), "{verdicts:?}");
+
+        let operator_replay = QuarantineReviewRequest {
+            scope: identity_scope("identity:worker"),
+            memory_id: origin.clone(),
+            decision: QuarantineDecision::Release,
+            expected_content_hash: crate::memory::records::content_hash(title, body),
+            reviewer: QuarantineReviewer::Operator {
+                principal: Some("operator@example.test".to_string()),
+            },
+            rationale: None,
+        };
+        let replay = fixture
+            .store
+            .review_quarantined(operator_replay.clone())
+            .await
+            .expect("replay");
+        let QuarantineReviewOutcome::AlreadyReleased {
+            successor,
+            decision,
+            ..
+        } = replay
+        else {
+            panic!("an operator replay must find the dream's release: {replay:?}");
+        };
+        assert_eq!(successor.memory_id, successor_id);
+        assert_eq!(
+            decision.review.reviewer,
+            QuarantineReviewer::Steward {
+                run_id: run.run_id.clone()
+            }
+        );
+        assert_eq!(decision.review.rationale.as_deref(), Some("benign"));
+        assert_eq!(
+            verdict_events(&fixture).len(),
+            1,
+            "a replay reports nothing"
+        );
+
+        // The evidence is durable: another store opened on the same files
+        // finds the same decision.
+        let reopened = SqliteAgentMemoryStore::open(fixture._dir.path()).expect("reopen");
+        let replay = reopened
+            .review_quarantined(operator_replay)
+            .await
+            .expect("replay after reopen");
+        let QuarantineReviewOutcome::AlreadyReleased {
+            decision: reopened_decision,
+            ..
+        } = replay
+        else {
+            panic!("the dream's release must replay after reopen: {replay:?}");
+        };
+        assert_eq!(reopened_decision, decision);
+    }
+
+    /// A quarantined UPDATE released by the dream supersedes the record it
+    /// updates, so exactly one version stays active (no fork).
+    #[tokio::test]
+    async fn steward_release_of_a_quarantined_update_supersedes_its_prior() {
+        use crate::memory::review::release_successor_id;
+
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![],
+        );
+        let (prior, update) =
+            seed_quarantined_update(&fixture, "Deploys moved to Thursdays.").await;
+        let run = dream_with_quarantine_verdicts(
+            &fixture,
+            serde_json::json!([
+                {"record_id": update, "verdict": "release", "rationale": "confirmed"}
+            ]),
+        )
+        .await;
+        assert_eq!(run.verdicts.quarantine_released, 1, "{:?}", run.skips);
+
+        let successor_id = release_successor_id(&update);
+        let successor = stored_record(&fixture, &successor_id).await;
+        assert_eq!(successor.status, RecordStatus::Active);
+        assert_eq!(successor.supersedes.as_deref(), Some(prior.as_str()));
+        assert_eq!(successor.derived_from, vec![update.clone()]);
+        assert_eq!(
+            stored_record(&fixture, &prior).await.status,
+            RecordStatus::Superseded { by: successor_id }
+        );
+    }
+
+    /// A dream releasing a quarantined update whose prior is gone is
+    /// refused (`stale_update`): nothing resurrects, the update stays
+    /// quarantined with tombstone as its exit, and no verdict is reported.
+    #[tokio::test]
+    async fn steward_release_of_a_stale_update_is_refused_and_stays_quarantined() {
+        use crate::memory::review::release_successor_id;
+
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![],
+        );
+        let (prior, update) = seed_quarantined_update(&fixture, "Deploys moved to Fridays.").await;
+        fixture
+            .store
+            .forget_authored(
+                &identity_scope("identity:worker"),
+                &prior,
+                MemoryAuthor::Agent {
+                    identity: "identity:worker".to_string(),
+                },
+            )
+            .await
+            .expect("forget prior");
+
+        let run = dream_with_quarantine_verdicts(
+            &fixture,
+            serde_json::json!([
+                {"record_id": update, "verdict": "release", "rationale": "confirmed"}
+            ]),
+        )
+        .await;
+        assert_eq!(run.verdicts.quarantine_released, 0, "{:?}", run.skips);
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains(&update) && skip.contains("not active")),
+            "{:?}",
+            run.skips
+        );
+        assert!(matches!(
+            stored_record(&fixture, &update).await.status,
+            RecordStatus::Quarantined { .. }
+        ));
+        assert!(
+            fixture
+                .store
+                .records_by_ids(REALM, &[release_successor_id(&update)])
+                .await
+                .expect("read")
+                .is_empty()
+        );
+        assert_eq!(verdict_events(&fixture), Vec::<serde_json::Value>::new());
+    }
+
+    /// A dream that judged records an operator has since decided loses
+    /// typed: the same decision replays as already decided, another is
+    /// refused, nothing is written and no verdict is reported again.
+    #[tokio::test]
+    async fn steward_verdicts_after_an_operator_review_write_nothing() {
+        use crate::memory::review::release_successor_id;
+
+        let fixture = build_fixture(vec![], vec![]);
+        let released = seed_quarantined(
+            &fixture.store,
+            "identity:worker",
+            "Released note",
+            "released by an operator",
+        )
+        .await;
+        let discarded = seed_quarantined(
+            &fixture.store,
+            "identity:worker",
+            "Discarded note",
+            "discarded by an operator",
+        )
+        .await;
+        // What the dream gathered, before the operator decided.
+        let gathered = vec![
+            stored_record(&fixture, &released).await,
+            stored_record(&fixture, &discarded).await,
+        ];
+        for (record, decision) in [
+            (&gathered[0], QuarantineDecision::Release),
+            (&gathered[1], QuarantineDecision::Tombstone),
+        ] {
+            let outcome = fixture
+                .store
+                .review_quarantined(QuarantineReviewRequest {
+                    scope: record.scope.clone(),
+                    memory_id: record.id.clone(),
+                    decision,
+                    expected_content_hash: crate::memory::records::content_hash(
+                        &record.title,
+                        &record.body,
+                    ),
+                    reviewer: QuarantineReviewer::Operator {
+                        principal: Some("operator@example.test".to_string()),
+                    },
+                    rationale: None,
+                })
+                .await
+                .expect("operator review");
+            assert!(outcome.applied(), "{outcome:?}");
+        }
+        assert_eq!(verdict_events(&fixture).len(), 2);
+
+        let run = apply_verdicts_to(
+            &fixture,
+            gathered,
+            serde_json::json!([
+                {"record_id": released, "verdict": "release", "rationale": "benign"},
+                {"record_id": discarded, "verdict": "release", "rationale": "benign after all"}
+            ]),
+        )
+        .await;
+        assert_eq!(run.verdicts.quarantine_released, 0, "{:?}", run.skips);
+        assert_eq!(run.ops_committed, 0);
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains(&released) && skip.contains("already_released")),
+            "{:?}",
+            run.skips
+        );
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains(&discarded) && skip.contains("not quarantined")),
+            "{:?}",
+            run.skips
+        );
+        assert_eq!(
+            verdict_events(&fixture).len(),
+            2,
+            "the losers report nothing"
+        );
+        assert_eq!(
+            stored_record(&fixture, &release_successor_id(&released))
+                .await
+                .provenance
+                .author,
+            MemoryAuthor::Operator
+        );
+        assert!(
+            fixture
+                .store
+                .records_by_ids(REALM, &[release_successor_id(&discarded)])
+                .await
+                .expect("read")
+                .is_empty()
+        );
+    }
+
     /// §10.4: a quarantined record whose content matches a secret pattern
     /// can never re-stage (release/promotion copies are refused at the
-    /// staged chokepoint), so the steward pre-scans and skips the verdict
-    /// loudly with the class named — and other verdicts in the same dream
-    /// still commit — instead of dropping the group with a generic
-    /// validation skip every dream forever.
+    /// staged chokepoint), so the review refuses the release typed and the
+    /// steward skips the verdict loudly with the class named (and other
+    /// verdicts in the same dream still commit) instead of dropping the
+    /// group with a generic validation skip every dream forever. Only the
+    /// applied release reports a verdict.
     #[tokio::test]
     async fn secret_shaped_quarantine_release_skips_loudly_and_others_commit() {
         let fixture = build_fixture(
@@ -5669,6 +6523,19 @@ mod tests {
             .expect("read")
             .remove(0);
         assert!(matches!(blocked.status, RecordStatus::Quarantined { .. }));
+        let verdicts = verdict_events(&fixture);
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0]["record_id"], clean.as_str());
+        assert_eq!(
+            fixture
+                .events
+                .types()
+                .iter()
+                .filter(|kind| **kind == "memory.quarantine.release_blocked")
+                .count(),
+            1,
+            "the refusal is reported once"
+        );
     }
 
     /// §10.1 proposal firewall pin: a proposal tainted at propose time is
