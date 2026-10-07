@@ -11,6 +11,14 @@ documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+# Forensic captures used only by in-repo tests stay out of the published
+# package. Their readers are `#[cfg(test)]` modules and integration tests,
+# which a dependent's build never compiles.
+exclude = [
+    "tests/fixtures/homecore_ledgerv1_closure/",
+    "tests/fixtures/homecore_security_idempotency/",
+    "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
+]
 
 [package.metadata.cargo-machete]
 # `meerkat-openai` is an OPTIONAL dependency that exists solely as a feature
