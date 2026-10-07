@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{AgentFactory, Config, build_ephemeral_service};
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder};
 use meerkat_client::TestClient;
 use meerkat_core::{
     AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
@@ -327,8 +327,12 @@ impl MobSessionService for NeverStartsActorRunService {
         self.inner.supports_persistent_sessions()
     }
 
-    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        self.inner.runtime_adapter()
+    fn acquire_runtime_adapter(
+        &self,
+        explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+    {
+        self.inner.acquire_runtime_adapter(explicit)
     }
 
     async fn session_belongs_to_mob(&self, session_id: &SessionId, mob_id: &MobId) -> bool {
@@ -355,9 +359,21 @@ async fn boot_runtime(
     );
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::MemoryBlobStore::new());
-    let factory = AgentFactory::new(state).comms(true).builtins(false);
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+    let factory = AgentFactory::new(state)
+        .session_store(session_store.clone())
+        .comms(true)
+        .builtins(false);
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_blob_store = Some(blob_store.clone());
     let service: Arc<dyn MobSessionService> =
-        Arc::new(build_ephemeral_service(factory, Config::default(), 1));
+        Arc::new(meerkat_session::PersistentSessionService::new(
+            builder,
+            1,
+            session_store,
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
     let attempted = refuse_actor_runs.then(|| Arc::new(Notify::new()));
     let service: Arc<dyn MobSessionService> = if let Some(attempted) = attempted.as_ref() {
         Arc::new(NeverStartsActorRunService {
@@ -367,10 +383,10 @@ async fn boot_runtime(
     } else {
         service
     };
-    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        runtime_store,
-        blob_store,
-    ));
+    let machine = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(runtime_store, blob_store)
+            .expect("acquire the never-executed persistence fixture runtime machine"),
+    );
     let definition = MobDefinition::from_toml(
         r#"
 [mob]
@@ -387,6 +403,7 @@ comms = true
     .expect("mob definition");
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
         .with_session_runtime_adapter(machine)
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -409,12 +426,13 @@ comms = true
     )
 }
 
-fn runtime_adapter(runtime: &UnifiedRuntime) -> Arc<meerkat_runtime::MeerkatMachine> {
+fn runtime_machine(runtime: &UnifiedRuntime) -> Arc<meerkat_runtime::MeerkatMachine> {
     let service = runtime
         .mob_runtime()
         .session_service()
         .expect("MobKit runtime exposes its session service");
-    MobSessionService::runtime_adapter(service.as_ref())
+    MobSessionService::acquire_runtime_adapter(service.as_ref(), None)
+        .expect("acquire the MobKit session service's runtime adapter")
         .expect("MobKit session service exposes its runtime adapter")
 }
 
@@ -456,7 +474,7 @@ async fn never_executed_terminal_survives_mobkit_runtime_restart() {
         .resolve_bridge_session_id(&AgentIdentity::from(MEMBER_ID))
         .await
         .expect("spawned member has a bridge session");
-    let first_adapter = runtime_adapter(&first);
+    let first_adapter = runtime_machine(&first);
 
     let mut prompt = PromptInput::new("work that must never be reported as completed", None);
     prompt.header.idempotency_key = Some(IdempotencyKey::new(IDEMPOTENCY_KEY));
@@ -535,7 +553,7 @@ async fn never_executed_terminal_survives_mobkit_runtime_restart() {
     drop(first_adapter);
 
     let (restarted, _) = boot_runtime(&state, false).await;
-    let restarted_adapter = runtime_adapter(&restarted);
+    let restarted_adapter = runtime_machine(&restarted);
     let by_id =
         SessionServiceRuntimeExt::input_state(restarted_adapter.as_ref(), &session_id, &input_id)
             .await

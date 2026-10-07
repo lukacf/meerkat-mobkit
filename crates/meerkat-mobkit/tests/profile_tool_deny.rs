@@ -212,6 +212,7 @@ async fn runtime_for(
         16,
         None,
     )
+    .expect("build the profile tool deny ephemeral spec")
     .with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: true,
         notify_orchestrator_on_resume: true,

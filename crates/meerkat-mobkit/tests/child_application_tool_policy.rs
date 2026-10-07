@@ -121,6 +121,7 @@ async fn boot(
         4,
         None,
     )
+    .expect("build the child application tool policy ephemeral spec")
     .with_options(options());
     MobRuntime::bootstrap(configure(spec))
         .await

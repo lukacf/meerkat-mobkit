@@ -513,8 +513,7 @@ pub enum StorageResolutionError {
     /// swallowing it here would hide the signal that path exists to raise.
     Council(crate::council_wiring::CouncilStoreError),
     /// The composition's runtime machine could not be built or acquired over
-    /// its store (meerkat 0.8.52: execution custody and typed readiness are
-    /// acquired at construction and can refuse).
+    /// its store because execution custody or controller readiness was refused.
     Runtime(meerkat_runtime::RuntimeDriverError),
 }
 

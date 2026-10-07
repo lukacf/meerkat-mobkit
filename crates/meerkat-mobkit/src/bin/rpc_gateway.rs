@@ -58,9 +58,11 @@ use meerkat_mobkit::{
 use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
+#[cfg(test)]
+use meerkat::EphemeralSessionService;
 use meerkat::{
-    AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService, FactoryAgent,
-    FactoryAgentBuilder, SessionAgentBuilder, SessionError,
+    AgentEvent, AgentFactory, Config, CreateSessionRequest, FactoryAgent, FactoryAgentBuilder,
+    SessionAgentBuilder, SessionError,
 };
 use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
@@ -2516,8 +2518,8 @@ default_binding = "local"
 
     /// A gateway-shaped callback job runtime with one completed job whose
     /// Event subscription targets `subscriber`. The delivery service is a
-    /// concrete `PersistentSessionService` left unbound, as the gateway used
-    /// to build it; the serving machine is passed explicitly.
+    /// concrete `PersistentSessionService` that acquires the explicit serving
+    /// machine before its first runtime use.
     async fn event_delivery_fixture(
         temp: &std::path::Path,
         register_subscriber: bool,
@@ -2538,10 +2540,13 @@ default_binding = "local"
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary));
-        let serving = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let serving = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("acquire the RPC gateway fixture runtime machine"),
+        );
         let factory = meerkat::AgentFactory::new(temp);
         let builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
         let concrete: Arc<dyn meerkat_mob::MobSessionService> =
@@ -2552,11 +2557,13 @@ default_binding = "local"
                 Arc::clone(&runtime_store),
                 Arc::clone(&blob_store),
             ));
+        let acquired = concrete
+            .acquire_runtime_adapter(Some(Arc::clone(&serving)))
+            .expect("acquire the event delivery fixture's serving runtime owner")
+            .expect("the event delivery service exposes its runtime owner");
         assert!(
-            !concrete
-                .runtime_adapter()
-                .is_some_and(|machine| Arc::ptr_eq(&machine, &serving)),
-            "precondition: an unbound service answers with a machine of its own"
+            acquired.shares_runtime_execution_owner_with(&serving),
+            "event delivery and the session service must share their runtime owner"
         );
 
         let origin = meerkat_core::SessionId::new();
@@ -2621,13 +2628,9 @@ default_binding = "local"
         Ok((runtime, serving, subscriber))
     }
 
-    /// A job Event delivery is admitted on the machine that SERVES the
-    /// subscriber's session. A directly constructed service answers
-    /// `runtime_adapter()` with a machine of its own; admitting there failed
-    /// ("Runtime not ready: destroyed") and blocked that session's delivery
-    /// queue. The fixture leaves the service unbound, so this pins that the
-    /// drain admits on the machine it was given, never one read back from the
-    /// service.
+    /// A job Event delivery is admitted on the machine that serves the
+    /// subscriber's session. The service acquires that explicit owner before
+    /// registration, and the drain receives the same machine for admission.
     #[tokio::test]
     async fn a_job_event_delivery_is_admitted_on_the_serving_machine()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -3952,10 +3955,13 @@ comms = true
                     runtime_store,
                     session_store.clone(),
                 );
-            let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-                Arc::clone(&runtime_store),
-                Arc::clone(&blob_store),
-            ));
+            let adapter = Arc::new(
+                meerkat_runtime::MeerkatMachine::persistent(
+                    Arc::clone(&runtime_store),
+                    Arc::clone(&blob_store),
+                )
+                .expect("acquire the RPC gateway fixture runtime machine"),
+            );
             let factory = AgentFactory::new(state).builtins(false).comms(true);
             let mut inner = FactoryAgentBuilder::new(factory, Config::default());
             inner.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
@@ -3993,6 +3999,7 @@ comms = true
             .with_runtime_authority_prewarm(&runtime_store)
             .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
+            .expect("acquire the RPC gateway fixture session runtime owner")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -10334,10 +10341,8 @@ impl DetachedCallbackJobRuntime {
     }
 
     /// Wire the delivery target: the session service for notifications and
-    /// the machine that SERVES those sessions for event admission. The
-    /// machine is passed explicitly, never read back from the service: a
-    /// directly constructed service answers `runtime_adapter()` with a
-    /// machine of its own, and admission there fails ("Runtime not ready").
+    /// its acquired serving machine for event admission. The gateway acquires
+    /// that explicit owner before attaching the delivery target.
     fn attach_delivery_service(
         &self,
         service: Arc<dyn meerkat_mob::MobSessionService>,
@@ -13909,10 +13914,19 @@ external_addressable = true
                 runtime_store,
                 session_store.clone(),
             );
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway runtime machine: {error}"),
+                )
+            }),
+        );
         // Match the ephemeral path's capability mask — only comms is enabled
         // by default. Apps control additional capabilities via their mob
         // definition profiles, not the gateway factory.
@@ -14094,19 +14108,24 @@ external_addressable = true
         // Keep the CONCRETE typed service for the firing host (the runtime-backed
         // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
         // erased Arc<dyn MobSessionService> the spec consumes).
-        // Bound to the serving machine: unbound, a directly constructed
-        // service answers `runtime_adapter()` with a machine of its own,
-        // which serves no session.
-        let concrete_service = Arc::new(
-            meerkat_session::PersistentSessionService::new(
-                callback_builder,
-                gateway_options.max_sessions,
-                session_store,
-                Arc::clone(&runtime_store),
-                blob_store,
-            )
-            .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-        );
+        let concrete_service = Arc::new(meerkat_session::PersistentSessionService::new(
+            callback_builder,
+            gateway_options.max_sessions,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+        concrete_service
+            .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!(
+                        "failed to acquire the persistent gateway session runtime owner: {error}"
+                    ),
+                )
+            });
         if let Some(detached_jobs) = detached_jobs.as_ref() {
             let delivery_service: Arc<dyn meerkat_mob::MobSessionService> =
                 concrete_service.clone();
@@ -14165,6 +14184,13 @@ external_addressable = true
             // never the session body).
             .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway session runtime owner: {error}"),
+                )
+            })
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
             .with_workgraph_service(workgraph_service.clone())
@@ -14172,6 +14198,13 @@ external_addressable = true
             // 0.7.26 last-link fix): without this, agent-authored schedules
             // can't rewrite to mob-member targets or deliver them.
             .with_agent_mob_tools(agent_mob_tools_slot)
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to install gateway agent mob tools: {error}"),
+                )
+            })
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -14279,10 +14312,9 @@ external_addressable = true
             detached_jobs,
         )
     } else {
-        // Ephemeral mode (original behavior).
-        // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
-        // so agent-level persistence is not needed. This avoids failures on read-only
-        // filesystems (e.g., GKE containers) where the default JSONL store can't write.
+        // Process-local mode keeps sessions and runtime state in memory.
+        // The supported persistent service/machine pair does not require
+        // durable session files on read-only container filesystems.
         let temp_dir = if scratch_dir.is_none() {
             Some(tempfile::tempdir().expect("create temp dir for agent working space"))
         } else {
@@ -14309,15 +14341,26 @@ external_addressable = true
         // sound for any store as long as every write goes through it.
         let (runtime_store, session_write_epochs) =
             meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway runtime machine: {error}"),
+                )
+            }),
+        );
+        let process_local_session_store: Arc<dyn meerkat::SessionStore> =
+            Arc::new(meerkat::MemoryStore::new());
         let mut factory = AgentFactory::new(agent_workspace)
             .builtins(false)
             .shell(shell)
             .comms(true)
-            .session_store(Arc::new(meerkat::MemoryStore::new()));
+            .session_store(process_local_session_store.clone());
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
@@ -14328,6 +14371,9 @@ external_addressable = true
         }
         let mut inner_builder =
             FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            process_local_session_store.clone(),
+        )));
         inner_builder.default_blob_store = Some(blob_store.clone());
         // No-persistent_state launches default to a memory-backed
         // workgraph (tools stay profile-gated, so nothing changes for
@@ -14417,7 +14463,7 @@ external_addressable = true
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
-            session_store: None,
+            session_store: Some(process_local_session_store.clone()),
             detached_jobs: None,
         };
         // Heal seam (2026-07-29 incident): captured from the CONCRETE
@@ -14472,26 +14518,49 @@ external_addressable = true
                     session_store: Some(session_store.clone()),
                     detached_jobs: None,
                 };
-                // Bound to the serving machine, as in the persistent-store
-                // composition above.
-                let concrete = Arc::new(
-                    meerkat_session::PersistentSessionService::new(
-                        callback_builder,
-                        gateway_options.max_sessions,
-                        session_store,
-                        Arc::clone(&runtime_store),
-                        blob_store.clone(),
-                    )
-                    .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-                );
+                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
+                    callback_builder,
+                    gateway_options.max_sessions,
+                    session_store,
+                    Arc::clone(&runtime_store),
+                    blob_store.clone(),
+                ));
+                concrete
+                    .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            STORAGE_RESOLUTION_CODE,
+                            format!(
+                                "failed to acquire the continuity-backed gateway \
+                                 session runtime owner: {error}"
+                            ),
+                        )
+                    });
                 committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
                 gateway_transcript_edit_service = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
-                Arc::new(EphemeralSessionService::new(
+                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
                     callback_builder,
                     gateway_options.max_sessions,
-                ))
+                    process_local_session_store,
+                    Arc::clone(&runtime_store),
+                    blob_store.clone(),
+                ));
+                concrete
+                    .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            STORAGE_RESOLUTION_CODE,
+                            format!(
+                                "failed to acquire the process-local gateway \
+                                 session runtime owner: {error}"
+                            ),
+                        )
+                    });
+                concrete
             };
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
@@ -14505,6 +14574,13 @@ external_addressable = true
             // different instance here would warm nothing.
             .with_runtime_authority_prewarm(&runtime_store)
             .with_session_runtime_adapter(adapter.clone())
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway session runtime owner: {error}"),
+                )
+            })
             .with_workgraph_service(workgraph_service.clone())
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
@@ -14533,7 +14609,7 @@ external_addressable = true
             } else {
                 meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
                     "sessions",
-                    "EphemeralSessionService",
+                    "MemoryStore",
                     "declared by the ephemeral launch mode",
                 )
             },

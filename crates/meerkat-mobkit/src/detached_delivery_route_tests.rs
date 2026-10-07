@@ -8,11 +8,11 @@
 //! hold its turn for the whole child run.
 //!
 //! `MobMcpState::new` takes its adapter from the session service it is given
-//! (`MobSessionService::runtime_adapter`), captured when MobKit installs the
-//! agent mob tools. Each test pins two facts per composition: the route is
-//! not blocked, and it is the SAME machine MobKit runs its sessions on (the
-//! one `MobRuntime` hands to `MobBuilder`: the spec's runtime adapter, else the
-//! session service's), so a detached completion is admitted by the runtime
+//! (`MobSessionService::acquire_runtime_adapter`), captured when MobKit
+//! installs the agent mob tools. Each test pins two facts per composition:
+//! the route is not blocked, and it uses the machine hosting the sessions (the
+//! one `MobRuntime` acquires from the session service with the spec's explicit
+//! runtime adapter), so a detached completion is admitted by the runtime
 //! that owns the owner's session.
 
 #![allow(clippy::expect_used, clippy::panic)]
@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use meerkat::{Config, FactoryAgentBuilder};
-use meerkat_session::{EphemeralSessionService, PersistentSessionService};
+use meerkat_session::PersistentSessionService;
 
 use crate::mob_handle_runtime::{CapabilityFlags, MobBootstrapSpec};
 
@@ -51,16 +51,19 @@ fn assert_detached_route_on_runtime_machine(spec: &MobBootstrapSpec, composition
         None,
         "{composition}: fork_off/council must deliver detached, not block"
     );
-    let route = spec
-        .session_service
-        .runtime_adapter()
+    let route = state
+        .session_service()
+        .acquire_runtime_adapter(None)
+        .unwrap_or_else(|error| {
+            panic!("{composition}: acquire the detached route runtime: {error}")
+        })
         .unwrap_or_else(|| panic!("{composition}: the session service exposes no runtime"));
-    // The machine `MobRuntime` hands to `MobBuilder` (mob_handle_runtime:
-    // `spec.runtime_adapter`, else the session service's own).
+    // The canonical machine `MobRuntime` hands to `MobBuilder`, acquired
+    // from the session service with the spec's explicit adapter.
     let runtime = spec
-        .runtime_adapter
-        .clone()
-        .or_else(|| spec.session_service.runtime_adapter())
+        .session_service
+        .acquire_runtime_adapter(spec.runtime_adapter.clone())
+        .unwrap_or_else(|error| panic!("{composition}: acquire the runtime machine: {error}"))
         .unwrap_or_else(|| panic!("{composition}: the runtime has no machine"));
     assert!(
         Arc::ptr_eq(&route, &runtime),
@@ -94,10 +97,13 @@ async fn gateway_persistent_composition_delivers_detached() {
     )));
     builder.default_blob_store = Some(blob_store.clone());
     let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the detached delivery fixture runtime machine"),
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -111,37 +117,53 @@ async fn gateway_persistent_composition_delivers_detached() {
         service,
     )
     .with_session_runtime_adapter(adapter.clone())
-    .with_agent_mob_tools(mob_tools_slot);
+    .expect("acquire the fixture session runtime owner")
+    .with_agent_mob_tools(mob_tools_slot)
+    .expect("install the detached delivery fixture's agent mob tools");
     spec.runtime_adapter = Some(adapter);
     assert_detached_route_on_runtime_machine(&spec, "gateway persistent composition");
 }
 
-/// `rpc_gateway`'s and `mobkit_gateway`'s ephemeral-session modes: an
-/// ephemeral session service with an explicit machine.
+/// `rpc_gateway`'s and `mobkit_gateway`'s process-local modes: a persistent
+/// session service over in-memory stores with an explicit machine.
 #[tokio::test]
 async fn gateway_ephemeral_session_composition_delivers_detached() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
-        meerkat_runtime::store::SqliteRuntimeStore::new(temp.path().join("runtime-store.sqlite3"))
-            .expect("runtime store"),
-    );
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::MemoryBlobStore::new());
     let factory = meerkat::AgentFactory::new(temp.path()).comms(true);
-    let builder = FactoryAgentBuilder::new(factory, Config::default());
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+        session_store.clone(),
+    )));
+    builder.default_blob_store = Some(blob_store.clone());
     let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the detached delivery fixture runtime machine"),
+    );
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store,
         runtime_store,
         blob_store,
     ));
-    let service = Arc::new(EphemeralSessionService::new(builder, 16));
     let mut spec = MobBootstrapSpec::new(
         definition("route-gateway-ephemeral"),
         meerkat_mob::MobStorage::in_memory(),
         service,
     )
     .with_session_runtime_adapter(adapter.clone())
-    .with_agent_mob_tools(mob_tools_slot);
+    .expect("acquire the fixture session runtime owner")
+    .with_agent_mob_tools(mob_tools_slot)
+    .expect("install the detached delivery fixture's agent mob tools");
     spec.runtime_adapter = Some(adapter);
     assert_detached_route_on_runtime_machine(&spec, "gateway ephemeral-session composition");
 }
@@ -185,7 +207,8 @@ async fn library_runtime_backed_ephemeral_constructor_delivers_detached() {
         CapabilityFlags::default(),
         None,
         None,
-    );
+    )
+    .expect("build the runtime-backed ephemeral detached delivery spec");
     assert_detached_route_on_runtime_machine(&spec, "library runtime-backed ephemeral constructor");
 }
 
@@ -199,6 +222,7 @@ async fn library_ephemeral_constructor_delivers_detached() {
         temp.path().to_path_buf(),
         16,
         None,
-    );
+    )
+    .expect("build the ephemeral detached delivery spec");
     assert_detached_route_on_runtime_machine(&spec, "library ephemeral constructor");
 }

@@ -694,7 +694,8 @@ comms = true
             16,
             None,
         )
-    };
+    }
+    .unwrap_or_else(|error| panic!("build {constructor_name} ephemeral spec: {error}"));
     let llm_client = Arc::new(IncidentPackTestClient::for_provider(Provider::Other));
     let spec = spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: true,
@@ -1214,8 +1215,10 @@ comms = true
         MobSessionService::supports_runtime_turn_apply(session_service.as_ref()),
         "the stock ephemeral service must support generic runtime-turn apply"
     );
-    let runtime_adapter = MobSessionService::runtime_adapter(session_service.as_ref())
-        .expect("the stock ephemeral service exposes its runtime adapter");
+    let runtime_adapter =
+        MobSessionService::acquire_runtime_adapter(session_service.as_ref(), None)
+            .expect("acquire the stock ephemeral service's runtime adapter")
+            .expect("the stock ephemeral service exposes its runtime adapter");
     assert!(
         !runtime_adapter.has_session_llm_reconfigure_host(),
         "this fixture deliberately leaves the session LLM reconfiguration host uninstalled"

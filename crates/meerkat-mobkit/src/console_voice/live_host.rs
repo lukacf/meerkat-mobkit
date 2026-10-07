@@ -942,10 +942,10 @@ pub(crate) mod tests {
             let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
             let blobs: Arc<dyn meerkat_core::BlobStore> =
                 Arc::new(Base64BlobStoreAdapter::new(binary.clone()));
-            let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-                runtime_store.clone(),
-                blobs.clone(),
-            ));
+            let machine = Arc::new(
+                meerkat_runtime::MeerkatMachine::persistent(runtime_store.clone(), blobs.clone())
+                    .expect("acquire the live voice fixture runtime machine"),
+            );
             let factory = meerkat::AgentFactory::new(directory.path())
                 .session_store(store.clone())
                 .runtime_root(directory.path())
@@ -998,12 +998,15 @@ pub(crate) mod tests {
                 service.clone(),
             )
             .with_session_runtime_adapter(machine.clone())
+            .expect("acquire the fixture session runtime owner")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: false,
                 notify_orchestrator_on_resume: true,
                 default_llm_client: Some(client),
             });
-            spec = spec.with_agent_mob_tools(mob_tools);
+            spec = spec
+                .with_agent_mob_tools(mob_tools)
+                .expect("install the live voice fixture's agent mob tools");
             spec.runtime_adapter = Some(machine.clone());
             spec.binary_blob_store = Some(binary);
             let runtime = Arc::new(

@@ -2449,7 +2449,7 @@ where
     B: meerkat_session::SessionAgentBuilder + 'static,
 {
     fn runtime_completion_observer(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        MobSessionService::runtime_adapter(self)
+        crate::mob_handle_runtime::observed_runtime_adapter(self)
     }
 
     async fn recover_committed_boundary(
@@ -4048,9 +4048,7 @@ impl MobSessionBridge {
         if let Some(explicit) = self.runtime_ingress_authority.as_ref() {
             return Some(Arc::clone(explicit));
         }
-        self.session_service
-            .as_ref()?
-            .runtime_adapter()
+        crate::mob_handle_runtime::observed_runtime_adapter(self.session_service.as_ref()?.as_ref())
             .map(|machine| machine as Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>)
     }
 
@@ -5696,7 +5694,9 @@ impl SessionBridge for MobSessionBridge {
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> Option<super::types::MemberDurability> {
-        let machine = self.session_service.as_ref()?.runtime_adapter()?;
+        let machine = crate::mob_handle_runtime::observed_runtime_adapter(
+            self.session_service.as_ref()?.as_ref(),
+        )?;
         member_durability_from_machine(machine.durability_reload_required(session_id).await)
     }
 

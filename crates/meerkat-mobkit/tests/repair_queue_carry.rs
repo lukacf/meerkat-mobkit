@@ -179,10 +179,13 @@ async fn build_harness(gate: watch::Receiver<bool>) -> Harness {
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let machine = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the repair queue fixture runtime machine"),
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -207,6 +210,7 @@ comms = true
     let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
         .with_session_runtime_adapter(machine.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

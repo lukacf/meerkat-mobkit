@@ -201,10 +201,13 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
             .expect("runtime store"),
     );
     let (runtime_store, session_write_epochs) = epoch_tracking_runtime_store(runtime_store);
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the idle CPU fixture runtime machine"),
+    );
     let factory = AgentFactory::new(&state_path)
         .session_store(session_store.clone())
         .builtins(false)
@@ -222,6 +225,7 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_session_write_epochs(&session_write_epochs)
         .with_session_runtime_adapter(adapter)
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

@@ -139,8 +139,7 @@ pub enum UnifiedRuntimeBuilderError {
     SessionStoreNotIncremental {
         store_kind: String,
     },
-    /// The composition's runtime machine could not be built or acquired
-    /// (meerkat 0.8.52: execution custody and typed readiness can refuse).
+    /// The composition's runtime machine could not be built or acquired.
     Runtime(meerkat_runtime::RuntimeDriverError),
 }
 

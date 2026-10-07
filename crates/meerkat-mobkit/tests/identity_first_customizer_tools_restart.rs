@@ -238,7 +238,11 @@ async fn resolved_tools(runtime: &meerkat_mobkit::UnifiedRuntime) -> Vec<String>
 async fn member_run_starts_held(runtime: &meerkat_mobkit::UnifiedRuntime) -> Option<bool> {
     let status = runtime.identity_runtime()?.status(&id(MEMBER)).await.ok()?;
     let session_id = status.session_id?;
-    let machine = runtime.mob_runtime().session_service()?.runtime_adapter()?;
+    let machine = runtime
+        .mob_runtime()
+        .session_service()?
+        .acquire_runtime_adapter(None)
+        .expect("acquire the customizer restart fixture's runtime adapter")?;
     machine.run_starts_held_for_test(&session_id).await
 }
 

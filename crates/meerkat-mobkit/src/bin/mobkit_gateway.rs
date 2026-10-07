@@ -544,10 +544,9 @@ fn gateway_agent_config(
 
 /// Returns (session_service, runtime_adapter, binary_blob_store).
 ///
-/// The runtime adapter is supplied separately from the session service so
-/// the session service's `runtime_store` stays `None` — keeping the
-/// StoreCheckpointer enabled.  The adapter is wired into MobBuilder
-/// directly via `with_runtime_adapter()`.
+/// The session service and explicit runtime adapter share the same runtime
+/// store. The service acquires that adapter before its schedule, voice, and
+/// mob hosts are composed.
 #[allow(clippy::too_many_arguments)]
 fn build_persistent_session_service(
     layout: &MobKitStorageLayout,
@@ -614,10 +613,13 @@ fn build_persistent_session_service(
             runtime_store,
             session_store.clone() as Arc<dyn meerkat::SessionStore>,
         );
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .context("failed to acquire the gateway runtime machine")?,
+    );
     let mut factory = AgentFactory::new(store_dir)
         .session_store(session_store.clone())
         .runtime_root(runtime_root)
@@ -696,6 +698,9 @@ fn build_persistent_session_service(
         Arc::clone(&runtime_store),
         blob_store,
     ));
+    service
+        .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+        .context("failed to acquire the persistent gateway session runtime owner")?;
     let schedule_host_inputs = schedule_tools.map(|tools| {
         (
             tools.service,
@@ -1740,10 +1745,12 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             // never the session body).
             .with_runtime_archived_terminal_authority(runtime_store)
             .with_session_runtime_adapter(adapter.clone())
+            .context("failed to acquire the gateway session runtime owner")?
             .with_workgraph_service(workgraph_service.clone())
             // This is the persistent session builder's shared agent-tool slot.
             // Identity activation needs it even when console voice is absent.
-            .with_agent_mob_tools(Arc::clone(&voice_inputs.4));
+            .with_agent_mob_tools(Arc::clone(&voice_inputs.4))
+            .context("failed to install gateway agent mob tools")?;
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         if let Some((_, admission_slot, state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the tool-plane
@@ -1784,11 +1791,16 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         // sound for any store as long as every write goes through it.
         let (runtime_store, session_write_epochs) =
             meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .context("failed to acquire the gateway runtime machine")?,
+        );
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
         let mut factory = AgentFactory::new(&runtime_root)
+            .session_store(session_store.clone())
             .runtime_root(runtime_root.clone())
             .project_root(project_root.clone())
             .builtins(true)
@@ -1806,7 +1818,10 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         // compaction declaration on top.
         let config = gateway_agent_config(host_config.as_ref(), compaction_policy.as_ref())?;
         let mut builder = FactoryAgentBuilder::new(factory, config);
-        builder.default_blob_store = Some(blob_store);
+        builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        builder.default_blob_store = Some(blob_store.clone());
         // The default TUX launch is ephemeral: a memory-backed workgraph
         // keeps the feature available (tools stay profile-gated). Memory
         // store = single process, so no admission sidecar.
@@ -1816,14 +1831,16 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
                 &runtime_id,
             );
         let workgraph_service = Some(ephemeral_workgraph);
-        let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
-        // THE FIX: share the explicit adapter's persistence authority with the
-        // session service. Without this, EphemeralSessionService keeps its own
-        // (store-less) adapter, meerkat 0.7's canonical_runtime_adapter check sees
-        // a mismatch and fails closed with "failed to bootstrap local runtime" —
-        // which is what broke every shipped 0.7.x mobkit_gateway binary on the
-        // first mobkit/init (persistent_sessions defaults off, so this is the path
-        // every launch hits). rpc_gateway.rs already had this call.
+        let session_service = Arc::new(PersistentSessionService::new(
+            builder,
+            64,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+        session_service
+            .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+            .context("failed to acquire the process-local gateway session runtime owner")?;
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_session_write_epochs(&session_write_epochs)
             // The SAME facade handed to MeerkatMachine::persistent above.
@@ -1831,16 +1848,17 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             // different instance here would warm nothing.
             .with_runtime_authority_prewarm(&runtime_store)
             .with_session_runtime_adapter(adapter.clone())
+            .context("failed to acquire the gateway session runtime owner")?
             .with_workgraph_service(workgraph_service.clone())
             .with_workgraph_admission_slot(workgraph_admission_slot);
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        // In-memory blobs are the declared choice of the default ephemeral
-        // launch; no persistent session service, so no H2 flag.
+        // The service's session and blob stores are explicitly process-local;
+        // no disk-backed session store is advertised by this launch.
         let mut slots = vec![
             meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
                 "sessions",
-                "EphemeralSessionService",
+                "MemoryStore",
                 "declared by the default ephemeral launch (persistent_sessions = false)",
             ),
             meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
@@ -1885,8 +1903,8 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             )
             .with_slots(slots),
         );
-        // Ephemeral sessions have no persistent service; the runtime-backed
-        // schedule firing host (and thus schedule tools) is persistent-only.
+        // This process-local launch keeps the schedule firing host and voice
+        // host disabled; their gateway configuration is persistent-only.
         (spec, None, workgraph_service, None)
     };
     let (session_spec, schedule_host_inputs, workgraph_service, voice_inputs) = session_bootstrap;

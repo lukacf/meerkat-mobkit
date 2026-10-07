@@ -3365,10 +3365,13 @@ external_addressable = true
         let attached = attach_schedule_tools_with_identity_targets(&inner_builder, &state)
             .expect("schedule tools attach");
         let inner_builder_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("acquire the schedule delivery fixture runtime machine"),
+        );
         let concrete = Arc::new(PersistentSessionService::new(
             inner_builder,
             16,
@@ -3406,7 +3409,9 @@ schedule = true
             concrete.clone(),
         )
         .with_session_runtime_adapter(adapter.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_agent_mob_tools(agent_mob_tools_slot)
+        .expect("install the schedule delivery fixture's agent mob tools")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
