@@ -5505,16 +5505,16 @@ mod tests {
         owner
     }
 
-    fn stage_exists(fixture: &Fixture, token: &str) -> bool {
+    /// The staged batch row (token, batch, creation time), if it still exists.
+    fn staged_row(fixture: &Fixture, token: &str) -> Option<(String, String, i64)> {
         rusqlite::Connection::open(fixture.store.path_for_realm(REALM))
             .expect("open realm db")
             .query_row(
-                "SELECT COUNT(*) FROM stage WHERE token = ?1",
+                "SELECT token, batch, created_at_ms FROM stage WHERE token = ?1",
                 rusqlite::params![token],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .expect("stage count")
-            == 1
+            .ok()
     }
 
     /// A legacy promotion's custody is ambiguous: every pre-epoch restart
@@ -5535,12 +5535,12 @@ mod tests {
             .await
             .expect("pending")
             .remove(0);
-        assert!(stage_exists(&fixture, &staged.stage_token));
+        let stage = staged_row(&fixture, &staged.stage_token).expect("staged batch");
 
-        for decision in [
-            crate::runtime::GatingDecision::Approve,
-            crate::runtime::GatingDecision::Reject,
-            crate::runtime::GatingDecision::Escalate,
+        for (decision_name, decision) in [
+            ("approve", crate::runtime::GatingDecision::Approve),
+            ("reject", crate::runtime::GatingDecision::Reject),
+            ("escalate", crate::runtime::GatingDecision::Escalate),
         ] {
             let mut owner = owner_with_restored_legacy_gate(legacy_gate);
             #[derive(Default)]
@@ -5577,8 +5577,12 @@ mod tests {
                 .pending_promotions(REALM)
                 .await
                 .expect("pending");
-            assert_eq!(pending, vec![staged.clone()]);
-            assert!(stage_exists(&fixture, &staged.stage_token));
+            assert_eq!(pending, vec![staged.clone()], "{decision_name}");
+            assert_eq!(
+                staged_row(&fixture, &staged.stage_token).as_ref(),
+                Some(&stage),
+                "{decision_name}"
+            );
             assert!(mob_titles(&fixture).await.is_empty());
         }
     }
