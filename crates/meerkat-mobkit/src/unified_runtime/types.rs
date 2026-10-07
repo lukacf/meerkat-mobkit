@@ -139,6 +139,9 @@ pub enum UnifiedRuntimeBuilderError {
     SessionStoreNotIncremental {
         store_kind: String,
     },
+    /// The composition's runtime machine could not be built or acquired
+    /// (meerkat 0.8.52: execution custody and typed readiness can refuse).
+    Runtime(meerkat_runtime::RuntimeDriverError),
 }
 
 impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
@@ -179,6 +182,7 @@ impl Display for UnifiedRuntimeBuilderError {
                  ContinuityStore::as_incremental_sessions on the continuity store (or forward \
                  it from the store your wrapper wraps)"
             ),
+            Self::Runtime(err) => write!(f, "{err}"),
         }
     }
 }

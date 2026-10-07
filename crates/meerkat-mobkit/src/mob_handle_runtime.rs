@@ -2436,14 +2436,17 @@ fn install_agent_mob_tools(
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
-) -> (
-    Arc<meerkat_mob_mcp::MobMcpState>,
-    ImplicitDelegateRetirementOverrides,
-    SharedDefaultLlmClientSlot,
-    SharedConsoleSpawnSinkSlot,
-    SharedIdentityRuntimeSlot,
-    AgentMobToolsInstall,
-) {
+) -> Result<
+    (
+        Arc<meerkat_mob_mcp::MobMcpState>,
+        ImplicitDelegateRetirementOverrides,
+        SharedDefaultLlmClientSlot,
+        SharedConsoleSpawnSinkSlot,
+        SharedIdentityRuntimeSlot,
+        AgentMobToolsInstall,
+    ),
+    meerkat_runtime::RuntimeDriverError,
+> {
     let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
         install_agent_mob_tools_with(
             definition,
@@ -2454,7 +2457,7 @@ fn install_agent_mob_tools(
             council_store.clone(),
             AgentMobChildPolicy::default(),
             None,
-        );
+        )?;
     let install = AgentMobToolsInstall {
         slot,
         session_service,
@@ -2462,14 +2465,14 @@ fn install_agent_mob_tools(
         default_llm_client_slot: Arc::clone(&llm_slot),
         council_store,
     };
-    (
+    Ok((
         state,
         overrides,
         llm_slot,
         console_spawn_sink,
         identity_runtime,
         install,
-    )
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2489,21 +2492,26 @@ fn install_agent_mob_tools_with(
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
     child_policy: AgentMobChildPolicy,
     existing_slots: Option<(SharedConsoleSpawnSinkSlot, SharedIdentityRuntimeSlot)>,
-) -> (
-    Arc<meerkat_mob_mcp::MobMcpState>,
-    ImplicitDelegateRetirementOverrides,
-    SharedDefaultLlmClientSlot,
-    SharedConsoleSpawnSinkSlot,
-    SharedIdentityRuntimeSlot,
-) {
+) -> Result<
+    (
+        Arc<meerkat_mob_mcp::MobMcpState>,
+        ImplicitDelegateRetirementOverrides,
+        SharedDefaultLlmClientSlot,
+        SharedConsoleSpawnSinkSlot,
+        SharedIdentityRuntimeSlot,
+    ),
+    meerkat_runtime::RuntimeDriverError,
+> {
     let default_llm_client_slot = default_llm_client_slot
         .unwrap_or_else(|| Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>)));
     let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
     // Forward the workgraph service so agent-spawned child mobs
     // (delegate / mob_spawn_member) inherit apply-time attention overlays.
-    let mut state =
-        meerkat_mob_mcp::MobMcpState::new(session_service, meerkat_mob::MobControlPrincipal::Owner)
-            .with_workgraph_service(workgraph_service);
+    let mut state = meerkat_mob_mcp::MobMcpState::new(
+        session_service,
+        meerkat_mob::MobControlPrincipal::Owner,
+    )?
+    .with_workgraph_service(workgraph_service);
     if let Some(council_store) = council_store {
         state = state.with_temporary_council_store(council_store);
     }
@@ -2563,13 +2571,13 @@ fn install_agent_mob_tools_with(
     *slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    (
+    Ok((
         state,
         implicit_delegate_retirement_overrides,
         default_llm_client_slot,
         console_spawn_sink,
         identity_runtime,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -6752,10 +6760,29 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<bool, SessionError> {
                 self.inner.session_known_to_archive_authority(session_id).await
             }
-            fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-                self.runtime_adapter_override
-                    .clone()
-                    .or_else(|| self.inner.runtime_adapter())
+            // meerkat 0.8.52: acquisition is fallible and may name an explicit
+            // machine. The override is this spec's ONE machine; an explicit
+            // machine of another runtime owner is refused, never swapped in.
+            fn acquire_runtime_adapter(
+                &self,
+                explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+            ) -> Result<
+                Option<Arc<meerkat_runtime::MeerkatMachine>>,
+                meerkat_runtime::RuntimeDriverError,
+            > {
+                let Some(adapter) = self.runtime_adapter_override.as_ref() else {
+                    return self.inner.acquire_runtime_adapter(explicit);
+                };
+                if let Some(explicit) = explicit.as_ref()
+                    && !adapter.shares_runtime_execution_owner_with(explicit)
+                {
+                    return Err(
+                        meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                            reason: meerkat_runtime::traits::ControllerReadinessFailure::AuthorityChanged,
+                        },
+                    );
+                }
+                Ok(Some(Arc::clone(adapter)))
             }
             async fn interrupt_with_machine_authority(
                 &self,
@@ -7901,8 +7928,12 @@ impl MobSessionService for AfterCreateMobSessionService {
             .session_known_to_archive_authority(session_id)
             .await
     }
-    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        self.inner.runtime_adapter()
+    fn acquire_runtime_adapter(
+        &self,
+        explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+    {
+        self.inner.acquire_runtime_adapter(explicit)
     }
     async fn interrupt_with_machine_authority(
         &self,
@@ -8634,12 +8665,17 @@ impl MobBootstrapSpec {
     /// [`with_workgraph_service`](Self::with_workgraph_service) so child mobs
     /// inherit the workgraph authority. `mob_tools_slot` is the agent factory
     /// builder's `default_mob_tools` slot.
+    ///
+    /// # Errors
+    ///
+    /// The agent mob tools' runtime adapter could not be acquired from the
+    /// session service (meerkat 0.8.52 acquisition is fallible).
     pub fn with_agent_mob_tools(
         mut self,
         mob_tools_slot: Arc<
             std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>,
         >,
-    ) -> Self {
+    ) -> Result<Self, meerkat_runtime::RuntimeDriverError> {
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8656,14 +8692,14 @@ impl MobBootstrapSpec {
             // No `store_path` in this builder path, so no durable council
             // store: councils stay process-bound, exactly as before.
             None,
-        );
+        )?;
         self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         self.identity_runtime_slot = Some(identity_runtime_slot);
         self.agent_mob_tools_install = Some(agent_mob_tools_install);
-        self
+        Ok(self)
     }
 
     /// Thread a realm-scoped WorkGraph service into the mob runtime.
@@ -8836,13 +8872,13 @@ impl MobBootstrapSpec {
     /// shared state is side-effect free, and the slots already handed out
     /// are kept; the council store and session service are the ones the
     /// tools were first installed with.
-    fn apply_agent_mob_child_policy(&mut self) {
+    fn apply_agent_mob_child_policy(&mut self) -> Result<(), meerkat_runtime::RuntimeDriverError> {
         let child_policy = self.agent_mob_child_policy();
         if child_policy.is_empty() {
-            return;
+            return Ok(());
         }
         let Some(install) = self.agent_mob_tools_install.clone() else {
-            return;
+            return Ok(());
         };
         let existing_slots = match (&self.console_spawn_sink_slot, &self.identity_runtime_slot) {
             (Some(sink), Some(identity)) => Some((Arc::clone(sink), Arc::clone(identity))),
@@ -8858,11 +8894,12 @@ impl MobBootstrapSpec {
                 install.council_store,
                 child_policy,
                 existing_slots,
-            );
+            )?;
         self.agent_mob_mcp_state = Some(state);
         self.implicit_delegate_retirement_overrides = Some(overrides);
         self.console_spawn_sink_slot = Some(console_spawn_sink);
         self.identity_runtime_slot = Some(identity_runtime);
+        Ok(())
     }
 
     /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
@@ -9080,13 +9117,18 @@ impl MobBootstrapSpec {
     ///
     /// If `session_store` is provided, it is set on the `FactoryAgentBuilder` so
     /// that agents use the given store instead of falling back to JSONL.
+    ///
+    /// # Errors
+    ///
+    /// The runtime machine or the agent mob tools could not acquire their
+    /// runtime (meerkat 0.8.52 acquisition is fallible).
     pub fn ephemeral(
         definition: MobDefinition,
         storage: MobStorage,
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         Self::ephemeral_inner(
             definition,
             storage,
@@ -9103,6 +9145,11 @@ impl MobBootstrapSpec {
     /// Like [`ephemeral`](Self::ephemeral), but with a pre-build hook that is
     /// called before each agent is constructed. Use this to inject external
     /// tools, augment system prompts, or set per-agent labels.
+    ///
+    /// # Errors
+    ///
+    /// The runtime machine or the agent mob tools could not acquire their
+    /// runtime (meerkat 0.8.52 acquisition is fallible).
     pub fn ephemeral_with_hook(
         definition: MobDefinition,
         storage: MobStorage,
@@ -9116,7 +9163,7 @@ impl MobBootstrapSpec {
         > + Send
         + Sync
         + 'static,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         Self::ephemeral_inner(
             definition,
             storage,
@@ -9141,7 +9188,7 @@ impl MobBootstrapSpec {
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
@@ -9149,10 +9196,10 @@ impl MobBootstrapSpec {
         let runtime_adapter = if caps.image_generation {
             let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-            Some(Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-                runtime_store,
-                Arc::clone(&blob_store),
-            )))
+            Some(Arc::new(
+                meerkat_runtime::MeerkatMachine::persistent(runtime_store, Arc::clone(&blob_store))
+                    .map_err(StorageResolutionError::Runtime)?,
+            ))
         } else {
             None
         };
@@ -9186,9 +9233,13 @@ impl MobBootstrapSpec {
             builder,
             max_sessions,
         ));
-        let effective_runtime_adapter = runtime_adapter
-            .clone()
-            .or_else(|| MobSessionService::runtime_adapter(concrete_session_service.as_ref()));
+        let effective_runtime_adapter = match runtime_adapter.clone() {
+            Some(adapter) => Some(adapter),
+            None => {
+                MobSessionService::acquire_runtime_adapter(concrete_session_service.as_ref(), None)
+                    .map_err(StorageResolutionError::Runtime)?
+            }
+        };
         let reconfigure_service: Arc<
             dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
         > = concrete_session_service.clone();
@@ -9262,7 +9313,8 @@ impl MobBootstrapSpec {
             // database from a mob that keeps nothing else would leave records
             // behind that no later boot of this mob can claim.
             None,
-        );
+        )
+        .map_err(StorageResolutionError::Runtime)?;
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -9289,7 +9341,7 @@ impl MobBootstrapSpec {
         spec.resolved_storage = Some(
             ResolvedStorageSummary::new(BlobDurability::DeclaredEphemeral, None).with_slots(slots),
         );
-        spec
+        Ok(spec)
     }
 
     /// Build a persistent session service with a correctly wired `AgentFactory`.
@@ -9561,10 +9613,13 @@ impl MobBootstrapSpec {
                 session_store.clone(),
             ),
         );
-        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let runtime_adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .map_err(StorageResolutionError::Runtime)?,
+        );
         let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
@@ -9700,7 +9755,7 @@ impl MobBootstrapSpec {
             dispatch_taint: None,
             after_create_hook,
             // ONE machine for the whole spec. Without the override the
-            // wrapped service answers `runtime_adapter()` with the persistent
+            // wrapped service answers `acquire_runtime_adapter` with the persistent
             // service's own cached `MeerkatMachine::persistent` over the same
             // runtime store: a second machine next to `runtime_adapter`, which
             // `MobRuntime` hands to `MobBuilder` and which therefore hosts the
@@ -9743,7 +9798,8 @@ impl MobBootstrapSpec {
             crate::council_wiring::open_council_store(
                 &crate::council_wiring::council_db_for_store_path(&store_path),
             )?,
-        );
+        )
+        .map_err(StorageResolutionError::Runtime)?;
         spec.runtime_authority_prewarm = Some(runtime_authority_prewarm);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
@@ -9804,7 +9860,7 @@ impl MobBootstrapSpec {
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         Self::ephemeral_runtime_backed_with_provider_stores(
             definition,
             storage,
@@ -9843,7 +9899,7 @@ impl MobBootstrapSpec {
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
         let has_custom_session_store = custom_session_store.is_some();
@@ -9915,10 +9971,13 @@ impl MobBootstrapSpec {
             } else {
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
             };
-        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let runtime_adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .map_err(StorageResolutionError::Runtime)?,
+        );
         let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
@@ -10088,7 +10147,8 @@ impl MobBootstrapSpec {
             // guard's detection missed, so the site was attributed to the
             // preceding `persistent_*` function and read as correct.
             None,
-        );
+        )
+        .map_err(StorageResolutionError::Runtime)?;
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -10142,7 +10202,23 @@ impl MobBootstrapSpec {
             ResolvedStorageSummary::new(blob_durability, session_store_incremental)
                 .with_slots(slots),
         );
-        spec
+        Ok(spec)
+    }
+}
+
+/// The session service's runtime machine for an OBSERVATION. meerkat 0.8.52
+/// made acquisition fallible; a refused acquisition is logged and observed as
+/// no machine, which every caller already reads as inconclusive or
+/// unavailable, never as a negative answer.
+fn observed_runtime_adapter(
+    service: &dyn MobSessionService,
+) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+    match service.acquire_runtime_adapter(None) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            tracing::warn!(%error, "runtime adapter acquisition refused; observation is inconclusive");
+            None
+        }
     }
 }
 
@@ -10160,6 +10236,9 @@ pub enum MobRuntimeError {
     CompositionProvenance(crate::mob_composition_manifest::MobCompositionProvenanceError),
     /// A teardown stop did not settle the mob's flow runs within its budget.
     MobStopFlowRunsUnsettled(Box<crate::unified_runtime::MobStopFlowRunsUnsettled>),
+    /// The runtime machine could not be acquired or composed (meerkat 0.8.52
+    /// acquisition is fallible: typed readiness, execution custody).
+    Runtime(meerkat_runtime::RuntimeDriverError),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -10171,6 +10250,7 @@ impl std::fmt::Display for MobRuntimeError {
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
             Self::MobStopFlowRunsUnsettled(err) => write!(f, "{err}"),
+            Self::Runtime(err) => write!(f, "{err}"),
         }
     }
 }
@@ -10618,7 +10698,8 @@ impl MobRuntime {
         let raw_definition = spec.definition.clone();
         // Before anything reads the agent mob-tool state: child mobs get the
         // host's final application tool policy and child bundles.
-        spec.apply_agent_mob_child_policy();
+        spec.apply_agent_mob_child_policy()
+            .map_err(MobRuntimeError::Runtime)?;
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
@@ -10642,10 +10723,12 @@ impl MobRuntime {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = default_llm_client.clone();
         }
-        let effective_runtime_adapter = spec
-            .runtime_adapter
-            .clone()
-            .or_else(|| session_service.runtime_adapter());
+        let effective_runtime_adapter = match spec.runtime_adapter.clone() {
+            Some(adapter) => Some(adapter),
+            None => session_service
+                .acquire_runtime_adapter(None)
+                .map_err(MobRuntimeError::Runtime)?,
+        };
 
         // Create-vs-resume selection, in ONE place. An in-memory storage is
         // always empty at boot, so this single read serves both modes:
@@ -11305,7 +11388,7 @@ impl MobRuntime {
         let adapter = self
             .session_service
             .as_ref()
-            .and_then(|service| service.runtime_adapter());
+            .and_then(|service| observed_runtime_adapter(service.as_ref()));
         for (run_id, input_id) in attempts {
             let Ok(input_uuid) = uuid::Uuid::parse_str(input_id) else {
                 continue;
@@ -11364,7 +11447,7 @@ impl MobRuntime {
     ///   a boundary commit holds until it lands, so a timeout usually means a
     ///   commit is in flight.
     pub async fn session_commit_pending(&self, session_id: &str) -> Option<bool> {
-        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let runtime_adapter = observed_runtime_adapter(self.session_service.as_ref()?.as_ref())?;
         let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
         bounded_commit_pending(
             runtime_adapter.session_has_uncommitted_run_input(&session_id),
@@ -11378,7 +11461,7 @@ impl MobRuntime {
     /// `None` when the runtime adapter does not answer within the bound
     /// (inconclusive, never a guessed `false`).
     pub async fn session_has_active_inputs(&self, session_id: &str) -> Option<bool> {
-        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let runtime_adapter = observed_runtime_adapter(self.session_service.as_ref()?.as_ref())?;
         let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
         bounded_commit_pending(
             async {
@@ -11414,7 +11497,7 @@ impl MobRuntime {
         let Some(runtime_adapter) = self
             .session_service
             .as_ref()
-            .and_then(|service| service.runtime_adapter())
+            .and_then(|service| observed_runtime_adapter(service.as_ref()))
         else {
             return SessionDrainRead::Stalled;
         };
@@ -11486,7 +11569,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(MobRuntimeError::Runtime)?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11537,7 +11623,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(MobRuntimeError::Runtime)?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11566,7 +11655,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(MobRuntimeError::Runtime)?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11849,7 +11941,10 @@ pub async fn model_routing_status_for_session(
     let Some(session_service) = session_service else {
         return Err(RoutingStatusUnavailable::RuntimeUnsupported);
     };
-    let Some(runtime_adapter) = session_service.runtime_adapter() else {
+    let Some(runtime_adapter) = session_service
+        .acquire_runtime_adapter(None)
+        .map_err(|error| RoutingStatusUnavailable::UpstreamReadFailed(error.to_string()))?
+    else {
         return Err(RoutingStatusUnavailable::RuntimeUnsupported);
     };
     let routing =
@@ -13532,6 +13627,7 @@ mod tests {
             4,
             None,
         )
+        .expect("bootstrap spec")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -15123,7 +15219,10 @@ realm_profile = "worker-v2"
             "persistent_with_hook must provide a runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .expect("acquire runtime adapter")
+                .is_some(),
             "session service must own a runtime_store so archive/retire don't \
              hit the store-only-projection rejection in meerkat-session"
         );
@@ -15164,7 +15263,8 @@ realm_profile = "worker-v2"
                 hook_called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
                 Box::pin(async { Ok(()) })
             },
-        );
+        )
+        .expect("bootstrap spec");
 
         let runtime_adapter = spec
             .runtime_adapter
@@ -16232,8 +16332,14 @@ comms = true
             true
         }
 
-        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-            Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))
+        fn acquire_runtime_adapter(
+            &self,
+            explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+        ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+        {
+            Ok(Some(explicit.unwrap_or_else(|| {
+                Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())
+            })))
         }
 
         async fn cancel_after_boundary_with_machine_authority(
@@ -17009,7 +17115,8 @@ comms = true
             &session_id,
             &run_id,
             wrapped
-                .runtime_adapter()
+                .acquire_runtime_adapter(None)
+                .expect("acquire runtime adapter")
                 .expect("wrapper should expose runtime adapter")
                 .session_control_authority(),
         )
@@ -17143,7 +17250,8 @@ comms = true
                 &session_id,
                 &run_id,
                 wrapped
-                    .runtime_adapter()
+                    .acquire_runtime_adapter(None)
+                    .expect("acquire runtime adapter")
                     .expect("wrapper should expose runtime adapter")
                     .session_control_authority(),
             )
@@ -17157,7 +17265,8 @@ comms = true
             &session_id,
             &run_id,
             wrapped
-                .runtime_adapter()
+                .acquire_runtime_adapter(None)
+                .expect("acquire runtime adapter")
                 .expect("wrapper should expose runtime adapter")
                 .session_control_authority(),
         )
@@ -21010,7 +21119,10 @@ comms = true
             "persistent bootstrap must expose the same committed runtime store for notice observations"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .expect("acquire runtime adapter")
+                .is_some(),
             "session service must own a runtime_store so archive/retire don't \
              hit the store-only-projection rejection"
         );
@@ -21330,6 +21442,7 @@ comms = true
                 None,
                 provider,
             )
+            .expect("bootstrap spec")
         }
     }
 
@@ -21610,7 +21723,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
         assert_eq!(summary.blob_durability, BlobDurability::DeclaredEphemeral);
         assert_eq!(summary.session_store_incremental, None);
@@ -21659,7 +21773,8 @@ comms = true
             .unwrap_or_else(|| panic!("persistent spec carries its runtime machine"));
         let served = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .expect("acquire runtime adapter")
             .unwrap_or_else(|| panic!("persistent session service exposes a runtime machine"));
         assert!(
             Arc::ptr_eq(&served, &runtime),
@@ -21691,13 +21806,17 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         assert!(
             spec.runtime_adapter.is_some(),
             "ephemeral_runtime_backed_inner must expose the shared runtime authority"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .expect("acquire runtime adapter")
+                .is_some(),
             "session service must still expose a runtime adapter so autonomous-host comms can wire"
         );
         assert_notice_store_observes_machine_admission(&spec).await;
@@ -21812,7 +21931,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let state = spec
             .agent_mob_mcp_state
             .expect("agent mob MCP state should be installed");
@@ -21867,7 +21987,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         // `TestClient::default()` DOES synthesize accounting under 0.8.22, but
         // under `Provider::Other` - and every profile in these tests is
         // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the spawn
@@ -21938,7 +22059,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
             meerkat_core::Provider::OpenAI,
         )));
@@ -22003,7 +22125,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
             meerkat_core::Provider::OpenAI,
         )));
@@ -22087,7 +22210,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         restarted_spec.options.default_llm_client = Some(Arc::new(
             meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
         ));
@@ -22157,14 +22281,16 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let spec_adapter = spec
             .runtime_adapter
             .as_ref()
             .unwrap_or_else(|| panic!("public ephemeral builds must retain their runtime adapter"));
         let service_adapter = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .expect("acquire runtime adapter")
             .unwrap_or_else(|| panic!("session service must expose the retained runtime adapter"));
         assert!(
             Arc::ptr_eq(spec_adapter, &service_adapter),
@@ -22498,7 +22624,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let runtime = MobRuntime::bootstrap(spec)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
@@ -22554,14 +22681,16 @@ image_generation = true
             store_path,
             4,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let spec_adapter = spec
             .runtime_adapter
             .as_ref()
             .expect("image-generation ephemeral builds must expose a runtime adapter");
         let service_adapter = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .expect("acquire runtime adapter")
             .expect("session service must expose the same runtime adapter");
         assert!(
             spec_adapter.shares_runtime_persistence_with(&service_adapter),

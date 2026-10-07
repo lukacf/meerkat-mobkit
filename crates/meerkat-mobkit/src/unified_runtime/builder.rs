@@ -2173,21 +2173,7 @@ impl UnifiedRuntimeBuilder {
                 agent_config,
                 self.provider_meerkat_stores.clone(),
             )
-            .map_err(|error| match error {
-                crate::storage_health::StorageResolutionError::Blob(
-                    crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared,
-                ) => UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string()),
-                crate::storage_health::StorageResolutionError::Blob(
-                    crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
-                )
-                | crate::storage_health::StorageResolutionError::RuntimeStore(_)
-                | crate::storage_health::StorageResolutionError::JobStore(_)
-                // An unreadable council store is the same class: a durable slot
-                // present on disk that refused at composition time.
-                | crate::storage_health::StorageResolutionError::Council(_) => {
-                    UnifiedRuntimeBuilderError::Io(error.to_string())
-                }
-            })?
+            .map_err(storage_resolution_builder_error)?
         } else if let Some(ref scratch_dir) = self.scratch_dir {
             std::fs::create_dir_all(scratch_dir).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!(
@@ -2212,6 +2198,7 @@ impl UnifiedRuntimeBuilder {
                 agent_config,
                 self.provider_meerkat_stores.clone(),
             )
+            .map_err(storage_resolution_builder_error)?
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.
             let temp_dir = tempfile::tempdir().map_err(|e| {
@@ -2233,7 +2220,8 @@ impl UnifiedRuntimeBuilder {
                 caps,
                 after_hook,
                 agent_config,
-            );
+            )
+            .map_err(storage_resolution_builder_error)?;
             spec._ephemeral_dir = Some(Arc::new(temp_dir));
             spec
         };
@@ -2295,6 +2283,29 @@ fn verify_shared_state_root(
     Ok(())
 }
 
+/// The builder-level class of a bootstrap storage refusal.
+fn storage_resolution_builder_error(
+    error: crate::storage_health::StorageResolutionError,
+) -> UnifiedRuntimeBuilderError {
+    match error {
+        crate::storage_health::StorageResolutionError::Blob(
+            crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared,
+        ) => UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string()),
+        crate::storage_health::StorageResolutionError::Blob(
+            crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
+        )
+        | crate::storage_health::StorageResolutionError::RuntimeStore(_)
+        | crate::storage_health::StorageResolutionError::JobStore(_)
+        // An unreadable council store is the same class: a durable slot
+        // present on disk that refused at composition time.
+        | crate::storage_health::StorageResolutionError::Council(_) => {
+            UnifiedRuntimeBuilderError::Io(error.to_string())
+        }
+        crate::storage_health::StorageResolutionError::Runtime(error) => {
+            UnifiedRuntimeBuilderError::Runtime(error)
+        }
+    }
+}
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {

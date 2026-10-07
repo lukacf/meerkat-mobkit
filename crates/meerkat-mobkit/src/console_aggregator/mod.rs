@@ -9707,8 +9707,12 @@ mod tests {
             self.inner.live_session_actor_registered(session_id).await
         }
 
-        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-            self.inner.runtime_adapter()
+        fn acquire_runtime_adapter(
+            &self,
+            explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+        ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+        {
+            self.inner.acquire_runtime_adapter(explicit)
         }
 
         fn supports_runtime_turn_apply(&self) -> bool {
