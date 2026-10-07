@@ -1033,8 +1033,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unrelated gate that reused the ID; a newly staged promotion whose ID
   collided with an old mapping also lost its own stage while the old
   mapping stayed. Each runtime now mints action, pending and audit IDs as
-  `gate-<kind>-v2-<epoch>-<sequence>` under its own random epoch, so new IDs
-  never match earlier, restored or legacy IDs. Treat gate IDs as opaque.
+  `gate-<kind>-v2-<epoch>-<sequence>` under its own random 128-bit epoch, so
+  new IDs do not match earlier or restored IDs, barring a random epoch
+  collision, and never match legacy IDs. Treat gate IDs as opaque.
   Exhausting the sequence, or a missing epoch when the platform's entropy
   source failed, refuses the evaluation (`safe_draft` with
   `gating_sequence_exhausted` or `gating_identity_unavailable`) or the

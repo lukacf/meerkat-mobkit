@@ -1031,7 +1031,8 @@ pub struct GatingAuditEntry {
 /// Version 1 snapshots hold sequential legacy IDs (`gate-<kind>-<sequence>`).
 /// Version 2 snapshots also hold epoch IDs (`gate-<kind>-v2-<epoch>-<sequence>`).
 /// A restoring owner keeps every restored ID as it is and mints new IDs under
-/// its own fresh epoch, so they cannot alias restored or legacy IDs.
+/// its own fresh epoch, so they do not alias restored IDs (barring a random
+/// epoch collision) and never alias legacy IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingStateSnapshot {
     pub version: u32,
@@ -1703,10 +1704,11 @@ fn current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// A fresh random epoch for one gating owner. Every gate identity the owner
-/// mints carries it, so no later process, other owner, or restored or legacy
-/// record can hold the same identity. Failed entropy leaves the owner unable
-/// to mint, with no fallback.
+/// A fresh random 128-bit epoch for one gating owner. Every gate identity the
+/// owner mints carries it, so a later process or another owner does not
+/// reissue the same identity, barring a random epoch collision. Legacy
+/// sequential IDs have a different form and never match. Failed entropy
+/// leaves the owner unable to mint, with no fallback.
 fn new_gating_epoch() -> Option<String> {
     use rand_core::RngCore;
     let mut bytes = [0_u8; 16];
