@@ -195,6 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The published crate no longer includes in-repo forensic test captures.
 - The memory steward's quarantine `release` and `tombstone` verdicts run the
   operator review's store transaction (`StewardStore::review_quarantined`,
   reviewer `steward`; see Added), so a record is decided once, by whichever
