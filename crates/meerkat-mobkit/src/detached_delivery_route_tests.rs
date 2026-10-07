@@ -43,6 +43,15 @@ fn assert_detached_route_on_runtime_machine(spec: &MobBootstrapSpec, composition
         .agent_mob_mcp_state
         .as_ref()
         .unwrap_or_else(|| panic!("{composition}: agent mob tools must be installed"));
+    assert!(
+        Arc::ptr_eq(
+            spec.storage
+                .forked_participant_store()
+                .expect("fixture root participant custody"),
+            &state.forked_participant_store_for_tests(),
+        ),
+        "{composition}: councils must read the root mob's exact capability store"
+    );
     assert_eq!(
         state.detached_delivery_blocked_because(),
         None,
@@ -619,6 +628,71 @@ mod completion_delivery {
                 .expect("native member address")
         }
 
+        async fn wait_for_council_participant(
+            &self,
+            gate: &TurnGate,
+            council_id: &str,
+            job_id: &str,
+        ) {
+            let council_id = meerkat_mob::temporary_council::TemporaryCouncilId::new(council_id)
+                .expect("returned council identity");
+            let store = self
+                .runtime
+                .agent_mob_mcp_state()
+                .expect("final MCP state")
+                .temporary_council_store_for_tests();
+            let mut entered = gate.entered.subscribe();
+            let mut progress = None;
+            let reached = tokio::time::timeout(WAIT, async {
+                loop {
+                    if *entered.borrow_and_update() > 0 {
+                        return;
+                    }
+                    if let Some(record) =
+                        store.load(&council_id).await.expect("read council custody")
+                    {
+                        assert_eq!(
+                            record.detached_job.as_ref().map(|job| job.job_id.as_str()),
+                            Some(job_id),
+                            "observe only this detached council's custody"
+                        );
+                        // Project only typed progress, never the record's bearer capabilities.
+                        progress = Some((
+                            record.machine_state.lifecycle_phase,
+                            record
+                                .participants
+                                .iter()
+                                .map(|participant| {
+                                    (
+                                        participant.order,
+                                        participant.acquisition,
+                                        participant.seated,
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        ));
+                        if let Some(result) = record.result {
+                            panic!(
+                                "council sealed before its first provider gate: {:?}",
+                                result.exit_reason,
+                            );
+                        }
+                    }
+                    tokio::select! {
+                        changed = entered.changed() => {
+                            changed.expect("gate remains owned");
+                        },
+                        () = tokio::time::sleep(Duration::from_millis(25)) => {},
+                    }
+                }
+            })
+            .await;
+            assert!(
+                reached.is_ok(),
+                "council provider gate timed out; last typed custody progress: {progress:?}",
+            );
+        }
+
         async fn assert_no_completion(&self, member: &str, job_id: &str) {
             let address = self.member_address(member).await;
             let session = self.session(member).await;
@@ -844,9 +918,11 @@ mod completion_delivery {
             }),
         )
         .await;
-        assert!(started["council_id"].as_str().is_some());
+        let council_id = started["council_id"].as_str().expect("council identity");
         let job_id = started["job_id"].as_str().expect("council job id");
-        gate.wait_entered(1).await;
+        fixture
+            .wait_for_council_participant(&gate, council_id, job_id)
+            .await;
         fixture.assert_no_completion("convener", job_id).await;
         gate.release();
         let outcome = fixture

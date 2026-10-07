@@ -2437,6 +2437,7 @@ pub(crate) struct AgentMobToolsInstall {
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: SharedDefaultLlmClientSlot,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+    forked_participant_store: Option<Arc<dyn meerkat_mob::store::ForkedParticipantStore>>,
     delivery: MobRuntimeDelivery,
 }
 
@@ -2481,6 +2482,7 @@ fn install_agent_mob_tools(
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+    forked_participant_store: Option<Arc<dyn meerkat_mob::store::ForkedParticipantStore>>,
     delivery: MobRuntimeDelivery,
 ) -> Result<InstalledAgentMobTools, MobRuntimeDeliveryError> {
     let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
@@ -2492,6 +2494,7 @@ fn install_agent_mob_tools(
             workgraph_service.clone(),
             default_llm_client_slot,
             council_store.clone(),
+            forked_participant_store.clone(),
             AgentMobChildPolicy::default(),
             None,
             &delivery,
@@ -2504,6 +2507,7 @@ fn install_agent_mob_tools(
         workgraph_service,
         default_llm_client_slot: Arc::clone(&llm_slot),
         council_store,
+        forked_participant_store,
         delivery,
     };
     Ok((
@@ -2532,6 +2536,7 @@ fn install_agent_mob_tools_with(
     // `TemporaryCouncilStore::list_unfinished` able to see anything after a
     // reboot, which is the whole point of the recovery path.
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+    forked_participant_store: Option<Arc<dyn meerkat_mob::store::ForkedParticipantStore>>,
     child_policy: AgentMobChildPolicy,
     existing_slots: Option<(SharedConsoleSpawnSinkSlot, SharedIdentityRuntimeSlot)>,
     delivery: &MobRuntimeDelivery,
@@ -2559,6 +2564,13 @@ fn install_agent_mob_tools_with(
     .with_workgraph_service(workgraph_service);
     if let Some(council_store) = council_store {
         state = state.with_temporary_council_store(council_store);
+    }
+    // The root handle is built separately and inserted into this state. Its
+    // source-owned capabilities must remain readable when a temporary council
+    // seats them in a mob built by this state. Absence stays absent on the
+    // root storage; never replace it with the state's default custody store.
+    if let Some(store) = forked_participant_store {
+        state = state.with_forked_participant_store(store);
     }
     // The host's application tool policy for child mobs (agent `mob_create`
     // and delegate's implicit mob): the registry, the binding every child
@@ -8738,6 +8750,7 @@ impl MobBootstrapSpec {
             // No `store_path` in this builder path, so no durable council
             // store: councils stay process-bound, exactly as before.
             None,
+            self.storage.forked_participant_store().cloned(),
             delivery,
         )?;
         self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -8918,15 +8931,28 @@ impl MobBootstrapSpec {
     /// here, once, before anything uses the state. Nothing has run yet, the
     /// shared state is side-effect free, and the slots already handed out
     /// are kept; the council store and session service are the ones the
-    /// tools were first installed with.
+    /// tools were first installed with. The participant store follows the
+    /// final spec.storage, including when that is the only changed input.
     fn apply_agent_mob_child_policy(&mut self) -> Result<(), MobRuntimeDeliveryError> {
         let child_policy = self.agent_mob_child_policy();
-        if child_policy.is_empty() {
-            return Ok(());
-        }
         let Some(install) = self.agent_mob_tools_install.clone() else {
             return Ok(());
         };
+        let forked_participant_store = self.storage.forked_participant_store().cloned();
+        // Public spec.storage can be replaced after the tools were installed.
+        // Handle identity only decides whether to rebuild the composition;
+        // capability access and authorization remain in the native store.
+        let same_store = match (
+            install.forked_participant_store.as_ref(),
+            forked_participant_store.as_ref(),
+        ) {
+            (Some(installed), Some(selected)) => Arc::ptr_eq(installed, selected),
+            (None, None) => true,
+            _ => false,
+        };
+        if child_policy.is_empty() && same_store {
+            return Ok(());
+        }
         let existing_slots = match (&self.console_spawn_sink_slot, &self.identity_runtime_slot) {
             (Some(sink), Some(identity)) => Some((Arc::clone(sink), Arc::clone(identity))),
             _ => None,
@@ -8940,6 +8966,7 @@ impl MobBootstrapSpec {
                 install.workgraph_service,
                 Some(install.default_llm_client_slot),
                 install.council_store,
+                forked_participant_store.clone(),
                 child_policy,
                 existing_slots,
                 &install.delivery,
@@ -8954,6 +8981,9 @@ impl MobBootstrapSpec {
         self.implicit_delegate_retirement_overrides = Some(overrides);
         self.console_spawn_sink_slot = Some(console_spawn_sink);
         self.identity_runtime_slot = Some(identity_runtime);
+        if let Some(install) = self.agent_mob_tools_install.as_mut() {
+            install.forked_participant_store = forked_participant_store;
+        }
         Ok(())
     }
 
@@ -9345,6 +9375,7 @@ impl MobBootstrapSpec {
             // database from a mob that keeps nothing else would leave records
             // behind that no later boot of this mob can claim.
             None,
+            spec.storage.forked_participant_store().cloned(),
             delivery,
         )
         .map_err(StorageResolutionError::Delivery)?;
@@ -9847,6 +9878,7 @@ impl MobBootstrapSpec {
             crate::council_wiring::open_council_store(
                 &crate::council_wiring::council_db_for_store_path(&store_path),
             )?,
+            spec.storage.forked_participant_store().cloned(),
             delivery,
         )
         .map_err(StorageResolutionError::Delivery)?;
@@ -10178,6 +10210,7 @@ impl MobBootstrapSpec {
             // guard's detection missed, so the site was attributed to the
             // preceding `persistent_*` function and read as correct.
             None,
+            spec.storage.forked_participant_store().cloned(),
             delivery,
         )
         .map_err(StorageResolutionError::Delivery)?;
@@ -23966,6 +23999,95 @@ image_generation = true
                 .expect("retained owner")
                 .shares_runtime_execution_owner_with(&selected)
         );
+    }
+
+    #[tokio::test]
+    async fn participant_custody_follows_final_storage_and_policy_reinstallation() {
+        for (replace_storage, remove_store, child_policy) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (false, false, true),
+        ] {
+            let dir = tempfile::tempdir().expect("fixture directory");
+            let (service, selected, store, _, jobs) = acquisition_fixture(dir.path());
+            let slot = Arc::new(std::sync::RwLock::new(None));
+            let mut spec =
+                MobBootstrapSpec::new(acquisition_definition(), MobStorage::in_memory(), service)
+                    .with_session_runtime_adapter(selected)
+                    .expect("adopt owner")
+                    .with_runtime_delivery(MobRuntimeDelivery::new(store, jobs))
+                    .with_agent_mob_tools(Arc::clone(&slot))
+                    .expect("initial tool state");
+            let initial_state = spec.agent_mob_mcp_state.clone().expect("initial state");
+            let initial_store = spec
+                .storage
+                .forked_participant_store()
+                .cloned()
+                .expect("initial root custody");
+            assert!(Arc::ptr_eq(
+                &initial_store,
+                &initial_state.forked_participant_store_for_tests(),
+            ));
+            let initial_generation = initial_state
+                .continuation_binding_generation()
+                .expect("initial continuation binding");
+            let console_slot = spec.console_spawn_sink_slot.clone().expect("console slot");
+            let identity_slot = spec.identity_runtime_slot.clone().expect("identity slot");
+            if replace_storage {
+                spec.storage = MobStorage::in_memory();
+                if remove_store {
+                    spec.storage = spec.storage.with_forked_participant_store(None);
+                }
+            }
+            if child_policy {
+                spec = spec.with_tool_consequence_policy_registry(Arc::new(
+                    meerkat_core::ToolConsequencePolicyRegistry::new(
+                        Vec::new(),
+                        Default::default(),
+                        None,
+                    )
+                    .expect("empty policy registry"),
+                ));
+            }
+            let selected_store = spec.storage.forked_participant_store().cloned();
+            spec.apply_agent_mob_child_policy()
+                .expect("install final storage and child policy");
+            let state = spec.agent_mob_mcp_state.as_ref().expect("final state");
+            let changed = replace_storage || child_policy;
+            assert_eq!(!Arc::ptr_eq(&initial_state, state), changed);
+            assert_eq!(
+                state.continuation_binding_generation() != Some(initial_generation),
+                changed,
+                "only a changed composition replaces the continuation binding"
+            );
+            assert!(Arc::ptr_eq(
+                &console_slot,
+                spec.console_spawn_sink_slot.as_ref().expect("console slot"),
+            ));
+            assert!(Arc::ptr_eq(
+                &identity_slot,
+                spec.identity_runtime_slot.as_ref().expect("identity slot"),
+            ));
+            let served_store = state.forked_participant_store_for_tests();
+            if let Some(selected_store) = selected_store {
+                assert!(Arc::ptr_eq(&selected_store, &served_store));
+                assert!(Arc::ptr_eq(
+                    &selected_store,
+                    spec.storage
+                        .forked_participant_store()
+                        .expect("root custody"),
+                ));
+            } else {
+                assert!(spec.storage.forked_participant_store().is_none());
+                assert!(
+                    !Arc::ptr_eq(&initial_store, &served_store),
+                    "removing root custody must not retain its old store in the MCP state"
+                );
+            }
+            assert_eq!(state.detached_delivery_blocked_because(), None);
+            assert!(slot.read().expect("tool slot").is_some());
+        }
     }
 
     #[tokio::test]
