@@ -473,11 +473,32 @@ mod tests {
             let first = MobRuntime::bootstrap(fixture.spec)
                 .await
                 .expect("first boot");
+            let stopped = first
+                .handle()
+                .stop()
+                .await
+                .expect("persist stopped lifecycle");
+            assert!(stopped.members.is_empty(), "the fixture has no members");
+            assert_eq!(
+                first.handle().status().await.expect("stopped state"),
+                meerkat_mob::MobState::Stopped
+            );
+            assert!(
+                first
+                    .handle()
+                    .events()
+                    .replay_all()
+                    .await
+                    .expect("replay durable stopped lifecycle")
+                    .iter()
+                    .any(|event| matches!(event.kind, meerkat_mob::MobEventKind::MobStopped)),
+                "the fixture must record an explicit Stop before recovery"
+            );
             first
                 .handle()
                 .shutdown()
                 .await
-                .expect("persist stopped mob");
+                .expect("close stopped actor");
             drop(first);
             owner_released(&fixture.delivery).await;
 

@@ -10623,12 +10623,13 @@ pub struct MobRuntime {
 
 /// The right to lift a prepared mob from `Stopped` to `Running`, once.
 ///
-/// A resumed persistent log replays the prior graceful shutdown, so the handle
-/// comes back `Stopped`. Lifting it is what makes MobMachine revive persisted
-/// sessions - and revival needs the owning identity already registered, which
-/// only an installed `IdentityRuntime` can do. So for an identity-first
-/// composition the lift cannot happen where the mob is built; it has to wait
-/// until the identity context exists.
+/// A persistent log that records a completed explicit Stop replays as
+/// `Stopped`; shutting down the actor alone preserves the durable mob phase.
+/// Lifting a stopped mob is what makes MobMachine revive persisted sessions -
+/// and revival needs the owning identity already registered, which only an
+/// installed `IdentityRuntime` can do. So for an identity-first composition the
+/// lift cannot happen where the mob is built; it has to wait until the identity
+/// context exists.
 ///
 /// This is that obligation made typed rather than left to a convention. It is
 /// only produced when a lift is genuinely owed, it is consumed by value so it
@@ -11100,11 +11101,10 @@ impl MobRuntime {
             builder.create().await?
         } else {
             let handle = builder.resume().await?;
-            // A persistent event log replays the PRIOR GRACEFUL SHUTDOWN. The
-            // last event of a clean stop is `MobStopped`, so replaying it
-            // faithfully hands back a handle in `Stopped`, and the identity
-            // restore below then tries to spawn into a stopped mob and leaves
-            // the identity broken.
+            // A completed explicit Stop records `MobStopped`, so replaying
+            // that durable phase hands back a handle in `Stopped`. Actor
+            // shutdown alone does not record a Stop. Identity restoration
+            // cannot spawn into a stopped mob until its activation is consumed.
             //
             // `bootstrap` is an operational bootstrap: the caller asked for a
             // running mob. So lift it here, once, rather than leaving every
