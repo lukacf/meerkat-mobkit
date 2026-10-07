@@ -18,32 +18,97 @@ fn valid_gating_origin(origin: &GatingOrigin) -> bool {
             .is_none_or(|value| !value.trim().is_empty())
 }
 
+fn valid_gating_epoch(epoch: &str) -> bool {
+    epoch.len() == 32
+        && epoch
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A gate identity in one of its two canonical forms.
+enum GatingIdForm<'a> {
+    /// `gate-<kind>-<sequence>`, minted before owner epochs.
+    Legacy(u64),
+    /// `gate-<kind>-v2-<epoch>-<sequence>`.
+    Epoch { epoch: &'a str, sequence: u64 },
+}
+
+fn parse_gating_id<'a>(value: &'a str, prefix: &str) -> Option<GatingIdForm<'a>> {
+    let canonical = |digits: &str| {
+        digits
+            .parse::<u64>()
+            .ok()
+            .filter(|sequence| digits == format!("{sequence:06}"))
+    };
+    let rest = value.strip_prefix(prefix)?;
+    match rest
+        .strip_prefix(GATING_ID_FORMAT)
+        .and_then(|rest| rest.strip_prefix('-'))
+    {
+        Some(rest) => {
+            let (epoch, digits) = rest.split_once('-')?;
+            if !valid_gating_epoch(epoch) {
+                return None;
+            }
+            Some(GatingIdForm::Epoch {
+                epoch,
+                sequence: canonical(digits)?,
+            })
+        }
+        None => canonical(rest).map(GatingIdForm::Legacy),
+    }
+}
+
+/// Whether `pending_id` is a pre-epoch sequential pending ID
+/// (`gate-pending-<sequence>`). Every restart of an unpersisted owner
+/// reissued those IDs, so one does not identify a single decision.
+pub(crate) fn is_legacy_sequential_pending_id(pending_id: &str) -> bool {
+    matches!(
+        parse_gating_id(pending_id, "gate-pending-"),
+        Some(GatingIdForm::Legacy(_))
+    )
+}
+
 fn validate_gating_snapshot(snapshot: &GatingStateSnapshot) -> Result<(), GatingStateRestoreError> {
     use GatingStateRestoreError::InvalidSnapshot;
-    if snapshot.version != 1 {
-        return Err(GatingStateRestoreError::UnsupportedVersion(
-            snapshot.version,
-        ));
+    let legacy = match snapshot.version {
+        1 => true,
+        2 => false,
+        version => return Err(GatingStateRestoreError::UnsupportedVersion(version)),
+    };
+    match snapshot.owner_epoch.as_deref() {
+        Some(_) if legacy => {
+            return Err(InvalidSnapshot("version 1 snapshot names an owner epoch"));
+        }
+        Some(epoch) if !valid_gating_epoch(epoch) => {
+            return Err(InvalidSnapshot("invalid owner epoch"));
+        }
+        _ => {}
     }
     if snapshot.pending.len() > GATING_PENDING_MAX_RETAINED
         || snapshot.audit.len() > GATING_AUDIT_MAX_RETAINED
     {
         return Err(InvalidSnapshot("retention bounds exceeded"));
     }
-    if snapshot
-        .next_sequence
-        .checked_add(snapshot.pending.len() as u64 + 1)
-        .is_none()
+    if legacy
+        && snapshot
+            .next_sequence
+            .checked_add(snapshot.pending.len() as u64 + 1)
+            .is_none()
     {
         return Err(InvalidSnapshot("sequence is exhausted"));
     }
-    let valid_id = |value: &str, prefix: &str| {
-        value
-            .strip_prefix(prefix)
-            .and_then(|suffix| suffix.parse::<u64>().ok())
-            .is_some_and(|sequence| {
-                sequence < snapshot.next_sequence && value == format!("{prefix}{sequence:06}")
-            })
+    // A version 1 snapshot holds only its own sequential IDs, all below its
+    // frontier. A version 2 snapshot may also hold restored legacy IDs and
+    // IDs of earlier owners; only the exporting owner's IDs have a frontier.
+    let valid_id = |value: &str, prefix: &str| match parse_gating_id(value, prefix) {
+        Some(GatingIdForm::Legacy(sequence)) => !legacy || sequence < snapshot.next_sequence,
+        Some(GatingIdForm::Epoch { epoch, sequence }) => {
+            !legacy
+                && (snapshot.owner_epoch.as_deref() != Some(epoch)
+                    || sequence < snapshot.next_sequence)
+        }
+        None => false,
     };
     let mut pending_ids = BTreeSet::new();
     for entry in &snapshot.pending {
@@ -108,7 +173,8 @@ impl MobkitRuntimeHandle {
     pub fn gating_state_snapshot(&mut self) -> GatingStateSnapshot {
         self.refresh_gating_timeouts();
         GatingStateSnapshot {
-            version: 1,
+            version: 2,
+            owner_epoch: self.gating_epoch.clone(),
             next_sequence: self.gating_sequence,
             pending: self
                 .gating_pending_order
@@ -122,6 +188,8 @@ impl MobkitRuntimeHandle {
     /// Restore trusted host persistence before any gating action is evaluated.
     /// Validation is atomic, and expired entries resolve through the existing
     /// owner timeout path instead of becoming silently approved or renewed.
+    /// Restored IDs stay as they are; this owner keeps minting under its own
+    /// epoch and never continues the snapshot's sequence.
     pub fn restore_gating_state(
         &mut self,
         snapshot: GatingStateSnapshot,
@@ -134,7 +202,6 @@ impl MobkitRuntimeHandle {
             return Err(GatingStateRestoreError::RuntimeNotPristine);
         }
         validate_gating_snapshot(&snapshot)?;
-        self.gating_sequence = snapshot.next_sequence;
         self.gating_pending_order = snapshot
             .pending
             .iter()
@@ -150,12 +217,38 @@ impl MobkitRuntimeHandle {
         Ok(())
     }
 
-    fn next_gating_sequence(&mut self) -> u64 {
-        Self::next_sequence(&mut self.gating_sequence)
+    /// Whether this owner can mint `count` more gate identities.
+    fn gating_ids_available(&self, count: u64) -> Result<(), GatingIdUnavailable> {
+        if self.gating_epoch.is_none() {
+            return Err(GatingIdUnavailable::EpochUnavailable);
+        }
+        self.gating_sequence
+            .checked_add(count)
+            .map(|_| ())
+            .ok_or(GatingIdUnavailable::SequenceExhausted)
     }
-    fn append_gating_audit(&mut self, mut entry: GatingAuditEntry) {
-        let audit_sequence = self.next_gating_sequence();
-        entry.audit_id = format!("gate-audit-{audit_sequence:06}");
+    /// Mint the next gate identity of `kind` (`action`, `pending` or `audit`)
+    /// under this owner's epoch. Exhaustion fails; it never wraps or repeats.
+    fn mint_gating_id(&mut self, kind: &str) -> Result<String, GatingIdUnavailable> {
+        let epoch = self
+            .gating_epoch
+            .as_deref()
+            .ok_or(GatingIdUnavailable::EpochUnavailable)?;
+        let sequence = self.gating_sequence;
+        let next = sequence
+            .checked_add(1)
+            .ok_or(GatingIdUnavailable::SequenceExhausted)?;
+        let id = format!("gate-{kind}-{GATING_ID_FORMAT}-{epoch}-{sequence:06}");
+        self.gating_sequence = next;
+        Ok(id)
+    }
+    fn append_gating_audit(&mut self, entry: GatingAuditEntry) -> Result<(), GatingIdUnavailable> {
+        let audit_id = self.mint_gating_id("audit")?;
+        self.record_gating_audit(audit_id, entry);
+        Ok(())
+    }
+    fn record_gating_audit(&mut self, audit_id: String, mut entry: GatingAuditEntry) {
+        entry.audit_id = audit_id;
         entry.timestamp_ms = current_time_ms();
         self.gating_audit.push(entry);
         while self.gating_audit.len() > GATING_AUDIT_MAX_RETAINED {
@@ -171,24 +264,36 @@ impl MobkitRuntimeHandle {
             .map(|(pending_id, _)| pending_id.clone())
             .collect::<Vec<_>>();
         for pending_id in expired {
+            // Without an audit identity the expiry cannot be recorded, so the
+            // entry stays pending; deciding it is refused the same way.
+            let audit_id = match self.mint_gating_id("audit") {
+                Ok(audit_id) => audit_id,
+                Err(unavailable) => {
+                    tracing::warn!(%pending_id, %unavailable, "gating timeout not recorded");
+                    return;
+                }
+            };
             if let Some(expired_entry) = self.gating_pending.remove(&pending_id) {
                 self.gating_pending_order
                     .retain(|candidate| candidate != &pending_id);
-                self.append_gating_audit(GatingAuditEntry {
-                    audit_id: String::new(),
-                    timestamp_ms: 0,
-                    event_type: "timeout_fallback".to_string(),
-                    action_id: expired_entry.action_id.clone(),
-                    pending_id: Some(pending_id.clone()),
-                    actor_id: expired_entry.actor_id,
-                    risk_tier: expired_entry.risk_tier,
-                    outcome: GatingOutcome::SafeDraft,
-                    detail: serde_json::json!({
-                        "fallback": "safe_draft",
-                        "reason": "approval_timeout",
-                        "origin": expired_entry.origin,
-                    }),
-                });
+                self.record_gating_audit(
+                    audit_id,
+                    GatingAuditEntry {
+                        audit_id: String::new(),
+                        timestamp_ms: 0,
+                        event_type: "timeout_fallback".to_string(),
+                        action_id: expired_entry.action_id.clone(),
+                        pending_id: Some(pending_id.clone()),
+                        actor_id: expired_entry.actor_id,
+                        risk_tier: expired_entry.risk_tier,
+                        outcome: GatingOutcome::SafeDraft,
+                        detail: serde_json::json!({
+                            "fallback": "safe_draft",
+                            "reason": "approval_timeout",
+                            "origin": expired_entry.origin,
+                        }),
+                    },
+                );
                 self.gating_resolution_observers
                     .notify(&GatingResolutionNotice {
                         pending_id,
@@ -278,6 +383,29 @@ impl MobkitRuntimeHandle {
         request: GatingEvaluateRequest,
         origin: Option<GatingOrigin>,
     ) -> GatingEvaluateResult {
+        let action = request.action.trim().to_string();
+        let actor_id = request.actor_id.trim().to_string();
+        let risk_tier = request.risk_tier.clone();
+        self.evaluate_gating_action_minting(request, origin)
+            .unwrap_or_else(|unavailable| GatingEvaluateResult {
+                action_id: String::new(),
+                action,
+                actor_id,
+                risk_tier,
+                outcome: GatingOutcome::SafeDraft,
+                pending_id: None,
+                fallback_reason: Some(unavailable.fallback_reason().to_string()),
+            })
+    }
+
+    /// Evaluation body. It checks up front that every identity it can mint is
+    /// available, so a refusal never leaves a partial pending entry, audit
+    /// record or approval notification behind.
+    fn evaluate_gating_action_minting(
+        &mut self,
+        request: GatingEvaluateRequest,
+        origin: Option<GatingOrigin>,
+    ) -> Result<GatingEvaluateResult, GatingIdUnavailable> {
         // Optional correlation metadata must not erase an identity access boundary.
         let origin = origin.map(|mut origin| {
             origin.conversation_id = origin
@@ -289,6 +417,7 @@ impl MobkitRuntimeHandle {
             origin
         });
         self.refresh_gating_timeouts();
+        self.gating_ids_available(GATING_IDS_PER_EVALUATION)?;
         let action = request.action.trim().to_string();
         let actor_id = request.actor_id.trim().to_string();
         let requested_approver = request
@@ -321,8 +450,7 @@ impl MobkitRuntimeHandle {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
-        let action_sequence = self.next_gating_sequence();
-        let action_id = format!("gate-action-{action_sequence:06}");
+        let action_id = self.mint_gating_id("action")?;
         let risk_tier = request.risk_tier.clone();
         if origin
             .as_ref()
@@ -330,7 +458,7 @@ impl MobkitRuntimeHandle {
         {
             // Refuse malformed supplied identity without creating an unattributed
             // pending or audit row that global gating grants could disclose.
-            return GatingEvaluateResult {
+            return Ok(GatingEvaluateResult {
                 action_id,
                 action,
                 actor_id,
@@ -338,7 +466,7 @@ impl MobkitRuntimeHandle {
                 outcome: GatingOutcome::SafeDraft,
                 pending_id: None,
                 fallback_reason: Some("invalid_gating_origin".to_string()),
-            };
+            });
         }
 
         if matches!(request.risk_tier, GatingRiskTier::R2 | GatingRiskTier::R3) {
@@ -367,8 +495,8 @@ impl MobkitRuntimeHandle {
                         "conflict_count": self.memory_conflicts.len(),
                         "origin": origin,
                     }),
-                });
-                return GatingEvaluateResult {
+                })?;
+                return Ok(GatingEvaluateResult {
                     action_id,
                     action,
                     actor_id,
@@ -376,7 +504,7 @@ impl MobkitRuntimeHandle {
                     outcome: GatingOutcome::SafeDraft,
                     pending_id: None,
                     fallback_reason: Some("memory_conflict_context_missing".to_string()),
-                };
+                });
             }
             let conflict = match self
                 .gating_memory_conflict_for_reference(entity.as_deref(), topic.as_deref())
@@ -402,8 +530,8 @@ impl MobkitRuntimeHandle {
                                 "topic": topic,
                             },
                         }),
-                    });
-                    return GatingEvaluateResult {
+                    })?;
+                    return Ok(GatingEvaluateResult {
                         action_id,
                         action,
                         actor_id,
@@ -411,7 +539,7 @@ impl MobkitRuntimeHandle {
                         outcome: GatingOutcome::SafeDraft,
                         pending_id: None,
                         fallback_reason: Some("memory_conflict_lookup_failed".to_string()),
-                    };
+                    });
                 }
             };
             if let Some(conflict) = conflict {
@@ -435,8 +563,8 @@ impl MobkitRuntimeHandle {
                         "conflict": conflict,
                         "origin": origin,
                     }),
-                });
-                return GatingEvaluateResult {
+                })?;
+                return Ok(GatingEvaluateResult {
                     action_id,
                     action,
                     actor_id,
@@ -444,11 +572,11 @@ impl MobkitRuntimeHandle {
                     outcome: GatingOutcome::SafeDraft,
                     pending_id: None,
                     fallback_reason: Some("memory_conflict".to_string()),
-                };
+                });
             }
         }
 
-        match request.risk_tier {
+        Ok(match request.risk_tier {
             GatingRiskTier::R0 | GatingRiskTier::R1 => {
                 self.append_gating_audit(GatingAuditEntry {
                     audit_id: String::new(),
@@ -465,7 +593,7 @@ impl MobkitRuntimeHandle {
                         "rationale": request.rationale,
                         "action": action,
                     }),
-                });
+                })?;
                 GatingEvaluateResult {
                     action_id,
                     action,
@@ -492,7 +620,7 @@ impl MobkitRuntimeHandle {
                         "rationale": request.rationale,
                         "action": action,
                     }),
-                });
+                })?;
                 GatingEvaluateResult {
                     action_id,
                     action,
@@ -504,8 +632,7 @@ impl MobkitRuntimeHandle {
                 }
             }
             GatingRiskTier::R3 => {
-                let pending_sequence = self.next_gating_sequence();
-                let pending_id = format!("gate-pending-{pending_sequence:06}");
+                let pending_id = self.mint_gating_id("pending")?;
                 let created_at_ms = current_time_ms();
                 // Clamp both ends. The upper bound stops a deadline that
                 // saturates past `u64::MAX` from never expiring (the
@@ -624,7 +751,7 @@ impl MobkitRuntimeHandle {
                         "action": action,
                         "origin": pending_entry.origin,
                     }),
-                });
+                })?;
                 GatingEvaluateResult {
                     action_id,
                     action,
@@ -635,7 +762,7 @@ impl MobkitRuntimeHandle {
                     fallback_reason: None,
                 }
             }
-        }
+        })
     }
 
     pub fn list_gating_pending(&mut self) -> Vec<GatingPendingEntry> {
@@ -651,6 +778,9 @@ impl MobkitRuntimeHandle {
         request: GatingDecideRequest,
     ) -> Result<GatingDecisionResult, GatingDecideError> {
         self.refresh_gating_timeouts();
+        // Checked before the entry is taken, so a refusal leaves it pending.
+        self.gating_ids_available(GATING_IDS_PER_DECISION)
+            .map_err(GatingDecideError::IdsUnavailable)?;
         let decision = request.decision.clone();
         let reason = request.reason.clone();
         let pending_id = request.pending_id.trim().to_string();
@@ -682,8 +812,9 @@ impl MobkitRuntimeHandle {
             GatingDecision::Approve => (GatingOutcome::Allowed, "approval_decided"),
             GatingDecision::Reject => (GatingOutcome::SafeDraft, "rejection_decided"),
             GatingDecision::Escalate => {
-                let successor_sequence = self.next_gating_sequence();
-                let successor_pending_id = format!("gate-pending-{successor_sequence:06}");
+                let successor_pending_id = self
+                    .mint_gating_id("pending")
+                    .map_err(GatingDecideError::IdsUnavailable)?;
                 let successor_entry = GatingPendingEntry {
                     pending_id: successor_pending_id.clone(),
                     action_id: pending_entry.action_id.clone(),
@@ -722,7 +853,8 @@ impl MobkitRuntimeHandle {
                         "action": successor_entry.action,
                         "origin": successor_entry.origin,
                     }),
-                });
+                })
+                .map_err(GatingDecideError::IdsUnavailable)?;
                 (GatingOutcome::PendingApproval, "escalation_decided")
             }
         };
@@ -745,7 +877,8 @@ impl MobkitRuntimeHandle {
                 "next_pending_id": next_pending_id,
                 "origin": pending_entry.origin,
             }),
-        });
+        })
+        .map_err(GatingDecideError::IdsUnavailable)?;
         self.gating_resolution_observers
             .notify(&GatingResolutionNotice {
                 pending_id: pending_id.clone(),
@@ -777,5 +910,163 @@ impl MobkitRuntimeHandle {
             .into_iter()
             .rev()
             .collect()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod gating_identity_tests {
+    use super::*;
+
+    fn owner() -> MobkitRuntimeHandle {
+        crate::start_mobkit_runtime(
+            crate::MobKitConfig {
+                modules: vec![],
+                discovery: crate::DiscoverySpec {
+                    namespace: "gating-identity".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            vec![],
+            Duration::from_secs(1),
+        )
+        .expect("runtime starts")
+    }
+
+    fn r3() -> GatingEvaluateRequest {
+        GatingEvaluateRequest {
+            action: "Deploy".to_string(),
+            actor_id: "worker".to_string(),
+            risk_tier: GatingRiskTier::R3,
+            rationale: None,
+            requested_approver: None,
+            approval_recipient: None,
+            approval_channel: None,
+            approval_timeout_ms: None,
+            entity: None,
+            topic: None,
+        }
+    }
+
+    #[test]
+    fn minted_ids_carry_the_owner_epoch() {
+        let mut first = owner();
+        let epoch = first.gating_epoch.clone().expect("epoch");
+        assert!(valid_gating_epoch(&epoch));
+        let result = first.evaluate_gating_action(r3());
+        assert_eq!(result.action_id, format!("gate-action-v2-{epoch}-000000"));
+        assert_eq!(
+            result.pending_id,
+            Some(format!("gate-pending-v2-{epoch}-000001"))
+        );
+        assert_eq!(
+            first.gating_audit_entries(1)[0].audit_id,
+            format!("gate-audit-v2-{epoch}-000002")
+        );
+        assert_ne!(owner().gating_epoch, first.gating_epoch);
+    }
+
+    #[test]
+    fn exhausted_sequence_refuses_typed_and_never_reuses() {
+        let mut owner = owner();
+        let pending_id = owner
+            .evaluate_gating_action(r3())
+            .pending_id
+            .expect("pends");
+        let before = owner.gating_state_snapshot();
+
+        owner.gating_sequence = u64::MAX - 1;
+        let refused = owner.evaluate_gating_action(r3());
+        assert_eq!(refused.outcome, GatingOutcome::SafeDraft);
+        assert_eq!(
+            refused.fallback_reason.as_deref(),
+            Some("gating_sequence_exhausted")
+        );
+        assert!(refused.pending_id.is_none());
+        assert!(refused.action_id.is_empty());
+        assert_eq!(owner.gating_sequence, u64::MAX - 1);
+        assert_eq!(owner.list_gating_pending(), before.pending);
+        assert_eq!(owner.gating_audit_entries(512), before.audit);
+        assert!(matches!(
+            owner.decide_gating_action(GatingDecideRequest {
+                pending_id,
+                approver_id: "operator".to_string(),
+                decision: GatingDecision::Approve,
+                reason: None,
+            }),
+            Err(GatingDecideError::IdsUnavailable(
+                GatingIdUnavailable::SequenceExhausted
+            ))
+        ));
+        assert_eq!(owner.list_gating_pending(), before.pending);
+
+        // The last identities are minted once, then minting fails.
+        owner.gating_sequence = u64::MAX - GATING_IDS_PER_EVALUATION;
+        assert!(owner.evaluate_gating_action(r3()).pending_id.is_some());
+        assert_eq!(owner.gating_sequence, u64::MAX);
+        assert_eq!(
+            owner.mint_gating_id("audit"),
+            Err(GatingIdUnavailable::SequenceExhausted)
+        );
+        assert_eq!(owner.gating_sequence, u64::MAX);
+    }
+
+    #[test]
+    fn rpc_decide_reports_unavailable_ids_as_a_typed_internal_error() {
+        let mut owner = owner();
+        let pending_id = owner
+            .evaluate_gating_action(r3())
+            .pending_id
+            .expect("pends");
+        let decide = |pending_id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "mobkit/gating/decide",
+                "params": {
+                    "pending_id": pending_id, "approver_id": "operator", "decision": "approve",
+                },
+            })
+            .to_string()
+        };
+        let unknown: Value = serde_json::from_str(&crate::handle_mobkit_rpc_json(
+            &mut owner,
+            &decide("gate-unknown"),
+            Duration::from_secs(1),
+        ))
+        .expect("response");
+        assert_eq!(unknown["error"]["code"], serde_json::json!(-32602));
+
+        owner.gating_sequence = u64::MAX - 1;
+        let before = owner.list_gating_pending();
+        let refused: Value = serde_json::from_str(&crate::handle_mobkit_rpc_json(
+            &mut owner,
+            &decide(&pending_id),
+            Duration::from_secs(1),
+        ))
+        .expect("response");
+        assert_eq!(refused["error"]["code"], serde_json::json!(-32603));
+        assert_eq!(
+            refused["error"]["data"],
+            serde_json::json!({
+                "error": "gating_ids_unavailable",
+                "reason": "gating_sequence_exhausted",
+            })
+        );
+        assert_eq!(owner.list_gating_pending(), before);
+    }
+
+    #[test]
+    fn owner_without_an_epoch_cannot_mint() {
+        let mut owner = owner();
+        owner.gating_epoch = None;
+        let refused = owner.evaluate_gating_action(r3());
+        assert_eq!(refused.outcome, GatingOutcome::SafeDraft);
+        assert_eq!(
+            refused.fallback_reason.as_deref(),
+            Some("gating_identity_unavailable")
+        );
+        assert!(owner.list_gating_pending().is_empty());
+        assert!(owner.gating_audit_entries(512).is_empty());
+        assert_eq!(owner.gating_sequence, 0);
     }
 }

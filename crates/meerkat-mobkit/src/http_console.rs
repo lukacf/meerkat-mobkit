@@ -4697,6 +4697,20 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
+/// A decision the owner could not record for lack of gate identities is an
+/// infrastructure failure with a typed reason; other refusals keep the
+/// redacted invalid-params response.
+fn gating_decide_error_response(id: Value, err: crate::runtime::GatingDecideError) -> Value {
+    match err {
+        crate::runtime::GatingDecideError::IdsUnavailable(reason) => response_value(
+            id,
+            None,
+            Some(crate::rpc::gating_ids_unavailable_rpc_error(reason)),
+        ),
+        err => gating_decision_failed_error(id, err),
+    }
+}
+
 fn gating_decision_failed_error(id: Value, err: impl std::fmt::Display) -> Value {
     tracing::warn!(
         target: "mobkit::console",
@@ -8340,7 +8354,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => gating_decision_failed_error(response_id, err),
+                Err(err) => gating_decide_error_response(response_id, err),
             }
         })
         .await,
@@ -13155,6 +13169,30 @@ comms = true
             json!("timeline replay unavailable")
         );
         assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn gating_ids_unavailable_is_a_typed_internal_error() {
+        use crate::runtime::{GatingDecideError, GatingIdUnavailable};
+        let response = super::gating_decide_error_response(
+            json!(7),
+            GatingDecideError::IdsUnavailable(GatingIdUnavailable::SequenceExhausted),
+        );
+        assert_eq!(response["error"]["code"], json!(-32603));
+        assert_eq!(
+            response["error"]["data"]["error"],
+            json!("gating_ids_unavailable")
+        );
+        assert_eq!(
+            response["error"]["data"]["reason"],
+            json!("gating_sequence_exhausted")
+        );
+        let refused = super::gating_decide_error_response(
+            json!(8),
+            GatingDecideError::UnknownPendingId("gate-x".to_string()),
+        );
+        assert_eq!(refused["error"]["code"], json!(-32602));
+        assert_eq!(refused["error"]["message"], json!("gating decision failed"));
     }
 
     #[test]

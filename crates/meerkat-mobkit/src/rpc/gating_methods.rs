@@ -84,7 +84,42 @@ impl GatingParamsError {
             }) => {
                 format!("approver_id '{provided}' does not match requested_approver '{expected}'")
             }
+            GatingParamsError::Decision(GatingDecideError::IdsUnavailable(reason)) => {
+                format!("gating decision cannot be recorded: {reason}")
+            }
         }
+    }
+}
+
+/// JSON-RPC error for a gating decision the owner could not record because
+/// it cannot mint gate identities (no epoch, or an exhausted sequence). This
+/// is owner infrastructure, not invalid caller input, so it is an internal
+/// error with a machine-readable reason.
+pub(crate) fn gating_ids_unavailable_rpc_error(
+    reason: crate::runtime::GatingIdUnavailable,
+) -> JsonRpcError {
+    JsonRpcError {
+        code: -32603,
+        message: format!("Internal error: {reason}"),
+        data: Some(serde_json::json!({
+            "error": "gating_ids_unavailable",
+            "reason": reason.fallback_reason(),
+        })),
+    }
+}
+
+/// JSON-RPC error for a failed `gating/decide`: owner infrastructure failures
+/// are internal errors; everything else is invalid params, as before.
+pub(super) fn gating_decide_rpc_error(err: GatingParamsError) -> JsonRpcError {
+    match err {
+        GatingParamsError::Decision(GatingDecideError::IdsUnavailable(reason)) => {
+            gating_ids_unavailable_rpc_error(reason)
+        }
+        err => JsonRpcError {
+            code: -32602,
+            message: format!("Invalid params: {}", err.message()),
+            data: None,
+        },
     }
 }
 
