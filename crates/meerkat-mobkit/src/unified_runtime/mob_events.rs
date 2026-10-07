@@ -559,6 +559,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MobReset => "mob_reset",
         MobEventKind::MemberSpawned(_) => "member_spawned",
         MobEventKind::MemberSessionBindingRecovered(_) => "member_session_binding_recovered",
+        MobEventKind::ForkJobTerminal(_) => "fork_job_terminal",
         MobEventKind::MemberRetirementStarted { .. } => "member_retirement_started",
         MobEventKind::MemberRetired { .. } => "member_retired",
         MobEventKind::RespawnTopologyAbandoned { .. } => "respawn_topology_abandoned",
@@ -829,9 +830,10 @@ mod tests {
     /// a mislabeled one ships silently and desynchronizes the console/SDK
     /// event surface from the wire. Serde itself is the oracle here: serialize
     /// the variant, read its `type` tag, compare. Covers the new
-    /// `MobDefinitionUpdated` arm plus controls on both unit and struct shapes.
+    /// `MobDefinitionUpdated` and `ForkJobTerminal` arms plus unit controls.
     #[test]
     fn event_kind_label_matches_the_serde_wire_tag() {
+        let fork_outcome = serde_json::json!({"text": "complete"});
         let cases = vec![
             MobEventKind::MobDefinitionUpdated {
                 epoch: 2,
@@ -840,6 +842,15 @@ mod tests {
             MobEventKind::MobCreated {
                 definition: Box::new(meerkat_mob::MobDefinition::explicit("label-oracle")),
             },
+            MobEventKind::ForkJobTerminal(meerkat_mob::ForkJobTerminalEvent {
+                job_id: "fork-label-oracle".to_string(),
+                child: AgentIdentity::from("fork-child"),
+                owner_session_id: meerkat_core::SessionId::new(),
+                retained_work: None,
+                status: meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+                result_digest: meerkat_mob::detached_outcome_digest(&fork_outcome),
+                outcome: fork_outcome,
+            }),
             MobEventKind::MobCompleted,
             MobEventKind::MobReset,
         ];

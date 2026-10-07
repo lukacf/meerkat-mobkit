@@ -142,6 +142,7 @@ fn flow_step_input(text: &str) -> meerkat_runtime::Input {
     meerkat_runtime::Input::FlowStep(meerkat_runtime::FlowStepInput {
         header: meerkat_runtime::InputHeader {
             ingress_context: None,
+            retained_resume: None,
             authority_association: None,
             id: meerkat_core::lifecycle::InputId::new(),
             timestamp: chrono::Utc::now(),

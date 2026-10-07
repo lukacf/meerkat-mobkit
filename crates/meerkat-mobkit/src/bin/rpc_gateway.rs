@@ -2209,6 +2209,115 @@ default_binding = "local"
     }
 
     #[test]
+    fn callback_context_delivery_preserves_native_dispositions() {
+        use meerkat::JobDeliveryApplyError as DeliveryError;
+        use meerkat_core::{
+            OperationAuthorizationError, OperationRefusalKind, OperationRefused,
+            OperationReviewRefusal, SessionControlError, SessionError,
+        };
+
+        let session_id = meerkat_core::SessionId::new();
+        let refusal = OperationRefused::new(OperationRefusalKind::Denied);
+        let review = OperationReviewRefusal::Unsatisfied {
+            kind: meerkat_core::approval::review::ReviewUnsatisfiedKind::HumanConsentRequired,
+        };
+        let review_unavailable = OperationReviewRefusal::Unavailable {
+            kind: meerkat_core::approval::review::ReviewUnavailableKind::UnsupportedEntry,
+        };
+        for (error, expected) in [
+            (
+                SessionControlError::Authorization(OperationAuthorizationError::Refused(refusal)),
+                DeliveryError::Authorization(OperationAuthorizationError::Refused(refusal)),
+            ),
+            (
+                SessionControlError::Authorization(OperationAuthorizationError::Unavailable),
+                DeliveryError::Authorization(OperationAuthorizationError::Unavailable),
+            ),
+            (
+                SessionControlError::Review(review),
+                DeliveryError::Review(review),
+            ),
+            (
+                SessionControlError::Review(review_unavailable),
+                DeliveryError::Review(review_unavailable),
+            ),
+            (
+                SessionControlError::Session(SessionError::ServedElsewhere {
+                    id: session_id.clone(),
+                }),
+                DeliveryError::ServedElsewhere {
+                    session_id: session_id.clone(),
+                },
+            ),
+            (
+                SessionControlError::Session(SessionError::HostingUnavailable {
+                    id: session_id.clone(),
+                }),
+                DeliveryError::HostingUnavailable { session_id },
+            ),
+        ] {
+            assert_eq!(callback_context_delivery_error(error), expected);
+        }
+
+        let error = SessionControlError::InvalidRequest {
+            message: "input refused; served elsewhere".to_string(),
+        };
+        let diagnostic = error.to_string();
+        assert_eq!(
+            callback_context_delivery_error(error),
+            DeliveryError::Infrastructure(diagnostic)
+        );
+    }
+
+    #[test]
+    fn callback_event_delivery_preserves_native_dispositions() {
+        use meerkat::JobDeliveryApplyError as DeliveryError;
+        use meerkat_core::{OperationAuthorizationError, OperationRefusalKind, OperationRefused};
+        use meerkat_runtime::RuntimeDriverError;
+
+        let session_id = meerkat_core::SessionId::new();
+        let refusal = OperationRefused::new(OperationRefusalKind::MalformedFacts);
+        for (error, expected) in [
+            (
+                RuntimeDriverError::InputRefused { refusal },
+                DeliveryError::Authorization(OperationAuthorizationError::Refused(refusal)),
+            ),
+            (
+                RuntimeDriverError::ControllerReadinessUnavailable {
+                    reason:
+                        meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable,
+                },
+                DeliveryError::Authorization(OperationAuthorizationError::Unavailable),
+            ),
+            (
+                RuntimeDriverError::ServedElsewhere {
+                    session_id: session_id.clone(),
+                },
+                DeliveryError::ServedElsewhere {
+                    session_id: session_id.clone(),
+                },
+            ),
+            (
+                RuntimeDriverError::HostingUnavailable {
+                    session_id: session_id.clone(),
+                },
+                DeliveryError::HostingUnavailable { session_id },
+            ),
+        ] {
+            assert_eq!(callback_event_delivery_error(error), expected);
+        }
+
+        let error = RuntimeDriverError::ValidationFailed {
+            reason: "input refused; hosting claim unavailable".to_string(),
+        };
+        let diagnostic = error.to_string();
+        assert_eq!(
+            callback_event_delivery_error(error),
+            DeliveryError::Infrastructure(diagnostic)
+        );
+    }
+
+    #[test]
     fn callback_event_delivery_builds_stable_runtime_owned_ingress() {
         let job_id = meerkat::JobId::new("019f74fb-1907-7b21-932d-ab22c4d1f500").expect("job id");
         let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f501")
@@ -2238,6 +2347,9 @@ default_binding = "local"
         };
         assert_eq!(event.event_type, "job.terminal");
         assert_eq!(event.handling_mode, meerkat_core::HandlingMode::Queue);
+        assert!(event.header.ingress_context.is_none());
+        assert!(event.header.authority_association.is_none());
+        assert!(event.header.retained_resume.is_none());
         assert_eq!(
             event
                 .header
@@ -10694,7 +10806,10 @@ struct CallbackJobDeliverySink {
 
 #[async_trait]
 impl meerkat::JobDeliverySink for CallbackJobDeliverySink {
-    async fn apply(&self, application: meerkat::JobDeliveryApplication) -> Result<(), String> {
+    async fn apply(
+        &self,
+        application: meerkat::JobDeliveryApplication,
+    ) -> Result<(), meerkat::JobDeliveryApplyError> {
         match application {
             meerkat::JobDeliveryApplication::Record { .. } => Ok(()),
             meerkat::JobDeliveryApplication::Notification {
@@ -10715,7 +10830,7 @@ impl meerkat::JobDeliverySink for CallbackJobDeliverySink {
                     .append_system_context(subscription.session_id(), request)
                     .await
                     .map(|_| ())
-                    .map_err(|error| error.to_string())
+                    .map_err(callback_context_delivery_error)
             }
             meerkat::JobDeliveryApplication::Event {
                 job_id,
@@ -10740,9 +10855,51 @@ impl meerkat::JobDeliverySink for CallbackJobDeliverySink {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(callback_event_delivery_error)
             }
         }
+    }
+}
+
+fn callback_context_delivery_error(
+    error: meerkat_core::SessionControlError,
+) -> meerkat::JobDeliveryApplyError {
+    match error {
+        meerkat_core::SessionControlError::Authorization(error) => {
+            meerkat::JobDeliveryApplyError::Authorization(error)
+        }
+        meerkat_core::SessionControlError::Review(error) => {
+            meerkat::JobDeliveryApplyError::Review(error)
+        }
+        meerkat_core::SessionControlError::Session(
+            meerkat_core::SessionError::ServedElsewhere { id },
+        ) => meerkat::JobDeliveryApplyError::ServedElsewhere { session_id: id },
+        meerkat_core::SessionControlError::Session(
+            meerkat_core::SessionError::HostingUnavailable { id },
+        ) => meerkat::JobDeliveryApplyError::HostingUnavailable { session_id: id },
+        other => meerkat::JobDeliveryApplyError::Infrastructure(other.to_string()),
+    }
+}
+
+fn callback_event_delivery_error(
+    error: meerkat_runtime::RuntimeDriverError,
+) -> meerkat::JobDeliveryApplyError {
+    match error {
+        meerkat_runtime::RuntimeDriverError::InputRefused { refusal } => {
+            meerkat::JobDeliveryApplyError::Authorization(refusal.into())
+        }
+        meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable { .. } => {
+            meerkat::JobDeliveryApplyError::Authorization(
+                meerkat_core::OperationAuthorizationError::Unavailable,
+            )
+        }
+        meerkat_runtime::RuntimeDriverError::ServedElsewhere { session_id } => {
+            meerkat::JobDeliveryApplyError::ServedElsewhere { session_id }
+        }
+        meerkat_runtime::RuntimeDriverError::HostingUnavailable { session_id } => {
+            meerkat::JobDeliveryApplyError::HostingUnavailable { session_id }
+        }
+        other => meerkat::JobDeliveryApplyError::Infrastructure(other.to_string()),
     }
 }
 
@@ -10779,6 +10936,7 @@ fn callback_job_event_input(
         objective_id: None,
         header: meerkat_runtime::InputHeader {
             ingress_context: None,
+            retained_resume: None,
             authority_association: None,
             id: meerkat_core::lifecycle::InputId::new(),
             timestamp: chrono::Utc::now(),
