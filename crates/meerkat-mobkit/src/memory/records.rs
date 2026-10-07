@@ -364,6 +364,12 @@ pub struct MemoryRecord {
     pub updated_at_ms: u64,
     #[serde(default)]
     pub usage: UsageStats,
+    /// §10.2 durable taint marker: the record landed quarantined, or
+    /// descends from one that did. Unlike `status`, it survives the
+    /// tombstone a review or forget applies, so read surfaces can keep a
+    /// quarantined record's content reviewer-only for good.
+    #[serde(default)]
+    pub ever_quarantined: bool,
 }
 
 /// Payload for creating or superseding a record (§7.3 `NewRecord`).
@@ -536,6 +542,7 @@ mod tests {
             created_at_ms: 10,
             updated_at_ms: 20,
             usage: UsageStats::default(),
+            ever_quarantined: false,
         };
         let json = serde_json::to_string(&record).expect("serialize");
         let back: MemoryRecord = serde_json::from_str(&json).expect("deserialize");

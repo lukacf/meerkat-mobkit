@@ -4688,6 +4688,7 @@ var CONSOLE_RPC_METHODS = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphGet: "mobkit/workgraph/get",
   workgraphEvents: "mobkit/workgraph/events",
@@ -5212,6 +5213,7 @@ var CONSOLE_COMMAND_NAMES = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  decideMemoryQuarantine: "decideMemoryQuarantine",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphGet: "workgraphGet",
   workgraphEvents: "workgraphEvents",
@@ -5362,6 +5364,10 @@ var CONSOLE_COMMAND_SPECS = {
   },
   [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.decideMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS.memoryQuarantineDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   },
   [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {
@@ -6434,6 +6440,7 @@ var import_react4 = require("react");
 // ../packages/console-components/src/conversation/scroll-geometry.ts
 var CONVERSATION_LIVE_EDGE_PX = 32;
 var CONVERSATION_ANCHOR_OFFSET_PX = 24;
+var CONVERSATION_END_ROUNDING_PX = 1;
 var CONVERSATION_POSITION_LIMIT = 100;
 function conversationScrollEnd(scrollHeight, clientHeight) {
   return Math.max(0, scrollHeight - clientHeight);
@@ -6748,8 +6755,8 @@ function useConversationScrollController(options) {
       }
       session.expectedScrollTop = null;
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
-      const downwardSettle = session.lastGesture === "down" && previous3 !== null && previous3 - observed <= 1;
-      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !downwardSettle;
+      const settle = previous3 !== null && previous3 - observed <= CONVERSATION_END_ROUNDING_PX && (session.lastGesture === "down" || session.lastGesture === "content-press" && session.mode === "following-end" && end - observed <= CONVERSATION_END_ROUNDING_PX);
+      const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !settle;
       session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
@@ -6777,9 +6784,11 @@ function useConversationScrollController(options) {
       const selection = viewport.ownerDocument.getSelection();
       if (selection && !selection.isCollapsed && selection.anchorNode && viewport.contains(selection.anchorNode)) readHistory();
     };
-    const onPointerDown = () => {
+    const onPointerDown = (event) => {
       const session = sessionRef.current;
-      if (session) session.lastGesture = null;
+      if (session) {
+        session.lastGesture = event.target !== viewport && event.button === 0 && event.pointerType !== "touch" && event.pointerType !== "pen" ? "content-press" : null;
+      }
       if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         session.expectedScrollTop = viewport.scrollTop;
@@ -30001,6 +30010,29 @@ function httpStatusCode(error) {
   const status = error?.httpStatus;
   return typeof status === "number" ? status : null;
 }
+function accessSaveFailure(error) {
+  const rpc2 = error?.rpcError;
+  if (rpc2?.code === -32009 && rpc2.data?.kind === "access_revision_conflict") return { kind: "revision_conflict" };
+  if (rpc2?.code === -32009 && rpc2.data?.kind === "access_owner_changed") return { kind: "owner_changed" };
+  if (rpc2?.code === -32004 && rpc2.data?.kind === "access_mutation_unavailable") return { kind: "unavailable" };
+  if (rpc2?.code === -32602 && rpc2.data?.kind === "invalid_access_config") return { kind: "invalid" };
+  if (rpc2?.code === -32602 || rpc2?.code === -32601) return { kind: "unavailable" };
+  return { kind: "failed" };
+}
+function accessSaveNotice(failure) {
+  switch (failure.kind) {
+    case "revision_conflict":
+      return "Access configuration changed. Review the latest settings before saving again.";
+    case "owner_changed":
+      return "The access configuration owner changed. Review the latest settings before saving again.";
+    case "unavailable":
+      return "Changes were not saved. Checked access saves are unavailable; your draft is retained.";
+    case "invalid":
+      return "Changes were not saved. The resulting access configuration is not valid; your draft is retained for correction.";
+    case "failed":
+      return "Changes were not saved. Your draft is retained; refresh Console access before trying again.";
+  }
+}
 
 // src/lib/single-flight.ts
 function createSingleFlight() {
@@ -30137,6 +30169,7 @@ var CONSOLE_RPC_METHODS2 = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphEvents: "mobkit/workgraph/events",
   workgraphGet: "mobkit/workgraph/get",
@@ -30422,7 +30455,7 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
       const error2 = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
-      error2.rpcError = typedError;
+      error2.rpcError = result.error.data === void 0 ? typedError : { ...typedError, data: result.error.data };
       throw error2;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
@@ -30738,6 +30771,7 @@ var CONSOLE_COMMAND_NAMES2 = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  decideMemoryQuarantine: "decideMemoryQuarantine",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphEvents: "workgraphEvents",
   workgraphGet: "workgraphGet",
@@ -30889,6 +30923,10 @@ var CONSOLE_COMMAND_SPECS2 = {
   },
   [CONSOLE_COMMAND_NAMES2.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS2.memoryPanelAuditVerdicts,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS2.memoryQuarantineDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   },
   [CONSOLE_COMMAND_NAMES2.workgraphSnapshot]: {
@@ -32663,37 +32701,44 @@ function AccessPanel({
   const [previewSubject, setPreviewSubject] = import_react28.default.useState("");
   const [previewAction, setPreviewAction] = import_react28.default.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = import_react28.default.useState("");
-  const [previewResult, setPreviewResult] = import_react28.default.useState(null);
+  const [previewFeedback, setPreviewFeedback] = import_react28.default.useState(null);
   const previewSubjectInput = import_react28.default.useRef(null);
   const inspectFocusPending = import_react28.default.useRef(false);
   const actions = status?.actions ?? [];
   const [saving, setSaving] = import_react28.default.useState(false);
-  const [mutationError, setMutationError] = import_react28.default.useState(null);
+  const [saveFailure, setSaveFailure] = import_react28.default.useState(null);
+  const [adminsBase, setAdminsBase] = import_react28.default.useState(null);
+  const [ruleBase, setRuleBase] = import_react28.default.useState(null);
+  const [groupBase, setGroupBase] = import_react28.default.useState(null);
   const [previewPending, setPreviewPending] = import_react28.default.useState(false);
-  const [previewError, setPreviewError] = import_react28.default.useState(null);
   const previewVersion = import_react28.default.useRef(0);
   const mayView = status?.available === true && status.can_administer === true;
   const current = mayView && !loading && !error && Boolean(config);
   const actionCatalogKey = JSON.stringify(actions);
   const scope = JSON.stringify([status?.subject, status?.available, status?.can_administer]);
+  const mutationScope = import_react28.default.useRef(scope);
+  mutationScope.current = scope;
   const previewScope = JSON.stringify([
     scope,
+    status?.owner_instance,
     status?.revision,
     status?.enabled,
+    config,
     actionCatalogKey,
-    loading,
     error,
     readOnly,
     previewSubject,
     previewAction,
     previewIdentity
   ]);
+  const currentPreview = current && previewFeedback?.scope === previewScope ? previewFeedback : null;
+  const previewResult = currentPreview?.result;
+  const previewError = currentPreview?.error;
   const latestPreviewScope = import_react28.default.useRef(previewScope);
   latestPreviewScope.current = previewScope;
   import_react28.default.useEffect(() => {
     previewVersion.current += 1;
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     setPreviewPending(false);
   }, [previewScope]);
   import_react28.default.useEffect(() => {
@@ -32705,7 +32750,10 @@ function AccessPanel({
     setGroupNameDraft("");
     setGroupMembersDraft("");
     setEditingGroup(null);
-    setMutationError(null);
+    setSaveFailure(null);
+    setAdminsBase(null);
+    setRuleBase(null);
+    setGroupBase(null);
   }, [scope]);
   import_react28.default.useEffect(() => () => {
     previewVersion.current += 1;
@@ -32719,21 +32767,41 @@ function AccessPanel({
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
-  const canEdit = current && !readOnly && !saving;
-  async function mutate(action, done = () => {
+  const checked = status?.conditional_mutations === "checked_v1" && typeof status.owner_instance === "string" && status.owner_instance.length > 0 && Number.isSafeInteger(status.revision) && status.revision >= 0;
+  const canReview = current && checked && !readOnly && !saving;
+  const requiresReview = saveFailure !== null && saveFailure.kind !== "failed" && saveFailure.kind !== "invalid";
+  const canEdit = canReview && !requiresReview;
+  function captureBase() {
+    if (!canReview || !config) return null;
+    return { owner_instance: status.owner_instance, revision: status.revision, config: structuredClone(config) };
+  }
+  async function mutate(edit, base, action, done = () => {
   }) {
-    if (!canEdit) return;
+    if (!canEdit || !base) return;
+    const requestedScope = scope;
     setSaving(true);
-    setMutationError(null);
+    setSaveFailure(null);
     try {
-      if (await action() !== false) done();
+      const result = await action(base);
+      if (requestedScope !== mutationScope.current) return;
+      if (result && typeof result === "object") setSaveFailure({ ...result, edit });
+      else if (result !== false) done();
     } catch {
-      setMutationError("Changes were not saved. Your draft is retained; refresh Console access before trying again.");
+      if (requestedScope === mutationScope.current) setSaveFailure({ kind: "failed", edit });
     } finally {
       setSaving(false);
     }
   }
+  function reviewAndReapply() {
+    const base = captureBase();
+    if (!base || !saveFailure || !requiresReview) return;
+    if (saveFailure.edit === "admins") setAdminsBase(base);
+    if (saveFailure.edit === "rule") setRuleBase(base);
+    if (saveFailure.edit === "group") setGroupBase(base);
+    setSaveFailure(null);
+  }
   function startGroupEdit(name2, members) {
+    setGroupBase(captureBase());
     setEditingGroup(name2);
     setGroupNameDraft(name2);
     setGroupMembersDraft(formatListInput(members));
@@ -32741,8 +32809,7 @@ function AccessPanel({
   function inspectSubject(subject) {
     if (!current || saving) return;
     previewVersion.current += 1;
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     setPreviewPending(false);
     setPreviewSubject(subject);
     inspectFocusPending.current = true;
@@ -32751,10 +32818,11 @@ function AccessPanel({
   function submitGroup() {
     const name2 = groupNameDraft.trim();
     if (!name2) return;
-    void mutate(() => onSaveGroup(name2, { members: parseListInput(groupMembersDraft) }), () => {
+    void mutate("group", groupBase, (base) => onSaveGroup(name2, { ...base.config.groups?.[name2], members: parseListInput(groupMembersDraft) }, base), () => {
       setEditingGroup(null);
       setGroupNameDraft("");
       setGroupMembersDraft("");
+      setGroupBase(null);
     });
   }
   async function runPreview() {
@@ -32763,17 +32831,16 @@ function AccessPanel({
     const version = ++previewVersion.current;
     const requestedScope = previewScope;
     setPreviewPending(true);
-    setPreviewResult(null);
-    setPreviewError(null);
+    setPreviewFeedback(null);
     try {
       const result = await onPreview(subject, previewAction, previewIdentity.trim() || void 0);
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        if (result?.allowed === true || result?.allowed === false) setPreviewResult(result);
-        else setPreviewError("Access preview unavailable. No decision was returned.");
+        if (result?.allowed === true || result?.allowed === false) setPreviewFeedback({ scope: requestedScope, result });
+        else setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. No decision was returned." });
       }
     } catch {
       if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
-        setPreviewError("Access preview unavailable. Refresh and try again.");
+        setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. Refresh and try again." });
       }
     } finally {
       if (version === previewVersion.current) setPreviewPending(false);
@@ -32804,7 +32871,8 @@ function AccessPanel({
       ] })
     ] }),
     loading ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "Refreshing owner state. Changes are temporarily unavailable." }) : null,
-    error || mutationError ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", role: "alert", "data-testid": "access-error", children: error || mutationError }) : null,
+    error || saveFailure ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gating__empty", role: "alert", "data-testid": "access-error", children: error || (saveFailure ? accessSaveNotice(saveFailure) : null) }) : null,
+    requiresReview && canReview ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: reviewAndReapply, children: "Review and reapply" }) : null,
     error ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { style: { padding: "0 24px" }, children: "Last loaded configuration may be out of date. Refresh before making changes." }) : null,
     readOnly ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { role: "status", children: "This connection is read-only." }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gating__tabs", children: [
@@ -32836,7 +32904,7 @@ function AccessPanel({
             "button",
             {
               "data-testid": "access-toggle-enabled",
-              onClick: () => void mutate(() => onSetEnabled(!enabled)),
+              onClick: () => void mutate("immediate", captureBase(), (base) => onSetEnabled(!enabled, base)),
               children: enabled ? "Disable enforcement" : "Enable enforcement"
             }
           ) }) : null
@@ -32850,7 +32918,10 @@ function AccessPanel({
               "button",
               {
                 "data-testid": "access-edit-admins",
-                onClick: () => setAdminsDraft(formatListInput(config?.admins)),
+                onClick: () => {
+                  setAdminsBase(captureBase());
+                  setAdminsDraft(formatListInput(config?.admins));
+                },
                 children: "Edit admins"
               }
             ) }) : null
@@ -32874,12 +32945,18 @@ function AccessPanel({
                   className: "approve",
                   "data-testid": "access-save-admins",
                   onClick: () => {
-                    void mutate(() => onSaveAdmins(parseListInput(adminsDraft)), () => setAdminsDraft(null));
+                    void mutate("admins", adminsBase, (base) => onSaveAdmins(parseListInput(adminsDraft), base), () => {
+                      setAdminsDraft(null);
+                      setAdminsBase(null);
+                    });
                   },
                   children: "Save"
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => setAdminsDraft(null), children: "Cancel" })
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
+                setAdminsDraft(null);
+                setAdminsBase(null);
+              }, children: "Cancel" })
             ] })
           ] })
         ] })
@@ -32919,7 +32996,7 @@ function AccessPanel({
                   "data-testid": `access-group-delete:${name2}`,
                   onClick: () => {
                     if (window.confirm(`Delete group "${name2}"?`)) {
-                      void mutate(() => onDeleteGroup(name2));
+                      void mutate("immediate", captureBase(), (base) => onDeleteGroup(name2, base));
                     }
                   },
                   children: "Delete"
@@ -32928,7 +33005,7 @@ function AccessPanel({
             ] }) : null
           ] }, name2)
         ),
-        canEdit ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
+        canEdit || groupBase ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: editingGroup ? `Edit ${editingGroup}` : "New group" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
             /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("label", { children: [
@@ -32938,9 +33015,12 @@ function AccessPanel({
                 {
                   "data-testid": "access-group-name",
                   value: groupNameDraft,
-                  onChange: (event) => setGroupNameDraft(event.target.value),
+                  onChange: (event) => {
+                    if (!groupBase) setGroupBase(captureBase());
+                    setGroupNameDraft(event.target.value);
+                  },
                   placeholder: "ops",
-                  disabled: editingGroup !== null
+                  disabled: !canEdit || editingGroup !== null
                 }
               )
             ] }),
@@ -32951,18 +33031,23 @@ function AccessPanel({
                 {
                   "data-testid": "access-group-members",
                   value: groupMembersDraft,
-                  onChange: (event) => setGroupMembersDraft(event.target.value),
-                  placeholder: "alice@example.com, bob@example.com"
+                  onChange: (event) => {
+                    if (!groupBase) setGroupBase(captureBase());
+                    setGroupMembersDraft(event.target.value);
+                  },
+                  placeholder: "alice@example.com, bob@example.com",
+                  disabled: !canEdit
                 }
               )
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form-actions", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-group-save", onClick: submitGroup, children: editingGroup ? "Save members" : "Create group" }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "approve", "data-testid": "access-group-save", onClick: submitGroup, disabled: !canEdit, children: editingGroup ? "Save members" : "Create group" }),
               editingGroup ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
                 setEditingGroup(null);
                 setGroupNameDraft("");
                 setGroupMembersDraft("");
-              }, children: "Cancel" }) : null
+                setGroupBase(null);
+              }, disabled: !canEdit, children: "Cancel" }) : null
             ] })
           ] })
         ] }) : null
@@ -32999,7 +33084,10 @@ function AccessPanel({
                     "button",
                     {
                       "data-testid": `access-rule-edit:${rule.id}`,
-                      onClick: () => setRuleDraft(draftFromRule(rule)),
+                      onClick: () => {
+                        setRuleBase(captureBase());
+                        setRuleDraft(draftFromRule(rule));
+                      },
                       children: "Edit"
                     }
                   ),
@@ -33010,7 +33098,7 @@ function AccessPanel({
                       "data-testid": `access-rule-delete:${rule.id}`,
                       onClick: () => {
                         if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
-                          void mutate(() => onDeleteRule(rule.id));
+                          void mutate("immediate", captureBase(), (base) => onDeleteRule(rule.id, base));
                         }
                       },
                       children: "Delete"
@@ -33022,7 +33110,10 @@ function AccessPanel({
             rule.id
           )
         ),
-        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) }), children: "New rule" }) }) : null,
+        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "data-testid": "access-rule-new", onClick: () => {
+          setRuleBase(captureBase());
+          setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) });
+        }, children: "New rule" }) }) : null,
         ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? `Edit ${ruleDraft.id}` : "New rule" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "access-panel__form", children: [
@@ -33149,12 +33240,18 @@ function AccessPanel({
                   "data-testid": "access-rule-save",
                   disabled: !canEdit || !ruleDraft.id.trim() || ruleDraft.actions.length === 0 || ruleDraft.actions.some((action) => !actions.includes(action)),
                   onClick: () => {
-                    void mutate(() => onUpsertRule(ruleFromDraft(ruleDraft)), () => setRuleDraft(null));
+                    void mutate("rule", ruleBase, (base) => onUpsertRule(ruleFromDraft(ruleDraft), base), () => {
+                      setRuleDraft(null);
+                      setRuleBase(null);
+                    });
                   },
                   children: "Save rule"
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => setRuleDraft(null), children: "Cancel" })
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { onClick: () => {
+                setRuleDraft(null);
+                setRuleBase(null);
+              }, children: "Cancel" })
             ] })
           ] })
         ] }) : null
@@ -34034,6 +34131,61 @@ function memoryFramePivot(frame) {
   const realm = typeof data.realm === "string" && data.realm.trim() ? data.realm.trim() : void 0;
   return { recordId, realm };
 }
+function canDecideQuarantinedRecord(record7) {
+  return record7.status.status === "quarantined" && record7.scope.scope === "identity" && typeof record7.content_hash === "string" && record7.content_hash.length > 0;
+}
+var QUARANTINE_RATIONALE_MAX_BYTES = 400;
+function quarantineRationaleProblem(rationale) {
+  const bytes = new TextEncoder().encode(rationale.trim()).length;
+  return bytes > QUARANTINE_RATIONALE_MAX_BYTES ? `The rationale is ${bytes} bytes (UTF-8); the limit is ${QUARANTINE_RATIONALE_MAX_BYTES}.` : null;
+}
+function quarantineDecisionSummary(result) {
+  const successor = result.successor?.memory_id;
+  switch (result.outcome) {
+    case "released":
+      return `Released as ${successor ?? "a new record"} (agent_observed, ever-quarantined); the original is kept, tombstoned.`;
+    case "already_released":
+      return `Already released as ${successor ?? "a new record"}; nothing changed.`;
+    case "tombstoned": {
+      const invalidated = result.decision?.review?.invalidated_promotions ?? [];
+      return invalidated.length > 0 ? `Tombstoned; it will never be recalled. Pending promotion ${invalidated.join(", ")} invalidated; it can no longer publish.` : "Tombstoned; it will never be recalled.";
+    }
+    case "already_tombstoned":
+      return "Already tombstoned; nothing changed.";
+    default:
+      return `Decided: ${String(result.outcome)}`;
+  }
+}
+function quarantineDecisionErrorText(error) {
+  const rpcError = error?.rpcError;
+  if (rpcError?.code === -32030) {
+    return "No grant: deciding needs memory.quarantine.review plus view, memory read and memory write (release) or delete (tombstone) on this identity.";
+  }
+  const data = rpcError?.data ?? null;
+  if (data?.kind === "memory_quarantine_review_refused") {
+    switch (data.reason) {
+      case "not_found":
+        return "Refused: no such record in this identity's scope.";
+      case "content_mismatch":
+        return "Refused: the record differs from the one loaded here. Reload it and review again.";
+      case "not_quarantined":
+        return data.released_as ? `Refused: it was already released as ${String(data.released_as)}.` : `Refused: the record is ${String(data.status)}, not quarantined.`;
+      case "gate_pending": {
+        const expires = typeof data.expires_at_ms === "number" ? ` (or wait until it expires, ${new Date(data.expires_at_ms).toISOString()})` : "";
+        return `Refused: gated promotion ${String(data.pending_id)} is waiting on it; decide it in the Gating inbox${expires}. Tombstoning the record instead invalidates that promotion.`;
+      }
+      case "successor_conflict":
+        return `Refused: another record already holds the release id ${String(data.successor_id)}; nothing was changed.`;
+      case "secret_detected":
+        return `Refused: the content matches the ${String(data.class)} secret pattern; tombstone is the only exit.`;
+      case "stale_update":
+        return `Refused: the version this update replaces (${String(data.prior)}) is ${String(data.prior_status)}; tombstone it instead.`;
+      default:
+        break;
+    }
+  }
+  return errorMessage(error);
+}
 function Chip({ label, tone }) {
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "chip memory-chip", "data-tone": tone || "neutral", children: label });
 }
@@ -34073,12 +34225,86 @@ function RecordRow({
 function evidenceKey(evidence, index2) {
   return `${index2}:${evidence.session_id || ""}:${evidence.generation ?? ""}`;
 }
+function QuarantineDecisionBlock({
+  realm,
+  record: record7,
+  onDecide
+}) {
+  const [rationale, setRationale] = import_react29.default.useState("");
+  const [pending, setPending] = import_react29.default.useState(null);
+  const [failure, setFailure] = import_react29.default.useState(null);
+  const rationaleProblem = quarantineRationaleProblem(rationale);
+  const blocked = pending !== null || rationaleProblem !== null;
+  const notice = rationaleProblem ?? failure;
+  async function decide(verdict) {
+    if (rationaleProblem !== null) return;
+    setPending(verdict);
+    setFailure(null);
+    try {
+      await onDecide(verdict, rationale.trim() || void 0);
+    } catch (err) {
+      setFailure(quarantineDecisionErrorText(err));
+    } finally {
+      setPending(null);
+    }
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-quarantine-decide", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Review" }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__line", children: [
+      "Release makes this an active agent_observed record of",
+      " ",
+      record7.scope.scope === "identity" ? record7.scope.identity : "this scope",
+      " (realm ",
+      realm,
+      "); it stays capped below verified trust because it was quarantined. Tombstone discards it."
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+      "input",
+      {
+        className: "memory-filterbar__input",
+        "data-testid": "memory-quarantine-rationale",
+        placeholder: "Rationale (optional, recorded in the audit)",
+        value: rationale,
+        disabled: pending !== null,
+        onChange: (event) => setRationale(event.target.value)
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__line", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "memory-back",
+          "data-testid": "memory-quarantine-release",
+          disabled: blocked,
+          onClick: () => void decide("release"),
+          children: pending === "release" ? "Releasing\u2026" : "Release"
+        }
+      ),
+      " ",
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "memory-back",
+          "data-testid": "memory-quarantine-tombstone",
+          disabled: blocked,
+          onClick: () => void decide("tombstone"),
+          children: pending === "tombstone" ? "Tombstoning\u2026" : "Tombstone"
+        }
+      )
+    ] }),
+    notice ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-quarantine-error", children: notice }) : null
+  ] });
+}
 function BiographyView({
   detail,
   dreams,
   onBack,
   onSelectRecord,
-  onLoadEvidence
+  onLoadEvidence,
+  onDecideQuarantine,
+  decisionNotice
 }) {
   const { record: record7, chain, injections } = detail;
   const provenance = record7.provenance;
@@ -34124,6 +34350,16 @@ function BiographyView({
     ] }),
     record7.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record7.description }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record7.body }),
+    decisionNotice ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-outcome", children: decisionNotice }) : null,
+    onDecideQuarantine && canDecideQuarantinedRecord(record7) ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+      QuarantineDecisionBlock,
+      {
+        realm: detail.realm,
+        record: record7,
+        onDecide: (verdict, rationale) => onDecideQuarantine(record7, verdict, rationale)
+      },
+      record7.id
+    ) : null,
     record7.tags && record7.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record7.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Born" }),
@@ -34336,9 +34572,18 @@ function MemoryPanel({
   onClearDetail,
   onQueryRecords,
   onLoadEvidence,
-  onOpenGating
+  onOpenGating,
+  onDecideQuarantine
 }) {
   const [tab2, setTab] = import_react29.default.useState("holdings");
+  const [decisionNotice, setDecisionNotice] = import_react29.default.useState(null);
+  const decideQuarantine = onDecideQuarantine ? async (record7, verdict, rationale) => {
+    if (!detail) return;
+    const realm = detail.realm;
+    const result = await onDecideQuarantine(realm, record7, verdict, rationale);
+    setDecisionNotice(quarantineDecisionSummary(result));
+    onSelectRecord(realm, result.successor?.memory_id ?? record7.id);
+  } : void 0;
   const [filter, setFilter] = import_react29.default.useState({});
   const [sortMode, setSortMode] = import_react29.default.useState("recency");
   const [paged, setPaged] = import_react29.default.useState(null);
@@ -34623,9 +34868,17 @@ function MemoryPanel({
         {
           detail,
           dreams,
-          onBack: onClearDetail,
-          onSelectRecord,
-          onLoadEvidence
+          onBack: () => {
+            setDecisionNotice(null);
+            onClearDetail();
+          },
+          onSelectRecord: (realm, memoryId) => {
+            setDecisionNotice(null);
+            onSelectRecord(realm, memoryId);
+          },
+          onLoadEvidence,
+          onDecideQuarantine: decideQuarantine,
+          decisionNotice
         }
       ) : detailLoading ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", children: "Loading record\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-groups", children: [
         onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-filterbar", "data-testid": "memory-filter", children: [
@@ -34857,7 +35110,7 @@ function MemoryPanel({
           canReviewQuarantine ? quarantineRecords.length : "no grant",
           ")"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: "Read-only. Verdicts are decided by the memory steward's dream and the gating flow \u2014 this queue cannot be actioned here." }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: onDecideQuarantine ? "Open a quarantined record to release or tombstone it. Gated promotions are decided in the Gating inbox; the memory steward's dream decides the rest." : "Read-only here. Verdicts come from the memory steward's dream, the gating flow, and reviewers who hold the quarantine review and memory write grants." }),
         /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", "data-testid": "memory-pipeline-proposals", children: [
           /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: "Proposed \u2014 awaiting a dream verdict (taint captured at propose time)" }),
           proposalsDenied ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: "Proposals: no grant." }) : proposals.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: "No pending proposals." }) : proposals.map((proposal) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
@@ -44302,7 +44555,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     dreamRuns: [],
     dreamRunsDenied: false,
     auditVerdicts: [],
-    auditVerdictsDenied: false
+    auditVerdictsDenied: false,
+    canDecideQuarantine: false
   });
   const [workGraphData, setWorkGraphData] = import_react45.default.useState({
     items: [],
@@ -45187,7 +45441,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -45600,7 +45854,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react45.default.useEffect(() => {
+  import_react45.default.useLayoutEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -45686,7 +45940,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (status?.available && status?.can_administer) {
         const result = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.getAccessConfig, accessTarget);
         config = result?.config || null;
-        if (result?.revision !== void 0) status = { ...status, revision: result.revision };
+        status = {
+          ...status,
+          revision: result?.revision,
+          owner_instance: result?.owner_instance,
+          conditional_mutations: status.conditional_mutations === "checked_v1" ? result?.conditional_mutations : void 0
+        };
       }
       if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
@@ -45742,7 +46001,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       }
       let quarantineRecords = [];
       let pendingPromotions = [];
+      let canDecideQuarantine = false;
       if (experience?.memory?.can_review_quarantine === true) {
+        try {
+          const capabilities = await consoleTransport.capabilities();
+          canDecideQuarantine = capabilities.methods.includes(
+            consoleCommandMethod2(CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine)
+          );
+        } catch {
+          canDecideQuarantine = false;
+        }
         try {
           const quarantineResult = await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES2.listMemoryQuarantine,
@@ -45831,6 +46099,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         dreamRunsDenied: dreamRuns.denied,
         auditVerdicts: auditVerdicts.value,
         auditVerdictsDenied: auditVerdicts.denied,
+        canDecideQuarantine,
         unavailable: false,
         error: null
       }));
@@ -45963,24 +46232,45 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
+  const decideMemoryQuarantine = import_react45.default.useCallback(
+    async (realm, record7, verdict, rationale) => {
+      const identity = record7.scope.scope === "identity" ? record7.scope.identity : void 0;
+      const result = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.decideMemoryQuarantine,
+        controlWorkbenchTarget("memory"),
+        {
+          realm,
+          identity,
+          memory_id: record7.id,
+          verdict,
+          expected_content_hash: record7.content_hash,
+          ...rationale ? { rationale } : {}
+        }
+      );
+      void refreshMemoryData();
+      return result;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshMemoryData]
+  );
   const runAccessMutation = import_react45.default.useCallback(
-    async (command, params) => {
-      if (accessData.scope !== accessScope || accessData.loading || accessData.error || accessData.status?.available !== true || accessData.status.can_administer !== true || experience?.access?.can_administer !== true || frontendReadOnly || experience?.console_policy?.read_only === true) return false;
-      let mutationError = null;
+    async (command, params, base) => {
+      if (accessData.scope !== accessScope || accessData.loading || accessData.error || accessData.status?.available !== true || accessData.status.can_administer !== true || accessData.status.conditional_mutations !== "checked_v1" || typeof accessData.status.owner_instance !== "string" || !accessData.status.owner_instance || !Number.isSafeInteger(accessData.status.revision) || accessData.status.revision < 0 || typeof base.owner_instance !== "string" || !base.owner_instance || !Number.isSafeInteger(base.revision) || base.revision < 0 || experience?.access?.can_administer !== true || frontendReadOnly || experience?.console_policy?.read_only === true) return false;
+      let failure = null;
       try {
-        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), {
+          checked_v1: { ...params, owner_instance: base.owner_instance, expected_revision: base.revision }
+        });
       } catch (err) {
-        mutationError = errorMessage(err);
+        failure = accessSaveFailure(err);
       }
       if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
       if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {
       });
-      if (mutationError && accessScope === accessScopeRef.current) {
-        setAccessData((current) => ({ ...current, error: mutationError }));
-      }
-      return mutationError === null;
+      if (accessScope !== accessScopeRef.current) return false;
+      return failure ?? true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only]
@@ -47530,18 +47820,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             label: agent.label
           })),
           onRefresh: () => void refreshAccessData(),
-          onSetEnabled: (enabled) => runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
-          onSaveAdmins: (admins) => {
-            const config = {
-              ...accessData.config || {},
-              admins
-            };
-            return runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
-          },
-          onUpsertRule: (rule) => runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
-          onDeleteRule: (id) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
-          onSaveGroup: (name2, group) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }),
-          onDeleteGroup: (name2) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }),
+          onSetEnabled: (enabled, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }, base),
+          onSaveAdmins: (admins, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config: { ...base.config, admins } }, base),
+          onUpsertRule: (rule, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }, base),
+          onDeleteRule: (id, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }, base),
+          onSaveGroup: (name2, group, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name: name2, group }, base),
+          onDeleteGroup: (name2, base) => runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name: name2 }, base),
           onPreview: async (subject, action, identity) => await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES2.previewAccess,
             controlWorkbenchTarget("access"),
@@ -47587,6 +47871,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           onClearDetail: () => setMemoryData((current) => ({ ...current, detail: null, detailLoading: false })),
           onQueryRecords: queryMemoryRecords,
           onLoadEvidence: loadMemoryEvidence,
+          onDecideQuarantine: memoryData.canDecideQuarantine && !frontendReadOnly && experience?.console_policy?.read_only !== true ? decideMemoryQuarantine : void 0,
           onOpenGating: (
             // Only offered where the nav itself offers gating — on runtimes
             // without a mob control surface (or with gating hidden) the

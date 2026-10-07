@@ -29,9 +29,11 @@ from .errors import (
     MOB_EVENTS_STALE_CURSOR_CODE,
     STORAGE_RESOLUTION_CODE,
     INIT_IN_PROGRESS_CODE,
+    COMPOSITION_PROVENANCE_CODE,
     WORKGRAPH_CONFLICT_CODE,
     WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
+    CompositionProvenanceError,
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     ConsoleTimelineReplayUnavailableError,
     LeaseLostError,
@@ -240,6 +242,13 @@ def _rpc_error_from_payload(
         )
     if code == INIT_IN_PROGRESS_CODE:
         return InitInProgressError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == COMPOSITION_PROVENANCE_CODE:
+        return CompositionProvenanceError(
             message,
             request_id=request_id,
             method=method,

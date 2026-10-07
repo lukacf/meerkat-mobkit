@@ -26,9 +26,9 @@ use meerkat_mobkit::memory::steward::StewardConfig;
 use meerkat_mobkit::memory::{
     CommitReceipt, DreamAuditVerdict, DreamRunAudit, EvidenceRefResolver, LlmWriteGate,
     MemoryEventSink, MemoryPanelStore, PanelRecordsPage, PendingHarvest, PendingPromotion,
-    PendingProposal, PersistedDreamRun, ScopeOverview, SelectedRecordFetch, StageToken,
-    StagedMemoryStore, StagedMutationBatch, StewardStore, TaintableStore, TombstoneMeta,
-    TombstoneSource,
+    PendingProposal, PersistedDreamRun, QuarantineReviewError, QuarantineReviewOutcome,
+    QuarantineReviewRequest, ScopeOverview, SelectedRecordFetch, StageToken, StagedMemoryStore,
+    StagedMutationBatch, StewardStore, TaintableStore, TombstoneMeta, TombstoneSource,
 };
 use meerkat_mobkit::memory_wiring::{MemoryEnginesConfig, MemoryStackSeams, attach_memory_engines};
 use meerkat_mobkit::{
@@ -135,6 +135,7 @@ impl FakeJudgmentStore {
             created_at_ms: 1,
             updated_at_ms: 1,
             usage: UsageStats::default(),
+            ever_quarantined: false,
         });
         fake
     }
@@ -293,6 +294,15 @@ impl StewardStore for FakeJudgmentStore {
         Ok(Vec::new())
     }
 
+    async fn review_quarantined(
+        &self,
+        _request: QuarantineReviewRequest,
+    ) -> Result<QuarantineReviewOutcome, QuarantineReviewError> {
+        Err(QuarantineReviewError::Store(AgentMemoryError::Unsupported(
+            "the fake judgment store holds no quarantine queue".to_string(),
+        )))
+    }
+
     async fn records_by_ids(
         &self,
         _realm: &str,
@@ -378,8 +388,8 @@ impl StewardStore for FakeJudgmentStore {
         _realm: &str,
         _pending_id: &str,
         _status: &str,
-    ) -> Result<(), AgentMemoryError> {
-        Ok(())
+    ) -> Result<bool, AgentMemoryError> {
+        Ok(false)
     }
 
     async fn rekey_pending_promotion(
@@ -387,8 +397,8 @@ impl StewardStore for FakeJudgmentStore {
         _realm: &str,
         _old_pending_id: &str,
         _new_pending_id: &str,
-    ) -> Result<(), AgentMemoryError> {
-        Ok(())
+    ) -> Result<bool, AgentMemoryError> {
+        Ok(false)
     }
 
     async fn discard_stage(&self, _token: StageToken) -> Result<(), AgentMemoryError> {

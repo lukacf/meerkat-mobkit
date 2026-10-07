@@ -16,7 +16,7 @@ concurrency:
 jobs:
   e2e-live:
     name: e2e-live (real rpc_gateway, real Anthropic turns)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

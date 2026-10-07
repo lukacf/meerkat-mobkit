@@ -39,6 +39,7 @@ mod engine;
 mod model;
 
 pub use controller::{AccessController, AccessView, AgentResourceAttributes};
+pub(crate) use controller::{AccessEditError, AccessEditPrecondition, AccessMutation};
 pub use engine::{AccessDecision, AccessPrincipal, AccessResource, evaluate_access};
 pub use model::{
     ACCESS_ACTIONS, ACTION_ACCESS_ADMIN, ACTION_AGENT_MEMORY_ADMIN, ACTION_AGENT_MEMORY_DELETE,

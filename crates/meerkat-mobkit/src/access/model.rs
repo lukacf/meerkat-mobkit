@@ -221,6 +221,7 @@ pub enum AccessConfigError {
     UnknownRule(String),
     Parse(String),
     Io(String),
+    RevisionExhausted,
 }
 
 impl std::fmt::Display for AccessConfigError {
@@ -242,6 +243,7 @@ impl std::fmt::Display for AccessConfigError {
             Self::UnknownRule(id) => write!(f, "unknown access rule id: {id}"),
             Self::Parse(message) => write!(f, "access config could not be parsed: {message}"),
             Self::Io(message) => write!(f, "access config io error: {message}"),
+            Self::RevisionExhausted => write!(f, "access configuration revision exhausted"),
         }
     }
 }

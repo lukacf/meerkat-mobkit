@@ -82,6 +82,32 @@ impl Display for UnifiedRuntimeBootstrapError {
 
 impl std::error::Error for UnifiedRuntimeBootstrapError {}
 
+impl UnifiedRuntimeBootstrapError {
+    /// The mob composition provenance refusal behind this bootstrap failure,
+    /// if that is what stopped it, including a refusal whose startup rollback
+    /// then failed too. Surfaces report these deliberate refusals with their
+    /// own code instead of as an internal error.
+    pub fn composition_provenance(
+        &self,
+    ) -> Option<&crate::mob_composition_manifest::MobCompositionProvenanceError> {
+        match self {
+            Self::Mob(MobRuntimeError::CompositionProvenance(refusal)) => Some(refusal),
+            // Defensive: a provenance refusal fails mob preparation before any
+            // module starts, so a rollback failure does not wrap one today.
+            // Seeing through it keeps the refusal typed if that order changes.
+            Self::ModuleStartupRollbackFailed { startup_error, .. } => {
+                startup_error.composition_provenance()
+            }
+            Self::Mob(_)
+            | Self::Module(_)
+            | Self::ModuleStartupThreadPanicked
+            | Self::PreSpawnHook(_)
+            | Self::IdentityFirst(_)
+            | Self::Topology(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnifiedRuntimeBuilderField {
     MobSpec,

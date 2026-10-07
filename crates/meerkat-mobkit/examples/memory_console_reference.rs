@@ -656,6 +656,7 @@ fn emit_timeline_events(runtime: &UnifiedRuntime, ids: &SeededIds) {
             record_id: ids.quarantined.clone(),
             verdict: "unverifiable".to_string(),
             rationale: Some("no evidence span reaches the claimed credential".to_string()),
+            successor_id: None,
         },
         MemoryTimelineEvent::QuarantineReleaseBlocked {
             realm: REALM.to_string(),

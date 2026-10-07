@@ -188,7 +188,9 @@ pub use memory::{
     HygieneOutcome, HygienistConfig, HygienistEngine, ManifestTier, MemberAgentEventSink,
     MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryPanelStore,
     MemoryRecord, MemoryScope, MemorySpawnCustomizer, MemoryTimelineEvent, MobPurposeSource,
-    NewMemoryRecord, OperatorResolver, PromotionGateResolver, RecordMeta,
+    NewMemoryRecord, OperatorResolver, PromotionGateResolver, QuarantineDecision,
+    QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRefusal,
+    QuarantineReviewRequest, QuarantineReviewer, RecordMeta, ReviewDecision, ReviewedRecordReceipt,
     SessionStoreEvidenceResolver, SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore,
     StagedMutationBatch, StagedOp, StewardConfig, StewardEngine, StewardStore, StewardTriggers,
     TaintLlmWriteGate, TaintObserverGuard, TaintableStore, TrustTier, spawn_member_event_observer,
@@ -208,9 +210,10 @@ pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
-    CAPABILITY_UNAVAILABLE_CODE, CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, INIT_IN_PROGRESS_CODE,
-    IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION,
+    CAPABILITY_UNAVAILABLE_CODE, COMPOSITION_PROVENANCE_CODE,
+    CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, INIT_IN_PROGRESS_CODE, IdentityFirstContext,
+    JsonRpcError, JsonRpcRequest, JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE,
+    MEMORY_QUARANTINE_REVIEW_REFUSED_CODE, MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION,
     STORAGE_RESOLUTION_CODE, SerializedRpcResponseDelivery, handle_console_ingress_json,
     handle_mobkit_rpc_json, handle_unified_rpc_json, handle_unified_rpc_json_arc,
     handle_unified_rpc_json_with_live_arc_delivery,

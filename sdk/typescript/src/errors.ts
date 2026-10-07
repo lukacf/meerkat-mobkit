@@ -122,6 +122,13 @@ export const STORAGE_RESOLUTION_CODE = -32014 as const;
  * callback awaiting it during init would wait on itself).
  */
 export const INIT_IN_PROGRESS_CODE = -32018 as const;
+/**
+ * Mob composition provenance refusal at gateway startup (`mobkit/init`): the
+ * persistent mob storage's recorded composition cannot be proven to match
+ * the launch. The error data carries the refusal's `kind` and, where it has
+ * them, the diverged `fields`.
+ */
+export const COMPOSITION_PROVENANCE_CODE = -32019 as const;
 /** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
 export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
 /** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
@@ -264,6 +271,77 @@ export class InitInProgressError extends RpcError {
   ) {
     super(INIT_IN_PROGRESS_CODE, message, requestId, method, data);
     this.name = "InitInProgressError";
+  }
+}
+
+/**
+ * The kinds of composition provenance refusal the gateway sends. A newer
+ * gateway may send a kind not listed here, so `kind` is typed to admit any
+ * string.
+ */
+export type CompositionProvenanceRefusalKind =
+  | "divergent"
+  | "candidate_divergent"
+  | "created_by_rehearsal"
+  | "missing"
+  | "unreadable"
+  | "malformed"
+  | "unsupported_version"
+  | "not_recorded"
+  | "unproven_storage";
+
+/**
+ * Raised when the gateway refuses to start over the mob's composition
+ * provenance.
+ *
+ * A persistent mob storage records the composition it was created for, and a
+ * launch whose composition cannot be proven to match it is refused before the
+ * mob actuates. The message names the remedy. `kind` names the refusal:
+ *
+ * - `"divergent"`: the supplied definition differs from the one recorded for
+ *   the storage (revert the change, or move the stored definition with the
+ *   `runtime_options.declare_spec_update` gateway option);
+ * - `"candidate_divergent"`: a candidate launch supplied a definition that
+ *   differs from the stored one it would boot. Only a gateway launched with
+ *   `runtime_options.mob_composition.authority = "candidate"` raises it,
+ *   which this builder never sends; the gateway option
+ *   `runtime_options.mob_composition.candidate_definition = "stored"`
+ *   acknowledges the stored definition;
+ * - `"created_by_rehearsal"`: the storage was created by a launch that did
+ *   not speak for the durable composition;
+ * - `"unreadable"`, `"malformed"`, `"unsupported_version"` or
+ *   `"not_recorded"`: the provenance record beside the storage is unusable,
+ *   or could not be written;
+ * - `"missing"`: no provenance record beside non-empty storage. The gateway
+ *   does not raise it today (an authoritative launch adopts and records the
+ *   definition instead); library callers can see it;
+ * - `"unproven_storage"`: non-empty storage with nothing declared about it.
+ *
+ * `kind` is `null` when the gateway sent no refusal data. `fields` lists the
+ * diverged definition fields as dotted paths (`profiles.lead.tools.deny`);
+ * it is empty unless the kind is `divergent` or `candidate_divergent`. The
+ * full refusal stays available as `data`.
+ */
+export class CompositionProvenanceError extends RpcError {
+  readonly kind: CompositionProvenanceRefusalKind | (string & {}) | null;
+  readonly fields: readonly string[];
+
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(COMPOSITION_PROVENANCE_CODE, message, requestId, method, data);
+    this.name = "CompositionProvenanceError";
+    const refusal =
+      typeof data === "object" && data !== null && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : {};
+    this.kind = typeof refusal.kind === "string" ? refusal.kind : null;
+    this.fields = Array.isArray(refusal.fields)
+      ? refusal.fields.filter((field): field is string => typeof field === "string")
+      : [];
   }
 }
 
@@ -550,6 +628,7 @@ export function isRpcError(err: unknown): err is RpcError {
     candidate.name === "MemoryBackendUnavailableError" ||
     candidate.name === "ConsoleTimelineReplayUnavailableError" ||
     candidate.name === "StorageResolutionError" ||
+    candidate.name === "CompositionProvenanceError" ||
     candidate.name === "WorkGraphUnavailableError" ||
     candidate.name === "WorkGraphConflictError"
   ) && typeof candidate.code === "number";

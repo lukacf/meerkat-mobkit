@@ -441,7 +441,7 @@ const openAccessFlows = [
 
   {
     name: "pipeline quarantine rows and gated promotions",
-    run: async ({ page, seed }) => {
+    run: async ({ page, baseUrl, seed }) => {
       // The one-release quarantine alias tab must still land on Pipeline.
       await openTab(page, "quarantine");
       await page.getByTestId(T.PIPELINE).waitFor({ timeout: 10_000 });
@@ -478,6 +478,27 @@ const openAccessFlows = [
       assert(
         detailText.includes("Router upstream credential"),
         `quarantine click-through biography: ${detailText.slice(0, 300)}`,
+      );
+
+      // Open access on a mutable console offers the decision. Gated
+      // promotions are waiting on this record, so a release is refused
+      // typed (the Gating inbox decides it) and nothing changes.
+      await page.getByTestId(T.QUARANTINE_DECIDE).waitFor({ timeout: 10_000 });
+      await page.getByTestId(T.QUARANTINE_RELEASE).click();
+      const refusal = page.getByTestId(T.QUARANTINE_ERROR);
+      await refusal.waitFor({ timeout: 10_000 });
+      const refusalText = await refusal.innerText();
+      assert(
+        refusalText.includes("gated promotion") && refusalText.includes("Gating inbox"),
+        `gated release refusal: ${refusalText}`,
+      );
+      const after = await rpc(baseUrl, "mobkit/memory/panel/record", {
+        memory_id: seed.quarantinedId,
+      });
+      assert.equal(
+        after.record?.status?.status,
+        "quarantined",
+        `a refused release leaves the record quarantined: ${JSON.stringify(after.record?.status)}`,
       );
       await page.getByTestId(T.DETAIL_BACK).click();
 
