@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- Meerkat's fallible runtime acquisition (Meerkat 0.8.52) reaches MobKit's
+  composition. Building a runtime machine can now refuse, and so can the
+  agent mob tools' runtime adapter:
+  - `MobBootstrapSpec::ephemeral` and `ephemeral_with_hook` return
+    `Result<Self, StorageResolutionError>`. `with_agent_mob_tools` returns
+    `Result<Self, RuntimeDriverError>`, and `with_session_runtime_adapter`
+    is fallible the same way.
+  - `StorageResolutionError`, `MobRuntimeError` and
+    `UnifiedRuntimeBuilderError` each gain `Runtime(RuntimeDriverError)`.
+    Exhaustive matches must add the arm.
+  - Session services that wrap a `MobSessionService` implement
+    `acquire_runtime_adapter(explicit)`. MobKit's wrapper passes the
+    explicit owner, or else its configured override, to the inner
+    service's acquisition and propagates that acquisition's refusal.
 - `GatingDecideError` gains `IdsUnavailable(GatingIdUnavailable)`, and
   `GatingStateSnapshot` gains `owner_epoch: Option<String>` (see Fixed).
   Exhaustive matches and struct literals must handle the new variant and
