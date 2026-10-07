@@ -4381,8 +4381,9 @@ mod tests {
         );
     }
 
-    /// The HomeCore boot-2 exactly-once violation, pinned on their REAL head
-    /// rows (fixtures/homecore_security_idempotency/, sha256 9f5fdb6b...,
+    /// The HomeCore boot-2 exactly-once violation, pinned on its captured
+    /// head rows with synthetic content
+    /// (fixtures/homecore_security_idempotency/, sha256 2f2c8443...,
     /// domain:security 019fae11-4e87-...): two consecutive boots of the same
     /// binary wrote two byte-different heads for an unchanged document. The
     /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility

@@ -14215,7 +14215,7 @@ shell = true
             .expect("staged Allow array");
         assert_ne!(
             active_order, staged_order,
-            "the real HomeCore specimen must retain differently ordered Allow arrays"
+            "the captured specimen must retain differently ordered Allow arrays"
         );
         assert_eq!(
             raw_visibility["filter_witnesses"]
@@ -14223,7 +14223,7 @@ shell = true
                 .expect("fixture witnesses")
                 .len(),
             LEGACY_SHELL_AND_COMMS_TOOL_NAMES.len(),
-            "the real specimen must retain all legacy provenance witnesses"
+            "the captured specimen must retain all legacy provenance witnesses"
         );
 
         let persisted = session_with_visibility_state(session_id.clone(), state.clone());

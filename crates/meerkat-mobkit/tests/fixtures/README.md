@@ -74,12 +74,17 @@ regression shipped past a synthetic 26-chain test for that reason).
   mutation and must be ADOPTED under the import receipt on the first
   projected write.
 
-- homecore_security_idempotency/ - HomeCore forensic bundle (2026-08-01):
-  the lossless three-state head+snapshot evolution of domain:security
-  (019fae11-4e87-7482-8796-54b2dac1f410) - untouched gen-20 corpus, the row
-  after ONE boot of the fixed binary on a fresh seed, and the row after a
-  SECOND boot (the exactly-once violation: identical head_revision, same
-  length, different bytes). sha256 pinned in checksums.sha256. Consumed by
+- homecore_security_idempotency/ - the three-state head+snapshot evolution
+  of domain:security (019fae11-4e87-7482-8796-54b2dac1f410) from a forensic
+  bundle (2026-08-01) - untouched gen-20 corpus, the row after ONE boot of
+  the fixed binary on a fresh seed, and the row after a SECOND boot (the
+  exactly-once violation: identical head_revision, same length, different
+  bytes) - with SYNTHETIC content. Keys, ids, timestamps, the
+  tool-visibility state and the boot-to-boot drift are the captured values;
+  every free-text value (prompts, instructions, message bodies) is replaced
+  by deterministic synthetic text, the mob namespace is renamed, and each
+  cas_token is recomputed over its new head_json. sha256 pinned in
+  checksums.sha256. Consumed by
   identity_first::adapters::tests::homecore_security_boot_drift_is_zero_durable_change,
   which pins that strict head equality SEES the two-boot drift (updated_at +
   the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
