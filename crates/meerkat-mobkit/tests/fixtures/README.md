@@ -9,12 +9,18 @@ regression shipped past a synthetic 26-chain test for that reason).
   v0_8_10_ob3_recovery_migration_session.json at pin 2bd60a1a. Used by the
   adapter import-on-load regression.
 
-- v0_8_10_zero_rewrite_supervisor_session.json - a REAL released-minted
-  0.8.10 mob-supervisor snapshot (zero-rewrite transcript graph: one
+- v0_8_10_zero_rewrite_supervisor_session.json - a released-minted 0.8.10
+  mob-supervisor snapshot envelope (zero-rewrite transcript graph: one
   revision, no commits key on the wire, singleton live-head body equal to
-  the live transcript), extracted from the HomeCore forensic bundle
-  (rows-019f2bdc, runtime_session_snapshots, session
-  019f2bdc-a781-7060-bff8-0b97b7a4fcee). Used by
+  the live transcript; session 019f2bdc-a781-7060-bff8-0b97b7a4fcee) with
+  SYNTHETIC content. The released envelope's keys, key order, ids,
+  timestamps and spelling are kept; every free-text value (system prompt,
+  build-state prompts) is replaced by deterministic synthetic text, the mob
+  namespace is renamed, and the transcript revision digest (and head) is
+  recomputed with meerkat_core::released_0810_transcript_serialized_rows_digest.
+  The retired checkpoint stamp is kept verbatim: the importer strips it as
+  untrusted metadata. The strict importer refuses it with the same typed
+  error as the original capture. Used by
   `released_zero_rewrite_history_refuses_typed_on_adapter_load` in
   `src/identity_first/adapters.rs`, which pins typed, session-scoped import
   refusal, byte preservation, and unrelated-session usability. The meerkat
