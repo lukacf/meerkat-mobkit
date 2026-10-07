@@ -1051,6 +1051,12 @@ async fn complete_text(
                 }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
+            LlmEvent::OperationObservationFailed {
+                operation_id,
+                phase,
+            } => {
+                tracing::warn!(%operation_id, ?phase, "LLM operation observation failed");
+            }
             LlmEvent::ReasoningDelta { .. }
             | LlmEvent::ReasoningComplete { .. }
             | LlmEvent::ToolCallDelta { .. }
@@ -2038,6 +2044,36 @@ mod tests {
                     expected
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_failure_preserves_physical_completion_without_retry() {
+        use crate::test_diagnostics::{
+            CompletionCase, ObservationClient, PHYSICAL_TEXT, capture_warnings,
+        };
+
+        let profile = DistillerProfile::embedded_default();
+        for case in CompletionCase::ALL {
+            let client = ObservationClient::new(case);
+            let (result, log) =
+                capture_warnings(complete_text(&client, &profile, "test".into())).await;
+            match case {
+                CompletionCase::Success => {
+                    assert_eq!(result.expect("physical success"), PHYSICAL_TEXT)
+                }
+                CompletionCase::TerminalError | CompletionCase::StreamError => assert!(
+                    matches!(result, Err(DistillerError::Client(message))
+                        if message == LlmError::ConnectionReset.to_string()),
+                    "partial text must not replace the terminal provider failure",
+                ),
+                CompletionCase::Truncated => assert!(matches!(
+                    result,
+                    Err(DistillerError::Truncated { max_output_tokens })
+                        if max_output_tokens == profile.params.max_output_tokens
+                )),
+            }
+            client.assert_observed_once_without_retry(&log);
         }
     }
 

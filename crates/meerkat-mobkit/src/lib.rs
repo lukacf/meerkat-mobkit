@@ -66,6 +66,8 @@ pub mod storage_layout;
 pub mod storage_migrate;
 pub mod storage_provider;
 #[cfg(test)]
+mod test_diagnostics;
+#[cfg(test)]
 mod test_wait;
 pub mod tool_compose;
 pub mod topology_control;

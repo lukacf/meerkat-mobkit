@@ -1249,6 +1249,7 @@ mod tests {
             tool_use_id: id.to_string(),
             content: vec![],
             is_error: false,
+            settlement_failures: Vec::new(),
         }]);
         (assistant, results)
     }

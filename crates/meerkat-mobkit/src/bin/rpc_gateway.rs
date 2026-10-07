@@ -11569,6 +11569,7 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
                         &result,
                     ),
                 is_error: false,
+                settlement_failures: Vec::new(),
             }
             .into()),
             Err(err) => Ok(ToolResult {
@@ -11577,6 +11578,7 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
                     text: format!("Tool execution failed: {err}"),
                 }],
                 is_error: true,
+                settlement_failures: Vec::new(),
             }
             .into()),
         }

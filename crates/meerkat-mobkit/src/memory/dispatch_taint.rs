@@ -459,6 +459,7 @@ mod tests {
                 text: text.to_string(),
             }],
             is_error: false,
+            settlement_failures: Vec::new(),
         }])
     }
 
