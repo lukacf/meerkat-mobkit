@@ -16507,6 +16507,7 @@ comms = true
                     system_prompt: Some("unchanged system prompt".to_string()),
                     event_tx: None,
                     runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                        work_authorization: None,
                         input_identity: None,
                         handling_mode: meerkat_core::types::HandlingMode::Steer,
                         turn_tool_overlay: None,
@@ -22728,6 +22729,7 @@ image_generation = true
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                work_authorization: None,
                 input_identity: None,
                 handling_mode: meerkat_core::types::HandlingMode::Steer,
                 turn_tool_overlay: None,

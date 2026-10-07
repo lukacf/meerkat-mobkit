@@ -6955,6 +6955,8 @@ mod tests {
 
     fn probe_input_header() -> meerkat_runtime::InputHeader {
         meerkat_runtime::InputHeader {
+            ingress_context: None,
+            authority_association: None,
             id: meerkat_core::lifecycle::InputId::new(),
             timestamp: chrono::Utc::now(),
             source: meerkat_runtime::InputOrigin::External {

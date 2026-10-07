@@ -2763,7 +2763,8 @@ model = "gpt-5.5"
             temp.path().to_path_buf(),
             4,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         let result = UnifiedRuntimeBuilder::default()
             .mob_spec(spec)
             .module_config(MobKitConfig {
