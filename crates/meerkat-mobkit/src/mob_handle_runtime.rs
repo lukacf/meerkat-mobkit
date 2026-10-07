@@ -2452,6 +2452,15 @@ impl AgentMobChildPolicy {
     }
 }
 
+type InstalledAgentMobTools = (
+    Arc<meerkat_mob_mcp::MobMcpState>,
+    ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
+    SharedConsoleSpawnSinkSlot,
+    SharedIdentityRuntimeSlot,
+    AgentMobToolsInstall,
+);
+
 /// Install the agent mob tools with no child policy yet; the spec applies its
 /// final child policy at bootstrap (see `MobBootstrapSpec::apply_agent_mob_child_policy`).
 fn install_agent_mob_tools(
@@ -2462,17 +2471,7 @@ fn install_agent_mob_tools(
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
-) -> Result<
-    (
-        Arc<meerkat_mob_mcp::MobMcpState>,
-        ImplicitDelegateRetirementOverrides,
-        SharedDefaultLlmClientSlot,
-        SharedConsoleSpawnSinkSlot,
-        SharedIdentityRuntimeSlot,
-        AgentMobToolsInstall,
-    ),
-    meerkat_runtime::RuntimeDriverError,
-> {
+) -> Result<InstalledAgentMobTools, meerkat_runtime::RuntimeDriverError> {
     let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
         install_agent_mob_tools_with(
             definition,
@@ -23534,14 +23533,14 @@ image_generation = true
         })
     }
 
-    fn acquisition_fixture(
-        path: &Path,
-    ) -> (
+    type AcquisitionFixture = (
         Arc<meerkat_session::PersistentSessionService<FactoryAgentBuilder>>,
         Arc<meerkat_runtime::MeerkatMachine>,
         Arc<dyn meerkat_runtime::RuntimeStore>,
         Arc<dyn meerkat_core::BlobStore>,
-    ) {
+    );
+
+    fn acquisition_fixture(path: &Path) -> AcquisitionFixture {
         let store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(

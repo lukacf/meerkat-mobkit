@@ -1757,7 +1757,7 @@ mod tests {
                 capture_warnings(complete_text(&client, &profile, "test".into())).await;
             match case {
                 CompletionCase::Success => {
-                    assert_eq!(result.expect("physical success"), PHYSICAL_TEXT)
+                    assert_eq!(result.expect("physical success"), PHYSICAL_TEXT);
                 }
                 CompletionCase::TerminalError | CompletionCase::StreamError => assert!(
                     matches!(result, Err(HygienistError::Client(message))
