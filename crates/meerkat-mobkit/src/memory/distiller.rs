@@ -2438,7 +2438,7 @@ mod tests {
             Arc::new(StaticTranscript(transcript)),
             None,
             tracker,
-            "family",
+            "team",
         ));
         (engine, client)
     }
@@ -2606,7 +2606,7 @@ mod tests {
         assert_eq!(
             *scope,
             MemoryScope::Identity {
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 identity: "identity:a".to_string()
             }
         );
@@ -2904,7 +2904,7 @@ mod tests {
                 Arc::new(StaticTranscript(Some(slice(&[("user", "a")])))),
                 None,
                 None,
-                "family",
+                "team",
             )
             .with_pre_rotation_timeout(Duration::from_millis(50)),
         );
@@ -3100,7 +3100,7 @@ mod tests {
                 range: Some((0, 5)),
             }]))),
             None,
-            "family",
+            "team",
         ));
         // The agent's Recorder wrote in the interaction window, and one run
         // completed toward the interaction trigger.
@@ -3179,7 +3179,7 @@ mod tests {
         let sink = DistillerTriggers::new(engine.clone());
         // Two respawn generations of the SAME durable identity, observed
         // under their encoded roster ids.
-        for generation in ["rt:identity:parent-1:0", "rt:identity:parent-1:1"] {
+        for generation in ["rt:identity:lead-1:0", "rt:identity:lead-1:1"] {
             let roster_id = crate::member_comms_id::mob_member_id_str(generation).into_owned();
             assert!(roster_id.starts_with("mk--"), "{roster_id}");
             sink.observe(
@@ -3202,10 +3202,7 @@ mod tests {
             .collect();
         assert_eq!(
             identities,
-            vec![
-                "identity:parent-1".to_string(),
-                "identity:parent-1".to_string()
-            ],
+            vec!["identity:lead-1".to_string(), "identity:lead-1".to_string()],
             "both generations must key the ONE logical scope"
         );
     }

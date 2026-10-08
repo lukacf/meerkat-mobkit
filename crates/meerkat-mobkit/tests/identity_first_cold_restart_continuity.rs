@@ -1,4 +1,4 @@
-//! Upgrade-carry regression (Bug 1, a downstream app's 0.7.20 report): a full process
+//! Upgrade-carry regression (Bug 1, a 0.7.20 field report): a full process
 //! restart against the same on-disk store must RESUME each agent's transcript,
 //! not fresh-spawn it empty.
 //!
@@ -252,7 +252,7 @@ async fn boot(
 // resume" — boot 2 appeared to re-Create. That diagnosis was wrong: the bridge
 // resumed fine, but the orchestrator reported the outcome by checkpoint-
 // snapshot presence and labeled a genuine resume `Created` — the exact
-// outcome-reporting lie from the downstream app's report. With outcomes keyed on the
+// outcome-reporting lie from the field report. With outcomes keyed on the
 // bridge verdict (and resume inheriting the persisted System message), the
 // full cold-restart path passes deterministically and this is now a live
 // regression guard for both bugs.
@@ -371,7 +371,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
     }
 
     // --- Boot 3 (second-restart variant): the resumed-then-extended session
-    // must survive ANOTHER restart. The downstream app's report hit the loss on every
+    // must survive ANOTHER restart. The field report hit the loss on every
     // restart; the second one exercises resume over a transcript that itself
     // grew after a resume. ---
     {
@@ -424,14 +424,14 @@ async fn identity_first_cold_restart_preserves_transcript() {
     }
 }
 
-/// Idle-member coverage for a downstream app's 0.7.23 regression (meerkat #837): a
+/// Idle-member coverage for a 0.7.23 regression (meerkat #837): a
 /// member restarted repeatedly with NO turns in between must keep resuming
 /// onto the same durable session, and the eventual turn must replay history.
 ///
 /// Field shape: turn-less boots committed chained resume-system-prompt-refresh
 /// rewrites; meerkat 0.7.16/0.7.17's rewrite-chain walk miswalked the chain
-/// and failed closed as a cycle, refusing resume on every boot (14 of 15
-/// downstream-app identities). The survivor had run a turn after its refresh - the
+/// and failed closed as a cycle, refusing resume on every boot (for nearly
+/// every identity). The survivor had run a turn after its refresh - the
 /// shape the sibling test above exercises, which is why it kept passing.
 ///
 /// Honesty note: the failing chain was built by PRE-0.7.21 boots (before
@@ -583,7 +583,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
 /// retire archives the durable session and durably writes
 /// `runtime_state=retired` while the continuity record still binds the
 /// identity to that session — precisely what the ≤0.7.28 resume-failure
-/// rollback did to the downstream app's members. On meerkat ≤0.7.28 the next resume
+/// rollback did to affected members. On meerkat ≤0.7.28 the next resume
 /// answered `missing durable session snapshot` forever (retire is terminal);
 /// on ≥0.7.29 the ordinary resume path must AUTO-REVIVE the
 /// retired-with-intact-snapshot session (`authorize_revivable_retired_session`)
@@ -731,8 +731,8 @@ async fn identity_first_resume_revives_terminally_retired_runtime() {
 /// quiet member whose content-less saves were all skipped). meerkat resume
 /// answers typed Absent; before the fix the restore path refused fresh-spawn
 /// for EVERY resume failure (#218 never-abandon), so the identity stayed
-/// Broken and reconcile retried forever - 30 identities permanently wedged in
-/// the field. The narrowly-typed fix: typed Absent AND a store probe
+/// Broken and reconcile retried forever - identities stayed permanently
+/// wedged. The narrowly-typed fix: typed Absent AND a store probe
 /// confirming no row was ever persisted authorize a FRESH spawn under a new
 /// session id, and the continuity record rebinds. Every other refusal keeps
 /// never-abandon semantics (the Bug I revival test above stays untouched:
@@ -816,7 +816,7 @@ async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
         {
             panic!(
                 "a never-persisted continuity head must fresh-spawn, not wedge Broken \
-                 (a 2026-07-30 production fleet incident): {failure:?}"
+                 (a 2026-07-30 production incident): {failure:?}"
             );
         }
         identity_rt

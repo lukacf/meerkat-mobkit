@@ -1,4 +1,4 @@
-"""MobKit builder chain - matches the downstream app's app.py patterns."""
+"""MobKit builder chain for composing and booting a MobKit runtime."""
 from __future__ import annotations
 
 import math
@@ -526,9 +526,9 @@ class MobKitBuilder:
                     steward_wire["runs_per_day"] = steward["runs_per_day"]
                 elif "runsPerDay" in steward:
                     steward_wire["runs_per_day"] = steward["runsPerDay"]
-                # Exposed because a hard-wired ceiling left a production
-                # reasoning-model steward committing zero ops for four days
-                # with no reachable knob. A field the SDK will not forward is
+                # Exposed because a hard-wired ceiling once left a
+                # reasoning-model steward committing zero ops with no
+                # reachable knob. A field the SDK will not forward is
                 # unreachable no matter what Rust does.
                 if "max_output_tokens" in steward:
                     steward_wire["max_output_tokens"] = steward["max_output_tokens"]
@@ -789,7 +789,7 @@ class MobKitBuilder:
 
             .role_migrations([
                 RoleMigrationDeclaration(
-                    identity="domain:home-automation", from_role="domain"
+                    identity="domain:automation", from_role="domain"
                 )
             ])
 
@@ -830,7 +830,7 @@ class MobKitBuilder:
         Each entry is the EXACT canonical JSON of one compiled policy, as
         produced by your policy compiler::
 
-            .application_tool_policies([compiled_household_tools_bytes])
+            .application_tool_policies([compiled_team_tools_bytes])
 
         Pass the compiler's bytes through unchanged. Parsing verifies the
         policy digest against the bytes it is given, so re-serialising the

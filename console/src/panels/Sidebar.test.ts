@@ -263,7 +263,7 @@ test("sidebar configured subgroups inherit from parents so children stay under t
     },
     wired_to: ["initiative:parent"],
   };
-  const grouped = __sidebarTest.groupSidebarAgents([child, parent], ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents([child, parent], opsGrouping);
 
   assert.deepEqual(
     grouped.get("initiatives")?.map((row) => [row.agent.member_id, row.subgroup, row.depth]),
@@ -503,14 +503,14 @@ class MemoryStorage {
   }
 }
 
-const ob3Grouping = {
+const opsGrouping = {
   group_by: ["labels.group", "role"],
   subgroup_by: ["labels.scope_id"],
   section_order: ["coordinators", "initiatives", "workers", "recipients"],
   collapse_single_subgroup: true,
 };
 
-function ob3Agent(args: {
+function opsAgent(args: {
   id: string;
   label: string;
   group: string;
@@ -544,12 +544,12 @@ function virtualRowsForAgents(
     searchActive?: boolean;
   } = {},
 ) {
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
-  const sectionNames = __sidebarTest.orderedSectionNames(grouped, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
+  const sectionNames = __sidebarTest.orderedSectionNames(grouped, opsGrouping);
   return __sidebarTest.buildSidebarVirtualRows({
     sectionNames,
     grouped,
-    grouping: ob3Grouping,
+    grouping: opsGrouping,
     collapsedSections: options.collapsedSections || new Set(),
     collapsedSubgroups: options.collapsedSubgroups || new Set(),
     pinnedAgentIds: options.pinnedAgentIds,
@@ -607,8 +607,8 @@ test("sidebar storage namespace separates configured defaults from persisted use
 
 test("sidebar subgroup headers render and can remove their agents when collapsed", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
-    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    opsAgent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
   ];
   const expanded = virtualRowsForAgents(agents);
 
@@ -670,8 +670,8 @@ test("sidebar exact order preferences persist through storage without sorting", 
 
 test("sidebar search expands section and subgroup matches without mutating saved collapse state", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
-    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    opsAgent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
   ];
   const collapsedSections = new Set(["initiatives"]);
   const collapsedSubgroups = new Set([__sidebarTest.sidebarSubgroupStorageId("initiatives", "cto")]);
@@ -691,9 +691,9 @@ test("sidebar search expands section and subgroup matches without mutating saved
 
 test("sidebar pinned agents render in a special Pinned section and leave their configured section", () => {
   const agents = [
-    ob3Agent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
-    ob3Agent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
-    ob3Agent({ id: "initiative-gamma", label: "Gamma", group: "initiatives", scope: "liveops", role: "initiative", identity: "initiative:gamma" }),
+    opsAgent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
+    opsAgent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
+    opsAgent({ id: "initiative-gamma", label: "Gamma", group: "initiatives", scope: "liveops", role: "initiative", identity: "initiative:gamma" }),
   ];
   const rows = virtualRowsForAgents(agents, {
     pinnedAgentIds: new Set(["initiative:beta", "initiative:gamma"]),
@@ -810,8 +810,8 @@ test("sidebar pinned family ids let an ancestor clear descendant pins that keep 
 
 test("sidebar Pinned section can be collapsed and search temporarily expands it", () => {
   const agents = [
-    ob3Agent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
-    ob3Agent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
+    opsAgent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
+    opsAgent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
   ];
   const collapsed = virtualRowsForAgents(agents, {
     pinnedAgentIds: new Set(["initiative:beta"]),
@@ -882,7 +882,7 @@ test("sidebar moves children with a pinned parent so subagents remain under the 
 
 test("sidebar pin ids prefer durable identity and labels.agent_identity before member_id", () => {
   assert.equal(
-    __sidebarTest.sidebarAgentPinId(ob3Agent({
+    __sidebarTest.sidebarAgentPinId(opsAgent({
       id: "durable",
       label: "Durable",
       group: "workers",
@@ -892,7 +892,7 @@ test("sidebar pin ids prefer durable identity and labels.agent_identity before m
     "agent:durable",
   );
   assert.equal(
-    __sidebarTest.sidebarAgentPinId(ob3Agent({
+    __sidebarTest.sidebarAgentPinId(opsAgent({
       id: "label-identity",
       label: "Label Identity",
       group: "workers",
@@ -902,7 +902,7 @@ test("sidebar pin ids prefer durable identity and labels.agent_identity before m
     "agent:from-label",
   );
   assert.equal(
-    __sidebarTest.sidebarAgentPinId(ob3Agent({
+    __sidebarTest.sidebarAgentPinId(opsAgent({
       id: "member-only",
       label: "Member Only",
       group: "workers",
@@ -914,20 +914,20 @@ test("sidebar pin ids prefer durable identity and labels.agent_identity before m
 
 test("sidebar configured ops-style grouping yields configured sections and scope subgroups", () => {
   const agents = [
-    ob3Agent({ id: "coord", label: "Coordinator", group: "coordinators", scope: "cto", role: "coordinator" }),
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
-    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
-    ob3Agent({ id: "initiative-game-production", label: "Game Production", group: "initiatives", scope: "game-production", role: "initiative" }),
-    ob3Agent({ id: "initiative-game-platform", label: "Game Platform", group: "initiatives", scope: "game-platform", role: "initiative" }),
-    ob3Agent({ id: "worker", label: "Worker", group: "workers", scope: "game-platform", role: "worker" }),
-    ob3Agent({ id: "recipient", label: "Recipient", group: "recipients", scope: "liveops", role: "recipient" }),
+    opsAgent({ id: "coord", label: "Coordinator", group: "coordinators", scope: "cto", role: "coordinator" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    opsAgent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    opsAgent({ id: "initiative-game-production", label: "Game Production", group: "initiatives", scope: "game-production", role: "initiative" }),
+    opsAgent({ id: "initiative-game-platform", label: "Game Platform", group: "initiatives", scope: "game-platform", role: "initiative" }),
+    opsAgent({ id: "worker", label: "Worker", group: "workers", scope: "game-platform", role: "worker" }),
+    opsAgent({ id: "recipient", label: "Recipient", group: "recipients", scope: "liveops", role: "recipient" }),
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
-  const sections = __sidebarTest.orderedSectionNames(grouped, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
+  const sections = __sidebarTest.orderedSectionNames(grouped, opsGrouping);
   const rows = __sidebarTest.buildSidebarVirtualRows({
     sectionNames: sections,
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set(),
     collapsedSubgroups: new Set(),
   });
@@ -952,15 +952,15 @@ test("sidebar configured ops-style grouping yields configured sections and scope
 
 test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
-    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
-    ob3Agent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    opsAgent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    opsAgent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const input = {
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set<string>(),
     collapsedSubgroups: new Set<string>(),
     pinnedAgentIds: new Set(["initiative:cto"]),
@@ -994,7 +994,7 @@ test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
 
 test("stock sidebar navigation model keeps ungrouped agents at section level", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
     {
       agent_id: "rt:initiative-unscoped",
       member_id: "member:initiative-unscoped",
@@ -1004,11 +1004,11 @@ test("stock sidebar navigation model keeps ungrouped agents at section level", (
       labels: { group: "initiatives" },
     } satisfies ConsoleAgent,
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const model = __sidebarTest.buildStockSidebarNavigationModel({
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set<string>(),
     collapsedSubgroups: new Set<string>(),
   });
@@ -1034,14 +1034,14 @@ test("stock sidebar navigation model keeps ungrouped agents at section level", (
 
 test("stock sidebar navigation model does not collide with a configured Pinned group", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
-    ob3Agent({ id: "literal-pinned", label: "Literal Pinned Group Agent", group: "Pinned", scope: "ops", role: "worker" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    opsAgent({ id: "literal-pinned", label: "Literal Pinned Group Agent", group: "Pinned", scope: "ops", role: "worker" }),
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const model = __sidebarTest.buildStockSidebarNavigationModel({
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set<string>(),
     collapsedSubgroups: new Set<string>(),
     pinnedAgentIds: new Set(["initiative:cto"]),
@@ -1063,17 +1063,17 @@ test("stock sidebar navigation model does not collide with a configured Pinned g
 
 test("sidebar applies persisted section and subgroup drag order without moving Pinned from the top", () => {
   const agents = [
-    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
-    ob3Agent({ id: "initiative-cto-two", label: "Second CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
-    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
-    ob3Agent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
-    ob3Agent({ id: "recipient-cto", label: "CTO Recipient", group: "recipients", scope: "cto", role: "recipient" }),
+    opsAgent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    opsAgent({ id: "initiative-cto-two", label: "Second CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    opsAgent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    opsAgent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
+    opsAgent({ id: "recipient-cto", label: "CTO Recipient", group: "recipients", scope: "cto", role: "recipient" }),
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const rows = __sidebarTest.buildSidebarVirtualRows({
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set(),
     collapsedSubgroups: new Set(),
     pinnedAgentIds: new Set(["initiative:cto"]),
@@ -1098,16 +1098,16 @@ test("sidebar applies persisted section and subgroup drag order without moving P
 
 test("sidebar drag preview includes the dragged category or subgroup tree", () => {
   const agents = [
-    ob3Agent({ id: "initiative-alpha", label: "Alpha Initiative", group: "initiatives", scope: "alpha", role: "initiative" }),
-    ob3Agent({ id: "worker-alpha", label: "Alpha Worker", group: "workers", scope: "alpha", role: "worker" }),
-    ob3Agent({ id: "initiative-beta", label: "Beta Initiative", group: "initiatives", scope: "beta", role: "initiative" }),
-    ob3Agent({ id: "recipient-beta", label: "Beta Recipient", group: "recipients", scope: "beta", role: "recipient" }),
+    opsAgent({ id: "initiative-alpha", label: "Alpha Initiative", group: "initiatives", scope: "alpha", role: "initiative" }),
+    opsAgent({ id: "worker-alpha", label: "Alpha Worker", group: "workers", scope: "alpha", role: "worker" }),
+    opsAgent({ id: "initiative-beta", label: "Beta Initiative", group: "initiatives", scope: "beta", role: "initiative" }),
+    opsAgent({ id: "recipient-beta", label: "Beta Recipient", group: "recipients", scope: "beta", role: "recipient" }),
   ];
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const rows = __sidebarTest.buildSidebarVirtualRows({
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set(),
     collapsedSubgroups: new Set(),
   });
@@ -1134,18 +1134,18 @@ test("sidebar drag preview includes the dragged category or subgroup tree", () =
 });
 
 test("sidebar virtualization computes stable visible ranges with overscan", () => {
-  const agents = Array.from({ length: 80 }, (_, index) => ob3Agent({
+  const agents = Array.from({ length: 80 }, (_, index) => opsAgent({
     id: `initiative-${index}`,
     label: `Initiative ${index}`,
     group: "initiatives",
     scope: index % 2 === 0 ? "cto" : "liveops",
     role: "initiative",
   }));
-  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents(agents, opsGrouping);
   const rows = __sidebarTest.buildSidebarVirtualRows({
-    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, opsGrouping),
     grouped,
-    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    grouping: { ...opsGrouping, collapse_single_subgroup: false },
     collapsedSections: new Set(),
     collapsedSubgroups: new Set(),
   });
@@ -1182,7 +1182,7 @@ test("sidebar reorder helper preserves unknown new categories at the end", () =>
 });
 
 test("sidebar treats an agent pinned by member_id as pinned even when it has a durable identity", () => {
-  const agent = ob3Agent({
+  const agent = opsAgent({
     id: "ops-lead",
     label: "Ops Lead",
     group: "coordinators",

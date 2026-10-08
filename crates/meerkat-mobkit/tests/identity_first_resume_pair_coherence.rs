@@ -670,11 +670,11 @@ fn prompt_bearing(system_contents: &[String], base_marker: &str) -> usize {
 ///
 /// Consequences pinned here, per incident lineage: definition/profile prompt
 /// edits are INERT for existing members BY DESIGN (they apply to new
-/// members; the released stack's silent inertness - a production deployment's 0/449 - becomes
+/// members; the released stack's silent inertness becomes
 /// the specified behavior instead of a trap); no resume can mint transcript
 /// rewrite commits for prompts (the 60-100× revision-bloat class stays
 /// dead); no resume can refuse over retained rewrite history for prompt
-/// reasons (the downstream app's 9/17-Broken class is structurally unreachable);
+/// reasons (the mass-Broken class is structurally unreachable);
 /// and every ordered System survives resume byte-for-byte (token replay).
 ///
 /// The authored-System leg (+1 exactly once via an explicit turn) is proven
@@ -688,7 +688,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
     const PARAGRAPH_A: &str = "Source-index collections available: alpha.";
 
     // The definition-owned assembled role instructions (an inline profile
-    // skill) - the surface the downstream app edited. Under the final contract this
+    // skill) - the surface an application edits. Under the final contract this
     // edit must change NOTHING for the existing member.
     let definition_with = |role_instructions: &str| {
         let toml = format!(

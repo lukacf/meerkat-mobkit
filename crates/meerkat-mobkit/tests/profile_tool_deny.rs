@@ -1,7 +1,7 @@
 //! A downstream app's per-profile deny set through MobKit's production runtime
 //! (meerkat 0.8.51 `[profiles.*.tools] deny`).
 //!
-//! A household identity agent's profile enables the mob tools but denies the
+//! A workspace identity agent's profile enables the mob tools but denies the
 //! ones that would let it spawn or rewire broader same-mob members, keeping
 //! fork_off, council, mob_check_member and mob_retire_member. The member is
 //! built through `UnifiedRuntime` from the definition TOML and drives its own
@@ -69,12 +69,12 @@ fn definition_denying(names: &[&str]) -> MobDefinition {
 [mob]
 id = "downstream-deny-mob-{}"
 
-[profiles.household]
+[profiles.workspace]
 model = "gpt-5.5"
 runtime_mode = "autonomous_host"
 external_addressable = true
 
-[profiles.household.tools]
+[profiles.workspace.tools]
 comms = true
 mob = true
 deny = [{deny}]
@@ -253,7 +253,7 @@ async fn an_unknown_deny_entry_fails_ensure_member_with_invalid_params_naming_it
         "jsonrpc": "2.0",
         "id": "unknown-deny-entry",
         "method": "mobkit/ensure_member",
-        "params": { "role": "household", "agent_identity": "kitchen" },
+        "params": { "role": "workspace", "agent_identity": "assistant" },
     })
     .to_string();
     let response: serde_json::Value = serde_json::from_str(
@@ -285,14 +285,14 @@ async fn downstream_deny_set_builds_and_refuses_denied_mob_tools() {
     // The deny set names agent mob tools as well as operator tools; a known
     // name the member does not mount is inert, so the member builds.
     runtime
-        .spawn_many(vec![SpawnMemberSpec::new("household", "kitchen")])
+        .spawn_many(vec![SpawnMemberSpec::new("workspace", "assistant")])
         .await
         .expect("a member builds with the downstream app's deny set");
 
     let done = client.done.notified();
     tokio::pin!(done);
     done.as_mut().enable();
-    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "kitchen", PROBE.to_string())
+    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "assistant", PROBE.to_string())
         .await
         .expect("send the probe turn");
     tokio::time::timeout(Duration::from_mins(1), done)

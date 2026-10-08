@@ -39,18 +39,18 @@ describe("openai live gateway registration", () => {
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are the robot's voice embodiment.",
+        sessionInstructions: "You are a test voice agent.",
         summary: { model: "gpt-5.4-mini", maxInputBytes: 32768, maxOutputBytes: 2048 },
       }),
       fixture.openai_live_gateway_config_with_summary,
     );
     const partial = openAiLiveGatewayConfigToWire({
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key" },
       voice: "marin",
       summary: { maxOutputBytes: 1024 },
     });
@@ -58,8 +58,8 @@ describe("openai live gateway registration", () => {
     assert.equal(
       "summary" in openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       }),
       false,
@@ -70,24 +70,24 @@ describe("openai live gateway registration", () => {
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are the robot's voice embodiment.",
+        sessionInstructions: "You are a test voice agent.",
       }),
       fixture.openai_live_gateway_config,
     );
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       }),
       {
         principal: "user:luka",
-        realm: "family",
-        auth_binding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        auth_binding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       },
     );
@@ -103,8 +103,8 @@ describe("openai live gateway registration", () => {
   it("rejects cross-realm bindings, blank fields, and authority-bearing keys", () => {
     const base = {
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key" },
       voice: "marin",
     };
     assert.throws(() =>
@@ -150,12 +150,12 @@ describe("experimental live gateway registration", () => {
     assert.deepEqual(
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
         authBinding: {
-          realm: "family",
+          realm: "example",
           binding: "chatgpt-oauth",
           profile: "luka",
         },
@@ -163,7 +163,7 @@ describe("experimental live gateway registration", () => {
         executionProfiles: [
           {
             profileId: "example.device.open-room.v1",
-            sessionInstructions: "You are the robot's voice embodiment.",
+            sessionInstructions: "You are a test voice agent.",
           },
         ],
       }),
@@ -175,7 +175,7 @@ describe("experimental live gateway registration", () => {
     assert.throws(() =>
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
@@ -189,11 +189,11 @@ describe("experimental live gateway registration", () => {
     assert.throws(() =>
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
-        authBinding: { realm: "family", binding: "chatgpt-oauth" },
+        authBinding: { realm: "example", binding: "chatgpt-oauth" },
         voice: "marin",
         instructions: "caller-owned prompt",
       } as unknown as import("../src/live.js").ExperimentalLiveGatewayConfig),
@@ -203,11 +203,11 @@ describe("experimental live gateway registration", () => {
   it("rejects malformed, reserved, duplicate, and authority-bearing profiles", () => {
     const base = {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factoryKind: "openai-gpt-live",
       factoryVersion: "v1",
       gate0Qualification: "gate0-v1",
-      authBinding: { realm: "family", binding: "chatgpt-oauth" },
+      authBinding: { realm: "example", binding: "chatgpt-oauth" },
       voice: "marin",
     };
     for (const executionProfiles of [
@@ -293,7 +293,7 @@ describe("live execution identity v1", () => {
     for (const [field, value] of [
       ["model", "legacy"],
       ["provider", "openai"],
-      ["auth_binding", { realm: "family", binding: "other" }],
+      ["auth_binding", { realm: "example", binding: "other" }],
       ["self_hosted_server_id", "server"],
       ["provider_params", {}],
     ] as const) {

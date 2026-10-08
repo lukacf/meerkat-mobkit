@@ -1,4 +1,4 @@
-//! Operator surgery helper (task #58, a downstream app's parent-1 context cliff):
+//! Operator surgery helper (a session whose context filled with replayed prompts):
 //! drop byte-identical duplicate System rows from a live mob-hosted
 //! session's durable transcript, keeping the first copy, through the
 //! typed rewrite door - one full-range rewrite commit composed onto the
@@ -12,7 +12,7 @@
 //!   4. Apply:    ... --apply
 //!   5. Remove the runtime scratch store (runtime.db) so the next boot
 //!      mints runtime authority from the healed durable row (the
-//!      fleet-proven reset-reseed lane).
+//!      reset-reseed lane).
 //!   6. Start the gateway.
 
 use std::sync::Arc;
@@ -115,9 +115,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(false)
     };
     // GROUP System rows by (content, identity), ignoring only the envelope
-    // timestamp (meerkat lead's selector, amended for multi-group heads):
-    // the transcript can carry SEVERAL distinct replayed prompts (field
-    // parent-1: one singleton plus 24x112568 and 7x91909 replay groups).
+    // timestamp (amended for multi-group heads): the transcript can carry
+    // SEVERAL distinct replayed prompts (for example one singleton plus two
+    // large replay groups).
     // Keep the FIRST occurrence of each distinct group; drop the rest.
     let mut seen_groups: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();

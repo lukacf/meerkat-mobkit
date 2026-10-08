@@ -179,7 +179,7 @@ fn strict_experimental_surface_is_identity_only_and_provider_neutral() {
         json!({"identity": "identity:luka", "responses_instructions": "delegate"}),
         json!({"identity": "identity:luka", "profile_id": "gpt-live-function-bridge-v1"}),
         json!({"identity": "identity:luka", "execution_profile": "function_bridge"}),
-        json!({"identity": "identity:luka", "auth_binding": {"realm": "family", "binding": "other"}}),
+        json!({"identity": "identity:luka", "auth_binding": {"realm": "example", "binding": "other"}}),
         json!({"identity": "identity:luka", "self_hosted_server_id": "server"}),
         json!({"identity": "identity:luka", "provider_params": {}}),
         json!({"identity": "identity:luka", "tools": []}),

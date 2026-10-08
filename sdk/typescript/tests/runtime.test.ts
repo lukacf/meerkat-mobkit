@@ -567,20 +567,20 @@ describe("MobKitRuntime", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.openaiLiveConfig = {
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      sessionInstructions: "You are the robot's voice embodiment.",
+      sessionInstructions: "You are a test voice agent.",
     };
 
     const params = (rt as any)._buildInitParams();
 
     assert.deepEqual(params.runtime_options.openai_live, {
       principal: "user:luka",
-      realm: "family",
-      auth_binding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      realm: "example",
+      auth_binding: { realm: "example", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      session_instructions: "You are the robot's voice embodiment.",
+      session_instructions: "You are a test voice agent.",
     });
     assert.equal("experimental_live" in params.runtime_options, false);
   });
@@ -589,12 +589,12 @@ describe("MobKitRuntime", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.experimentalLiveConfig = {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factoryKind: "openai-gpt-live",
       factoryVersion: "v1",
       gate0Qualification: "gate0-v1",
       authBinding: {
-        realm: "family",
+        realm: "example",
         binding: "chatgpt-oauth",
         profile: "luka",
       },
@@ -602,7 +602,7 @@ describe("MobKitRuntime", () => {
       executionProfiles: [
         {
           profileId: "example.device.open-room.v1",
-          sessionInstructions: "You are the robot's voice embodiment.",
+          sessionInstructions: "You are a test voice agent.",
         },
       ],
     };
@@ -611,12 +611,12 @@ describe("MobKitRuntime", () => {
 
     assert.deepEqual(params.runtime_options.experimental_live, {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factory_kind: "openai-gpt-live",
       factory_version: "v1",
       gate0_qualification: "gate0-v1",
       auth_binding: {
-        realm: "family",
+        realm: "example",
         binding: "chatgpt-oauth",
         profile: "luka",
       },
@@ -624,7 +624,7 @@ describe("MobKitRuntime", () => {
       execution_profiles: [
         {
           profile_id: "example.device.open-room.v1",
-          session_instructions: "You are the robot's voice embodiment.",
+          session_instructions: "You are a test voice agent.",
         },
       ],
     });
@@ -2078,30 +2078,30 @@ describe("MobHandle.rememberAgentMemory()", () => {
       memory_id: "mem-1",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["calendar", "family"],
+      tags: ["calendar", "team"],
       created_at_ms: 10,
       updated_at_ms: 20,
     }));
 
     const result = await handle.rememberAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["family", "calendar"],
+      tags: ["team", "calendar"],
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/remember");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["family", "calendar"],
+      tags: ["team", "calendar"],
     });
     assert.equal(result.memoryId, "mem-1");
     assert.equal(result.title, "School pickup");
     assert.equal(result.body, "Pickup is before calendar planning.");
-    assert.deepEqual(result.tags, ["calendar", "family"]);
+    assert.deepEqual(result.tags, ["calendar", "team"]);
     assert.equal(result.createdAtMs, 10);
     assert.equal(result.updatedAtMs, 20);
   });
@@ -2115,14 +2115,14 @@ describe("MobHandle.recallAgentMemory()", () => {
         memory_id: "mem-1",
         title: "School pickup",
         body: "Pickup is before calendar planning.",
-        tags: ["calendar", "family"],
+        tags: ["calendar", "team"],
         created_at_ms: 10,
         updated_at_ms: 20,
       }],
     }));
 
     const result = await handle.recallAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       queryText: "Where is pickup?",
       queryTerms: ["pickup"],
@@ -2132,7 +2132,7 @@ describe("MobHandle.recallAgentMemory()", () => {
     assert.equal(calls[0].method, "mobkit/agent_memory/recall");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       query_text: "Where is pickup?",
       query_terms: ["pickup"],
@@ -2153,14 +2153,14 @@ describe("MobHandle.forgetAgentMemory()", () => {
     }));
 
     const result = await handle.forgetAgentMemory("identity:luka", "mem-1", {
-      realm: "family",
+      realm: "example",
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/forget");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
       memory_id: "mem-1",
-      realm: "family",
+      realm: "example",
     });
     assert.equal(result.memoryId, "mem-1");
     assert.equal(result.deleted, true);
@@ -2176,10 +2176,10 @@ describe("MobHandle.updateAgentMemory()", () => {
     }));
 
     const result = await handle.updateAgentMemory("identity:luka", "mem-1", {
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup moved to 15:30.",
-      tags: ["family"],
+      tags: ["team"],
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/update");
@@ -2188,8 +2188,8 @@ describe("MobHandle.updateAgentMemory()", () => {
       memory_id: "mem-1",
       title: "School pickup",
       body: "Pickup moved to 15:30.",
-      realm: "family",
-      tags: ["family"],
+      realm: "example",
+      tags: ["team"],
     });
     assert.equal(result.memoryId, "mem-2");
     assert.equal(result.supersedes, "mem-1");
@@ -2211,7 +2211,7 @@ describe("MobHandle.manifestAgentMemory()", () => {
     }));
 
     const result = await handle.manifestAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       tier: "working_set",
       k: 4,
     });
@@ -2219,7 +2219,7 @@ describe("MobHandle.manifestAgentMemory()", () => {
     assert.equal(calls[0].method, "mobkit/agent_memory/manifest");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       tier: "working_set",
       k: 4,
     });
@@ -3248,7 +3248,7 @@ describe("MobHandle live methods", () => {
       ["responses_model", "gpt-5.5"],
       ["responses_tools", []],
       ["responses_instructions", "delegate"],
-      ["auth_binding", { realm: "family", binding: "other" }],
+      ["auth_binding", { realm: "example", binding: "other" }],
       ["self_hosted_server_id", "server"],
       ["provider_params", {}],
       ["tools", []],

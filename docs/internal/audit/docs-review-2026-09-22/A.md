@@ -1081,7 +1081,7 @@ configuredAgentGroup reverses the child-to-ancestor chain before looking for a v
     },
     wired_to: ["initiative:parent"],
   };
-  const grouped = __sidebarTest.groupSidebarAgents([child, parent], ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents([child, parent], opsGrouping);
 
   assert.deepEqual(
     grouped.get("initiatives")?.map((row) => [row.agent.member_id, row.subgroup, row.depth]),

@@ -1,12 +1,12 @@
 {
   "experimental_gateway_config": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "factory_kind": "openai-gpt-live",
     "factory_version": "v1",
     "gate0_qualification": "gate0-v1",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "chatgpt-oauth",
       "profile": "luka"
     },
@@ -14,31 +14,31 @@
     "execution_profiles": [
       {
         "profile_id": "example.device.open-room.v1",
-        "session_instructions": "You are the robot's voice embodiment."
+        "session_instructions": "You are a test voice agent."
       }
     ]
   },
   "openai_live_gateway_config": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "openai-api-key",
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are the robot's voice embodiment."
+    "session_instructions": "You are a test voice agent."
   },
   "openai_live_gateway_config_with_summary": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "openai-api-key",
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are the robot's voice embodiment.",
+    "session_instructions": "You are a test voice agent.",
     "summary": {
       "model": "gpt-5.4-mini",
       "max_input_bytes": 32768,

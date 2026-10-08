@@ -1187,7 +1187,7 @@ impl ContinuitySessionStoreAdapter {
             ))),
             (false, Some(stored)) => {
                 let Some(state) = self.lookup_session(&id.to_string()) else {
-                    // Parked repair (task #56 corpus, a downstream app parent-1): an
+                    // Parked repair (task #56 corpus, a production member): an
                     // EXPLICITLY unregistered session whose continuity
                     // record still binds it hydrates write authority from
                     // the DURABLE record - identity, generation, and fencing
@@ -1812,7 +1812,7 @@ impl ContinuitySessionStoreAdapter {
 
     /// The PROJECTION doors' variant of
     /// [`Self::ensure_session_mutation_allowed`] (task #56 corpus finding,
-    /// A downstream app parent-1): `save_authoritative_projection*` and
+    /// a production member): `save_authoritative_projection*` and
     /// `save_transcript_rewrite` carry STORE-ISSUED committed runtime
     /// authority by trait contract, and the durable-tear reconciliation must
     /// be able to repair a PARKED member's durable head - a member that
@@ -4110,7 +4110,7 @@ mod tests {
     /// released realms committed under tests/fixtures carry no
     /// rewrite-carrying heads (rewrite_count is 0 in all four), and the
     /// failing fleet shape is exactly a rewrite-carrying released head.
-    /// Replace with the downstream app's forensic bundle when it lands.
+    /// Replace with a real released-binary capture if one becomes available.
     fn seed_released_rewrite_carrying_head(
         db_path: &std::path::Path,
         session_id: &meerkat_core::types::SessionId,
@@ -4382,8 +4382,8 @@ mod tests {
         );
     }
 
-    /// The downstream app's boot-2 exactly-once violation, pinned on its captured
-    /// head rows with synthetic content
+    /// A boot-2 exactly-once violation seen in the field, pinned on head rows
+    /// of that shape with synthetic content
     /// (fixtures/security_idempotency/, sha256 2f2c8443...,
     /// domain:security 019fae11-4e87-...): two consecutive boots of the same
     /// binary wrote two byte-different heads for an unchanged document. The

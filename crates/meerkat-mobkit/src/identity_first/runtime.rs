@@ -20930,38 +20930,38 @@ mod admission_first_topology_tests {
         Ok(())
     }
 
-    /// Downstream app privacy rule: children's agents must not keep reaching the
-    /// parents'. `managed_peer_edges` is this process's memory and starts
-    /// empty, while the mob's wiring is durable and replays on recovery. An
-    /// edge between two of this runtime's identities that the topology no
-    /// longer wants must be unwired after a restart, even though this
-    /// process never wired it. An edge to a member that is not one of this
-    /// runtime's identities is left alone.
+    /// Topology rule: member agents must not keep reaching the lead's agent
+    /// once the topology separates them. `managed_peer_edges` is this
+    /// process's memory and starts empty, while the mob's wiring is durable
+    /// and replays on recovery. An edge between two of this runtime's
+    /// identities that the topology no longer wants must be unwired after a
+    /// restart, even though this process never wired it. An edge to a member
+    /// that is not one of this runtime's identities is left alone.
     #[tokio::test]
     async fn an_edge_no_longer_desired_is_unwired_after_a_restart()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let parent = AgentIdentity::parse("identity:parent-1")?;
-        let child = AgentIdentity::parse("identity:child-1")?;
-        let sibling = AgentIdentity::parse("identity:child-2")?;
+        let lead = AgentIdentity::parse("identity:lead-1")?;
+        let member = AgentIdentity::parse("identity:member-1")?;
+        let peer_member = AgentIdentity::parse("identity:member-2")?;
         let (_open_gate, gate) = watch::channel(false);
         let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
         // The process after the restart: nothing in its managed set. A
         // topology provider owns the topology.
         let runtime = runtime_with(bridge.clone(), "edge-prune-after-restart")?;
         runtime.set_identity_edge_ownership(IdentityEdgeOwnership::TopologyProvider);
-        let parent_rt = register_active(&runtime, &bridge, &parent, 0).await?;
-        let child_rt = register_active(&runtime, &bridge, &child, 0).await?;
-        let sibling_rt = register_active(&runtime, &bridge, &sibling, 0).await?;
+        let lead_rt = register_active(&runtime, &bridge, &lead, 0).await?;
+        let member_rt = register_active(&runtime, &bridge, &member, 0).await?;
+        let peer_member_rt = register_active(&runtime, &bridge, &peer_member, 0).await?;
         let delegate_rt = AgentRuntimeId::parse("rt:delegate:0")?;
         // The previous process wired these; the mob replayed them.
-        bridge.land_wire(&parent_rt, &child_rt);
-        bridge.land_wire(&child_rt, &sibling_rt);
-        bridge.land_wire(&child_rt, &delegate_rt);
+        bridge.land_wire(&lead_rt, &member_rt);
+        bridge.land_wire(&member_rt, &peer_member_rt);
+        bridge.land_wire(&member_rt, &delegate_rt);
         assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
 
-        // The topology now keeps the children together and away from the
-        // parent.
-        let kept = ManagedPeerEdge::new(child.clone(), sibling.clone())?;
+        // The topology now keeps the members together and away from the
+        // lead.
+        let kept = ManagedPeerEdge::new(member.clone(), peer_member.clone())?;
         runtime
             .reconcile_managed_peer_edges(std::slice::from_ref(&kept))
             .await?;
@@ -20973,20 +20973,20 @@ mod admission_first_topology_tests {
                 .any(|(a, b)| (a == x && b == y) || (a == y && b == x))
         };
         assert!(
-            unwired_pair(&parent_rt, &child_rt),
+            unwired_pair(&lead_rt, &member_rt),
             "the edge the topology no longer wants is unwired: {unwired:?}"
         );
         assert!(
-            !unwired_pair(&child_rt, &sibling_rt),
+            !unwired_pair(&member_rt, &peer_member_rt),
             "the desired edge is kept: {unwired:?}"
         );
         assert!(
-            !unwired_pair(&child_rt, &delegate_rt),
+            !unwired_pair(&member_rt, &delegate_rt),
             "an edge to a member that is not one of this runtime's identities is left alone: \
              {unwired:?}"
         );
         let live = runtime.logical_peer_edges().await?;
-        let stale = ManagedPeerEdge::new(parent.clone(), child.clone())?;
+        let stale = ManagedPeerEdge::new(lead.clone(), member.clone())?;
         assert!(
             live.contains(&kept),
             "the desired edge stays wired: {live:?}"
@@ -20996,14 +20996,14 @@ mod admission_first_topology_tests {
     }
 
     /// With a topology provider, a live identity edge the mob definition's
-    /// wiring declares (here `role_wiring` kid-helper) is the definition's,
+    /// wiring declares (here `role_wiring` worker-helper) is the definition's,
     /// so the topology never prunes it, even though its desired set does not
     /// contain it. An edge that no declared owner wants is pruned.
     #[tokio::test]
     async fn a_definition_declared_edge_is_not_the_topologys_to_prune()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let parent = AgentIdentity::parse("identity:parent")?;
-        let kid = AgentIdentity::parse("identity:kid")?;
+        let lead = AgentIdentity::parse("identity:lead")?;
+        let worker = AgentIdentity::parse("identity:worker")?;
         let helper = AgentIdentity::parse("identity:helper")?;
         let as_profile = |identity: &AgentIdentity, profile: &str| {
             let mut spec = spec(identity);
@@ -21020,13 +21020,13 @@ mod admission_first_topology_tests {
 id = "edge-prune-definition-owned"
 
 [[wiring.role_wiring]]
-a = "kid"
+a = "worker"
 b = "helper"
 
-[profiles.parent]
+[profiles.lead]
 model = "gpt-5.5"
 
-[profiles.kid]
+[profiles.worker]
 model = "gpt-5.5"
 
 [profiles.helper]
@@ -21039,13 +21039,13 @@ model = "gpt-5.5"
             ))),
             Some(definition),
         );
-        let parent_rt =
-            register_active_as(&runtime, &bridge, as_profile(&parent, "parent"), 0).await?;
-        let kid_rt = register_active_as(&runtime, &bridge, as_profile(&kid, "kid"), 0).await?;
+        let lead_rt = register_active_as(&runtime, &bridge, as_profile(&lead, "lead"), 0).await?;
+        let worker_rt =
+            register_active_as(&runtime, &bridge, as_profile(&worker, "worker"), 0).await?;
         let helper_rt =
             register_active_as(&runtime, &bridge, as_profile(&helper, "helper"), 0).await?;
-        bridge.land_wire(&parent_rt, &kid_rt);
-        bridge.land_wire(&kid_rt, &helper_rt);
+        bridge.land_wire(&lead_rt, &worker_rt);
+        bridge.land_wire(&worker_rt, &helper_rt);
 
         runtime.reconcile_managed_peer_edges(&[]).await?;
 
@@ -21056,11 +21056,11 @@ model = "gpt-5.5"
                 .any(|(a, b)| (a == x && b == y) || (a == y && b == x))
         };
         assert!(
-            unwired_pair(&parent_rt, &kid_rt),
+            unwired_pair(&lead_rt, &worker_rt),
             "the edge no declared owner wants is pruned: {unwired:?}"
         );
         assert!(
-            !unwired_pair(&kid_rt, &helper_rt),
+            !unwired_pair(&worker_rt, &helper_rt),
             "the definition-declared edge is kept: {unwired:?}"
         );
         Ok(())

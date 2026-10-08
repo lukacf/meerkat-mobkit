@@ -12060,19 +12060,19 @@ mod tests {
         use crate::memory::records::MemoryScope;
 
         let identity = MemoryScope::Identity {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             identity: "identity:luka".to_string(),
         };
         let mob = MemoryScope::Mob {
-            realm: "family".to_string(),
-            mob: "mob:home".to_string(),
+            realm: "team".to_string(),
+            mob: "mob:main".to_string(),
         };
         let operator = MemoryScope::Operator {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             operator: "op:luka".to_string(),
         };
         let realm = MemoryScope::Realm {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
         };
 
         assert_eq!(

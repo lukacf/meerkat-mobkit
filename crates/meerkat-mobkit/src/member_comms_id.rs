@@ -1140,23 +1140,23 @@ mod tests {
             "Agent7",
             "a",
             // Downstream app durable identities (colon-bearing).
-            "identity:parent-1",
-            "identity:parent-2",
-            "identity:child-1",
-            "identity:child-2",
+            "identity:lead-1",
+            "identity:lead-2",
+            "identity:member-1",
+            "identity:member-2",
             "domain:calendar",
-            "domain:school",
-            "domain:health",
-            "domain:home",
-            "domain:home-automation",
+            "domain:research",
+            "domain:support",
+            "domain:ops",
+            "domain:automation",
             "domain:finance",
             "domain:discovery",
-            "family-group:main",
+            "team-group:main",
             "triage:main",
             "gate:main",
             // Runtime-id shaped aliases (`rt:{identity}:{generation}`).
-            "rt:identity:parent-1:0",
-            "rt:domain:home-automation:3",
+            "rt:identity:lead-1:0",
+            "rt:domain:automation:3",
             "rt:channel:C0SMOKEOPS:0",
             "rt:review:singleton:12",
             // Mixed punctuation / boundary shapes.
@@ -1206,7 +1206,7 @@ mod tests {
 
     /// The load-bearing guard: the codec's output must be accepted by meerkat
     /// 0.7's own fail-closed comms-name validator — the exact check that
-    /// rejected `rt:identity:parent-1:0` before this codec existed. If meerkat
+    /// rejected `rt:identity:lead-1:0` before this codec existed. If meerkat
     /// tightens `MemberCommsName` again, this test fails instead of a downstream app.
     #[test]
     fn encoded_ids_satisfy_meerkat_member_comms_name_validator() {
@@ -1225,10 +1225,10 @@ mod tests {
     fn exact_wire_format_for_known_aliases() {
         let cases = [
             ("worker-one", "worker-one"), // already comms-safe -> pass through
-            ("identity:parent-1", "mk--identity_cparent-1"),
-            ("domain:home-automation", "mk--domain_chome-automation"),
-            ("family-group:main", "mk--family-group_cmain"),
-            ("rt:identity:parent-1:0", "mk--rt_cidentity_cparent-1_c0"),
+            ("identity:lead-1", "mk--identity_clead-1"),
+            ("domain:automation", "mk--domain_cautomation"),
+            ("team-group:main", "mk--team-group_cmain"),
+            ("rt:identity:lead-1:0", "mk--rt_cidentity_clead-1_c0"),
             ("triage:main", "mk--triage_cmain"),
             ("a:b_c", "mk--a_cb__c"),
             ("a b", "mk--a_x20_b"),
@@ -1283,10 +1283,10 @@ mod tests {
     #[test]
     fn decode_then_encode_canonicalizes_both_id_spaces() {
         for (input, canonical) in [
-            ("rt:domain:home:0", "mk--rt_cdomain_chome_c0"),
-            ("mk--rt_cdomain_chome_c0", "mk--rt_cdomain_chome_c0"),
-            ("domain:home", "mk--domain_chome"),
-            ("mk--domain_chome", "mk--domain_chome"),
+            ("rt:domain:ops:0", "mk--rt_cdomain_cops_c0"),
+            ("mk--rt_cdomain_cops_c0", "mk--rt_cdomain_cops_c0"),
+            ("domain:ops", "mk--domain_cops"),
+            ("mk--domain_cops", "mk--domain_cops"),
             ("digest-owner", "digest-owner"),
         ] {
             let key = mob_member_id_str(runtime_alias_str(input).as_ref()).into_owned();
@@ -1294,8 +1294,8 @@ mod tests {
         }
         // The failure mode this contract exists to prevent:
         assert_ne!(
-            mob_member_id_str("mk--rt_cdomain_chome_c0"),
-            "mk--rt_cdomain_chome_c0",
+            mob_member_id_str("mk--rt_cdomain_cops_c0"),
+            "mk--rt_cdomain_cops_c0",
             "encode alone re-encodes roster ids — never use it on binding member ids"
         );
     }
@@ -1320,13 +1320,13 @@ mod tests {
     fn runtime_event_alias_across_generations_and_forms() {
         use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, Generation};
 
-        let encoded = mob_member_id_str("rt:identity:parent-1:0").into_owned();
+        let encoded = mob_member_id_str("rt:identity:lead-1:0").into_owned();
         let rid = AgentRuntimeId::new(AgentIdentity::from(encoded.as_str()), Generation::new(7));
-        assert_eq!(runtime_event_alias(&rid), "rt:identity:parent-1:0:7");
+        assert_eq!(runtime_event_alias(&rid), "rt:identity:lead-1:0:7");
 
-        let encoded = mob_member_id_str("domain:home-automation").into_owned();
+        let encoded = mob_member_id_str("domain:automation").into_owned();
         let rid = AgentRuntimeId::new(AgentIdentity::from(encoded.as_str()), Generation::new(1));
-        assert_eq!(runtime_event_alias(&rid), "domain:home-automation:1");
+        assert_eq!(runtime_event_alias(&rid), "domain:automation:1");
 
         // Plain member name keeps its initial generation.
         let rid = AgentRuntimeId::initial(AgentIdentity::from("triage-main"));
@@ -1404,14 +1404,14 @@ mod tests {
     fn logical_memory_identity_normalizes_every_member_id_shape() {
         // Identity-first internal member: encoded runtime alias, any
         // generation, normalizes to the durable identity.
-        let encoded_gen0 = mob_member_id_str("rt:identity:parent-1:0").into_owned();
-        let encoded_gen7 = mob_member_id_str("rt:identity:parent-1:7").into_owned();
-        assert_eq!(logical_memory_identity(&encoded_gen0), "identity:parent-1");
-        assert_eq!(logical_memory_identity(&encoded_gen7), "identity:parent-1");
+        let encoded_gen0 = mob_member_id_str("rt:identity:lead-1:0").into_owned();
+        let encoded_gen7 = mob_member_id_str("rt:identity:lead-1:7").into_owned();
+        assert_eq!(logical_memory_identity(&encoded_gen0), "identity:lead-1");
+        assert_eq!(logical_memory_identity(&encoded_gen7), "identity:lead-1");
         // Decoded (public alias) spelling of the same runtime id.
         assert_eq!(
-            logical_memory_identity("rt:identity:parent-1:0"),
-            "identity:parent-1"
+            logical_memory_identity("rt:identity:lead-1:0"),
+            "identity:lead-1"
         );
         // Identity-first external binding: encoded durable identity.
         assert_eq!(
@@ -1423,7 +1423,7 @@ mod tests {
         // Non-generation rt:-prefixed names stay whole (conservative).
         assert_eq!(logical_memory_identity("rt:oddly:named"), "rt:oddly:named");
         // Fixed point: normalizing a logical identity changes nothing.
-        for id in ["identity:parent-1", "review:singleton", "helper"] {
+        for id in ["identity:lead-1", "review:singleton", "helper"] {
             assert_eq!(logical_memory_identity(id), id);
         }
     }

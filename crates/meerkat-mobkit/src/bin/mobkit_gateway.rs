@@ -108,7 +108,7 @@ struct InitParams {
     /// runtime.
     identity_roster: Option<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
     /// Member role migrations this activation is authorized to perform, e.g.
-    /// `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    /// `[{"identity": "domain:automation", "from_role": "domain"}]`.
     ///
     /// A durable member whose role changed refuses to resume
     /// (`MobError::MemberRoleMigrationRequired`) until the host names it here,

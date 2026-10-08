@@ -1,6 +1,6 @@
 //! Operator verbs for oversized/wedged member transcripts.
 //!
-//! Two verbs, one incident class (downstream app parent-1: a member transcript
+//! Two verbs, one incident class (a member transcript
 //! grows past what a turn can carry and the only prior remedy was row
 //! surgery):
 //!

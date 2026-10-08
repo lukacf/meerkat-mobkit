@@ -296,11 +296,11 @@ class TestSendAndWaitWaitsForItsOwnTurn:
         transport = TicketTransport(sends=[{**_sent(ticket if tracked else None), "durable": True}])
         runtime = _make_runtime(transport)
         pair = (
-            {"correlation_id": "school-event-1", "idempotency_key": "school:event-1"}
+            {"correlation_id": "lab-event-1", "idempotency_key": "lab:event-1"}
             if with_pair else {}
         )
         tracking = {"track_turn": True} if tracked else {}
-        content = "School closed.\nKeep both paragraphs."
+        content = "Lab closed.\nKeep both paragraphs."
 
         if through_handle:
             result = await runtime.agent("keeper").dispatch_text(content, **pair, **tracking)
@@ -320,23 +320,23 @@ class TestSendAndWaitWaitsForItsOwnTurn:
     async def test_dispatch_text_and_wait_preserves_idempotency_and_own_ticket(self, with_pair):
         ticket = "4a9bc1cc-0b66-4af6-bce4-926359b1dd8f"
         pair = (
-            {"correlation_id": "school-event-2", "idempotency_key": "school:event-2"}
+            {"correlation_id": "lab-event-2", "idempotency_key": "lab:event-2"}
             if with_pair else {}
         )
         transport = TicketTransport(
             sends=[{**_sent(ticket), "durable": True}],
-            turn_results={ticket: [_completed("School notice accepted")]},
+            turn_results={ticket: [_completed("Lab notice accepted")]},
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
         output = await handle.dispatch_text_and_wait(
-            "School notice", origin="connector", timeout=5, poll_interval=0.001, **pair,
+            "Lab notice", origin="connector", timeout=5, poll_interval=0.001, **pair,
         )
 
-        assert output == "School notice accepted"
+        assert output == "Lab notice accepted"
         assert transport.params_of("mobkit/dispatch") == [{
             "identity": "keeper",
-            "dispatch_input": {"content": "School notice", "origin": "connector", **pair},
+            "dispatch_input": {"content": "Lab notice", "origin": "connector", **pair},
             "track_turn": True,
         }]
         assert transport.waited_turns() == [{"identity": "keeper", "ticket": ticket}]

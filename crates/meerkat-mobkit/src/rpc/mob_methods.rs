@@ -3909,8 +3909,8 @@ mod member_declaration_delegation_tests {
             "mob/apply_member_tool_declaration",
             serde_json::json!({
                 "mob_id": "some-other-mob",
-                "agent_identity": "identity:child-2",
-                "request_id": "ex-tp-apply-identity-child-2-rev109-0001",
+                "agent_identity": "identity:member-2",
+                "request_id": "ex-tp-apply-identity-member-2-rev109-0001",
                 "expected_intent_revision": 3,
                 "declaration": {
                     "category_overrides": {},
@@ -4097,7 +4097,7 @@ mod member_declaration_alias_tests {
     fn an_alias_round_trips_through_the_boundary() {
         for alias in [
             "rt:gate:main:0",
-            "identity:child-2",
+            "identity:member-2",
             "gate:main",
             "plainname",
         ] {
@@ -4136,7 +4136,7 @@ mod member_declaration_alias_tests {
     /// shape that catches a field nobody enumerated.
     #[test]
     fn no_field_of_a_read_result_carries_the_reserved_namespace() {
-        let roster = crate::member_comms_id::mob_member_id_str("identity:child-2").into_owned();
+        let roster = crate::member_comms_id::mob_member_id_str("identity:member-2").into_owned();
         let result = meerkat_contracts::wire::MobMemberToolDeclarationResult {
             mob_id: "example".to_string(),
             agent_identity: public_member_alias(&roster),
@@ -4170,7 +4170,7 @@ mod member_declaration_alias_tests {
         assert_no_reserved_namespace(&json, "read_result");
         assert_eq!(
             json["agent_identity"],
-            serde_json::json!("identity:child-2")
+            serde_json::json!("identity:member-2")
         );
     }
 }
@@ -4180,19 +4180,19 @@ mod member_declaration_alias_tests {
 mod member_declaration_wire_tests {
     //! Contract tests for the `mob/*` member-declaration surface.
     //!
-    //! These assert against the EXACT payload the downstream app's Phase B sends, supplied
-    //! over bus with real production values from their state generation 90, rather
-    //! than against a shape inferred from the struct definitions. That distinction
-    //! is the point: the two previous gaps on this surface (#337's carrier and the
-    //! role-migration carrier) were both "the type existed and the caller could not
-    //! reach it", and a payload I invented myself would reproduce the same class of
-    //! mistake one level up.
+    //! These assert against an exact caller-shaped payload (a Phase B apply as an
+    //! external caller sends it, with synthetic values), rather than against a
+    //! shape inferred from the struct definitions. That distinction is the
+    //! point: the two previous gaps on this surface (#337's carrier and the
+    //! role-migration carrier) were both "the type existed and the caller could
+    //! not reach it", and a payload inferred from the types alone would
+    //! reproduce the same class of mistake one level up.
 
-    /// The apply request a downstream app sends 17 times per rollout, verbatim.
+    /// The apply request an external caller sends once per member per rollout.
     const DOWNSTREAM_APPLY_PARAMS: &str = r#"{
       "mob_id": "example",
-      "agent_identity": "identity:child-2",
-      "request_id": "ex-tp-apply-identity-child-2-rev109-0001",
+      "agent_identity": "identity:member-2",
+      "request_id": "ex-tp-apply-identity-member-2-rev109-0001",
       "expected_intent_revision": 3,
       "declaration": {
         "category_overrides": {
@@ -4217,19 +4217,19 @@ mod member_declaration_wire_tests {
       "convergence": { "kind": "drain", "max_wait_ms": 120000 }
     }"#;
 
-    /// The adopt request, sent once per member before its first apply. Byte-what
-    /// the downstream app's adopt runner sends (at a pinned commit); per-member variation is only agent_identity, request_id, the
-    /// session values and profile_name.
+    /// The adopt request, sent once per member before its first apply, in the
+    /// shape an external adopt runner sends; per-member variation is only
+    /// agent_identity, request_id, the session values and profile_name.
     const DOWNSTREAM_ADOPT_PARAMS: &str = r#"{
       "mob_id": "example",
-      "agent_identity": "identity:child-2",
-      "request_id": "ex-tp-adopt-identity-child-2-0001",
+      "agent_identity": "identity:member-2",
+      "request_id": "ex-tp-adopt-identity-member-2-0001",
       "precondition": "expected_absent",
       "declaration_scope": "example-tool-policy",
       "declaration_revision": 1,
       "session": {
-        "session_id": "01a02578-6294-7512-9489-0fb1f57bd9e6",
-        "lineage_id": "session:01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "session_id": "0190a000-0000-7000-8000-000000000001",
+        "lineage_id": "session:0190a000-0000-7000-8000-000000000001",
         "lineage_generation": 0,
         "authority_policy": "require_existing"
       },
@@ -4319,7 +4319,7 @@ mod member_declaration_wire_tests {
             serde_json::from_str(DOWNSTREAM_APPLY_PARAMS)
                 .expect("the downstream app's production apply payload must deserialize");
         assert_eq!(params.mob_id, "example");
-        assert_eq!(params.agent_identity, "identity:child-2");
+        assert_eq!(params.agent_identity, "identity:member-2");
         assert_eq!(params.expected_intent_revision, 3);
 
         // And it must survive the conversions the handler performs, so a payload

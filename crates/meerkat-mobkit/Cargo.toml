@@ -11,7 +11,7 @@ documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
-# Forensic captures used only by in-repo tests stay out of the published
+# Large recorded corpora used only by in-repo tests stay out of the published
 # package. Their readers are `#[cfg(test)]` modules and integration tests,
 # which a dependent's build never compiles.
 exclude = [

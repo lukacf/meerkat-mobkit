@@ -544,7 +544,7 @@ class TestCallbackDispatcherRoster:
         await d.handle_callback("callback/roster_provider/roster", {
             "context": {
                 "mob_definition": {
-                    "id": "household",
+                    "id": "team",
                     "profiles": {"assistant": {"model": "gpt-5.5"}},
                 },
                 "previous_identities": ["a:main", "b:main"],
@@ -554,7 +554,7 @@ class TestCallbackDispatcherRoster:
         context = seen[0]
         assert isinstance(context, RosterContext)
         assert context.mob_definition is not None
-        assert context.mob_definition["id"] == "household"
+        assert context.mob_definition["id"] == "team"
         assert context.mob_definition["profiles"]["assistant"]["model"] == "gpt-5.5"
         assert context.previous_identities == ["a:main", "b:main"]
 

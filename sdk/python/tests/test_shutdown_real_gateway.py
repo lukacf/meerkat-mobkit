@@ -24,12 +24,8 @@ def _resolve_gateway_bin() -> str:
     if override:
         return override
     return os.path.join(
-        os.path.expanduser("~/Library/Caches/rust-workspaces"),
-        "meerkat-mobkit-2783c42580",
-        "targets",
-        "meerkat-mobkit-44eecf13a1",
-        "debug",
-        "rpc_gateway",
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "target", "debug", "rpc_gateway",
     )
 
 

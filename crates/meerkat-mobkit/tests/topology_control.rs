@@ -1706,7 +1706,7 @@ async fn identity_reconcile_reports_dormant_endpoint_as_missing_and_incomplete()
     shutdown(&unified).await;
 }
 
-/// A production deployment (MobKit 0.8.43): queries arriving about 1/s with a 0.8 s
+/// Observed on MobKit 0.8.43: queries arriving about 1/s with a 0.8 s
 /// edge discovery queued for minutes, because every read took the exclusive
 /// mutation lock. Concurrent reads now share one computation: with one
 /// discovery held in flight, eight more callers cost at most one further

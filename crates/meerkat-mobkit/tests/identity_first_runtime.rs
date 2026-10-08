@@ -5200,7 +5200,7 @@ impl RosterProvider for FailingRoster {
 
 #[tokio::test]
 async fn identity_first_runtime_reset_adopts_updated_spec_profile() {
-    // Re-profile via reset (REQ-10 / downstream-app re-profile): the mobkit/reset RPC
+    // Re-profile via reset (REQ-10 re-profile): the mobkit/reset RPC
     // handler calls adopt_roster_spec(roster_provider, identity) before reset,
     // so the generation-advancing rebuild creates the fresh session on the
     // roster's CURRENT profile rather than the stored one. reset mints
@@ -7612,7 +7612,7 @@ async fn identity_first_runtime_restore_flow_resumes_ready() {
     }
 }
 
-/// Regression for a downstream app's restart transcript loss: a rejected resume must
+/// Regression for a restart transcript loss: a rejected resume must
 /// keep the identity → session binding intact (the durable transcript is the
 /// only copy), degrade the identity to Broken with the error attached, and let
 /// the next reconcile retry the resume — never fresh-spawn, never retire, and
@@ -7733,7 +7733,7 @@ impl RosterProvider for StaticRosterProvider {
     }
 }
 
-/// Regression for a downstream app's 0.7.23 parked-mob outcome: identities degraded
+/// Regression for a 0.7.23 parked-mob outcome: identities degraded
 /// to Broken by a rejected resume stayed broken indefinitely because nothing
 /// in a live process re-ran the reconcile ("degraded pending reconcile retry"
 /// promised a retry that only a manual RPC or a restart delivered). The
@@ -8156,7 +8156,7 @@ async fn identity_first_runtime_parks_archived_not_revivable_on_first_restore_pa
     assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
 }
 
-/// Task #54 regression (downstream app: lifetime ZERO surface=Turn injection rows):
+/// Task #54 regression (lifetime ZERO surface=Turn injection rows):
 /// an INTERNAL DISPATCH must run the same delivery preparation as the send
 /// door. A content-matching logical-scope record must arrive as
 /// injected_context on the bridge delivery AND leave a durable surface=Turn
@@ -8246,7 +8246,7 @@ async fn internal_dispatch_runs_delivery_preparation_and_ledgers_turn_injection(
         ))]
     );
     // ... and the injection is DURABLY ledgered as a Turn surface, so the
-    // downstream app's smoke can never read "surface shipped dark" again.
+    // smoke check can never read "surface shipped dark" again.
     let log = meerkat_mobkit::StewardStore::injection_log(memory_store.as_ref(), "default", 16)
         .await
         .unwrap();
@@ -8495,7 +8495,7 @@ async fn identity_first_runtime_lazy_reconcile_keeps_unprovable_identity_broken(
 
 /// Regression for the reconcile-outcome lie: a bridge resume that fell back to
 /// a fresh spawn (typed `FreshSpawned`) must be reported as `created`, never
-/// `resumed` - reporting keyed on snapshot presence hid the downstream app's loss.
+/// `resumed` - reporting keyed on snapshot presence hid the loss.
 #[tokio::test]
 async fn identity_first_runtime_restore_flow_reports_fresh_spawned_resume_as_created() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());

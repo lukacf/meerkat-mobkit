@@ -2,8 +2,8 @@
 
 A durable member whose role changed refuses to resume until the host declares
 the migration. These tests pin the only two things the SDK owes that contract:
-the declaration is REACHABLE from Python (a downstream app found it was not, which made
-the whole carrier unusable from the SDK they run), and it is ABSENT unless the
+the declaration is REACHABLE from Python (it once was not, which made the
+whole carrier unusable from the SDK), and it is ABSENT unless the
 host asked for it.
 """
 import json

@@ -598,14 +598,14 @@ describe("parseAgentMemoryRecord", () => {
       memory_id: "mem-1",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["calendar", "family"],
+      tags: ["calendar", "team"],
       created_at_ms: 10,
       updated_at_ms: 20,
     });
     assert.equal(result.memoryId, "mem-1");
     assert.equal(result.title, "School pickup");
     assert.equal(result.body, "Pickup is before calendar planning.");
-    assert.deepEqual(result.tags, ["calendar", "family"]);
+    assert.deepEqual(result.tags, ["calendar", "team"]);
     assert.equal(result.createdAtMs, 10);
     assert.equal(result.updatedAtMs, 20);
   });
@@ -641,7 +641,7 @@ describe("parseAgentMemoryRecallResult", () => {
         memory_id: "mem-1",
         title: "School pickup",
         body: "Pickup is before calendar planning.",
-        tags: ["calendar", "family"],
+        tags: ["calendar", "team"],
         created_at_ms: 10,
         updated_at_ms: 20,
       }],

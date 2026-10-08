@@ -17,7 +17,7 @@
 //! - `--truncate-tool-results <max_bytes>`: tool-result bounding - replace
 //!   the content of every ToolResult entry whose serialized bytes exceed
 //!   the bound with a typed truncation marker plus a UTF-8-safe kept prefix
-//!   of the original text projection (downstream app parent-1, 2026-08-14: 72.4%
+//!   of the original text projection (one production member, 2026-08-14: 72.4%
 //!   of a 3.75 MB member strand was tool_results the System modes could not
 //!   touch).
 //! - `--drop-tool-results-older-than <N>`: tail-window elision - replace

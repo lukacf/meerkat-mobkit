@@ -3145,7 +3145,7 @@ memory = false
         let dir = tempfile::tempdir()?;
         let store = Arc::new(SqliteAgentMemoryStore::open(dir.path())?);
         let provider: Arc<dyn AgentMemoryProvider> = store.clone();
-        let identity = AgentIdentity::parse("identity:parent-1")?;
+        let identity = AgentIdentity::parse("identity:lead-1")?;
 
         // SDK write: the exact provider call the mobkit/agent_memory RPC
         // handlers land on.
@@ -3165,12 +3165,12 @@ memory = false
         // for BOTH generations' roster ids normalizes to the one logical
         // scope (the exact key the distiller's identity_scope() builds).
         let sink_gen0 = crate::member_comms_id::logical_memory_identity(
-            &crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:0"),
+            &crate::member_comms_id::mob_member_id_str("rt:identity:lead-1:0"),
         );
         let sink_gen1 = crate::member_comms_id::logical_memory_identity(
-            &crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:1"),
+            &crate::member_comms_id::mob_member_id_str("rt:identity:lead-1:1"),
         );
-        assert_eq!(sink_gen0, "identity:parent-1");
+        assert_eq!(sink_gen0, "identity:lead-1");
         assert_eq!(sink_gen1, sink_gen0, "generations share one scope");
         let distiller_scope = crate::memory::records::MemoryScope::Identity {
             realm: "default".to_string(),

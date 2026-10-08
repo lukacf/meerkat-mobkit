@@ -3736,7 +3736,7 @@ mod tests {
     async fn resolve_record_by_session_reads_the_fence_on_a_v1_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("continuity.sqlite3");
-        let identity = AgentIdentity::parse("domain:school").unwrap();
+        let identity = AgentIdentity::parse("domain:research").unwrap();
         let session_id = meerkat_core::types::SessionId::new();
         {
             let store = LocalContinuityStore::open(&path).expect("open");
@@ -4125,7 +4125,7 @@ mod tests {
     async fn max_fencing_token_recovers_high_water_across_tables_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("continuity.db");
-        let identity = AgentIdentity::parse("identity:parent-1").unwrap();
+        let identity = AgentIdentity::parse("identity:lead-1").unwrap();
         let session_id = meerkat_core::types::SessionId::new();
         {
             let store = LocalContinuityStore::open(&path).unwrap();
@@ -4232,7 +4232,7 @@ mod tests {
         use super::super::types::LeaseAcquireResult;
 
         let store = LocalContinuityStore::in_memory().unwrap();
-        let identity = AgentIdentity::parse("identity:parent-1").unwrap();
+        let identity = AgentIdentity::parse("identity:lead-1").unwrap();
         let session_id = meerkat_core::types::SessionId::new();
         // Pre-restart history: reconcile bumped the continuity record to 15.
         store
@@ -4830,7 +4830,7 @@ mod tests {
     #[test]
     fn a_blob_that_changed_after_conversion_is_reconverted_before_the_stamp() {
         use std::collections::BTreeSet;
-        // The live-household sequence, which is the DEFAULT path rather than
+        // The live-deployment sequence, which is the DEFAULT path rather than
         // an edge case: a crossing fails partway, the ledger stays at v1, and
         // AT v1 THE WHOLE-DOCUMENT PATH IS STILL THE ACTIVE WRITER. So the
         // deployment keeps appending to blobs that were already converted.
@@ -4861,7 +4861,7 @@ mod tests {
         assert_eq!(failed.converted, vec![session.id().to_string()]);
         assert!(!failed.ledger_stamped);
 
-        // ---- the household keeps running: a message lands in the LEGACY blob ----
+        // ---- the deployment keeps running: a message lands in the LEGACY blob ----
         session.push(meerkat_core::Message::User(
             meerkat_core::UserMessage::text("written after the failed crossing".to_string()),
         ));

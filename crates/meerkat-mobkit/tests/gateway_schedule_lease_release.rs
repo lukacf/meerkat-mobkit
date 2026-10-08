@@ -15,7 +15,7 @@
 //! `driver.release_executor_lease()`, and tokio gives no guarantee the woken
 //! supervisor is polled between main's completion and runtime teardown. The
 //! lease row was measured still held (owner_id, lease_token, acquired_at_ms and
-//! expires_at_ms all set) 57s past a clean exit on a production store.
+//! expires_at_ms all set) 57s past a clean exit on a persistent store.
 //!
 //! Cost: the replacement process gets
 //! `AcquireScheduleExecutorLeaseOutcome::Busy`, its tick returns without
@@ -40,7 +40,7 @@
 //!
 //! Fixed, it is green on repeats rather than on a sample: 6 local runs out of 6,
 //! plus both tests inside the full CI suite (0.8s and 2.4s there, against a 60s
-//! acquisition budget). A production deployment measured the neighbouring shutdown race at 4 hangs
+//! acquisition budget). A separate measurement put the neighbouring shutdown race at 4 hangs
 //! in 6 runs on identical Rust, so a single green run on any gateway teardown
 //! path is worth about as much as a coin flip; repeat, do not sample.
 //!

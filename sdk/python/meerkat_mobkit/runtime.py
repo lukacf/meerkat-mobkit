@@ -3581,7 +3581,7 @@ class MobHandle:
              "continuity": {...}}
 
         The token is single-use with a short TTL — hand the URL to the
-        client (robot, satellite process) immediately.  Optional kwargs are
+        client (device, satellite process) immediately.  Optional kwargs are
         forwarded (e.g. ``model=`` to override the realtime model,
         ``turning_mode=``).
         """
@@ -4239,11 +4239,11 @@ class MobHandle:
         For same-process (inproc) cross-mob wiring::
 
             # Get peer info from each side
-            a_info = await core.peer_info("school")
+            a_info = await core.peer_info("research")
             b_info = await gw.peer_info("calendar")
 
             # Wire each side to the other (inproc address from peer_info)
-            await core.wire_local("school", b_info["comms_name"], b_info["peer_id"], b_info["address"])
+            await core.wire_local("research", b_info["comms_name"], b_info["peer_id"], b_info["address"])
             await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"], a_info["address"])
 
         For cross-process (TCP/UDS), replace the address with the remote

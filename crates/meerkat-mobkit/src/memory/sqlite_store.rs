@@ -337,9 +337,9 @@ fn verify_released_0_8_10_memory_schema(conn: &Connection) -> Result<(), String>
 /// Platform writers (the distiller's trigger-sink path foremost) keyed
 /// identity scopes by the mob-plane member id, the comms-safe roster
 /// encoding of a generated runtime alias (e.g.
-/// `mk--rt_cidentity_cparent-1_c0`), splitting each member's memory across
+/// `mk--rt_cidentity_clead-1_c0`), splitting each member's memory across
 /// per-incarnation scopes disjoint from the scope the SDK, injection, and
-/// recorder speak (`identity:parent-1`). Fold every identity-space key
+/// recorder speak (`identity:lead-1`). Fold every identity-space key
 /// through the one normalization helper
 /// (`member_comms_id::logical_memory_identity`). Data-only: no DDL, so the
 /// v2 predecessor fingerprint stays the current schema.
@@ -4249,27 +4249,27 @@ mod tests {
     fn every_scope_kind_round_trips_through_the_persisted_encoding() -> Result<(), Box<dyn Error>> {
         let scopes = [
             MemoryScope::Identity {
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 identity: "identity:luka".to_string(),
             },
             MemoryScope::Mob {
-                realm: "family".to_string(),
-                mob: "mob:home".to_string(),
+                realm: "team".to_string(),
+                mob: "mob:main".to_string(),
             },
             MemoryScope::Operator {
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 operator: "op:luka".to_string(),
             },
             MemoryScope::Realm {
-                realm: "family".to_string(),
+                realm: "team".to_string(),
             },
         ];
         for scope in scopes {
-            let decoded = scope_from_parts(scope.kind_str(), scope.key(), "family")?;
+            let decoded = scope_from_parts(scope.kind_str(), scope.key(), "team")?;
             assert_eq!(decoded, scope, "scope kind '{}'", scope.kind_str());
         }
         // An unknown kind is still a loud parse error, not a silent default.
-        assert!(scope_from_parts("galaxy", "g", "family").is_err());
+        assert!(scope_from_parts("galaxy", "g", "team").is_err());
         Ok(())
     }
 
@@ -4311,13 +4311,13 @@ mod tests {
         let id = identity()?;
 
         let first = store
-            .remember("family", &id, new_memory("Same fact", "Same body"))
+            .remember("team", &id, new_memory("Same fact", "Same body"))
             .await?;
         let second = store
-            .remember("family", &id, new_memory("Same fact", "Same body"))
+            .remember("team", &id, new_memory("Same fact", "Same body"))
             .await?;
         let third = store
-            .remember("family", &id, new_memory("Other fact", "Other body"))
+            .remember("team", &id, new_memory("Other fact", "Other body"))
             .await?;
 
         assert_eq!(
@@ -4325,7 +4325,7 @@ mod tests {
             "dedup must return the existing id"
         );
         assert_ne!(first.memory_id, third.memory_id);
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(records.len(), 2, "duplicate remember must not add a row");
         Ok(())
     }
@@ -4376,26 +4376,26 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
         let record = store
-            .remember("family", &id, new_memory("Fact", "Body"))
+            .remember("team", &id, new_memory("Fact", "Body"))
             .await?;
 
-        let deleted = store.forget("family", &id, &record.memory_id).await?;
+        let deleted = store.forget("team", &id, &record.memory_id).await?;
         assert!(deleted.deleted);
         assert!(
             store
-                .recall(recall_all(id.clone(), "family"))
+                .recall(recall_all(id.clone(), "team"))
                 .await?
                 .is_empty()
         );
 
-        let again = store.forget("family", &id, &record.memory_id).await?;
+        let again = store.forget("team", &id, &record.memory_id).await?;
         assert!(!again.deleted, "tombstoned record must not delete twice");
 
         // A deliberate non-LLM re-add of the same content passes the
         // tombstone-recreation guard (which targets LLM authors, §8.4) and
         // mints a fresh id.
         let readded = store
-            .remember("family", &id, new_memory("Fact", "Body"))
+            .remember("team", &id, new_memory("Fact", "Body"))
             .await?;
         assert_ne!(readded.memory_id, record.memory_id);
         Ok(())
@@ -4406,16 +4406,16 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let prior = store
-            .remember("family", &id, new_memory("DB host", "Use db-old.example."))
+            .remember("team", &id, new_memory("DB host", "Use db-old.example."))
             .await?;
 
         // Steward ranks the record, then the RPC update path supersedes it.
         let token = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
                 },
@@ -4438,7 +4438,7 @@ mod tests {
 
         // Only the successor is recallable (memory never argues with
         // itself), and it inherited the steward rank.
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].memory_id, new_id);
         assert!(records[0].body.contains("db-new"));
@@ -4453,7 +4453,7 @@ mod tests {
         );
 
         // Chain is preserved on the row.
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4472,12 +4472,12 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let mut ids = Vec::new();
         for i in 0..5 {
             let record = store
                 .remember(
-                    "family",
+                    "team",
                     &id,
                     new_memory(&format!("Fact {i}"), &format!("Body {i}")),
                 )
@@ -4489,7 +4489,7 @@ mod tests {
         let token = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
                 },
@@ -4539,12 +4539,12 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         let token = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-crash".to_string(),
                 },
@@ -4565,14 +4565,14 @@ mod tests {
         // instance or a fresh one over the same directory.
         assert!(
             store
-                .recall(recall_all(id.clone(), "family"))
+                .recall(recall_all(id.clone(), "team"))
                 .await?
                 .is_empty()
         );
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
         assert!(
             reopened
-                .recall(recall_all(id.clone(), "family"))
+                .recall(recall_all(id.clone(), "team"))
                 .await?
                 .is_empty()
         );
@@ -4580,7 +4580,7 @@ mod tests {
         // Commit applies the batch and burns the token.
         let receipt = store.commit(token.clone()).await?;
         assert_eq!(receipt.applied_ops, 1);
-        assert_eq!(store.recall(recall_all(id, "family")).await?.len(), 1);
+        assert_eq!(store.recall(recall_all(id, "team")).await?.len(), 1);
         let replay = store.commit(token).await;
         assert!(matches!(replay, Err(AgentMemoryError::InvalidRecord(_))));
         Ok(())
@@ -4597,7 +4597,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
-            store.path_for_realm("family")
+            store.path_for_realm("team")
         };
         {
             let conn = Connection::open(&db_path)?;
@@ -4671,7 +4671,7 @@ mod tests {
         // Any realm operation opens the connection and runs the ledger
         // preflight, which must refuse the unledgered owned tables.
         assert!(
-            store.pending_proposals("family", 4).await.is_err(),
+            store.pending_proposals("team", 4).await.is_err(),
             "first realm use over a pre-ledger file must refuse typed"
         );
         let probe = Connection::open(&db_path)?;
@@ -4700,8 +4700,8 @@ mod tests {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
             store.path_for_realm("default")
         };
-        let gen0 = crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:0").into_owned();
-        let gen1 = crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:1").into_owned();
+        let gen0 = crate::member_comms_id::mob_member_id_str("rt:identity:lead-1:0").into_owned();
+        let gen1 = crate::member_comms_id::mob_member_id_str("rt:identity:lead-1:1").into_owned();
         {
             // Build the released v2 shape and stamp its ledger row, exactly
             // as a mobkit 0.8.8-0.8.10 binary left it.
@@ -4725,7 +4725,7 @@ mod tests {
             };
             insert_record("mem-gen0", &gen0)?;
             insert_record("mem-gen1", &gen1)?;
-            insert_record("mem-logical", "identity:parent-1")?;
+            insert_record("mem-logical", "identity:lead-1")?;
             // A mob-scope row whose key must NEVER be rewritten even if it
             // looked identity-shaped.
             tx.execute(
@@ -4741,7 +4741,7 @@ mod tests {
             for (identity, at) in [
                 (gen0.as_str(), 1),
                 (gen0.as_str(), 2),
-                ("identity:parent-1", 1),
+                ("identity:lead-1", 1),
             ] {
                 tx.execute(
                     "INSERT INTO pending_harvests (identity, session_key, cause, \
@@ -4841,7 +4841,7 @@ mod tests {
         );
         let logical_records: i64 = probe.query_row(
             "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
-             AND scope_key = 'identity:parent-1'",
+             AND scope_key = 'identity:lead-1'",
             [],
             |row| row.get(0),
         )?;
@@ -4879,14 +4879,14 @@ mod tests {
         assert_eq!(
             harvests,
             vec![
-                ("identity:parent-1".to_string(), 1),
-                ("identity:parent-1".to_string(), 2)
+                ("identity:lead-1".to_string(), 1),
+                ("identity:lead-1".to_string(), 2)
             ],
             "harvest queue folds with PK collisions collapsed"
         );
         let injection_identity: String =
             probe.query_row("SELECT identity FROM injections", [], |row| row.get(0))?;
-        assert_eq!(injection_identity, "identity:parent-1");
+        assert_eq!(injection_identity, "identity:lead-1");
         // Content preservation: folded rows keep their ids and bodies.
         let gen0_body: String = probe.query_row(
             "SELECT body FROM records WHERE memory_id = 'mem-gen0'",
@@ -4901,7 +4901,7 @@ mod tests {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        assert_eq!(proposal_scope, "identity:parent-1");
+        assert_eq!(proposal_scope, "identity:lead-1");
         assert!(
             proposal_record.contains("proposed body"),
             "{proposal_record}"
@@ -4912,7 +4912,7 @@ mod tests {
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(promotion_scope, "identity:parent-1");
+        assert_eq!(promotion_scope, "identity:lead-1");
         // THE stage seam: the surviving token's EMBEDDED Create scope is
         // normalized, so a later gated commit cannot re-create the legacy
         // scope.
@@ -4928,7 +4928,7 @@ mod tests {
                     scope,
                     &MemoryScope::Identity {
                         realm: "default".to_string(),
-                        identity: "identity:parent-1".to_string(),
+                        identity: "identity:lead-1".to_string(),
                     },
                     "the embedded Create scope must be normalized in place"
                 );
@@ -4949,7 +4949,7 @@ mod tests {
         );
         let logical_records: i64 = probe.query_row(
             "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
-             AND scope_key = 'identity:parent-1'",
+             AND scope_key = 'identity:lead-1'",
             [],
             |row| row.get(0),
         )?;
@@ -4967,7 +4967,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
-            store.path_for_realm("family")
+            store.path_for_realm("team")
         };
         {
             let conn = Connection::open(&db_path)?;
@@ -4997,7 +4997,7 @@ mod tests {
             let insert = |id: &str, status: &str| {
                 conn.execute(
                     "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, \
-                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:home', ?2, ?3, \
+                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:main', ?2, ?3, \
                      ?4, 1)",
                     params![id, record, author, status],
                 )
@@ -5009,7 +5009,7 @@ mod tests {
         }
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         assert!(
-            store.pending_proposals("family", 8).await.is_err(),
+            store.pending_proposals("team", 8).await.is_err(),
             "first realm use over a pre-ledger proposals table must refuse typed"
         );
         let probe = Connection::open(&db_path)?;
@@ -5030,7 +5030,7 @@ mod tests {
     async fn fresh_store_stamps_mobkit_memory_domain() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5053,7 +5053,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
-            store.path_for_realm("family")
+            store.path_for_realm("team")
         };
         {
             let conn = Connection::open(&db_path)?;
@@ -5107,7 +5107,7 @@ mod tests {
             ] {
                 conn.execute(
                     "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, \
-                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:home', '{}', \
+                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:main', '{}', \
                      '{}', ?2, 1)",
                     params![id, status],
                 )?;
@@ -5115,7 +5115,7 @@ mod tests {
         }
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         assert!(
-            store.realm_connection("family").is_err(),
+            store.realm_connection("team").is_err(),
             "opening a pre-ledger realm connection must refuse typed"
         );
         let probe = Connection::open(&db_path)?;
@@ -5144,11 +5144,11 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let stage_create = |title: &str| StagedMutationBatch {
             kind: StagedBatchKind::FreshWrite,
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             author: MemoryAuthor::Application,
             ops: vec![StagedOp::Create {
                 id: None,
-                scope: identity_scope("family").expect("scope"),
+                scope: identity_scope("team").expect("scope"),
                 record: payload(title, &format!("{title} body")),
                 trust: TrustTier::AgentObserved,
                 derived_from: Vec::new(),
@@ -5163,13 +5163,13 @@ mod tests {
         let pending_gated = store.stage(stage_create("Gated pending")).await?;
         store
             .record_pending_promotion(
-                "family",
+                "team",
                 PendingPromotion {
                     pending_id: "gate-pending".to_string(),
                     stage_token: pending_gated.token.clone(),
                     record_id: "mem-src-1".to_string(),
                     scope_kind: "mob".to_string(),
-                    scope_key: "mob:home".to_string(),
+                    scope_key: "mob:main".to_string(),
                     rationale: None,
                     status: "pending".to_string(),
                     created_at_ms: now_ms(),
@@ -5181,13 +5181,13 @@ mod tests {
         let resolved_gated = store.stage(stage_create("Gated resolved")).await?;
         store
             .record_pending_promotion(
-                "family",
+                "team",
                 PendingPromotion {
                     pending_id: "gate-resolved".to_string(),
                     stage_token: resolved_gated.token.clone(),
                     record_id: "mem-src-2".to_string(),
                     scope_kind: "mob".to_string(),
-                    scope_key: "mob:home".to_string(),
+                    scope_key: "mob:main".to_string(),
                     rationale: None,
                     status: "pending".to_string(),
                     created_at_ms: now_ms(),
@@ -5196,12 +5196,12 @@ mod tests {
             .await?;
         assert!(
             store
-                .resolve_pending_promotion("family", "gate-resolved", "denied")
+                .resolve_pending_promotion("team", "gate-resolved", "denied")
                 .await?
         );
         // Age every stage row past the 24h GC horizon, then reopen.
         {
-            let conn = store.realm_connection("family")?;
+            let conn = store.realm_connection("team")?;
             let guard = conn
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5232,13 +5232,13 @@ mod tests {
     async fn stage_rejects_lattice_violations() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         // Agent author above the LLM ceiling.
         let above_ceiling = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Agent {
                     identity: identity()?.as_str().to_string(),
                 },
@@ -5263,7 +5263,7 @@ mod tests {
         let operator_tier = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Operator,
                 ops: vec![StagedOp::Create {
                     id: None,
@@ -5288,14 +5288,14 @@ mod tests {
     async fn transitive_taint_blocks_laundering_through_store() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         // Seed an untrusted record, merge it into a "fresh" consolidated
         // record, then try to retier the merge product upward.
         let seed = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
                 },
@@ -5335,7 +5335,7 @@ mod tests {
         let launder = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-2".to_string(),
                 },
@@ -5376,7 +5376,7 @@ mod tests {
         };
         let md_path = write_markdown_import_fixture(
             dir.path(),
-            "family",
+            "team",
             &id,
             &[first.clone(), second.clone()],
         )?;
@@ -5393,7 +5393,7 @@ mod tests {
         )?;
 
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let records = store.recall(recall_all(id.clone(), "family")).await?;
+        let records = store.recall(recall_all(id.clone(), "team")).await?;
         let mut got: Vec<&str> = records.iter().map(|r| r.memory_id.as_str()).collect();
         got.sort_unstable();
         let mut want = [first.memory_id.as_str(), second.memory_id.as_str()];
@@ -5419,7 +5419,7 @@ mod tests {
         assert!(renamed.exists(), "markdown file must survive as .imported");
 
         // Import audit trail exists (one audit row per imported record).
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5433,7 +5433,7 @@ mod tests {
 
         // Reopening does not re-import (file renamed) and keeps counts.
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
-        assert_eq!(reopened.recall(recall_all(id, "family")).await?.len(), 2);
+        assert_eq!(reopened.recall(recall_all(id, "team")).await?.len(), 2);
         Ok(())
     }
 
@@ -5501,7 +5501,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         store.set_llm_write_gate(std::sync::Arc::new(TaintedSessionGate));
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         // Agent write from a tainted session lands quarantined, carrying a
         // verification claim (so the later retier passes the claim check
@@ -5534,7 +5534,7 @@ mod tests {
         });
         let release = StagedMutationBatch {
             kind: StagedBatchKind::FreshWrite,
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-1".to_string(),
             },
@@ -5558,12 +5558,12 @@ mod tests {
         let token = store.stage(release).await?;
         store.commit(token).await?;
         let released = store
-            .record_by_id("family", "mem-released-copy")
+            .record_by_id("team", "mem-released-copy")
             .await?
             .ok_or("released copy exists")?;
         assert_eq!(released.status, RecordStatus::Active);
         let origin_record = store
-            .record_by_id("family", &origin)
+            .record_by_id("team", &origin)
             .await?
             .ok_or("origin exists")?;
         assert_eq!(origin_record.status, RecordStatus::Tombstoned);
@@ -5571,7 +5571,7 @@ mod tests {
         // The durable taint marker persisted through the release: both the
         // tombstoned origin and the copy (inherited via derived_from).
         {
-            let conn = store.realm_connection("family")?;
+            let conn = store.realm_connection("team")?;
             let guard = conn
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5597,7 +5597,7 @@ mod tests {
         // origin is now tombstoned.
         let retier = StagedMutationBatch {
             kind: StagedBatchKind::FreshWrite,
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-2".to_string(),
             },
@@ -5628,7 +5628,7 @@ mod tests {
             updated_at_ms: 1,
         };
         let md_path =
-            write_markdown_import_fixture(dir.path(), "family", &id, std::slice::from_ref(&valid))?;
+            write_markdown_import_fixture(dir.path(), "team", &id, std::slice::from_ref(&valid))?;
 
         // Hand-edits happen (§7.3 invites them): append one record with an
         // oversized title and one carrying a secret. Both must skip loudly;
@@ -5651,11 +5651,11 @@ mod tests {
         // A file whose stem is not an agent identity (whitespace never
         // validates) fails wholesale: set aside as .import-failed, never
         // taking the realm store down.
-        let junk_path = dir.path().join("family").join("not an identity.md");
+        let junk_path = dir.path().join("team").join("not an identity.md");
         fs::write(&junk_path, "## Orphan\nnot a memory file\n")?;
 
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let records = store.recall(recall_all(id.clone(), "family")).await?;
+        let records = store.recall(recall_all(id.clone(), "team")).await?;
         assert_eq!(
             records
                 .iter()
@@ -5670,7 +5670,7 @@ mod tests {
         assert!(junk_path.with_extension("md.import-failed").exists());
 
         // The skips are counted in import audit rows.
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5703,7 +5703,7 @@ mod tests {
 
         // Reopen: no re-import attempts, store stays healthy.
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
-        assert_eq!(reopened.recall(recall_all(id, "family")).await?.len(), 1);
+        assert_eq!(reopened.recall(recall_all(id, "team")).await?.len(), 1);
         Ok(())
     }
 
@@ -5714,8 +5714,8 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         store.set_llm_write_gate(std::sync::Arc::new(TaintedSessionGate));
         let mob = MemoryScope::Mob {
-            realm: "family".to_string(),
-            mob: "mob:home".to_string(),
+            realm: "team".to_string(),
+            mob: "mob:main".to_string(),
         };
         let author = MemoryAuthor::Agent {
             identity: identity()?.as_str().to_string(),
@@ -5733,7 +5733,7 @@ mod tests {
                 author.clone(),
             )
             .await?;
-        let proposals = store.pending_proposals("family", 8).await?;
+        let proposals = store.pending_proposals("team", 8).await?;
         let by_id: std::collections::HashMap<&str, &PendingProposal> = proposals
             .iter()
             .map(|proposal| (proposal.proposal_id.as_str(), proposal))
@@ -5779,7 +5779,7 @@ mod tests {
         // §10.4 chokepoint.
         let err = store
             .remember(
-                "family",
+                "team",
                 &id,
                 new_memory("AWS key", "found AKIAIOSFODNN7EXAMPLE in the logs"),
             )
@@ -5792,7 +5792,7 @@ mod tests {
         // Clean writes pass.
         store
             .remember(
-                "family",
+                "team",
                 &id,
                 new_memory(
                     "Key location",
@@ -5811,13 +5811,13 @@ mod tests {
         for i in 0..4 {
             store
                 .remember(
-                    "family",
+                    "team",
                     &id,
                     new_memory(&format!("Fact {i}"), &format!("Body {i}")),
                 )
                 .await?;
         }
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(
             records.len(),
             4,
@@ -5839,7 +5839,7 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
         let record = store
-            .remember("family", &id, new_memory("Fact", "Body"))
+            .remember("team", &id, new_memory("Fact", "Body"))
             .await?;
 
         store
@@ -5855,7 +5855,7 @@ mod tests {
             .mark_usage(&[record.memory_id.clone()], UsageEvent::JudgedUseful)
             .await?;
 
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5879,7 +5879,7 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
         let record = store
-            .remember("family", &id, new_memory("Fact", "Body"))
+            .remember("team", &id, new_memory("Fact", "Body"))
             .await?;
 
         let build_entry = InjectionLogEntry {
@@ -5896,13 +5896,13 @@ mod tests {
             surface: InjectionSurface::Turn,
             at_ms: 200,
         };
-        AgentMemoryProvider::log_injections(&store, "family", &[build_entry.clone()]).await?;
-        AgentMemoryProvider::log_injections(&store, "family", &[turn_entry.clone()]).await?;
+        AgentMemoryProvider::log_injections(&store, "team", &[build_entry.clone()]).await?;
+        AgentMemoryProvider::log_injections(&store, "team", &[turn_entry.clone()]).await?;
 
-        let entries = store.injection_log("family", 16).await?;
+        let entries = store.injection_log("team", 16).await?;
         assert_eq!(entries, vec![turn_entry, build_entry]);
 
-        let limited = store.injection_log("family", 1).await?;
+        let limited = store.injection_log("team", 1).await?;
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].surface, InjectionSurface::Turn);
 
@@ -5916,8 +5916,8 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let scope = MemoryScope::Mob {
-            realm: "family".to_string(),
-            mob: "mob:home".to_string(),
+            realm: "team".to_string(),
+            mob: "mob:main".to_string(),
         };
         let proposal_id = store
             .propose(
@@ -5930,7 +5930,7 @@ mod tests {
             .await?;
         assert!(proposal_id.starts_with("prop-"));
 
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5990,7 +5990,7 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         let receipt = store
             .remember_authored(
@@ -6008,7 +6008,7 @@ mod tests {
         // coordinator's two read surfaces) must never return them.
         assert!(
             store
-                .recall(recall_all(id.clone(), "family"))
+                .recall(recall_all(id.clone(), "team"))
                 .await?
                 .is_empty(),
             "quarantined bodies must never reach recall"
@@ -6024,9 +6024,9 @@ mod tests {
         // Non-LLM principals are not gated: the RPC remember path
         // (Application author) lands active through the same gate.
         let record = store
-            .remember("family", &id, new_memory("App fact", "App body"))
+            .remember("team", &id, new_memory("App fact", "App body"))
             .await?;
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].memory_id, record.memory_id);
         Ok(())
@@ -6043,7 +6043,7 @@ mod tests {
             Some(tracker.clone()),
             crate::identity_first::agent_memory::AgentMemoryLlmWrites::Observed,
         )));
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let author = MemoryAuthor::Distiller {
             run_id: "run-1".to_string(),
         };
@@ -6066,8 +6066,8 @@ mod tests {
             )
             .await?;
         assert_eq!(receipt.status, RecordStatus::Active);
-        let record = store.with_realm_conn(&"family".to_string(), |conn| {
-            load_record(conn, "family", &receipt.memory_id)?
+        let record = store.with_realm_conn(&"team".to_string(), |conn| {
+            load_record(conn, "team", &receipt.memory_id)?
                 .ok_or_else(|| AgentMemoryError::Io("record missing".to_string()))
         })?;
         assert_eq!(record.trust, TrustTier::AgentObserved);
@@ -6121,14 +6121,14 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let kept = store
-            .remember("family", &id, new_memory("Kept fact", "Body"))
+            .remember("team", &id, new_memory("Kept fact", "Body"))
             .await?;
         let dropped = store
-            .remember("family", &id, new_memory("Phone number", "Body 2"))
+            .remember("team", &id, new_memory("Phone number", "Body 2"))
             .await?;
-        store.forget("family", &id, &dropped.memory_id).await?;
+        store.forget("team", &id, &dropped.memory_id).await?;
 
         let tombstones = store.recent_tombstones(&scope, 0, 10).await?;
         assert_eq!(tombstones.len(), 1);
@@ -6152,9 +6152,9 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let prior = store
-            .remember("family", &id, new_memory("DB host", "Use db-good.example."))
+            .remember("team", &id, new_memory("DB host", "Use db-good.example."))
             .await?;
 
         store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
@@ -6169,7 +6169,7 @@ mod tests {
         assert!(matches!(receipt.status, RecordStatus::Quarantined { .. }));
 
         // A tainted "update" must not blank the good record.
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].memory_id, prior.memory_id);
         assert!(records[0].body.contains("db-good"));
@@ -6182,12 +6182,12 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         let token = store
             .stage(StagedMutationBatch {
                 kind: StagedBatchKind::FreshWrite,
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 author: agent_author()?,
                 ops: vec![StagedOp::Create {
                     id: None,
@@ -6203,7 +6203,7 @@ mod tests {
             .await?;
         store.commit(token).await?;
         assert!(
-            store.recall(recall_all(id, "family")).await?.is_empty(),
+            store.recall(recall_all(id, "team")).await?.is_empty(),
             "the write gate must hold at the store seam for staged commits too"
         );
         Ok(())
@@ -6214,7 +6214,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
 
         let mut record = payload("Observed fact", "Seen in session");
         record.verification = Some(super::super::records::VerificationClaim {
@@ -6228,7 +6228,7 @@ mod tests {
 
         // The verification is a CLAIM in provenance; the tier stays at the
         // LLM ceiling (§10.2).
-        let conn = store.realm_connection("family")?;
+        let conn = store.realm_connection("team")?;
         let guard = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6249,11 +6249,11 @@ mod tests {
         drop(guard);
 
         // Recall sees it (identity scope, active).
-        let records = store.recall(recall_all(id, "family")).await?;
+        let records = store.recall(recall_all(id, "team")).await?;
         assert_eq!(records.len(), 1);
 
         // forget_authored tombstones it with agent authorship.
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let result = store
             .forget_authored(&scope, &receipt.memory_id, agent_author()?)
             .await?;
@@ -6267,7 +6267,7 @@ mod tests {
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let id = identity()?;
         let prior = store
-            .remember("family", &id, new_memory("Fact", "Body"))
+            .remember("team", &id, new_memory("Fact", "Body"))
             .await?;
 
         // An agent may only supersede within its OWN identity scope: the
@@ -6275,7 +6275,7 @@ mod tests {
         // about the scope (single-lineage supersede stays with the record's
         // own writers, §8.2).
         let other_scope = MemoryScope::Identity {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             identity: "identity:other".to_string(),
         };
         let cross = store
@@ -6299,7 +6299,7 @@ mod tests {
     async fn panel_records_page_paginates_and_filters() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         for index in 0..5 {
             store
                 .remember_authored(
@@ -6313,24 +6313,17 @@ mod tests {
         // Keyset pagination: strictly-descending (updated_at_ms, id) with
         // no row repeated or skipped across pages.
         let first = store
-            .records_page("family", Some("identity"), None, None, 2, None)
+            .records_page("team", Some("identity"), None, None, 2, None)
             .await?;
         assert_eq!(first.records.len(), 2);
         let cursor = first.next_cursor.clone().expect("more pages");
         let second = store
-            .records_page("family", Some("identity"), None, None, 2, Some(cursor))
+            .records_page("team", Some("identity"), None, None, 2, Some(cursor))
             .await?;
         assert_eq!(second.records.len(), 2);
         let third_cursor = second.next_cursor.clone().expect("one more page");
         let third = store
-            .records_page(
-                "family",
-                Some("identity"),
-                None,
-                None,
-                2,
-                Some(third_cursor),
-            )
+            .records_page("team", Some("identity"), None, None, 2, Some(third_cursor))
             .await?;
         assert_eq!(third.records.len(), 1);
         assert_eq!(third.next_cursor, None);
@@ -6347,7 +6340,7 @@ mod tests {
 
         // Status filter.
         let quarantined = store
-            .records_page("family", None, None, Some("quarantined"), 10, None)
+            .records_page("team", None, None, Some("quarantined"), 10, None)
             .await?;
         assert!(quarantined.records.is_empty());
         Ok(())
@@ -6357,7 +6350,7 @@ mod tests {
     async fn panel_supersede_chain_walks_both_directions() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let scope = identity_scope("family")?;
+        let scope = identity_scope("team")?;
         let root = store
             .remember_authored(&scope, payload("Fact", "v1"), MemoryAuthor::Operator)
             .await?;
@@ -6380,7 +6373,7 @@ mod tests {
 
         // The same chain comes back oldest-first from every entry point.
         for entry in [&root.memory_id, &mid.memory_id, &tip.memory_id] {
-            let chain = store.supersede_chain("family", entry, 16).await?;
+            let chain = store.supersede_chain("team", entry, 16).await?;
             let ids: Vec<&str> = chain.iter().map(|record| record.id.as_str()).collect();
             assert_eq!(
                 ids,
@@ -6393,7 +6386,7 @@ mod tests {
             );
         }
         // Bounded.
-        let bounded = store.supersede_chain("family", &root.memory_id, 2).await?;
+        let bounded = store.supersede_chain("team", &root.memory_id, 2).await?;
         assert_eq!(bounded.len(), 2);
         Ok(())
     }

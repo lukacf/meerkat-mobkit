@@ -76,18 +76,18 @@ async def test_agent_memory_rpc_names_and_params():
     handle, calls = make_mock_mob_handle({
         "mobkit/agent_memory/remember": {
             "memory_id": "mem-1",
-            "title": "School pickup",
-            "body": "Pickup is before calendar planning.",
-            "tags": ["calendar", "family"],
+            "title": "Release checklist",
+            "body": "Checklist runs before release planning.",
+            "tags": ["calendar", "team"],
             "created_at_ms": 10,
             "updated_at_ms": 20,
         },
         "mobkit/agent_memory/recall": {
             "records": [{
                 "memory_id": "mem-1",
-                "title": "School pickup",
-                "body": "Pickup is before calendar planning.",
-                "tags": ["calendar", "family"],
+                "title": "Release checklist",
+                "body": "Checklist runs before release planning.",
+                "tags": ["calendar", "team"],
                 "created_at_ms": 10,
                 "updated_at_ms": 20,
             }],
@@ -100,21 +100,21 @@ async def test_agent_memory_rpc_names_and_params():
 
     remembered = await handle.remember_agent_memory(
         "identity:luka",
-        realm="family",
-        title="School pickup",
-        body="Pickup is before calendar planning.",
-        tags=["family", "calendar"],
+        realm="example",
+        title="Release checklist",
+        body="Checklist runs before release planning.",
+        tags=["team", "calendar"],
     )
     recalled = await handle.recall_agent_memory(
         "identity:luka",
-        realm="family",
+        realm="example",
         selection="contextual",
-        query_text="Where is pickup?",
-        query_terms=["pickup"],
+        query_text="Where is the checklist?",
+        query_terms=["checklist"],
         max_entries=4,
     )
     forgotten = await handle.forget_agent_memory(
-        "identity:luka", "mem-1", realm="family"
+        "identity:luka", "mem-1", realm="example"
     )
 
     assert calls == [
@@ -122,20 +122,20 @@ async def test_agent_memory_rpc_names_and_params():
             "mobkit/agent_memory/remember",
             {
                 "identity": "identity:luka",
-                "realm": "family",
-                "title": "School pickup",
-                "body": "Pickup is before calendar planning.",
-                "tags": ["family", "calendar"],
+                "realm": "example",
+                "title": "Release checklist",
+                "body": "Checklist runs before release planning.",
+                "tags": ["team", "calendar"],
             },
         ),
         (
             "mobkit/agent_memory/recall",
             {
                 "identity": "identity:luka",
-                "realm": "family",
+                "realm": "example",
                 "selection": "contextual",
-                "query_text": "Where is pickup?",
-                "query_terms": ["pickup"],
+                "query_text": "Where is the checklist?",
+                "query_terms": ["checklist"],
                 "max_entries": 4,
             },
         ),
@@ -144,7 +144,7 @@ async def test_agent_memory_rpc_names_and_params():
             {
                 "identity": "identity:luka",
                 "memory_id": "mem-1",
-                "realm": "family",
+                "realm": "example",
             },
         ),
     ]
@@ -165,8 +165,8 @@ async def test_agent_memory_update_and_manifest_rpc_names_and_params():
             "records": [{
                 "id": "mem-2",
                 "kind": "fact",
-                "title": "School pickup",
-                "description": "When planning the family calendar",
+                "title": "Release checklist",
+                "description": "When planning the team calendar",
                 "age_days": 3,
                 "rank": 1,
             }],
@@ -176,14 +176,14 @@ async def test_agent_memory_update_and_manifest_rpc_names_and_params():
     updated = await handle.update_agent_memory(
         "identity:luka",
         "mem-1",
-        realm="family",
-        title="School pickup",
-        body="Pickup moved to 15:30.",
-        tags=["family"],
+        realm="example",
+        title="Release checklist",
+        body="Checklist moved to 15:30.",
+        tags=["team"],
     )
     manifest = await handle.manifest_agent_memory(
         "identity:luka",
-        realm="family",
+        realm="example",
         tier="working_set",
         k=4,
     )
@@ -194,17 +194,17 @@ async def test_agent_memory_update_and_manifest_rpc_names_and_params():
             {
                 "identity": "identity:luka",
                 "memory_id": "mem-1",
-                "title": "School pickup",
-                "body": "Pickup moved to 15:30.",
-                "realm": "family",
-                "tags": ["family"],
+                "title": "Release checklist",
+                "body": "Checklist moved to 15:30.",
+                "realm": "example",
+                "tags": ["team"],
             },
         ),
         (
             "mobkit/agent_memory/manifest",
             {
                 "identity": "identity:luka",
-                "realm": "family",
+                "realm": "example",
                 "tier": "working_set",
                 "k": 4,
             },
@@ -1681,7 +1681,7 @@ async def test_live_method_names_and_identity_param():
         "robot",
         model="gpt-realtime-2",
         instructions=[
-            "Use the current room voice.",
+            "Use the configured voice.",
             "Keep replies concise.",
         ],
     )
@@ -1708,7 +1708,7 @@ async def test_live_method_names_and_identity_param():
         "identity": "robot",
         "model": "gpt-realtime-2",
         "instructions": [
-            "Use the current room voice.",
+            "Use the configured voice.",
             "Keep replies concise.",
         ],
     }
@@ -1806,7 +1806,7 @@ async def test_live_open_typed_refuses_execution_identity_before_old_gateway_ope
         ("responses_model", "gpt-5.5"),
         ("responses_tools", []),
         ("responses_instructions", "delegate"),
-        ("auth_binding", {"realm": "family", "binding": "other"}),
+        ("auth_binding", {"realm": "example", "binding": "other"}),
         ("self_hosted_server_id", "server"),
         ("provider_params", {}),
         ("tools", []),

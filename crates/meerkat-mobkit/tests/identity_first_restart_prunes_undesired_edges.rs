@@ -1,14 +1,14 @@
 //! A managed peer edge the topology no longer wants is unwired across a
-//! restart (a downstream app's privacy rule: one group's agents must not keep
+//! restart (an application privacy rule: one group's agents must not keep
 //! reaching another group's).
 //!
 //! Every boot runs the production activation path
 //! (`install_and_bootstrap_identity_first_context`) on durable state:
 //! persistent mob storage, so the mob's wiring and event ledger survive the
 //! restart and replay, while the restarted process starts with an empty
-//! managed-edge set. Boot 1 wires a household through the topology provider;
-//! boot 2 restarts with a provider that drops the parent's edges to the
-//! children, which must be gone after boot 2's restore, and the children's
+//! managed-edge set. Boot 1 wires a team through the topology provider;
+//! boot 2 restarts with a provider that drops the lead's edges to the
+//! members, which must be gone after boot 2's restore, and the members'
 //! edge kept.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -70,16 +70,16 @@ runtime_mode = "turn_driven"
 comms = true
 "#
     ))
-    .expect("parse the household definition")
+    .expect("parse the team definition")
 }
 
 /// The host's topology, which the test shrinks between boots.
-struct HouseholdTopology {
+struct TeamTopology {
     edges: Mutex<Vec<ManagedPeerEdge>>,
 }
 
 #[async_trait]
-impl TopologyProvider for HouseholdTopology {
+impl TopologyProvider for TeamTopology {
     async fn compute_edges(
         &self,
         _target_identities: &[AgentIdentity],
@@ -281,24 +281,24 @@ async fn an_edge_the_topology_dropped_is_unwired_after_a_restart() {
     let mob_id = next_mob_id("edge-prune-restart");
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
-    let parent = id("identity:parent-1");
-    let child = id("identity:child-1");
-    let sibling = id("identity:child-2");
+    let lead = id("identity:lead-1");
+    let member = id("identity:member-1");
+    let peer = id("identity:member-2");
     let roster = vec![
-        spec("identity:parent-1"),
-        spec("identity:child-1"),
-        spec("identity:child-2"),
+        spec("identity:lead-1"),
+        spec("identity:member-1"),
+        spec("identity:member-2"),
     ];
-    let children = ManagedPeerEdge::new(child.clone(), sibling.clone()).unwrap();
-    let topology = Arc::new(HouseholdTopology {
+    let members = ManagedPeerEdge::new(member.clone(), peer.clone()).unwrap();
+    let topology = Arc::new(TeamTopology {
         edges: Mutex::new(vec![
-            ManagedPeerEdge::new(parent.clone(), child.clone()).unwrap(),
-            ManagedPeerEdge::new(parent.clone(), sibling.clone()).unwrap(),
-            children.clone(),
+            ManagedPeerEdge::new(lead.clone(), member.clone()).unwrap(),
+            ManagedPeerEdge::new(lead.clone(), peer.clone()).unwrap(),
+            members.clone(),
         ]),
     });
 
-    // Boot 1: the household is wired as the topology declares.
+    // Boot 1: the team is wired as the topology declares.
     let booted = boot(
         &state_path,
         definition(&mob_id),
@@ -310,19 +310,19 @@ async fn an_edge_the_topology_dropped_is_unwired_after_a_restart() {
     assert_eq!(
         live,
         BTreeSet::from([
-            pair(&parent, &child),
-            pair(&parent, &sibling),
-            pair(&child, &sibling),
+            pair(&lead, &member),
+            pair(&lead, &peer),
+            pair(&member, &peer),
         ]),
-        "boot 1 wires the household"
+        "boot 1 wires the team"
     );
     booted.unified.shutdown().await;
     drop(booted);
 
-    // The host's topology now keeps the children away from the parent.
-    *topology.edges.lock().unwrap() = vec![children];
+    // The host's topology now keeps the members away from the lead.
+    *topology.edges.lock().unwrap() = vec![members];
 
-    // Boot 2: the same durable state; the mob replays the parent edges, and
+    // Boot 2: the same durable state; the mob replays the lead edges, and
     // the restarted process never wired them itself.
     let booted = boot(
         &state_path,
@@ -334,7 +334,7 @@ async fn an_edge_the_topology_dropped_is_unwired_after_a_restart() {
     let live = live_identity_edges(&booted.bridge, &booted.runtime_ids).await;
     assert_eq!(
         live,
-        BTreeSet::from([pair(&child, &sibling)]),
+        BTreeSet::from([pair(&member, &peer)]),
         "after the restart only the desired edge is wired"
     );
     booted.unified.shutdown().await;
@@ -347,23 +347,23 @@ fn fight_definition(mob_id: &str) -> MobDefinition {
 id = "{mob_id}"
 
 [[wiring.role_wiring]]
-a = "kid"
+a = "member"
 b = "helper"
 
-[profiles.parent]
+[profiles.lead]
 model = "gpt-5.5"
 external_addressable = true
 runtime_mode = "turn_driven"
 
-[profiles.parent.tools]
+[profiles.lead.tools]
 comms = true
 
-[profiles.kid]
+[profiles.member]
 model = "gpt-5.5"
 external_addressable = true
 runtime_mode = "turn_driven"
 
-[profiles.kid.tools]
+[profiles.member.tools]
 comms = true
 
 [profiles.helper]
@@ -386,18 +386,18 @@ async fn without_a_topology_provider_spawn_time_wiring_survives_a_restart() {
     let mob_id = next_mob_id("edge-keep-no-provider");
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
-    let kid = id("identity:kid");
+    let member = id("identity:member");
     let helper = id("identity:helper");
     let roster = vec![
         with_profile("identity:helper", "helper"),
-        with_profile("identity:kid", "kid"),
+        with_profile("identity:member", "member"),
     ];
 
     let booted = boot(&state_path, fight_definition(&mob_id), &roster, None).await;
     let live = live_identity_edges(&booted.bridge, &booted.runtime_ids).await;
     assert_eq!(
         live,
-        BTreeSet::from([pair(&kid, &helper)]),
+        BTreeSet::from([pair(&member, &helper)]),
         "the mob wires the definition's edge at spawn"
     );
     booted.unified.shutdown().await;
@@ -409,7 +409,7 @@ async fn without_a_topology_provider_spawn_time_wiring_survives_a_restart() {
     let live = live_identity_edges(&booted.bridge, &booted.runtime_ids).await;
     assert_eq!(
         live,
-        BTreeSet::from([pair(&kid, &helper)]),
+        BTreeSet::from([pair(&member, &helper)]),
         "without a topology provider the restart and reconcile keep the edge"
     );
     booted.unified.shutdown().await;
@@ -446,20 +446,20 @@ async fn a_definition_declared_edge_is_never_churned_by_the_topology() {
     let mob_id = next_mob_id("edge-no-fight");
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
-    let parent = id("identity:parent");
-    let kid = id("identity:kid");
+    let lead = id("identity:lead");
+    let member = id("identity:member");
     let helper = id("identity:helper");
     let roster = vec![
         with_profile("identity:helper", "helper"),
-        with_profile("identity:kid", "kid"),
-        with_profile("identity:parent", "parent"),
+        with_profile("identity:member", "member"),
+        with_profile("identity:lead", "lead"),
     ];
-    let topology = Arc::new(HouseholdTopology {
+    let topology = Arc::new(TeamTopology {
         edges: Mutex::new(vec![
-            ManagedPeerEdge::new(parent.clone(), kid.clone()).unwrap(),
+            ManagedPeerEdge::new(lead.clone(), member.clone()).unwrap(),
         ]),
     });
-    let expected = BTreeSet::from([pair(&kid, &helper), pair(&parent, &kid)]);
+    let expected = BTreeSet::from([pair(&member, &helper), pair(&lead, &member)]);
 
     // One boot: the activation's restore and reconcile, then two more
     // reconciles.

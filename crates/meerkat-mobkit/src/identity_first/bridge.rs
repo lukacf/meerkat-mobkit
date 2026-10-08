@@ -7787,7 +7787,7 @@ mod tests {
             serde_json::from_value(params["role_migrations"].clone())
                 .expect("the fixture's role_migrations must deserialize");
         assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].identity.as_str(), "domain:home-automation");
+        assert_eq!(declarations[0].identity.as_str(), "domain:automation");
         assert_eq!(declarations[0].from_role, "domain");
     }
 
@@ -7875,7 +7875,7 @@ mod tests {
     /// passing an activation that still declares one.
     #[test]
     fn a_declaration_is_not_consumed_by_being_looked_up() {
-        let identity = AgentIdentity::parse("domain:home-automation").expect("identity");
+        let identity = AgentIdentity::parse("domain:automation").expect("identity");
         let map = role_migration_declaration_map([RoleMigrationDeclaration {
             identity: identity.clone(),
             from_role: meerkat_mob::ProfileName::from("domain"),
@@ -7896,11 +7896,10 @@ mod tests {
     /// migration for something that is not an identity.
     #[test]
     fn role_migration_declaration_parses_from_the_boot_payload_shape() {
-        let declaration: RoleMigrationDeclaration = serde_json::from_str(
-            r#"{"identity": "domain:home-automation", "from_role": "domain"}"#,
-        )
-        .expect("declaration parses");
-        assert_eq!(declaration.identity.as_str(), "domain:home-automation");
+        let declaration: RoleMigrationDeclaration =
+            serde_json::from_str(r#"{"identity": "domain:automation", "from_role": "domain"}"#)
+                .expect("declaration parses");
+        assert_eq!(declaration.identity.as_str(), "domain:automation");
         assert_eq!(declaration.from_role, "domain");
 
         serde_json::from_str::<RoleMigrationDeclaration>(
@@ -8857,18 +8856,18 @@ mod tests {
         let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
         assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);
         let required = meerkat_mob::MobError::MemberRoleMigrationRequired {
-            member_id: meerkat_mob::AgentIdentity::from("child-1"),
+            member_id: meerkat_mob::AgentIdentity::from("member-1"),
             stored_role: meerkat_mob::ProfileName::from("identity"),
-            requested_role: meerkat_mob::ProfileName::from("identity-child"),
+            requested_role: meerkat_mob::ProfileName::from("identity-member"),
         };
         assert_eq!(
             classify_resume_error(&required),
             ResumeRejectionKind::RoleMigrationNotApplied
         );
         let rejected = meerkat_mob::MobError::MemberRoleMigrationRejected {
-            member_id: meerkat_mob::AgentIdentity::from("child-1"),
+            member_id: meerkat_mob::AgentIdentity::from("member-1"),
             declared_predecessor_role: meerkat_mob::ProfileName::from("predecessor"),
-            requested_role: meerkat_mob::ProfileName::from("identity-child"),
+            requested_role: meerkat_mob::ProfileName::from("identity-member"),
             reason: "durable predecessor role is 'identity', not the declared role".to_string(),
         };
         assert_eq!(

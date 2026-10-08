@@ -1,6 +1,6 @@
 """Downstream-scenario E2E smoke tests using the identity-first API.
 
-Covers HC-01 through HC-08: real round-trip through Python SDK -> rpc_gateway
+Covers downstream scenarios DS-01 through DS-08: real round-trip through Python SDK -> rpc_gateway
 -> Rust IdentityRuntime -> restore_flow -> SessionBridge -> real LLM API.
 
 Run:
@@ -35,7 +35,7 @@ from meerkat_mobkit.errors import RpcError
 
 # The gateway-backed suites must exercise THIS worktree's freshly built
 # rpc_gateway, not whichever binary the main checkout last built. The default
-# path below is the main worktree's scripts/repo-cargo lane; running from a
+# path below is the repository's plain cargo target directory; running from a
 # feature worktree would silently test the wrong artifact (and hide the wire
 # drift the branch introduces). Prefer an explicit override:
 #   MOBKIT_GATEWAY_BIN=$(./scripts/repo-cargo --print-env CARGO_TARGET_DIR)/debug/rpc_gateway
@@ -44,12 +44,8 @@ def _resolve_gateway_bin() -> str:
     if override:
         return override
     return os.path.join(
-        os.path.expanduser("~/Library/Caches/rust-workspaces"),
-        "meerkat-mobkit-2783c42580",
-        "targets",
-        "meerkat-mobkit-44eecf13a1",
-        "debug",
-        "rpc_gateway",
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "target", "debug", "rpc_gateway",
     )
 
 
@@ -206,7 +202,7 @@ class DownstreamCustomizer:
 
 _DEFAULT_ROSTER = [
     DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
-    DurableAgentSpec(identity="identity:erin", profile="personal", addressability="addressable"),
+    DurableAgentSpec(identity="identity:alice", profile="personal", addressability="addressable"),
     DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
     DurableAgentSpec(identity="domain:calendar", profile="calendar", addressability="internal_only"),
     DurableAgentSpec(identity="gate:main", profile="gatekeeper", addressability="internal_only"),
@@ -214,7 +210,7 @@ _DEFAULT_ROSTER = [
 
 _DEFAULT_EDGES = [
     ("identity:luka", "triage:main"),
-    ("identity:erin", "triage:main"),
+    ("identity:alice", "triage:main"),
     ("triage:main", "domain:calendar"),
     ("triage:main", "gate:main"),
 ]
@@ -327,13 +323,13 @@ async def test_lazy_gateway_init_exposes_typed_dormant_bootstrap_status(
 
 
 # ===========================================================================
-# HC-01: Family Bootstrap And Mixed Delivery
+# DS-01: Team Bootstrap And Mixed Delivery
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC01FamilyBootstrapAndMixedDelivery:
+class TestDS01TeamBootstrapAndMixedDelivery:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_send_dispatch_and_addressability(self, mob_toml, state_dir):
@@ -351,7 +347,7 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
 
             # dispatch() to InternalOnly identity succeeds
             di = DispatchInput(
-                content="New email from school about pickup change",
+                content="New email from a vendor about a delivery change",
                 origin="connector",
             )
             result = await rt.dispatch("triage:main", di)
@@ -366,23 +362,23 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
             assert status.state == "active"
             assert status.addressability == "internal_only"
 
-            dana_status = await rt.status("identity:luka")
-            assert dana_status.state == "active"
-            assert dana_status.addressability == "addressable"
-            assert dana_status.agent_runtime_id is not None
-            assert dana_status.session_id is not None
+            lead_status = await rt.status("identity:luka")
+            assert lead_status.state == "active"
+            assert lead_status.addressability == "addressable"
+            assert lead_status.agent_runtime_id is not None
+            assert lead_status.session_id is not None
         finally:
             await rt.shutdown()
 
 
 # ===========================================================================
-# HC-02: Unknown Sender Goes To Triage, Known Sender Goes To Identity
+# DS-02: Unknown Sender Goes To Triage, Known Sender Goes To Identity
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC02DispatchRouting:
+class TestDS02DispatchRouting:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_distinct_dispatch_targets(self, mob_toml, state_dir):
@@ -392,13 +388,13 @@ class TestHC02DispatchRouting:
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
             # Known sender → dispatch to identity
-            di_dana = DispatchInput(
-                content="Telegram DM from Luka: Can you remind me about dentist?",
+            di_lead = DispatchInput(
+                content="Telegram DM from Luka: Can you remind me about the vendor review?",
                 origin="connector",
                 correlation_id="msg-1",
                 idempotency_key="telegram:msg-1",
             )
-            await rt.dispatch("identity:luka", di_dana)
+            await rt.dispatch("identity:luka", di_lead)
 
             # Unknown sender → dispatch to triage
             di_triage = DispatchInput(
@@ -410,14 +406,14 @@ class TestHC02DispatchRouting:
             await rt.dispatch("triage:main", di_triage)
 
             # Both are distinct identities with different session_ids
-            dana_status = await rt.status("identity:luka")
+            lead_status = await rt.status("identity:luka")
             triage_status = await rt.status("triage:main")
-            assert dana_status.session_id != triage_status.session_id
-            assert dana_status.agent_runtime_id != triage_status.agent_runtime_id
+            assert lead_status.session_id != triage_status.session_id
+            assert lead_status.agent_runtime_id != triage_status.agent_runtime_id
 
             # Record pre-restart state
-            dana_rt_id = dana_status.agent_runtime_id
-            dana_session = dana_status.session_id
+            lead_rt_id = lead_status.agent_runtime_id
+            lead_session = lead_status.session_id
             triage_rt_id = triage_status.agent_runtime_id
             triage_session = triage_status.session_id
         finally:
@@ -426,10 +422,10 @@ class TestHC02DispatchRouting:
         # Restart and verify stability
         rt2 = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
-            dana2 = await rt2.status("identity:luka")
+            lead2 = await rt2.status("identity:luka")
             triage2 = await rt2.status("triage:main")
-            assert dana2.agent_runtime_id == dana_rt_id
-            assert dana2.session_id == dana_session
+            assert lead2.agent_runtime_id == lead_rt_id
+            assert lead2.session_id == lead_session
             assert triage2.agent_runtime_id == triage_rt_id
             assert triage2.session_id == triage_session
         finally:
@@ -437,70 +433,70 @@ class TestHC02DispatchRouting:
 
 
 # ===========================================================================
-# HC-03: Reconcile New Family Member Without Breaking Existing Continuity
+# DS-03: Reconcile New Team Member Without Breaking Existing Continuity
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC03ReconcileNewMember:
+class TestDS03ReconcileNewMember:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
-    async def test_add_olivia_via_in_process_reconcile(self, mob_toml, state_dir):
-        roster = DownstreamRoster(_DEFAULT_ROSTER[:3])  # luka, erin, triage
-        topology = DownstreamTopology(_DEFAULT_EDGES[:2])  # luka↔triage, erin↔triage
+    async def test_add_bob_via_in_process_reconcile(self, mob_toml, state_dir):
+        roster = DownstreamRoster(_DEFAULT_ROSTER[:3])  # luka, alice, triage
+        topology = DownstreamTopology(_DEFAULT_EDGES[:2])  # luka↔triage, alice↔triage
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
-            before_dana = await rt.status("identity:luka")
-            before_erin = await rt.status("identity:erin")
-            dana_session = before_dana.session_id
-            dana_rt_id = before_dana.agent_runtime_id
-            erin_session = before_erin.session_id
+            before_lead = await rt.status("identity:luka")
+            before_alice = await rt.status("identity:alice")
+            lead_session = before_lead.session_id
+            lead_rt_id = before_lead.agent_runtime_id
+            alice_session = before_alice.session_id
 
             # Mutate the roster IN-PROCESS (not restart)
             roster.update([
                 *_DEFAULT_ROSTER[:3],
                 DurableAgentSpec(
-                    identity="identity:olivia",
+                    identity="identity:bob",
                     profile="personal",
                     addressability="addressable",
                 ),
             ])
             topology.update([
                 *_DEFAULT_EDGES[:2],
-                ("identity:olivia", "triage:main"),
+                ("identity:bob", "triage:main"),
             ])
 
             # In-process reconcile — re-runs restore_flow with updated roster
             result = await rt.reconcile()
             assert result is not None
 
-            after_dana = await rt.status("identity:luka")
-            after_erin = await rt.status("identity:erin")
-            after_olivia = await rt.status("identity:olivia")
+            after_lead = await rt.status("identity:luka")
+            after_alice = await rt.status("identity:alice")
+            after_bob = await rt.status("identity:bob")
 
-            # olivia is new
-            assert after_olivia.state == "active"
-            assert after_olivia.session_id is not None
-            assert after_olivia.generation == 0
+            # bob is new
+            assert after_bob.state == "active"
+            assert after_bob.session_id is not None
+            assert after_bob.generation == 0
 
-            # luka and erin preserved - no silent respawn
-            assert after_dana.session_id == dana_session
-            assert after_dana.agent_runtime_id == dana_rt_id
-            assert after_erin.session_id == erin_session
+            # luka and alice preserved - no silent respawn
+            assert after_lead.session_id == lead_session
+            assert after_lead.agent_runtime_id == lead_rt_id
+            assert after_alice.session_id == alice_session
         finally:
             await rt.shutdown()
 
 
 # ===========================================================================
-# HC-04: Hot-Update Addressability And Metadata
+# DS-04: Hot-Update Addressability And Metadata
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC04HotUpdateAddressability:
+class TestDS04HotUpdateAddressability:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_flip_addressability_via_reconcile(self, mob_toml, state_dir):
@@ -517,13 +513,13 @@ class TestHC04HotUpdateAddressability:
             await rt.send("identity:luka", "Hello")
 
             # Mutate roster IN-PROCESS: flip luka to InternalOnly, add label
-            new_dana = DurableAgentSpec(
+            new_lead = DurableAgentSpec(
                 identity="identity:luka",
                 profile="personal",
                 addressability="internal_only",
                 labels={"timezone": "Europe/Stockholm"},
             )
-            roster.update([new_dana, *_DEFAULT_ROSTER[1:]])
+            roster.update([new_lead, *_DEFAULT_ROSTER[1:]])
 
             # In-process reconcile
             await rt.reconcile()
@@ -544,13 +540,13 @@ class TestHC04HotUpdateAddressability:
 
 
 # ===========================================================================
-# HC-05: Durable Respawn After Wedged Agent
+# DS-05: Durable Respawn After Wedged Agent
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC05DurableRespawn:
+class TestDS05DurableRespawn:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_respawn_preserves_identity(self, mob_toml, state_dir):
@@ -586,10 +582,10 @@ class TestHC05DurableRespawn:
 
 
 # ===========================================================================
-# HC-06: Lease Loss Stops New Work
+# DS-06: Lease Loss Stops New Work
 # ===========================================================================
 
-# HC-06: Lease loss requires an external LeaseProvider that can force Lost.
+# DS-06: Lease loss requires an external LeaseProvider that can force Lost.
 # The gateway currently creates a LocalLeaseProvider internally — there is no
 # SDK callback path for lease operations yet. When external LeaseProvider
 # support is wired, this test must be upgraded to:
@@ -601,7 +597,7 @@ class TestHC05DurableRespawn:
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC06LeaseSemantics:
+class TestDS06LeaseSemantics:
     @pytest.mark.asyncio
     @pytest.mark.timeout(60)
     async def test_dispatch_succeeds_with_lease_happy_path(self, mob_toml, state_dir):
@@ -624,13 +620,13 @@ class TestHC06LeaseSemantics:
 
 
 # ===========================================================================
-# HC-07: Reset vs Delete Semantics
+# DS-07: Reset vs Delete Semantics
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC07ResetVsDelete:
+class TestDS07ResetVsDelete:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_reset_advances_generation(self, mob_toml, state_dir):
@@ -693,13 +689,13 @@ class TestHC07ResetVsDelete:
 
 
 # ===========================================================================
-# HC-08: External-Authoritative Restart Smoke
+# DS-08: External-Authoritative Restart Smoke
 # ===========================================================================
 
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC08PersistentRestart:
+class TestDS08PersistentRestart:
     @pytest.mark.asyncio
     @pytest.mark.timeout(360)
     async def test_session_and_continuity_preserved_across_restart(self, mob_toml, state_dir):
@@ -722,7 +718,7 @@ class TestHC08PersistentRestart:
 
             # Also dispatch to triage to build multi-actor state
             di = DispatchInput(
-                content="School notification: parent-teacher conference next Tuesday",
+                content="Project notification: design review next Tuesday",
                 origin="connector",
             )
             await rt.dispatch("triage:main", di)

@@ -3711,16 +3711,16 @@ schedule = true
     }
 
     /// A downstream app on 0.7.28 field case: identity-first bridge members' ROSTER ids
-    /// are comms-ENCODED (`mk--domain_chome` for the durable identity
-    /// `domain:home` - bridge.rs member_id_for_spawn_spec), and the
+    /// are comms-ENCODED (`mk--domain_cops` for the durable identity
+    /// `domain:ops` - bridge.rs member_id_for_spawn_spec), and the
     /// authoring rewrite stores that roster id in the binding. The internal
     /// lane must resolve it WITHOUT re-encoding (the codec re-encodes
     /// marker-prefixed input by design); before the canonicalization fix the
     /// lookup missed and delivery fell through to the external door:
-    /// "mob member is not externally addressable: mk--rt_cdomain_chome_c0".
+    /// "mob member is not externally addressable: mk--rt_cdomain_cops_c0".
     #[tokio::test(flavor = "multi_thread")]
     async fn agent_authored_one_shot_delivers_to_internal_only_identity_bridge_member() {
-        let roster_id = crate::member_comms_id::mob_member_id_str("domain:home").into_owned();
+        let roster_id = crate::member_comms_id::mob_member_id_str("domain:ops").into_owned();
         assert!(
             roster_id.starts_with("mk--"),
             "repro precondition: the roster id must be marker-encoded"

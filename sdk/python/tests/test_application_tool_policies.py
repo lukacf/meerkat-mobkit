@@ -6,10 +6,9 @@ the host asked for it.
 
 This is the second time that first claim has needed a test. The role-migration
 carrier shipped with a gateway that parsed the parameter and a Python SDK that
-could not send it, a downstream app found it, and test_role_migrations.py exists because
-of it. The tool-policy lowering then shipped exactly the same way. The downstream app
-composes through this SDK only, so a parameter it cannot send is a feature that
-does not exist for the one consumer there is.
+could not send it, and test_role_migrations.py exists because of it. The
+tool-policy lowering then shipped exactly the same way. A host that composes
+through this SDK only cannot use a parameter the SDK cannot send.
 """
 
 import json
@@ -41,38 +40,38 @@ FIXTURE = (
     / "fixtures"
     / "application_tool_policies_init_params.json"
 )
-POLICY_HOUSEHOLD = json.loads(FIXTURE.read_text())["application_tool_policies"][0]
+POLICY_PRIMARY = json.loads(FIXTURE.read_text())["application_tool_policies"][0]
 # A second, deliberately NOT digest-valid, for order and refusal checks only:
 # the SDK is a carrier and never validates policy contents.
-POLICY_GUEST = POLICY_HOUSEHOLD.replace("household-tools", "guest-tools")
+POLICY_GUEST = POLICY_PRIMARY.replace("team-tools", "guest-tools")
 
 
 def test_a_declared_policy_reaches_the_init_params():
-    builder = MobKit.builder().application_tool_policies([POLICY_HOUSEHOLD])
-    assert _init_params(builder)["application_tool_policies"] == [POLICY_HOUSEHOLD]
+    builder = MobKit.builder().application_tool_policies([POLICY_PRIMARY])
+    assert _init_params(builder)["application_tool_policies"] == [POLICY_PRIMARY]
 
 
 def test_the_compilers_bytes_travel_verbatim():
     # Parsing verifies the digest against the bytes it is handed, so anything
     # that reformats here would make that check meaningless. Trailing newline
     # and key order must survive exactly.
-    builder = MobKit.builder().application_tool_policies([POLICY_HOUSEHOLD])
+    builder = MobKit.builder().application_tool_policies([POLICY_PRIMARY])
     sent = _init_params(builder)["application_tool_policies"][0]
-    assert sent == POLICY_HOUSEHOLD
+    assert sent == POLICY_PRIMARY
     assert sent.endswith("\n")
 
 
 def test_bytes_are_accepted_and_decoded_as_utf8():
-    builder = MobKit.builder().application_tool_policies([POLICY_HOUSEHOLD.encode()])
-    assert _init_params(builder)["application_tool_policies"] == [POLICY_HOUSEHOLD]
+    builder = MobKit.builder().application_tool_policies([POLICY_PRIMARY.encode()])
+    assert _init_params(builder)["application_tool_policies"] == [POLICY_PRIMARY]
 
 
 def test_several_policies_keep_their_order():
     builder = MobKit.builder().application_tool_policies(
-        [POLICY_HOUSEHOLD, POLICY_GUEST]
+        [POLICY_PRIMARY, POLICY_GUEST]
     )
     assert _init_params(builder)["application_tool_policies"] == [
-        POLICY_HOUSEHOLD,
+        POLICY_PRIMARY,
         POLICY_GUEST,
     ]
 
@@ -85,7 +84,7 @@ def test_an_empty_entry_is_refused_rather_than_forwarded():
     # Forwarding a blank entry surfaces at boot as a parse error with nothing
     # pointing at which entry was blank.
     with pytest.raises(ValueError, match=r"application_tool_policies\[1\] is empty"):
-        MobKit.builder().application_tool_policies([POLICY_HOUSEHOLD, "   "])
+        MobKit.builder().application_tool_policies([POLICY_PRIMARY, "   "])
 
 
 def test_a_non_string_entry_is_refused_with_its_index():

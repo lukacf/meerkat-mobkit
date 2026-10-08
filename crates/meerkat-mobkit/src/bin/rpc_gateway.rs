@@ -178,7 +178,7 @@ struct GatewayRuntimeOptions {
     /// For candidate/certification boots in a candidate-then-promote pipeline
     /// against one state directory. Without it such a boot pins its own
     /// deliberately-restricted composition and the promoted boot is refused -
-    /// which cost a live household 929 supervisor respawns and a rollback.
+    /// which in one production incident cost 929 supervisor respawns and a rollback.
     composition_authority: meerkat_mobkit::mob_composition_manifest::CompositionAuthority,
     /// `runtime_options.mob_composition.candidate_definition`: `"stored"` lets
     /// a candidate boot the stored mob definition when the supplied one
@@ -215,7 +215,7 @@ struct GatewayRuntimeOptions {
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
 /// transport on the gateway's HTTP listener with bootstrap URLs derived from
 /// the loopback base; the object form
-/// `{"public_base_url": "ws://192.168.0.123:8080", "seed_max_chars": 200000}`
+/// `{"public_base_url": "ws://10.0.0.5:8080", "seed_max_chars": 200000}`
 /// additionally rewrites the minted bootstrap URLs for clients that reach
 /// the gateway through a proxy or a LAN address (the token/channel query
 /// parameters are appended to this base) and/or clamps the projected seed
@@ -848,14 +848,14 @@ mod tests {
     #[test]
     fn configured_risk_tier_overrides_a_caller_supplied_tier() {
         let mut action_risk_tiers = HashMap::new();
-        action_risk_tiers.insert("delete_household_data".to_string(), "r3".to_string());
+        action_risk_tiers.insert("delete_workspace_data".to_string(), "r3".to_string());
         let gating = GatewayGatingConfig { action_risk_tiers };
 
         let claimed_low = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "mobkit/gating/evaluate",
-            "params": {"action": "delete_household_data", "risk_tier": "r0"}
+            "params": {"action": "delete_workspace_data", "risk_tier": "r0"}
         })
         .to_string();
 
@@ -872,7 +872,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "mobkit/gating/evaluate",
-            "params": {"action": "delete_household_data"}
+            "params": {"action": "delete_workspace_data"}
         })
         .to_string();
         let applied = apply_gateway_runtime_config_to_request(&omitted, &gating);
@@ -3680,7 +3680,7 @@ actions = ["agent.view"]
     fn calendar_fork_source() -> meerkat_core::service::ForkBuildSource {
         meerkat_core::service::ForkBuildSource::new(
             meerkat_core::MobMemberBinding {
-                mob_id: "home".to_string(),
+                mob_id: "main".to_string(),
                 role: "domain".to_string(),
                 member: meerkat_mobkit::member_comms_id::roster_member_id_for_identity(
                     "domain:calendar",
@@ -3707,7 +3707,7 @@ actions = ["agent.view"]
             peer_meta: Some(
                 meerkat_core::PeerMeta::default()
                     .with_label("role", "domain")
-                    .with_label("team", "home"),
+                    .with_label("team", "main"),
             ),
             ..Default::default()
         };
@@ -3723,7 +3723,7 @@ actions = ["agent.view"]
             options["fork_source"],
             json!({
                 "source_member": {
-                    "mob_id": "home",
+                    "mob_id": "main",
                     "role": "domain",
                     "member": "mk--domain_ccalendar"
                 },
@@ -3734,7 +3734,7 @@ actions = ["agent.view"]
         assert_eq!(options["resume_session_id"], child_session_id.as_str());
         assert_eq!(options["session_id"], child_session_id.as_str());
         assert_ne!(child_session_id, CALENDAR_SOURCE_SESSION);
-        assert_eq!(options["labels"], json!({"role": "domain", "team": "home"}));
+        assert_eq!(options["labels"], json!({"role": "domain", "team": "main"}));
 
         for build in [
             None,
@@ -4080,7 +4080,7 @@ comms = true
         let mut source_spec = meerkat_mob::SpawnMemberSpec::new("domain", source_id.clone());
         source_spec.labels = Some(BTreeMap::from([
             ("agent_identity".to_string(), "domain:calendar".to_string()),
-            ("team".to_string(), "home".to_string()),
+            ("team".to_string(), "main".to_string()),
         ]));
         Box::pin(first.runtime.mob_handle().spawn_spec(source_spec))
             .await
@@ -5491,21 +5491,21 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "auth_binding": {
-                            "realm": "family",
+                            "realm": "team",
                             "binding": "openai-api-key",
                             "profile": "luka"
                         },
                         "voice": "marin",
-                        "session_instructions": "You are the robot's voice embodiment."
+                        "session_instructions": "Synthetic system prompt for the voice profile."
                     }
                 }
             }),
             None,
         )
         .expect("public registration");
-        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        let realm = meerkat_core::RealmId::parse("team").expect("realm");
         assert_eq!(
             options.openai_live,
             Some(GatewayOpenAiLiveOption {
@@ -5518,7 +5518,9 @@ comms = true
                     origin: meerkat_core::BindingOrigin::Configured,
                 },
                 voice: "marin".to_string(),
-                session_instructions: Some("You are the robot's voice embodiment.".to_string()),
+                session_instructions: Some(
+                    "Synthetic system prompt for the voice profile.".to_string()
+                ),
                 summary: Default::default(),
             })
         );
@@ -5529,8 +5531,8 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
-                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "realm": "team",
+                        "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                         "voice": "marin",
                         "session_instructions": null
                     }
@@ -5545,49 +5547,49 @@ comms = true
 
         for invalid in [
             json!("gpt-live-1"),
-            json!({"principal": "user:luka", "realm": "family", "voice": "marin"}),
+            json!({"principal": "user:luka", "realm": "team", "voice": "marin"}),
             json!({
                 "principal": " ",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "auth_binding": {"realm": "other", "binding": "openai-api-key"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key", "token": "x"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key", "token": "x"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": " "
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "session_instructions": " "
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "model": "gpt-live-1"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "execution_profiles": []
             }),
@@ -5610,17 +5612,17 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
-                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "realm": "team",
+                        "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                         "voice": "marin"
                     },
                     "experimental_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "factory_kind": "private-live",
                         "factory_version": "v1",
                         "gate0_qualification": "gate0-v1",
-                        "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                        "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                         "voice": "marin"
                     }
                 }
@@ -5647,19 +5649,19 @@ comms = true
                 "runtime_options": {
                     "experimental_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "factory_kind": "private-live",
                         "factory_version": "v1",
                         "gate0_qualification": "gate0-v1",
                         "auth_binding": {
-                            "realm": "family",
+                            "realm": "team",
                             "binding": "chatgpt-oauth",
                             "profile": "luka"
                         },
                         "voice": "marin",
                         "execution_profiles": [{
                             "profile_id": "example.device.open-room.v1",
-                            "session_instructions": "You are the robot's voice embodiment."
+                            "session_instructions": "Synthetic system prompt for the voice profile."
                         }]
                     }
                 }
@@ -5669,31 +5671,31 @@ comms = true
         .expect("explicit registration parses");
         let experimental = options.experimental_live.expect("registration");
         assert_eq!(experimental.principal, "user:luka");
-        assert_eq!(experimental.realm.as_str(), "family");
-        assert_eq!(experimental.binding.realm.as_str(), "family");
+        assert_eq!(experimental.realm.as_str(), "team");
+        assert_eq!(experimental.binding.realm.as_str(), "team");
         assert_eq!(experimental.binding.binding.as_str(), "chatgpt-oauth");
         assert_eq!(experimental.voice, "marin");
         assert_eq!(
             experimental.execution_profiles,
             vec![GatewayExperimentalLiveExecutionProfile {
                 profile_id: "example.device.open-room.v1".to_string(),
-                session_instructions: "You are the robot's voice embodiment.".to_string(),
+                session_instructions: "Synthetic system prompt for the voice profile.".to_string(),
             }]
         );
         assert_eq!(options.live, GatewayLiveOption::Disabled);
 
         for invalid in [
             json!({
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
@@ -5702,88 +5704,88 @@ comms = true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "ambient_default": true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "instructions": "caller-owned prompt"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": {}
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{"profile_id": " ", "session_instructions": "voice"}]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
-                "execution_profiles": [{"profile_id": "robot", "session_instructions": " "}]
+                "execution_profiles": [{"profile_id": "device", "session_instructions": " "}]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
-                    "profile_id": "robot",
+                    "profile_id": "device",
                     "session_instructions": "voice",
                     "tools": []
                 }]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [
-                    {"profile_id": "robot", "session_instructions": "voice"},
-                    {"profile_id": " robot ", "session_instructions": "other"}
+                    {"profile_id": "device", "session_instructions": "voice"},
+                    {"profile_id": " device ", "session_instructions": "other"}
                 ]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
                     "profile_id": meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
@@ -5792,11 +5794,11 @@ comms = true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
                     "profile_id": meerkat::GPT_LIVE_FUNCTION_BRIDGE_PROFILE_ID,
@@ -5823,7 +5825,7 @@ comms = true
         ] {
             let mut profile = json!({
                 "profile_id": "example.device.open-room.v1",
-                "session_instructions": "You are the robot's voice embodiment."
+                "session_instructions": "Synthetic system prompt for the voice profile."
             });
             profile
                 .as_object_mut()
@@ -5834,12 +5836,12 @@ comms = true
                     "runtime_options": {
                         "experimental_live": {
                             "principal": "user:luka",
-                            "realm": "family",
+                            "realm": "team",
                             "factory_kind": "private-live",
                             "factory_version": "v1",
                             "gate0_qualification": "gate0-v1",
                             "auth_binding": {
-                                "realm": "family",
+                                "realm": "team",
                                 "binding": "chatgpt-oauth"
                             },
                             "voice": "marin",
@@ -5860,7 +5862,7 @@ comms = true
     fn production_experimental_live_operator_advertises_only_client_context() {
         let canonical = meerkat::ExperimentalLiveOperatorConfig::gpt_live_client_context();
         let selected_factory = canonical.factory().clone();
-        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        let realm = meerkat_core::RealmId::parse("team").expect("realm");
         let experimental = GatewayExperimentalLiveOption {
             principal: "user:luka".to_string(),
             realm: realm.clone(),
@@ -5875,7 +5877,7 @@ comms = true
             voice: "marin".to_string(),
             execution_profiles: vec![GatewayExperimentalLiveExecutionProfile {
                 profile_id: "example.device.open-room.v1".to_string(),
-                session_instructions: "You are the robot's voice embodiment.".to_string(),
+                session_instructions: "Synthetic system prompt for the voice profile.".to_string(),
             }],
         };
         let operator =
@@ -12366,7 +12368,7 @@ impl StdioCallbackAgentBuilder {
         // ruling this layer does not own: an explicit Set at resume
         // IS new transcript intent by contract, so the runtime
         // recorded one assembled System row per boot (the downstream app's
-        // accretion: parent-1 reached 1,294,962 tokens against a
+        // accretion: one member reached 1,294,962 tokens against a
         // 922,000 ceiling). Standing instructions are per-session
         // build state baked at mint; a deliberate mid-life change
         // must use the typed transcript admission.
@@ -13216,7 +13218,7 @@ external_addressable = true
         );
     }
     // Member role migrations this boot is authorized to perform, e.g.
-    // `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    // `[{"identity": "domain:automation", "from_role": "domain"}]`.
     //
     // A malformed declaration refuses the boot rather than arming nothing. An
     // operator who wrote a declaration expects it to be in force, and silently

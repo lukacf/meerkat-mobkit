@@ -3782,7 +3782,7 @@ impl SessionStoreBackedRuntimeStore {
     /// terminal blocks the RESEED direction only (terminal lifecycle facts
     /// outrank content recovery; re-seeding runtime authority is where
     /// resurrection risk lives) - the opposite direction, durable BEHIND
-    /// committed (the parent-1 tear), reconciles even under a terminal
+    /// committed (the member tear), reconciles even under a terminal
     /// because repairing the durable projection of already-committed
     /// authority mints no runtime life.
     async fn freshen_stale_runtime_authority_from_durable(
@@ -4003,7 +4003,7 @@ impl SessionStoreBackedRuntimeStore {
         }
         if durable_order < committed_order {
             let reconciliation_started = std::time::Instant::now();
-            // Durable BEHIND committed: the parent-1 tear shape. A projection
+            // Durable BEHIND committed: the member tear shape. A projection
             // that failed (or, pre-fix, could not install a rewrite
             // generation) left the durable row behind authority the runtime
             // store already committed - a PLAIN RESUME must converge it, not
@@ -4229,7 +4229,7 @@ impl SessionStoreBackedRuntimeStore {
         Ok(successor_prefix == durable_revision)
     }
 
-    /// INVERSE-APPEND ADMISSION (task #56 corpus, a downstream app parent-1 field
+    /// INVERSE-APPEND ADMISSION (task #56 corpus, a production member field
     /// shape): the chain walk accepts a durable predecessor that the commit
     /// parent EXTENDS (appends before compaction), but the wedged-retire
     /// tear leaves the INVERSE - a durable row extending PAST the sealed
@@ -4290,8 +4290,8 @@ impl SessionStoreBackedRuntimeStore {
         Ok(None)
     }
 
-    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, a downstream app
-    /// parent-1 true field shape; admission authored by a downstream app and landed
+    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, a production
+    /// member's true field shape; admission authored downstream and landed
     /// here with the lane's conventions): the tear is a FAILED projection,
     /// so the durable row never received the wedged turn's final appends -
     /// durable is a strict digest-PREFIX of the sealed commit parent (the
@@ -4576,7 +4576,7 @@ impl SessionStoreBackedRuntimeStore {
             return Ok(());
         };
         let successor = snapshot.session();
-        // Parent-1 tear (task #56): `save_authoritative_projection` alone
+        // Member tear (task #56): `save_authoritative_projection` alone
         // cannot INSTALL a new rewrite generation on the durable row - a
         // retire committing a rewrite-advanced WholeBlob over an older
         // durable head left graph-ahead-of-head state that meerkat's
@@ -4795,7 +4795,7 @@ impl SessionStoreBackedRuntimeStore {
                 // the injected store's save guard stays the only authority
                 // (commitless projections, adopted seeds): the INVERSE
                 // append shape, where the durable row extends PAST the
-                // sealed commit parent (downstream app parent-1 - the wedged
+                // sealed commit parent (a production member - the wedged
                 // turn's final appends projected durably while the retire
                 // compacted from the quiesced pre-append state). The proof
                 // is exact content: the durable row's own first
@@ -17902,7 +17902,7 @@ comms = true
         );
     }
 
-    /// Task #56 (parent-1 launch blocker): a committed WholeBlob boundary
+    /// Task #56 (launch blocker): a committed WholeBlob boundary
     /// carrying a NEW rewrite generation over an older durable row must
     /// project through the store's typed rewrite door, installing the
     /// missing commit on the durable row - not tear it into
@@ -18039,7 +18039,7 @@ comms = true
         );
     }
 
-    /// Task #56, freshness half (parent-1's ACTUAL recovery path): the tear
+    /// Task #56, freshness half (the member's ACTUAL recovery path): the tear
     /// already exists on disk - durable gen0, committed gen1 - and the next
     /// thing that happens is a plain RESUME, not a new committing verb. The
     /// freshness probe must distinguish durable-behind from fresh, run the
@@ -18331,7 +18331,7 @@ comms = true
         );
     }
 
-    /// Task #56 corpus finding (downstream app parent-1, real bytes): the member
+    /// Task #56 corpus finding (production member, real bytes): the member
     /// is PARKED and its session explicitly UNREGISTERED from
     /// identity-runtime state while the durable row sits torn behind
     /// committed runtime authority. The tear reconciliation is a
@@ -18541,7 +18541,7 @@ comms = true
         );
     }
 
-    /// Task #56 iteration-3 field shape (downstream app parent-1 trace): the
+    /// Task #56 iteration-3 field shape (production member trace): the
     /// wedged turn's final appends were projected DURABLY while the retire
     /// committed its compaction from the quiesced pre-append state, so the
     /// durable row EXTENDS PAST the sealed commit parent (249 vs a smaller
@@ -18761,7 +18761,7 @@ comms = true
         );
     }
 
-    /// Task #56 iteration-5 TRUE field shape (downstream app parent-1, proof
+    /// Task #56 iteration-5 TRUE field shape (production member, proof
     /// verdict "messages_before=250 durable_messages=249 matched"): the
     /// tear is a FAILED projection - the wedged turn's final append never
     /// reached the durable row, so durable is a strict digest-PREFIX of the

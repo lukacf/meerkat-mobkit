@@ -804,7 +804,7 @@ mod tests {
     fn providers_are_derived_from_the_ids_the_artifacts_carry() {
         // The host compiles provider_id "example-provider"; nothing in MobKit names it.
         let payloads = vec![
-            policy_for("example-provider", "household-tools", "member-a", "shell"),
+            policy_for("example-provider", "team-tools", "member-a", "shell"),
             policy_for("some-other-author", "fleet-baseline", "member-b", "network"),
         ];
         let providers =
@@ -825,7 +825,7 @@ mod tests {
     fn the_gateways_own_entry_point_refuses_a_wrong_id_space_artifact() {
         let payload = CompiledApplicationToolPolicy::new(
             PolicyProviderId::new("example-provider").expect("provider id"),
-            PolicyId::new("household-tools").expect("policy id"),
+            PolicyId::new("team-tools").expect("policy id"),
             PolicyRevision(1),
             source(),
             grants_for("mk--rt_cdomain_ccalendar_c0", "shell"),
@@ -853,18 +853,18 @@ mod tests {
         // its own provider refused every policy compiled by anyone else.
         let payloads = vec![policy_for(
             "example-provider",
-            "household-tools",
+            "team-tools",
             "member-a",
             "shell",
         )];
         let providers = providers_from_canonical_payloads(&payloads).expect("artifact installs");
         assert_eq!(providers.len(), 1);
         let snapshot = providers[0]
-            .snapshot(&PolicyId::new("household-tools").expect("policy id"))
+            .snapshot(&PolicyId::new("team-tools").expect("policy id"))
             .expect("the carried policy id resolves");
         let mut request = request("member-a", "shell");
         request.provider_id = PolicyProviderId::new("example-provider").expect("provider id");
-        request.policy_id = PolicyId::new("household-tools").expect("policy id");
+        request.policy_id = PolicyId::new("team-tools").expect("policy id");
         assert!(matches!(
             snapshot.evaluate(&request),
             ToolConsequenceVerdict::Allow
@@ -874,12 +874,12 @@ mod tests {
     #[test]
     fn two_policies_from_one_author_share_a_single_provider() {
         let payloads = vec![
-            policy_for("example-provider", "household-tools", "member-a", "shell"),
+            policy_for("example-provider", "team-tools", "member-a", "shell"),
             policy_for("example-provider", "guest-tools", "member-b", "network"),
         ];
         let providers = providers_from_canonical_payloads(&payloads).expect("both install");
         assert_eq!(providers.len(), 1, "one author means one provider");
-        for policy_id in ["household-tools", "guest-tools"] {
+        for policy_id in ["team-tools", "guest-tools"] {
             providers[0]
                 .snapshot(&PolicyId::new(policy_id).expect("policy id"))
                 .unwrap_or_else(|error| panic!("{policy_id} should resolve: {error}"));
@@ -894,7 +894,7 @@ mod tests {
         // not just the pieces.
         let payloads = vec![policy_for(
             "example-provider",
-            "household-tools",
+            "team-tools",
             "member-a",
             "shell",
         )];
@@ -921,7 +921,7 @@ mod tests {
             .bind(
                 member.clone(),
                 PolicyProviderId::new("example-provider").expect("provider id"),
-                PolicyId::new("household-tools").expect("policy id"),
+                PolicyId::new("team-tools").expect("policy id"),
             )
             .expect("the carried provider and policy identity must bind");
 
@@ -933,7 +933,7 @@ mod tests {
         let error = match registry.bind(
             member,
             PolicyProviderId::new("mobkit-gateway").expect("provider id"),
-            PolicyId::new("household-tools").expect("policy id"),
+            PolicyId::new("team-tools").expect("policy id"),
         ) {
             Ok(_) => panic!("a provider no artifact declared must not bind"),
             Err(error) => error,
@@ -960,7 +960,7 @@ mod tests {
             .join("tests/fixtures/application_tool_policies_init_params.json");
         let canonical = String::from_utf8(policy_for(
             "example-provider",
-            "household-tools",
+            "team-tools",
             "member-a",
             "shell",
         ))
@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].provider_id().as_str(), "example-provider");
         providers[0]
-            .snapshot(&PolicyId::new("household-tools").expect("policy id"))
+            .snapshot(&PolicyId::new("team-tools").expect("policy id"))
             .expect("the carried policy id resolves");
     }
 
@@ -1057,13 +1057,13 @@ mod tests {
                 "child_application_tool_policy": {
                     "kind": "provider",
                     "provider_id": "example-provider",
-                    "policy_id": "household-tools"
+                    "policy_id": "team-tools"
                 }
             }))
             .expect("provider"),
             Some(ApplicationToolPolicyBinding::Provider {
                 provider_id: PolicyProviderId::new("example-provider").expect("provider id"),
-                policy_id: PolicyId::new("household-tools").expect("policy id"),
+                policy_id: PolicyId::new("team-tools").expect("policy id"),
             })
         );
     }
@@ -1092,7 +1092,7 @@ mod tests {
         let providers: Vec<Arc<dyn ToolConsequenceNarrowingPolicy>> =
             providers_from_canonical_payloads(&[policy_for(
                 "example-provider",
-                "household-tools",
+                "team-tools",
                 "member-a",
                 "shell",
             )])
@@ -1105,17 +1105,15 @@ mod tests {
             policy_id: PolicyId::new(policy).expect("policy id"),
         };
         validate_child_application_tool_policy(
-            &binding("example-provider", "household-tools"),
+            &binding("example-provider", "team-tools"),
             &providers,
         )
         .expect("a served provider and policy");
         validate_child_application_tool_policy(&ApplicationToolPolicyBinding::Unmanaged, &[])
             .expect("unmanaged needs no provider");
-        let error = validate_child_application_tool_policy(
-            &binding("other", "household-tools"),
-            &providers,
-        )
-        .expect_err("an unserved provider");
+        let error =
+            validate_child_application_tool_policy(&binding("other", "team-tools"), &providers)
+                .expect_err("an unserved provider");
         assert!(
             error
                 .to_string()
@@ -1127,10 +1125,7 @@ mod tests {
         )
         .expect_err("a policy the provider never accepted");
         assert!(error.to_string().contains("cannot load"), "{error}");
-        validate_child_application_tool_policy(
-            &binding("example-provider", "household-tools"),
-            &[],
-        )
-        .expect_err("a provider binding without any served policy");
+        validate_child_application_tool_policy(&binding("example-provider", "team-tools"), &[])
+            .expect_err("a provider binding without any served policy");
     }
 }
