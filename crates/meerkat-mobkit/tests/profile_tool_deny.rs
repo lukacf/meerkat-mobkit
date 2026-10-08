@@ -309,24 +309,22 @@ async fn homecore_deny_set_builds_and_refuses_denied_mob_tools() {
                 .expect("the probe turn recorded its results"),
         )
     };
-    // The mob operator tools a `mob = true` member mounts are the core of the
-    // HomeCore restriction; the probe is meaningless without them.
-    for operator_tool in ["spawn_member", "wire_members"] {
+    // A `mob = true` member mounts the mob operator tools; the probe is
+    // meaningless without them. `retire_member` and `list_members` are not in
+    // the deny set, so they stay mounted.
+    for operator_tool in ["retire_member", "list_members"] {
         assert!(
             mounted.iter().any(|name| name == operator_tool),
             "a mob-enabled member mounts {operator_tool}: {mounted:?}"
         );
     }
-    for tool in DENIED
-        .iter()
-        .filter(|tool| mounted.iter().any(|name| name == *tool))
-    {
-        let text = results
-            .get(&probe_call_id(tool))
-            .unwrap_or_else(|| panic!("{tool} was called"));
+    // An unconditional profile deny hides the tool from the member's visible
+    // set at build time (meerkat 0.8.52); the execution gate still refuses
+    // any denied call that reaches it.
+    for tool in DENIED {
         assert!(
-            text.contains("access_denied"),
-            "{tool} is denied by the profile and refused: {text}"
+            !mounted.iter().any(|name| name == tool),
+            "{tool} is denied by the profile and hidden: {mounted:?}"
         );
     }
     for tool in KEPT
