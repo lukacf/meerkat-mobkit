@@ -4042,26 +4042,55 @@ impl MobSessionBridge {
     /// Resolve the machine-level ingress authority for repair carry: an
     /// explicitly injected one wins; otherwise the session service's runtime
     /// adapter (the gateway's `MeerkatMachine`) serves.
+    ///
+    /// A refused acquisition is an error, not an absent authority: the owner
+    /// exists but would not serve, so its queue may hold work.
     fn resolved_runtime_ingress_authority(
         &self,
-    ) -> Option<Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>> {
+    ) -> Result<
+        Option<Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>>,
+        meerkat_runtime::RuntimeDriverError,
+    > {
         if let Some(explicit) = self.runtime_ingress_authority.as_ref() {
-            return Some(Arc::clone(explicit));
+            return Ok(Some(Arc::clone(explicit)));
         }
-        crate::mob_handle_runtime::observed_runtime_adapter(self.session_service.as_ref()?.as_ref())
-            .map(|machine| machine as Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>)
+        let Some(service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        Ok(service
+            .acquire_runtime_adapter(None)?
+            .map(|machine| machine as Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>))
     }
 
+    /// `Err` when the runtime owner refused to serve: its queue may hold
+    /// member inputs, so the caller must defer the disposal rather than
+    /// destroy what it could not observe.
     async fn capture_pending_member_ingress(
         &self,
         session_id: &meerkat_core::types::SessionId,
-    ) -> PendingIngressCapture {
-        let Some(authority) = self.resolved_runtime_ingress_authority() else {
-            tracing::debug!(
-                session_id = %session_id,
-                "no runtime ingress authority; repair cannot observe or carry queued member inputs"
-            );
-            return PendingIngressCapture::empty();
+    ) -> Result<PendingIngressCapture, meerkat_mob::MobError> {
+        let authority = match self.resolved_runtime_ingress_authority() {
+            Ok(Some(authority)) => authority,
+            Ok(None) => {
+                tracing::debug!(
+                    session_id = %session_id,
+                    "no runtime ingress authority; repair cannot observe or carry queued \
+                     member inputs"
+                );
+                return Ok(PendingIngressCapture::empty());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    %error,
+                    "runtime adapter acquisition refused; deferring repair disposal so \
+                     queued member inputs are not lost"
+                );
+                return Err(meerkat_mob::MobError::Internal(format!(
+                    "repair disposal deferred: the runtime owner refused to serve ({error}), \
+                     so queued member inputs could not be captured"
+                )));
+            }
         };
         let active = match authority.list_active_inputs(session_id).await {
             Ok(ids) => ids,
@@ -4074,7 +4103,7 @@ impl MobSessionBridge {
                     error = %error,
                     "pending-ingress probe unavailable before repair disposal"
                 );
-                return PendingIngressCapture::empty();
+                return Ok(PendingIngressCapture::empty());
             }
         };
         let mut capture = PendingIngressCapture::empty();
@@ -4141,7 +4170,7 @@ impl MobSessionBridge {
         capture
             .carryable
             .sort_by_key(|entry| entry.admission_sequence.unwrap_or(u64::MAX));
-        capture
+        Ok(capture)
     }
 
     /// Loud pre-disposal record of what the repair is about to do with a
@@ -4190,7 +4219,7 @@ impl MobSessionBridge {
         if capture.carryable.is_empty() {
             return;
         }
-        let Some(authority) = self.resolved_runtime_ingress_authority() else {
+        let Ok(Some(authority)) = self.resolved_runtime_ingress_authority() else {
             // Unreachable in practice: a non-empty capture required the
             // authority. Fail loud rather than silently dropping.
             tracing::error!(
@@ -4969,7 +4998,10 @@ impl MobSessionBridge {
             // wedged member's queued inputs FIRST so the healed successor can
             // re-admit them instead of losing them with the disposal (OB3
             // run 33758a41).
-            let capture = self.capture_pending_member_ingress(&session_id).await;
+            let capture = self
+                .capture_pending_member_ingress(&session_id)
+                .await
+                .map_err(|error| BridgeError::Mob(error.to_string()))?;
             self.log_pending_ingress_before_repair_disposal(member_id, &session_id, &capture);
             match self
                 .resume_repair_member(
@@ -6257,7 +6289,17 @@ impl SessionBridge for MobSessionBridge {
                         "collision retire precondition",
                     ));
                 }
-                let capture = self.capture_pending_member_ingress(session_id).await;
+                let capture = match self.capture_pending_member_ingress(session_id).await {
+                    Ok(capture) => capture,
+                    Err(error) => {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &error,
+                            "collision retire deferred: queued inputs unobservable",
+                        ));
+                    }
+                };
                 self.log_pending_ingress_before_repair_disposal(&mid, session_id, &capture);
                 if let Err(err) = self.retire_session_owned_member_to_absence(&mid).await {
                     return Err(resume_rejected(
@@ -6344,7 +6386,17 @@ impl SessionBridge for MobSessionBridge {
                     // collision arm above). When it DOES match, the retire is
                     // destructive: capture the stale member's queued inputs
                     // first and carry them into the fresh successor session.
-                    let capture = self.capture_pending_member_ingress(session_id).await;
+                    let capture = match self.capture_pending_member_ingress(session_id).await {
+                        Ok(capture) => capture,
+                        Err(error) => {
+                            return Err(resume_rejected(
+                                identity,
+                                session_id,
+                                &error,
+                                "never-persisted retire deferred: queued inputs unobservable",
+                            ));
+                        }
+                    };
                     self.log_pending_ingress_before_repair_disposal(&mid, session_id, &capture);
                     if let Err(retire_error) =
                         self.retire_session_owned_member_to_absence(&mid).await
@@ -10007,5 +10059,53 @@ mod tests {
             }
             other => panic!("a failed roster read must stay unobservable, got {other:?}"),
         }
+    }
+    /// A refused runtime acquisition is not an absent owner: the queue may
+    /// hold member inputs, so repair must defer its disposal instead of
+    /// capturing nothing and destroying them.
+    #[tokio::test]
+    async fn a_refused_runtime_acquisition_defers_repair_disposal() {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let definition =
+            meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"refused-acquisition-repair\"\n")
+                .expect("mob definition");
+        let spec = crate::MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            4,
+            None,
+        )
+        .expect("bootstrap spec");
+        let runtime = crate::MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap runtime");
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let session_id = meerkat_core::types::SessionId::new();
+
+        let refusing = super::MobSessionBridge::with_session_service(
+            runtime.handle(),
+            crate::mob_handle_runtime::acquisition_observation_probe(true, Arc::clone(&reads)),
+        );
+        assert!(
+            refusing
+                .capture_pending_member_ingress(&session_id)
+                .await
+                .is_err(),
+            "a refused acquisition must defer disposal, not yield an empty capture"
+        );
+
+        // An owner that is genuinely absent still has nothing to carry.
+        let absent = super::MobSessionBridge::with_session_service(
+            runtime.handle(),
+            crate::mob_handle_runtime::acquisition_observation_probe(false, reads),
+        );
+        assert!(
+            absent
+                .capture_pending_member_ingress(&session_id)
+                .await
+                .expect("an absent owner is not an error")
+                .is_empty()
+        );
     }
 }
