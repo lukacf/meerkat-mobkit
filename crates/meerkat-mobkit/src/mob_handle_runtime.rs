@@ -14175,9 +14175,8 @@ shell = true
     ) {
         use base64::Engine as _;
 
-        const BUNDLE: &[u8] = include_bytes!(
-            "../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
-        );
+        const BUNDLE: &[u8] =
+            include_bytes!("../tests/fixtures/security_idempotency/security-head-evolution.json");
         let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("fixture bundle");
         let table = &bundle[snapshot]["continuity_session_heads"];
         let columns = table["columns"].as_array().expect("fixture columns");

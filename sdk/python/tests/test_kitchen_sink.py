@@ -12,7 +12,7 @@ graph to process - agents use the comms `send` tool to coordinate.
 
 Run:
     PYTHONPATH=sdk/python ANTHROPIC_API_KEY=... \
-        python3 -m pytest sdk/python/tests/test_homecore_kitchen_sink.py -v --timeout=300
+        python3 -m pytest sdk/python/tests/test_kitchen_sink.py -v --timeout=300
 """
 from __future__ import annotations
 

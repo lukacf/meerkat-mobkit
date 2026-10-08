@@ -59,7 +59,7 @@ regression shipped past a synthetic 26-chain test for that reason).
                       minted no resume rewrites for an unchanged system
                       prompt
 
-- homecore_ledgerv1_closure/ - the continuity closure of the fleet session
+- ledger_v1_closure/ - the continuity closure of the fleet session
   cited in the class-2 and class-3 0.8.11 binding verdicts (domain:calendar,
   019fae11-4dd7-7301-9754-67b646603fb3 - the fleet's max-depth 26-rewrite
   chain), with SYNTHETIC content. Built by schema-level synthesis from the
@@ -96,7 +96,7 @@ regression shipped past a synthetic 26-chain test for that reason).
   mutation and must be ADOPTED under the import receipt on the first
   projected write.
 
-- homecore_security_idempotency/ - the three-state head+snapshot evolution
+- security_idempotency/ - the three-state head+snapshot evolution
   of domain:security (019fae11-4e87-7482-8796-54b2dac1f410) from a forensic
   bundle (2026-08-01) - untouched gen-20 corpus, the row after ONE boot of
   the fixed binary on a fresh seed, and the row after a SECOND boot (the

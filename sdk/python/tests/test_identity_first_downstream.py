@@ -6,7 +6,7 @@ These tests exercise the REAL round-trip: Python SDK -> rpc_gateway binary
 
 Run:
     PYTHONPATH=sdk/python ANTHROPIC_API_KEY=... \
-        python3 -m pytest sdk/python/tests/test_identity_first_homecore.py -v --timeout=120
+        python3 -m pytest sdk/python/tests/test_identity_first_downstream.py -v --timeout=120
 """
 from __future__ import annotations
 

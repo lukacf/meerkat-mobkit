@@ -15,8 +15,8 @@ rust-version.workspace = true
 # package. Their readers are `#[cfg(test)]` modules and integration tests,
 # which a dependent's build never compiles.
 exclude = [
-    "tests/fixtures/homecore_ledgerv1_closure/",
-    "tests/fixtures/homecore_security_idempotency/",
+    "tests/fixtures/ledger_v1_closure/",
+    "tests/fixtures/security_idempotency/",
     "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     "tests/fixtures/v0_8_10_released_session.json",
 ]

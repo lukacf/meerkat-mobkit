@@ -5,7 +5,7 @@ Covers HC-01 through HC-08: real round-trip through Python SDK -> rpc_gateway
 
 Run:
     PYTHONPATH=sdk/python ANTHROPIC_API_KEY=... \
-        python3 -m pytest sdk/python/tests/test_identity_first_homecore_e2e.py -v --timeout=180
+        python3 -m pytest sdk/python/tests/test_identity_first_downstream_e2e.py -v --timeout=180
 """
 from __future__ import annotations
 

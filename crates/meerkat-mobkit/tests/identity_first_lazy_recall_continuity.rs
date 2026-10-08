@@ -1540,7 +1540,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
 /// ACTIVE, the fleet transcript replays, and a real turn extends the
 /// adopted (current-format) head durably.
 ///
-/// FIXTURE PROVENANCE: fixtures/homecore_ledgerv1_closure/ (sha256
+/// FIXTURE PROVENANCE: fixtures/ledger_v1_closure/ (sha256
 /// 128aee2d...) - the forensic closure's exact layout and rewrite topology
 /// with SYNTHETIC content: free text replaced, and every strand id, commit
 /// digest and head revision recomputed with the released 0.8.10 digest
@@ -1555,9 +1555,8 @@ async fn homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
     }
     let _serial = SERIAL_WINDOW.lock().await;
     const CLOSURE: &[u8] =
-        include_bytes!("fixtures/homecore_ledgerv1_closure/calendar-continuity-closure.json");
-    const CLOSURE_DDL: &str =
-        include_str!("fixtures/homecore_ledgerv1_closure/continuity-schema.sql");
+        include_bytes!("fixtures/ledger_v1_closure/calendar-continuity-closure.json");
+    const CLOSURE_DDL: &str = include_str!("fixtures/ledger_v1_closure/continuity-schema.sql");
     /// A phrase only the fleet transcript carries (their domain system role).
     const FLEET_MARKER: &str = "household domain specialist";
     const FLEET_MEMBER: &str = "domain:calendar";

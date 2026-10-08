@@ -4384,7 +4384,7 @@ mod tests {
 
     /// The HomeCore boot-2 exactly-once violation, pinned on its captured
     /// head rows with synthetic content
-    /// (fixtures/homecore_security_idempotency/, sha256 2f2c8443...,
+    /// (fixtures/security_idempotency/, sha256 2f2c8443...,
     /// domain:security 019fae11-4e87-...): two consecutive boots of the same
     /// binary wrote two byte-different heads for an unchanged document. The
     /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility
@@ -4396,7 +4396,7 @@ mod tests {
     #[test]
     fn homecore_security_boot_drift_is_zero_durable_change() {
         const BUNDLE: &[u8] = include_bytes!(
-            "../../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+            "../../tests/fixtures/security_idempotency/security-head-evolution.json"
         );
         let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("bundle JSON");
         let head_of = |state: &str| -> meerkat_core::session_store::SessionHead {

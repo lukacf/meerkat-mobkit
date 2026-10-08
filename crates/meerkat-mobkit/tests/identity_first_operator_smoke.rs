@@ -10,7 +10,7 @@
 //! Run:
 //! ```bash
 //! ANTHROPIC_API_KEY=... ./scripts/repo-cargo test -p meerkat-mobkit \
-//!     --test identity_first_ob3_smoke --features integration-real-tests \
+//!     --test identity_first_operator_smoke --features integration-real-tests \
 //!     -- --ignored --test-threads=1 --nocapture
 //! ```
 
