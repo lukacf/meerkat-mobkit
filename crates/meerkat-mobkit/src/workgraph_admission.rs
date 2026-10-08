@@ -383,7 +383,7 @@ pub struct WorkGraphAdmission {
 
 impl WorkGraphAdmission {
     /// Bound on [`Self::member_resolution_cache`]. Sized past any plausible
-    /// roster (OB3's eternal fleet is ~600 members) while capping worst-case
+    /// roster (the operator deployment's eternal fleet is ~600 members) while capping worst-case
     /// growth from admissions against arbitrary non-member session ids.
     const MEMBER_RESOLUTION_CACHE_MAX: usize = 4096;
 

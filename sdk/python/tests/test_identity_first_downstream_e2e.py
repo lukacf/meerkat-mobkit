@@ -1,4 +1,4 @@
-"""HomeCore-scenario E2E smoke tests using the identity-first API.
+"""Downstream-scenario E2E smoke tests using the identity-first API.
 
 Covers HC-01 through HC-08: real round-trip through Python SDK -> rpc_gateway
 -> Rust IdentityRuntime -> restore_flow -> SessionBridge -> real LLM API.
@@ -73,12 +73,12 @@ _skip_no_binary = pytest.mark.skipif(
 )
 
 # ---------------------------------------------------------------------------
-# Mob definition (TOML) — profiles for all HomeCore roles
+# Mob definition (TOML) - profiles for all downstream app roles
 # ---------------------------------------------------------------------------
 
-_HOMECORE_MOB_TOML = """\
+_DOWNSTREAM_MOB_TOML = """\
 [mob]
-id = "homecore-e2e"
+id = "example-e2e"
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
@@ -139,7 +139,7 @@ content = "You are a gatekeeper agent. Validate requests. Keep responses brief."
 # ---------------------------------------------------------------------------
 
 
-class HomeCoreRoster:
+class DownstreamRoster:
     """Roster provider that returns a configurable list of DurableAgentSpecs."""
 
     def __init__(self, specs: list[DurableAgentSpec]):
@@ -152,7 +152,7 @@ class HomeCoreRoster:
         return list(self._specs)
 
 
-class HomeCoreTopology:
+class DownstreamTopology:
     """Topology provider that returns configurable edges."""
 
     def __init__(self, edges: list[tuple[str, str]]):
@@ -167,7 +167,7 @@ class HomeCoreTopology:
         return [ManagedPeerEdge(a=a, b=b) for a, b in self._edges]
 
 
-class HomeCoreCustomizer:
+class DownstreamCustomizer:
     """Agent customizer that injects topology-aware prompts."""
 
     async def customize_build(self, context, spec, draft) -> None:
@@ -206,7 +206,7 @@ class HomeCoreCustomizer:
 
 _DEFAULT_ROSTER = [
     DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
-    DurableAgentSpec(identity="identity:louise", profile="personal", addressability="addressable"),
+    DurableAgentSpec(identity="identity:erin", profile="personal", addressability="addressable"),
     DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
     DurableAgentSpec(identity="domain:calendar", profile="calendar", addressability="internal_only"),
     DurableAgentSpec(identity="gate:main", profile="gatekeeper", addressability="internal_only"),
@@ -214,7 +214,7 @@ _DEFAULT_ROSTER = [
 
 _DEFAULT_EDGES = [
     ("identity:luka", "triage:main"),
-    ("identity:louise", "triage:main"),
+    ("identity:erin", "triage:main"),
     ("triage:main", "domain:calendar"),
     ("triage:main", "gate:main"),
 ]
@@ -227,9 +227,9 @@ _DEFAULT_EDGES = [
 async def _boot_identity_runtime(
     state_dir: str,
     mob_toml_path: str,
-    roster: HomeCoreRoster,
-    topology: HomeCoreTopology | None = None,
-    customizer: HomeCoreCustomizer | None = None,
+    roster: DownstreamRoster,
+    topology: DownstreamTopology | None = None,
+    customizer: DownstreamCustomizer | None = None,
 ):
     """Boot a real rpc_gateway with identity-first providers."""
     builder = (
@@ -277,7 +277,7 @@ async def _wait_for_identity_convergence(runtime, *, timeout: float = 60.0):
 @pytest.fixture
 def mob_toml(tmp_path):
     p = tmp_path / "mob.toml"
-    p.write_text(_HOMECORE_MOB_TOML)
+    p.write_text(_DOWNSTREAM_MOB_TOML)
     return str(p)
 
 
@@ -295,7 +295,7 @@ async def test_lazy_gateway_init_exposes_typed_dormant_bootstrap_status(
     mob_toml, state_dir
 ):
     """Lazy init is metadata-only and needs no model-provider credential."""
-    roster = HomeCoreRoster(_DEFAULT_ROSTER)
+    roster = DownstreamRoster(_DEFAULT_ROSTER)
     runtime = await (
         MobKit.builder()
         .gateway(_GATEWAY_BIN)
@@ -337,9 +337,9 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_send_dispatch_and_addressability(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
-        customizer = HomeCoreCustomizer()
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
+        customizer = DownstreamCustomizer()
 
         rt = await _boot_identity_runtime(
             state_dir, mob_toml, roster, topology, customizer
@@ -366,11 +366,11 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
             assert status.state == "active"
             assert status.addressability == "internal_only"
 
-            luka_status = await rt.status("identity:luka")
-            assert luka_status.state == "active"
-            assert luka_status.addressability == "addressable"
-            assert luka_status.agent_runtime_id is not None
-            assert luka_status.session_id is not None
+            dana_status = await rt.status("identity:luka")
+            assert dana_status.state == "active"
+            assert dana_status.addressability == "addressable"
+            assert dana_status.agent_runtime_id is not None
+            assert dana_status.session_id is not None
         finally:
             await rt.shutdown()
 
@@ -386,19 +386,19 @@ class TestHC02DispatchRouting:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_distinct_dispatch_targets(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
             # Known sender → dispatch to identity
-            di_luka = DispatchInput(
+            di_dana = DispatchInput(
                 content="Telegram DM from Luka: Can you remind me about dentist?",
                 origin="connector",
                 correlation_id="msg-1",
                 idempotency_key="telegram:msg-1",
             )
-            await rt.dispatch("identity:luka", di_luka)
+            await rt.dispatch("identity:luka", di_dana)
 
             # Unknown sender → dispatch to triage
             di_triage = DispatchInput(
@@ -410,14 +410,14 @@ class TestHC02DispatchRouting:
             await rt.dispatch("triage:main", di_triage)
 
             # Both are distinct identities with different session_ids
-            luka_status = await rt.status("identity:luka")
+            dana_status = await rt.status("identity:luka")
             triage_status = await rt.status("triage:main")
-            assert luka_status.session_id != triage_status.session_id
-            assert luka_status.agent_runtime_id != triage_status.agent_runtime_id
+            assert dana_status.session_id != triage_status.session_id
+            assert dana_status.agent_runtime_id != triage_status.agent_runtime_id
 
             # Record pre-restart state
-            luka_rt_id = luka_status.agent_runtime_id
-            luka_session = luka_status.session_id
+            dana_rt_id = dana_status.agent_runtime_id
+            dana_session = dana_status.session_id
             triage_rt_id = triage_status.agent_runtime_id
             triage_session = triage_status.session_id
         finally:
@@ -426,10 +426,10 @@ class TestHC02DispatchRouting:
         # Restart and verify stability
         rt2 = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
-            luka2 = await rt2.status("identity:luka")
+            dana2 = await rt2.status("identity:luka")
             triage2 = await rt2.status("triage:main")
-            assert luka2.agent_runtime_id == luka_rt_id
-            assert luka2.session_id == luka_session
+            assert dana2.agent_runtime_id == dana_rt_id
+            assert dana2.session_id == dana_session
             assert triage2.agent_runtime_id == triage_rt_id
             assert triage2.session_id == triage_session
         finally:
@@ -447,16 +447,16 @@ class TestHC03ReconcileNewMember:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_add_olivia_via_in_process_reconcile(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER[:3])  # luka, louise, triage
-        topology = HomeCoreTopology(_DEFAULT_EDGES[:2])  # luka↔triage, louise↔triage
+        roster = DownstreamRoster(_DEFAULT_ROSTER[:3])  # luka, erin, triage
+        topology = DownstreamTopology(_DEFAULT_EDGES[:2])  # luka↔triage, erin↔triage
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
-            before_luka = await rt.status("identity:luka")
-            before_louise = await rt.status("identity:louise")
-            luka_session = before_luka.session_id
-            luka_rt_id = before_luka.agent_runtime_id
-            louise_session = before_louise.session_id
+            before_dana = await rt.status("identity:luka")
+            before_erin = await rt.status("identity:erin")
+            dana_session = before_dana.session_id
+            dana_rt_id = before_dana.agent_runtime_id
+            erin_session = before_erin.session_id
 
             # Mutate the roster IN-PROCESS (not restart)
             roster.update([
@@ -476,8 +476,8 @@ class TestHC03ReconcileNewMember:
             result = await rt.reconcile()
             assert result is not None
 
-            after_luka = await rt.status("identity:luka")
-            after_louise = await rt.status("identity:louise")
+            after_dana = await rt.status("identity:luka")
+            after_erin = await rt.status("identity:erin")
             after_olivia = await rt.status("identity:olivia")
 
             # olivia is new
@@ -485,10 +485,10 @@ class TestHC03ReconcileNewMember:
             assert after_olivia.session_id is not None
             assert after_olivia.generation == 0
 
-            # luka and louise preserved — no silent respawn
-            assert after_luka.session_id == luka_session
-            assert after_luka.agent_runtime_id == luka_rt_id
-            assert after_louise.session_id == louise_session
+            # luka and erin preserved - no silent respawn
+            assert after_dana.session_id == dana_session
+            assert after_dana.agent_runtime_id == dana_rt_id
+            assert after_erin.session_id == erin_session
         finally:
             await rt.shutdown()
 
@@ -504,8 +504,8 @@ class TestHC04HotUpdateAddressability:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_flip_addressability_via_reconcile(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
@@ -517,13 +517,13 @@ class TestHC04HotUpdateAddressability:
             await rt.send("identity:luka", "Hello")
 
             # Mutate roster IN-PROCESS: flip luka to InternalOnly, add label
-            new_luka = DurableAgentSpec(
+            new_dana = DurableAgentSpec(
                 identity="identity:luka",
                 profile="personal",
                 addressability="internal_only",
                 labels={"timezone": "Europe/Stockholm"},
             )
-            roster.update([new_luka, *_DEFAULT_ROSTER[1:]])
+            roster.update([new_dana, *_DEFAULT_ROSTER[1:]])
 
             # In-process reconcile
             await rt.reconcile()
@@ -554,8 +554,8 @@ class TestHC05DurableRespawn:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_respawn_preserves_identity(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
@@ -609,7 +609,7 @@ class TestHC06LeaseSemantics:
 
         NOTE: Does NOT test lease loss — requires external LeaseProvider (not yet wired).
         """
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster)
         try:
@@ -634,8 +634,8 @@ class TestHC07ResetVsDelete:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_reset_advances_generation(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster, topology)
         try:
@@ -666,7 +666,7 @@ class TestHC07ResetVsDelete:
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_delete_and_reappearance(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
 
         rt = await _boot_identity_runtime(state_dir, mob_toml, roster)
         try:
@@ -681,7 +681,7 @@ class TestHC07ResetVsDelete:
         finally:
             await rt.shutdown()
 
-        # Restart with same roster — luka reappears as fresh
+        # Restart with same roster - luka reappears as fresh
         rt2 = await _boot_identity_runtime(state_dir, mob_toml, roster)
         try:
             after = await rt2.status("identity:luka")
@@ -703,9 +703,9 @@ class TestHC08PersistentRestart:
     @pytest.mark.asyncio
     @pytest.mark.timeout(360)
     async def test_session_and_continuity_preserved_across_restart(self, mob_toml, state_dir):
-        roster = HomeCoreRoster(_DEFAULT_ROSTER)
-        topology = HomeCoreTopology(_DEFAULT_EDGES)
-        customizer = HomeCoreCustomizer()
+        roster = DownstreamRoster(_DEFAULT_ROSTER)
+        topology = DownstreamTopology(_DEFAULT_EDGES)
+        customizer = DownstreamCustomizer()
 
         rt = await _boot_identity_runtime(
             state_dir, mob_toml, roster, topology, customizer

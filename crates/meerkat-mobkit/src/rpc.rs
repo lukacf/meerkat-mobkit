@@ -1763,7 +1763,7 @@ pub const CONSOLE_READ_TIMEOUT_CODE: i64 = -32017;
 ///
 /// Both seams are strict sequential command loops, so a member that is busy -
 /// a long tool chain, a post-cycle compaction - makes every console read on
-/// that member queue behind the turn with no signal at all. That is the OB3
+/// that member queue behind the turn with no signal at all. That is the production incident
 /// shape (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
 /// and never completed, because a read has no way to say "the loop is busy".
 ///
@@ -3510,7 +3510,7 @@ async fn handle_unified_rpc_json_inner(
         // Same deadline posture as `resolved_tools`: this crosses the
         // identity-runtime status read and then a runtime-machine command,
         // so it can queue behind a member's in-flight turn exactly the way
-        // OB3 observed for `resolved_tools`.
+        // the operator deployment observed for `resolved_tools`.
         "mobkit/identity/routing_status" => {
             with_read_deadline(
                 "mobkit/identity/routing_status",
@@ -6611,7 +6611,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "identity": "identity:luka",
-                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
             }),
             json!(1),
             false,
@@ -6628,7 +6628,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "model": "legacy",
-                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
             }),
             json!(2),
             true,
@@ -6652,7 +6652,7 @@ mod tests {
                 "mobkit/live/open",
                 &json!({
                     "identity": "identity:luka",
-                    "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                    "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
                 }),
                 json!(4),
                 true,
@@ -6741,7 +6741,7 @@ mod tests {
         );
     }
 
-    /// OB3 (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
+    /// a 2026-08-16 production incident: `mobkit/identity/resolved_tools` hung past 60 seconds
     /// with no completion because the member's session task was mid-turn and
     /// the read had no deadline - the session task is a strict sequential
     /// command loop, so the read queued instead of degrading. A read that

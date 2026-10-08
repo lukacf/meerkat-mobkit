@@ -8507,7 +8507,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Ok(result) => {
                         // Converge declared definition wiring after every
                         // materialization — upstream spawn-time wiring is
-                        // bring-up-order dependent (HomeCore, 2026-07-09).
+                        // bring-up-order dependent (a downstream app, 2026-07-09).
                         let _ = reconcile_console_topology(runtime, topology).await;
                         let outcome = match result.outcomes.get(&identity) {
                             Some(crate::identity_first::RestoreOutcome::Created { .. }) => {
@@ -8960,7 +8960,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             // Previously a hardcoded noop ("console runtime routes directly
             // to MobRuntime") — which left declared definition wiring
             // unreconcilable from the console surface while the stdin
-            // surface had the real handler (HomeCore, 2026-07-09).
+            // surface had the real handler (a downstream app, 2026-07-09).
             let report = reconcile_console_topology(runtime, topology).await;
             response_value(
                 response_id,
@@ -16236,7 +16236,7 @@ comms = true
         );
     }
 
-    /// Happy path for the two OB3 operator verbs on the console plane:
+    /// Happy path for the two operator verbs on the console plane:
     /// `mobkit/member_health` answers from identity-plane reads (state,
     /// generation, actor-loop verdict, no `durability` until meerkat exposes
     /// it) for both the durable identity and its current runtime alias, and
@@ -17102,7 +17102,7 @@ comms = true
             content: serde_json::to_value(meerkat_core::ContentInput::Text(
                 "Reply with the proof token.".to_string(),
             ))?,
-            origin: "homecore:gate".to_string(),
+            origin: "example:gate".to_string(),
             idempotency_key: "idem-probe".to_string(),
             handling_mode: None,
             origin_kind: Some(crate::console_aggregator::ConsoleTurnOrigin::OperatorProbe),
@@ -17123,7 +17123,7 @@ comms = true
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].kind, "user_input");
         assert_eq!(page.frames[0].payload["origin_kind"], "operator_probe");
-        assert_eq!(page.frames[0].payload["origin"], "homecore:gate");
+        assert_eq!(page.frames[0].payload["origin"], "example:gate");
 
         // An identical retry replays the original acceptance.
         let replay =

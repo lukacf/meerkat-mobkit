@@ -1,4 +1,4 @@
-"""Typed data models for MobKit SDK — matches HomeCore import surface."""
+"""Typed data models for MobKit SDK - matches the downstream app's import surface."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields

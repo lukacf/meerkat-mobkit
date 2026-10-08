@@ -56,5 +56,5 @@
       "must_not_tombstone": ["mem-office-old-capture"]
     }
   },
-  "notes": "The §5 Elephant calibration lesson, imported: recency judgments prefer fact-time over capture-time when the evidence carries one. Both records sit at the same trust tier, so the tier rule cannot decide; naive capture-time recency would keep the newer-captured Kista record, but its evidence describes an older state of the world (a March shipping label) than the older-captured Söder record (an operator announcement of a 2026-05-01 move). The correct dream supersedes the newer-captured, stale-fact-time record and states the rule in the rationale, per the consolidate-phase prompt's fact-time refinement."
+  "notes": "The §5 external memory hub calibration lesson, imported: recency judgments prefer fact-time over capture-time when the evidence carries one. Both records sit at the same trust tier, so the tier rule cannot decide; naive capture-time recency would keep the newer-captured Kista record, but its evidence describes an older state of the world (a March shipping label) than the older-captured Söder record (an operator announcement of a 2026-05-01 move). The correct dream supersedes the newer-captured, stale-fact-time record and states the rule in the rationale, per the consolidate-phase prompt's fact-time refinement."
 }

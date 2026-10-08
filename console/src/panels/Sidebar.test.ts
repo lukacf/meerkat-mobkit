@@ -912,7 +912,7 @@ test("sidebar pin ids prefer durable identity and labels.agent_identity before m
   );
 });
 
-test("sidebar configured OB3-like grouping yields configured sections and scope subgroups", () => {
+test("sidebar configured ops-style grouping yields configured sections and scope subgroups", () => {
   const agents = [
     ob3Agent({ id: "coord", label: "Coordinator", group: "coordinators", scope: "cto", role: "coordinator" }),
     ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),

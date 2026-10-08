@@ -1,4 +1,4 @@
-// Repair must not destroy queued work (task #48; OB3 field runs 33758a41 +
+// Repair must not destroy queued work (task #48; production field runs 33758a41 +
 // 6bb7010e): identity-first continuity repair used to heal a wedged member by
 // FULL disposal — `cancel_active_runtime_turn_before_retire` observed
 // queue_len=5 steer_queue_len=10 and PROCEEDED; ArchiveSession destroyed the
@@ -54,7 +54,7 @@ mod llm_usage;
 /// which records EVERY message of every request it is asked to run (carried
 /// inputs may be batched with a later delivery into ONE turn, so recording
 /// only the last message would hide them from the assertions).
-/// Closed gate = the OB3 wedge shape (a turn parked inside the provider
+/// Closed gate = the production wedge shape (a turn parked inside the provider
 /// stream while fan-in piles up behind it).
 struct GatedRecordingClient {
     gate: watch::Receiver<bool>,
@@ -323,7 +323,7 @@ where
     }
 }
 
-/// OB3 run 33758a41 shape: a member wedged mid-turn with fan-in queued behind
+/// Production run 33758a41 shape: a member wedged mid-turn with fan-in queued behind
 /// it. The collision repair must carry the queued Prompt inputs into the
 /// healed successor session (which drains them), and must not resurrect the
 /// flow-step (its correlation belongs to the flow engine — it is destroyed
@@ -365,7 +365,7 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
     .await;
 
     // Wedge the member: close the gate, start a turn that parks inside the
-    // provider stream, then pile queued fan-in behind it (the OB3 shape).
+    // provider stream, then pile queued fan-in behind it (the production shape).
     gate_tx.send(false).expect("close gate");
     harness
         .bridge
@@ -521,7 +521,7 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
 // 1. Adoption could not resolve a system prompt at all: it needs inline skills
 //    or an explicit prompt override, and failing both a SpawnBasePromptSource,
 //    which MobKit wires nowhere. Solved by giving the profile a minimal inline
-//    skill - and note this is not test-only trivia: HomeCore confirmed 9 of
+//    skill - and note this is not test-only trivia: a downstream app confirmed 9 of
 //    their 17 production members declare neither.
 //
 // 2. The resume target cannot be a fresh SessionId. Resuming a never-persisted

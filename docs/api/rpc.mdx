@@ -734,7 +734,7 @@ Submit an identity-addressed console interaction through the console aggregator.
 
 ```json
 {
-  "identity": "identity:luka",
+  "identity": "identity:alice",
   "content": "What is on my calendar tomorrow?",
   "origin": "console:panel-1",
   "origin_kind": "operator",
@@ -767,7 +767,7 @@ turn, in the same shape as meerkat `turn/start`:
 
 ```json
 {
-  "identity": "identity:luka",
+  "identity": "identity:alice",
   "content": "Draft the weekly update.",
   "origin": "console:panel-1",
   "idempotency_key": "panel-1:turn-2",
@@ -997,7 +997,7 @@ explicit memory policies are applied literally.
 
 ### `mobkit/agent_memory/remember`
 
-Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional Elephant enrichment or extraction, when supplied by a custom provider, is out of band.
+Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional external memory hub enrichment or extraction, when supplied by a custom provider, is out of band.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |

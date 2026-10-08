@@ -2,7 +2,7 @@
 
 Every test here boots the real ``rpc_gateway`` through the Python SDK, runs a
 REAL provider turn, and asserts a POSITIVE observable that only exists if the
-whole chain worked. This is the lane for the defect class HomeCore found on
+whole chain worked. This is the lane for the defect class a downstream app found on
 2026-09-03: an option accepted by the SDK and the gateway that changed nothing
 at turn time, invisible to every unit test because the unit tests stop at the
 parser and the observable lives in a store written during a real turn.
@@ -46,7 +46,7 @@ skills = ["archivist_role"]
 external_addressable = true
 # meerkat-mob's default runtime mode is autonomous_host, on which the identity
 # door refuses injected context outright ("autonomous inbox delivery carries no
-# user-channel work boundary"). Every HomeCore profile is turn_driven; the lane
+# user-channel work boundary"). Every downstream app profile is turn_driven; the lane
 # tests the production shape, and the omitted-mode trap is its own finding.
 runtime_mode = "turn_driven"
 
@@ -235,7 +235,7 @@ async def _seed_and_send(rt, token: str):
 async def test_omitted_per_turn_injection_injects_on_the_turn_surface(
     live_preconditions, state_dir, mob_toml, tmp_path
 ):
-    """HomeCore's finding, end to end: an options object that OMITS
+    """The downstream app's finding, end to end: an options object that OMITS
     per_turn_injection must get the documented default (budgeted) and therefore
     write surface=turn ledger rows during a real turn. Negative control in the
     same run: an explicit "off" on a fresh state completes its turn and writes
@@ -326,7 +326,7 @@ async def test_routing_status_reports_the_declared_provider_after_a_real_turn(
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
 async def test_resolved_tools_after_a_completed_real_turn(live_preconditions, state_dir, mob_toml):
-    """OB3's Fail A discriminator as a permanent test: resolved_tools on an
+    """A production incident's Fail A discriminator as a permanent test: resolved_tools on an
     identity that has completed a real turn must resolve (the session is held),
     and the resolved set must include the memory tool the profile declares.
     Read after the turn, never right after the ingress ack."""

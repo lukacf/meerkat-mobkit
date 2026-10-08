@@ -512,7 +512,7 @@ mod tests {
 
     fn seed(member_id: &str, initial_message: Option<Value>) -> ConsoleSpawnSeed {
         ConsoleSpawnSeed {
-            mob_id: Some("ob3".to_string()),
+            mob_id: Some("ops".to_string()),
             member_id: member_id.to_string(),
             identity: member_id.to_string(),
             initial_message,
@@ -537,7 +537,7 @@ mod tests {
             .expect("kickoff user_input event projected");
         assert_eq!(kickoff.identity, "worker-3");
         assert!(
-            kickoff.event_id.starts_with("spawn-kickoff:ob3:worker-3:"),
+            kickoff.event_id.starts_with("spawn-kickoff:ops:worker-3:"),
             "deterministic kickoff id, got {}",
             kickoff.event_id
         );
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn spawned_by_uses_comms_name_identity_segment() {
         assert_eq!(
-            spawned_by_from_comms_name("ob3/orchestrator/ops-lead").as_deref(),
+            spawned_by_from_comms_name("ops/orchestrator/ops-lead").as_deref(),
             Some("ops-lead")
         );
         assert_eq!(
@@ -756,7 +756,7 @@ mod tests {
         // shape is `{mob}/{role}/{identity}`, so everything after the second
         // separator belongs to the identity.
         assert_eq!(
-            spawned_by_from_comms_name("ob3/orchestrator/people/finder").as_deref(),
+            spawned_by_from_comms_name("ops/orchestrator/people/finder").as_deref(),
             Some("people/finder")
         );
         // One separator is not the canonical shape — don't guess lineage.
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn seeds_from_single_spawn_args_and_outcome() {
         let args = json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "profile": "person-worker",
             "member_id": "worker-3",
             "initial_message": "Find the person",
@@ -819,12 +819,12 @@ mod tests {
             "mob_spawn_member",
             &args,
             &outcome.to_string(),
-            Some("ob3/orchestrator/ops-lead"),
+            Some("ops/orchestrator/ops-lead"),
         );
 
         assert_eq!(seeds.len(), 1);
         let seed = &seeds[0];
-        assert_eq!(seed.mob_id.as_deref(), Some("ob3"));
+        assert_eq!(seed.mob_id.as_deref(), Some("ops"));
         assert_eq!(seed.member_id, "worker-3");
         assert_eq!(seed.identity, "worker-3");
         assert_eq!(seed.initial_message, Some(json!("Find the person")));
@@ -848,7 +848,7 @@ mod tests {
         });
         let outcome = json!({
             "output": "The ledger is consistent.",
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "source_member_id": "ops-lead",
             "agent_identity": "durable-investigator",
             "member_ref": "opaque-ref",
@@ -866,11 +866,11 @@ mod tests {
             "fork_off",
             &args,
             &outcome.to_string(),
-            Some("ob3/orchestrator/ops-lead"),
+            Some("ops/orchestrator/ops-lead"),
         );
         assert_eq!(seeds.len(), 1);
         let seed = &seeds[0];
-        assert_eq!(seed.mob_id.as_deref(), Some("ob3"));
+        assert_eq!(seed.mob_id.as_deref(), Some("ops"));
         assert_eq!(seed.member_id, "durable-investigator");
         assert_eq!(seed.initial_message, Some(json!("Inspect the ledger")));
         assert_eq!(seed.spawned_by.as_deref(), Some("ops-lead"));
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn seeds_honor_agent_identity_label_override() {
         let args = json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "member_id": "worker-3",
             "initial_message": "go",
             "labels": { "agent_identity": "people/finder" }
@@ -921,7 +921,7 @@ mod tests {
     #[test]
     fn seeds_from_specs_array_enrich_each_member() {
         let args = json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "specs": [
                 {
                     "profile": "person-worker",
@@ -976,7 +976,7 @@ mod tests {
             "delegate",
             &args,
             &outcome.to_string(),
-            Some("ob3/orchestrator/ops-lead"),
+            Some("ops/orchestrator/ops-lead"),
         );
 
         assert_eq!(seeds.len(), 1);
@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn unparsable_outcome_falls_back_to_args_members() {
         let args = json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "member_id": "worker-3",
             "initial_message": "go"
         });

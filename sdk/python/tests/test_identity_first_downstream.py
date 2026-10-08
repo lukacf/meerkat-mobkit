@@ -1,4 +1,4 @@
-"""HomeCore-scenario E2E smoke tests for the Python SDK surface.
+"""Downstream-scenario E2E smoke tests for the Python SDK surface.
 
 Covers HC-01 through HC-08 from phase5_scenarios.md Track B.
 These tests exercise the REAL round-trip: Python SDK -> rpc_gateway binary
@@ -63,12 +63,12 @@ _skip_no_binary = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Mob definition (TOML) for HomeCore scenarios
+# Mob definition (TOML) for downstream app scenarios
 # ---------------------------------------------------------------------------
 
-_HOMECORE_MOB_TOML = """\
+_DOWNSTREAM_MOB_TOML = """\
 [mob]
-id = "homecore-e2e"
+id = "example-e2e"
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
@@ -154,9 +154,9 @@ async def _boot_runtime(state_dir: str, mob_toml_path: str):
 
 @pytest.fixture
 def mob_toml(tmp_path):
-    """Write the HomeCore mob.toml to a temp file and return its path."""
+    """Write the downstream app mob.toml to a temp file and return its path."""
     p = tmp_path / "mob.toml"
-    p.write_text(_HOMECORE_MOB_TOML)
+    p.write_text(_DOWNSTREAM_MOB_TOML)
     return str(p)
 
 
@@ -302,7 +302,7 @@ class TestHC03ReconcileNewMember:
             handle = rt.mob_handle()
 
             await handle.ensure_member("luka", role="personal")
-            await handle.ensure_member("louise", role="personal")
+            await handle.ensure_member("erin", role="personal")
 
             r1 = await handle.send("luka", message="Remember: my favorite color is blue.")
             session_before = r1.session_id
@@ -330,13 +330,13 @@ class TestHC03ReconcileNewMember:
         try:
             handle = rt.mob_handle()
             await handle.ensure_member("luka", role="personal")
-            await handle.ensure_member("louise", role="personal")
+            await handle.ensure_member("erin", role="personal")
             await handle.ensure_member("olivia", role="personal")
 
             members = await handle.list_members()
             ids = {m.agent_identity for m in members}
             assert "luka" in ids
-            assert "louise" in ids
+            assert "erin" in ids
             assert "olivia" in ids
         finally:
             await rt.shutdown()
@@ -549,7 +549,7 @@ class TestHC08PersistentStateRestart:
     @pytest.mark.timeout(120)
     async def test_gateway_restarts_with_persistent_state(self, tmp_path):
         mob_toml_path = tmp_path / "mob.toml"
-        mob_toml_path.write_text(_HOMECORE_MOB_TOML)
+        mob_toml_path.write_text(_DOWNSTREAM_MOB_TOML)
         sd = str(tmp_path / "state")
         os.makedirs(sd, exist_ok=True)
 
@@ -589,7 +589,7 @@ class TestHC08PersistentStateRestart:
     @pytest.mark.timeout(60)
     async def test_persistent_state_creates_sqlite(self, tmp_path):
         mob_toml_path = tmp_path / "mob.toml"
-        mob_toml_path.write_text(_HOMECORE_MOB_TOML)
+        mob_toml_path.write_text(_DOWNSTREAM_MOB_TOML)
         sd = str(tmp_path / "state")
         os.makedirs(sd, exist_ok=True)
 

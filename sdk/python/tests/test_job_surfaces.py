@@ -39,7 +39,7 @@ async def test_jobs_and_monitors_use_canonical_domain_methods() -> None:
         restart_class="non_resumable",
         delivery={"kind": "notification"},
         protocol="framed_jsonl",
-        working_dir="/srv/homecore",
+        working_dir="/srv/example",
         max_line_bytes=4096,
     )
 
@@ -75,7 +75,7 @@ async def test_jobs_and_monitors_use_canonical_domain_methods() -> None:
                 "protocol": "framed_jsonl",
                 "restart_class": "non_resumable",
                 "delivery": {"kind": "notification"},
-                "working_dir": "/srv/homecore",
+                "working_dir": "/srv/example",
                 "max_line_bytes": 4096,
             },
         ),

@@ -1,7 +1,7 @@
 //! Regression: the rpc_gateway stdin dispatch loop must serve RPC requests
 //! CONCURRENTLY. A turn- or build-running RPC can block on a host callback
 //! round-trip (`callback/build_agent`, `callback/call_tool`), and the host
-//! may issue further RPCs from inside that callback (HomeCore issued
+//! may issue further RPCs from inside that callback (a downstream app issued
 //! `mobkit/agent_memory/recall` from a callback tool handler). With the old
 //! sequential loop those reentrant requests queued behind the blocked RPC
 //! until the callback timed out.
@@ -14,7 +14,7 @@
 //! identity on its unanswered callback and asserts
 //! `mobkit/agent_memory/recall` for that SAME identity still answers through
 //! the full runtime path (identity status read + memory provider). This is
-//! byte-for-byte HomeCore's re-entrancy shape - the host calling back into
+//! byte-for-byte the downstream app's re-entrancy shape - the host calling back into
 //! the gateway from inside `callback/build_agent` - and it must never queue
 //! behind the parked build.
 
@@ -680,13 +680,13 @@ fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
     );
 }
 
-/// HomeCore's exact re-entrancy shape (seam inventory row 6): the host calls
+/// The downstream app's exact re-entrancy shape (seam inventory row 6): the host calls
 /// `mobkit/agent_memory/recall` from INSIDE a callback the gateway is waiting
 /// on, for the very identity whose build is parked on that callback. The
 /// recall must be served concurrently through the full runtime path
 /// (identity status read + configured memory provider), not queue behind the
 /// parked build until the callback deadline. This is the deadlock that drove
-/// HomeCore to read the memory sqlite directly; it was fixed by the
+/// the downstream app to read the memory sqlite directly; it was fixed by the
 /// concurrent dispatch loop (#260) and this test pins the recall path
 /// specifically, locks and all.
 #[test]
@@ -804,7 +804,7 @@ fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
 ///
 /// `answer_identity_provider_callback` is deliberately amnesiac (resolve_many
 /// is always `uninitialized`); the cross-boot resume regression needs the
-/// real HomeCore shape: `upsert_continuity_record` / `save_session_snapshot`
+/// real downstream app shape: `upsert_continuity_record` / `save_session_snapshot`
 /// payloads captured verbatim and echoed back on the next boot's
 /// `resolve_many` / `load_session_snapshot`.
 #[derive(Default)]
@@ -1065,7 +1065,7 @@ fn resolved_tools_for_alpha(
 /// creation-era `metadata.tooling` wholesale (`apply_resumed_session_metadata`,
 /// no resume-override mask) - so a tool category enabled on the profile AFTER
 /// the member was created was unmaskable: it never resolved on ANY resume, on
-/// every boot, forever (HomeCore activation-41: `tools.workgraph = true`
+/// every boot, forever (a downstream app's activation-41: `tools.workgraph = true`
 /// added post-creation never surfaced `workgraph_*`). Meerkat 0.8.21 replaces
 /// the overwrite with a unified merge (`merge_resumed_tool_category`): an
 /// EXPLICIT current-profile setting wins, and creation-era metadata fills
@@ -1873,7 +1873,7 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
 /// Owner-authority ordering on a persistent identity-first resume.
 ///
 /// Three MobKit-owned invariants, each of which was broken in production and
-/// each verified on HomeCore's production clone before being written down here:
+/// each verified on a downstream app's production clone before being written down here:
 ///
 /// 1. Owner authority is PUBLISHED before `MobRuntime::prepare`, because
 ///    prepare runs durable-tail recovery and refuses a head-canonical session

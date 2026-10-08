@@ -45,10 +45,10 @@ Three current consumer shapes drive the design:
   be backed by thread agents. Studio may want its own project/thread navigator
   and Electron/Rust transport while reusing MobKit transcript, composer, dock,
   topology, activity, or lifecycle controls.
-- **OB3 Validator:** has an Ant Design application shell and admin routes. It
+- **Operator validator app:** has an Ant Design application shell and admin routes. It
   uses MobKit console configuration for stock grouping, pins, buttons, hidden
   controls, and initial layout, and also wraps the stock console with host
-  toolbar actions that remain OB3-owned.
+  toolbar actions that remain host-owned.
 - **Meerkat Fugue:** exposes MobKit's stock console behind an operator/status
   server. It wants MobKit-owned console behavior and host auth wrapping, but
   not a Fugue-projected browser facade for roster, timeline, history, identity
@@ -62,7 +62,7 @@ own.
 This plan must be executable end to end inside the MobKit repository by an
 agentic implementation system. The real upstream consumers above are design
 evidence, not execution dependencies. The implementation must not require
-checking out, modifying, testing, or deploying Meerkat App / Studio, OB3
+checking out, modifying, testing, or deploying Meerkat App / Studio, the operator deployment
 Validator, or Meerkat Fugue.
 
 Instead, MobKit will add self-contained proving fixtures that model the relevant
@@ -71,7 +71,7 @@ consumer shapes:
 | Fixture | Models | Purpose |
 | --- | --- | --- |
 | `reference-wrapper` | Fugue-like stock console behind a host wrapper | Proves Level 0 stays canonical and host status/auth wrappers do not become console facades |
-| `configured-host-shell` | OB3-like `config/console.toml` plus inert host links and toolbar | Proves Level 1/1.5 config and host-shell behavior without depending on OB3 |
+| `configured-host-shell` | production-like `config/console.toml` plus inert host links and toolbar | Proves Level 1/1.5 config and host-shell behavior without depending on the operator deployment |
 | `custom-host-shell` | Studio-like custom navigation, host records, and injected non-HTTP transport | Proves Level 3/4 mix-and-match without importing Studio nouns or code |
 
 These fixtures may live under `examples/`, `console/fixtures/`, or
@@ -803,7 +803,7 @@ Implementation tasks:
 
 - Add `reference-wrapper`, a Fugue-like wrapper that serves the stock console
   behind a host wrapper and exposes separate host status facts.
-- Add `configured-host-shell`, an OB3-like fixture with
+- Add `configured-host-shell`, a production-like fixture with
   `config/console.toml`, inert sidebar links, host toolbar actions, and direct
   route auth evidence.
 - Add `custom-host-shell`, a Studio-like fixture with host-owned records,

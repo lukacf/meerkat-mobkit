@@ -143,7 +143,7 @@ impl CompiledPolicyProvider {
     /// surface distinguishes, because `Allow` emits no observation and only
     /// `Deny` reaches the observer.
     ///
-    /// The exact production shape, HomeCore 2026-08-31: 17 members compiled as
+    /// The exact production shape from a downstream app, 2026-08-31: 17 members compiled as
     /// `mk--rt_cdomain_ccalendar_c0`, the encoded AGENT RUNTIME ID.
     /// [`crate::member_comms_id::roster_member_id_for_identity`] documents that
     /// conversion as producing "binding detail that no longer names a roster
@@ -544,7 +544,7 @@ mod tests {
         ));
     }
 
-    /// The exact 17-member shape HomeCore compiled on 2026-08-31: the encoded
+    /// The exact 17-member shape a downstream app compiled on 2026-08-31: the encoded
     /// AGENT RUNTIME ID rather than the encoded durable identity. Every one of
     /// these matches no roster row, so under the forced `default_deny` the
     /// policy would deny every tool for every member the moment it bound.

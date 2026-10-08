@@ -2,7 +2,7 @@
 """Memory bright-line ratchet — docs/design/agent-memory-architecture.md §12.
 
 MobKit's memory modules must never grow retrieval-index or embedding
-machinery: that is hub (Elephant) material. This gate enforces the ratchet in
+machinery: that is external memory hub material. This gate enforces the ratchet in
 two passes:
 
   1. Deny-list scan of crates/meerkat-mobkit/Cargo.toml dependency names

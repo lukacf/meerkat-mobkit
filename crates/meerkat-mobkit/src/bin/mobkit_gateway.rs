@@ -2906,7 +2906,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "mobkit/init",
-            "params": { "meerkat_config_path": "/etc/homecore/config.toml" }
+            "params": { "meerkat_config_path": "/etc/example/config.toml" }
         })
         .to_string();
 
@@ -2914,7 +2914,7 @@ mod tests {
 
         assert_eq!(
             params.meerkat_config_path.as_deref(),
-            Some(Path::new("/etc/homecore/config.toml"))
+            Some(Path::new("/etc/example/config.toml"))
         );
         Ok(())
     }

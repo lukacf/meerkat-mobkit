@@ -269,7 +269,7 @@ pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId
 ///
 /// It was `pub(crate)` while being the only correct answer for an embedder that
 /// only has an alias, which left the obvious mistake as the only reachable
-/// option. OB3 asked which function to call and there was no right answer to
+/// option. The operator deployment asked which function to call and there was no right answer to
 /// give them.
 ///
 /// # NOT for deciding whether two values agree
@@ -562,7 +562,7 @@ pub fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> Str
 }
 
 /// Deterministic canonical-UUID form of an APP-supplied delivery
-/// correlation id (task #58, HomeCore admission break 2026-08-05):
+/// correlation id (task #58, a downstream app admission break 2026-08-05):
 /// meerkat 0.8.16 threads arbitrary app correlation strings ("telegram:
 /// primary/i:769307582", connector source ids) into bridge admission,
 /// where the delivery-identity contract requires a canonical UUID. A
@@ -653,17 +653,17 @@ mod tests {
             "a comms encoding of a runtime alias must reach the durable row: {stacked}"
         );
 
-        // OB3's exact production value shape, spelled out by hand rather than constructed here
+        // the operator deployment's exact production value shape, spelled out by hand rather than constructed here
         // (only the address is a placeholder). Their typed MobMemberBinding.member and comms_name
         // both carry this, and theirs is the only store known to hold the stacked shape - so a
         // helper that agrees with itself about how to build the input cannot stand in for it. If
         // their encoding differs from what this crate would produce, that difference IS the bug and
         // constructing the input would hide it.
-        let ob3_persisted = "mk--rt_cperson_cjane_x2e_doe_x40_example_x2e_com_c2";
+        let operator_persisted = "mk--rt_cperson_cjane_x2e_doe_x40_example_x2e_com_c2";
         assert_eq!(
-            roster_member_id_for_supplied_id(ob3_persisted),
+            roster_member_id_for_supplied_id(operator_persisted),
             roster_member_id_for_identity("person:jane.doe@example.com"),
-            "OB3's persisted stacked alias must reach the durable person row"
+            "the operator deployment's persisted stacked alias must reach the durable person row"
         );
     }
 
@@ -730,7 +730,7 @@ mod tests {
     fn colon_aliases_round_trip_and_are_comms_safe() {
         for alias in [
             "rt:review:singleton:0",
-            "rt:channel:C0SMOKEOB3:0",
+            "rt:channel:C0SMOKEOPS:0",
             "agent:beta",
             "review:singleton",
             "rt:agent-x:0",
@@ -1128,7 +1128,7 @@ mod tests {
 
     // --- Defensive suite: map the whole id codec + reconciliation aliases ---
 
-    /// The exact identities + runtime-id forms from the HomeCore deployment
+    /// The exact identities + runtime-id forms from the downstream app's deployment
     /// that surfaced the meerkat 0.7 comms-name regression, plus the escape
     /// productions. Every entry must encode to a comms-safe id and round-trip.
     fn defensive_corpus() -> Vec<String> {
@@ -1139,7 +1139,7 @@ mod tests {
             "_internal",
             "Agent7",
             "a",
-            // HomeCore durable identities (colon-bearing).
+            // Downstream app durable identities (colon-bearing).
             "identity:parent-1",
             "identity:parent-2",
             "identity:child-1",
@@ -1157,7 +1157,7 @@ mod tests {
             // Runtime-id shaped aliases (`rt:{identity}:{generation}`).
             "rt:identity:parent-1:0",
             "rt:domain:home-automation:3",
-            "rt:channel:C0SMOKEOB3:0",
+            "rt:channel:C0SMOKEOPS:0",
             "rt:review:singleton:12",
             // Mixed punctuation / boundary shapes.
             "a:b_c",
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn homecore_corpus_round_trips_and_is_comms_safe() {
+    fn downstream_corpus_round_trips_and_is_comms_safe() {
         for alias in defensive_corpus() {
             let encoded = mob_member_id_str(&alias).into_owned();
             assert!(
@@ -1207,14 +1207,14 @@ mod tests {
     /// The load-bearing guard: the codec's output must be accepted by meerkat
     /// 0.7's own fail-closed comms-name validator — the exact check that
     /// rejected `rt:identity:parent-1:0` before this codec existed. If meerkat
-    /// tightens `MemberCommsName` again, this test fails instead of HomeCore.
+    /// tightens `MemberCommsName` again, this test fails instead of a downstream app.
     #[test]
     fn encoded_ids_satisfy_meerkat_member_comms_name_validator() {
         use meerkat_core::connection::MemberCommsName;
         for alias in defensive_corpus() {
             let encoded = mob_member_id_str(&alias).into_owned();
             assert!(
-                MemberCommsName::new("homecore-mob", "worker", encoded.clone()).is_ok(),
+                MemberCommsName::new("example-mob", "worker", encoded.clone()).is_ok(),
                 "MemberCommsName::new rejected encoded id {encoded:?} (from alias {alias:?})"
             );
         }
@@ -1279,7 +1279,7 @@ mod tests {
     /// decode-then-encode maps BOTH the alias space and the roster-id space to
     /// the same roster key, and is the identity on plain member names. Encode
     /// alone is NOT idempotent on roster ids (the reserved-marker rule
-    /// re-encodes them) — the 0.7.28 HomeCore schedule self-delivery failure.
+    /// re-encodes them) — a downstream app's 0.7.28 schedule self-delivery failure.
     #[test]
     fn decode_then_encode_canonicalizes_both_id_spaces() {
         for (input, canonical) in [

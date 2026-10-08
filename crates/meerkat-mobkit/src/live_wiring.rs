@@ -652,7 +652,7 @@ struct GatewayLiveOpenParams {
     /// not realtime-capable open the channel against this model instead.
     #[serde(default)]
     model: Option<String>,
-    /// Strict optional per-open provider selection (HomeCore cross-provider
+    /// Strict optional per-open provider selection (downstream app cross-provider
     /// regression): pairs with `model` so a member whose text profile lives
     /// on another provider (e.g. Anthropic) can open the channel against a
     /// provider that has a realtime lane (`provider = "openai"`,
@@ -2971,7 +2971,7 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
 }
 
 /// Fold the per-open `(provider, model)` selection into the projected
-/// channel identity (design §6 + the HomeCore cross-provider regression).
+/// channel identity (design §6 + the downstream app's cross-provider regression).
 ///
 /// `model` alone swaps the realtime model for this channel without touching
 /// the member's text identity - the pre-existing v1 override, byte-identical
@@ -3271,7 +3271,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             );
         }
     }
-    // HomeCore cross-provider regression: resolve the strict optional
+    // Downstream app cross-provider regression: resolve the strict optional
     // `provider` selection BEFORE any session work, so an unrecognized name
     // is a pure typed parameter error (`Provider::from_name` would coerce
     // it to `Other` and fall through to a misleading downstream rejection).
@@ -3913,7 +3913,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             );
         }
     }
-    // HomeCore cross-provider regression: resolve the strict optional
+    // Downstream app cross-provider regression: resolve the strict optional
     // `provider` selection BEFORE any session work, so an unrecognized name
     // is a pure typed parameter error (`Provider::from_name` would coerce
     // it to `Other` and fall through to a misleading downstream rejection).
@@ -5410,7 +5410,7 @@ mod tests {
         let provider = LiveCapabilityProvider {
             configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
                 factory: Arc::new(AgentFactory::minimal()),
-                realm: RealmId::parse("mob.homecore").expect("realm"),
+                realm: RealmId::parse("mob.example").expect("realm"),
                 experimental_factory: None,
                 open_authority: Arc::clone(&authority) as _,
                 answer_transport: Arc::new(UnusedAnswerTransport),
@@ -5904,7 +5904,7 @@ mod tests {
         let provider = LiveCapabilityProvider {
             configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
                 factory: Arc::new(AgentFactory::minimal()),
-                realm: RealmId::parse("mob.homecore").expect("realm"),
+                realm: RealmId::parse("mob.example").expect("realm"),
                 experimental_factory: None,
                 open_authority: Arc::new(NoBinderOpenAuthority),
                 answer_transport: Arc::new(UnusedAnswerTransport),
@@ -5953,7 +5953,7 @@ mod tests {
         LiveCapabilityProvider {
             configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
                 factory: Arc::new(AgentFactory::minimal()),
-                realm: RealmId::parse("mob.homecore").expect("realm"),
+                realm: RealmId::parse("mob.example").expect("realm"),
                 experimental_factory: None,
                 open_authority: Arc::new(NoBinderOpenAuthority),
                 answer_transport: Arc::new(UnusedAnswerTransport),
@@ -6090,7 +6090,7 @@ mod tests {
                     .expect("principal");
             let target = meerkat_core::PrincipalRef::new(
                 meerkat_core::PrincipalKind::PersonalAgent,
-                "identity:reachy",
+                "identity:robot",
             )
             .expect("target");
             let request = meerkat_core::AuthBindingUseRequest::new(
@@ -6126,7 +6126,7 @@ mod tests {
     #[cfg(feature = "openai-live")]
     fn live_binding() -> meerkat_core::AuthBindingRef {
         meerkat_core::AuthBindingRef {
-            realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm"),
+            realm: meerkat_core::RealmId::parse("mob.example").expect("realm"),
             binding: meerkat_core::BindingId::parse("chatgpt").expect("binding"),
             profile: None,
             origin: meerkat_core::BindingOrigin::Configured,
@@ -6168,7 +6168,7 @@ mod tests {
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
             owner: Arc::new(StaticSessionOwner(false)),
             machine: test_live_machine(),
-            durable_identity: "identity:reachy".to_string(),
+            durable_identity: "identity:robot".to_string(),
             access_view: access_view(Some("root")),
             credential_policy: credential_policy.clone(),
         };
@@ -6196,7 +6196,7 @@ mod tests {
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
             owner: Arc::new(UnavailableDurableSourceOwner),
             machine: test_live_machine(),
-            durable_identity: "identity:reachy".to_string(),
+            durable_identity: "identity:robot".to_string(),
             access_view: access_view(Some("root")),
             credential_policy: credential_policy.clone(),
         };
@@ -6224,7 +6224,7 @@ mod tests {
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
             owner: Arc::new(StaticSessionOwner(true)),
             machine: test_live_machine(),
-            durable_identity: "identity:reachy".to_string(),
+            durable_identity: "identity:robot".to_string(),
             access_view: access_view(Some("alice")),
             credential_policy: credential_policy.clone(),
         };
@@ -6252,7 +6252,7 @@ mod tests {
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
             owner: Arc::new(StaticSessionOwner(true)),
             machine: test_live_machine(),
-            durable_identity: "identity:reachy".to_string(),
+            durable_identity: "identity:robot".to_string(),
             access_view: access_view(None),
             credential_policy: credential_policy.clone(),
         };
@@ -6280,7 +6280,7 @@ mod tests {
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
             owner: Arc::new(StaticSessionOwner(true)),
             machine: test_live_machine(),
-            durable_identity: "identity:reachy".to_string(),
+            durable_identity: "identity:robot".to_string(),
             access_view: access_view(Some("root")),
             credential_policy: credential_policy.clone(),
         };
@@ -6581,10 +6581,10 @@ mod tests {
             .dispatch(
                 LiveSurfaceAuthority::host_trusted_stdio(),
                 Some(session_id.clone()),
-                Some("identity:reachy".to_string()),
+                Some("identity:robot".to_string()),
                 "mobkit/live/playback_owner/revoke".to_string(),
                 serde_json::json!({
-                    "identity": "identity:reachy",
+                    "identity": "identity:robot",
                     "channel_id": channel_id.as_str(),
                     "pending_receipt": readiness.pending_receipt(),
                     "readiness_receipt": readiness.readiness_id(),
@@ -6628,10 +6628,10 @@ mod tests {
             .dispatch(
                 LiveSurfaceAuthority::host_trusted_stdio(),
                 Some(session_id),
-                Some("identity:reachy".to_string()),
+                Some("identity:robot".to_string()),
                 "mobkit/live/status".to_string(),
                 serde_json::json!({
-                    "identity": "identity:reachy",
+                    "identity": "identity:robot",
                     "channel_id": channel_id.as_str(),
                     "pending_receipt": readiness.pending_receipt(),
                 }),
@@ -6719,7 +6719,7 @@ mod tests {
     }
 
     /// An Anthropic-profile text identity carrying a realm-scoped auth
-    /// binding, the HomeCore shape the cross-provider live open starts from.
+    /// binding, the downstream app's shape the cross-provider live open starts from.
     fn anthropic_identity_with_binding() -> meerkat_core::SessionLlmIdentity {
         meerkat_core::SessionLlmIdentity {
             model: "claude-sonnet-4-5".to_string(),
@@ -6727,7 +6727,7 @@ mod tests {
             self_hosted_server_id: None,
             provider_params: None,
             auth_binding: Some(meerkat_core::AuthBindingRef {
-                realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm id"),
+                realm: meerkat_core::RealmId::parse("mob.example").expect("realm id"),
                 binding: meerkat_core::BindingId::parse("anthropic-main").expect("binding id"),
                 profile: None,
                 origin: meerkat_core::BindingOrigin::Configured,
@@ -6735,7 +6735,7 @@ mod tests {
         }
     }
 
-    /// HomeCore cross-provider regression: a differing `provider` re-pairs
+    /// Downstream app cross-provider regression: a differing `provider` re-pairs
     /// the channel identity as a (provider, model) pair AND clears the
     /// inherited provider-specific auth binding, so the selected provider's
     /// configured default credential resolution applies for this open.

@@ -37,7 +37,7 @@ class TestBuilderChain:
         b = (
             MobKit.builder()
             .mob_inline("[mob]\nid = 'home'\n")
-            .persistent_state("/var/lib/homecore")
+            .persistent_state("/var/lib/example")
             .declare_spec_update(7)
         )
         b._validate()
@@ -45,7 +45,7 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["mob_config"] == "[mob]\nid = 'home'\n"
-        assert params["persistent_state"] == "/var/lib/homecore"
+        assert params["persistent_state"] == "/var/lib/example"
         assert params["runtime_options"]["mob_composition"] == {
             "authority": "authoritative"
         }
@@ -66,7 +66,7 @@ class TestBuilderChain:
     def test_definition_update_requires_replacement_definition(self):
         b = (
             MobKit.builder()
-            .persistent_state("/var/lib/homecore")
+            .persistent_state("/var/lib/example")
             .declare_spec_update(1)
         )
 
@@ -122,7 +122,7 @@ class TestBuilderChain:
                     realm="family", binding="openai-api-key", profile="luka"
                 ),
                 voice="marin",
-                session_instructions="You are Reachy's voice embodiment.",
+                session_instructions="You are the robot's voice embodiment.",
             )
         )
         params = MobKitRuntime(b._config)._build_init_params()
@@ -136,7 +136,7 @@ class TestBuilderChain:
                 "profile": "luka",
             },
             "voice": "marin",
-            "session_instructions": "You are Reachy's voice embodiment.",
+            "session_instructions": "You are the robot's voice embodiment.",
         }
         assert "experimental_live" not in params["runtime_options"]
         with pytest.raises(TypeError, match="OpenAiLiveGatewayConfig"):
@@ -156,8 +156,8 @@ class TestBuilderChain:
                 voice="marin",
                 execution_profiles=(
                     ExperimentalLiveExecutionProfileConfig(
-                        profile_id="homecore.reachy.open-room.v1",
-                        session_instructions="You are Reachy's voice embodiment.",
+                        profile_id="example.device.open-room.v1",
+                        session_instructions="You are the robot's voice embodiment.",
                     ),
                 ),
             )
@@ -178,8 +178,8 @@ class TestBuilderChain:
             "voice": "marin",
             "execution_profiles": [
                 {
-                    "profile_id": "homecore.reachy.open-room.v1",
-                    "session_instructions": "You are Reachy's voice embodiment.",
+                    "profile_id": "example.device.open-room.v1",
+                    "session_instructions": "You are the robot's voice embodiment.",
                 }
             ],
         }

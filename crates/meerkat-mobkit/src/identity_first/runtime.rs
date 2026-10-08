@@ -1754,7 +1754,7 @@ impl IdentityFirstRuntimeContext {
     /// task, nothing runs that reconcile: delivery refuses Broken identities
     /// (REQ-13 fails loudly), `materialize` refuses the Broken state, and the
     /// only retries were a manual `mobkit/reconcile_identity` RPC or a process
-    /// restart. HomeCore 0.7.23 sat with 14 preserved-but-parked identities
+    /// restart. A downstream app on 0.7.23 sat with 14 preserved-but-parked identities
     /// because of exactly that gap.
     ///
     /// The supervisor has no timer. It runs one pass when it starts (the boot
@@ -1797,7 +1797,7 @@ impl IdentityFirstRuntimeContext {
         // Subscribe before the first pass so a trigger landing during it
         // still wakes the next wait.
         let mut triggers = self.runtime.subscribe_continuity_repair_triggers();
-        // Bounded non-identical retries (OB3 0.8.12-era evidence): a repair
+        // Bounded non-identical retries (production 0.8.12-era evidence): a repair
         // pass whose failure comes back byte-identical N times in a row is a
         // deterministic wall, and each blind retry re-executes the pass's
         // DESTRUCTIVE dispose steps against the same blocking precondition.
@@ -3390,7 +3390,7 @@ impl IdentityRuntime {
     /// What must NOT happen is attributing the pass cause to each identity as
     /// if it were that identity's own. Before embodiment became per identity,
     /// one member's `bridge create_session:` failure was copied onto 16 peers
-    /// (HomeCore activation-33 shape). Member failures now bypass this method,
+    /// (downstream app activation-33 shape). Member failures now bypass this method,
     /// while a genuine pass failure stamps only what is known: the pass died
     /// before this identity's own outcome was recorded. A cause the identity actually produced
     /// during the pass (`mark_bootstrap_from_lifecycle`,
@@ -7500,7 +7500,7 @@ impl IdentityRuntime {
                         if let Some(reason) = deterministic_build_rejection_reason(&err) {
                             self.mark_host_rejected_build_park(identity, reason).await;
                         }
-                        // Repair honesty (OB3 rehearsal): the typed
+                        // Repair honesty (production rehearsal): the typed
                         // ArchivedNotRevivable refusal is a stable,
                         // deterministic wall - record the terminal verdict on
                         // this FIRST refusal so the repair supervisor parks
@@ -8489,7 +8489,7 @@ impl IdentityRuntime {
                 // is no live member left to retire; removal is the same
                 // bookkeeping as for a Dormant entry. Refusing it is how a
                 // retired identity got stuck for every later roster reconcile
-                // (meerkat-mobkit #404, OB3 2026-09-05).
+                // (meerkat-mobkit #404, a 2026-09-05 production incident).
                 IdentityLifecycleState::Dormant
                 | IdentityLifecycleState::Broken
                 | IdentityLifecycleState::Uninitialized
@@ -10934,7 +10934,7 @@ impl IdentityRuntime {
     /// send door always had it; the dispatch door previously delivered raw,
     /// so internal dispatches (schedules foremost) skipped defanging, taint
     /// session attribution, and ambient memory injection for the member's
-    /// whole lifetime (HomeCore: zero surface=Turn injection-ledger rows).
+    /// whole lifetime (a downstream app: zero surface=Turn injection-ledger rows).
     ///
     /// Steer is latency-sensitive live operator input: it bypasses both
     /// memory injection and inbound defanging by design. Every other
@@ -11152,7 +11152,7 @@ impl IdentityRuntime {
             (None, None) => None,
             (Some(idempotency_key), Some(correlation_id)) => {
                 // App-supplied correlations canonicalize deterministically
-                // instead of refusing on value shape (HomeCore admission
+                // instead of refusing on value shape (downstream app admission
                 // break: source-string correlations were tolerated through
                 // the 0.8.15 pair and refused by 0.8.16 identity threading).
                 // Half-pairs below stay typed refusals - structure is still
@@ -11847,7 +11847,7 @@ impl IdentityRuntime {
     }
 
     // -----------------------------------------------------------------------
-    // Lifecycle: reload_member (non-destructive cold reload, OB3 2026-09-04)
+    // Lifecycle: reload_member (non-destructive cold reload, a 2026-09-04 production incident)
     // -----------------------------------------------------------------------
 
     /// Record every completed reload attempt, including early no-ops/refusals.
@@ -19309,11 +19309,11 @@ mod turn_ticket_tests {
 
     #[test]
     fn only_the_owning_pending_record_is_settled() {
-        let louise = AgentIdentity::parse("louise").expect("identity");
+        let erin = AgentIdentity::parse("erin").expect("identity");
         let mut outcomes = TurnOutcomes::default();
         let ticket = outcomes.admit(&keeper(), None);
         // Another identity's waiter can never settle this record.
-        outcomes.settle(&louise, ticket, text("louise's reply"));
+        outcomes.settle(&erin, ticket, text("erin's reply"));
         assert_eq!(outcomes.outcome(&keeper(), ticket), TurnOutcome::Pending);
         outcomes.settle(&keeper(), ticket, text("keeper's reply"));
         // A settled record is final: nothing overwrites it.
@@ -19327,12 +19327,12 @@ mod turn_ticket_tests {
                 }
             }
         );
-        assert_eq!(outcomes.outcome(&louise, ticket), TurnOutcome::Unknown);
+        assert_eq!(outcomes.outcome(&erin, ticket), TurnOutcome::Unknown);
     }
 
     #[test]
     fn a_redispatch_reuses_a_pending_or_completed_admission_but_not_a_failed_one() {
-        let louise = AgentIdentity::parse("louise").expect("identity");
+        let erin = AgentIdentity::parse("erin").expect("identity");
         let mut outcomes = TurnOutcomes::default();
         let key = delivery_key("evt-1");
         let original = outcomes.admit(&keeper(), Some(key.clone()));
@@ -19340,7 +19340,7 @@ mod turn_ticket_tests {
             outcomes.reusable_delivery_ticket(&keeper(), &key),
             Some(original)
         );
-        assert_eq!(outcomes.reusable_delivery_ticket(&louise, &key), None);
+        assert_eq!(outcomes.reusable_delivery_ticket(&erin, &key), None);
         outcomes.settle(&keeper(), original, text("answer"));
         assert_eq!(
             outcomes.reusable_delivery_ticket(&keeper(), &key),
@@ -20930,7 +20930,7 @@ mod admission_first_topology_tests {
         Ok(())
     }
 
-    /// HomeCore privacy rule: children's agents must not keep reaching the
+    /// Downstream app privacy rule: children's agents must not keep reaching the
     /// parents'. `managed_peer_edges` is this process's memory and starts
     /// empty, while the mob's wiring is durable and replays on recovery. An
     /// edge between two of this runtime's identities that the topology no

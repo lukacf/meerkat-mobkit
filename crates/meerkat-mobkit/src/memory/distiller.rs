@@ -1921,7 +1921,7 @@ impl MemberAgentEventSink for DistillerTriggers {
         // Scope keys are LOGICAL identities (task #53). The observer already
         // normalizes its fan-out; this re-normalization is a cheap fixed
         // point that keeps any direct sink caller from re-splitting
-        // distiller scopes per incarnation (the HomeCore activation smoke:
+        // distiller scopes per incarnation (the downstream app's activation smoke:
         // extraction landed under mk--rt_c... roster ids, invisible to
         // injection and SDK reads).
         let identity = crate::member_comms_id::logical_memory_identity(identity);

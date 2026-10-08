@@ -10304,7 +10304,7 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
-    /// Regression (HomeCore dispatch-path mirroring asymmetry): a console
+    /// Regression (downstream app dispatch-path mirroring asymmetry): a console
     /// send targets the DURABLE identity, but the member is rostered under
     /// its fenced runtime incarnation (`rt:{identity}:{generation}`). The
     /// send's interaction reservation must key the pending interaction under
@@ -10428,7 +10428,7 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
-    /// HomeCore field report (2026-08-17), and the case neither sibling test
+    /// Downstream app field report (2026-08-17), and the case neither sibling test
     /// covers: a SCHEDULED turn's completions, arriving on a member that was
     /// addressed through console send EARLIER in the same process.
     ///

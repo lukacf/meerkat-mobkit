@@ -1,4 +1,4 @@
-//! The typed "session needs repair" hold (HomeCore 2026-09-22 wedge).
+//! The typed "session needs repair" hold (a downstream app's 2026-09-22 wedge).
 //!
 //! meerkat 0.8.41 types the WholeBlob audited-endpoint divergence
 //! (`SessionError::WholeBlobAuditedEndpointDivergence`, resume hold
@@ -234,7 +234,7 @@ fn runtime_with(bridge: Arc<RepairBridge>) -> (Arc<IdentityRuntime>, Arc<LocalCo
         default_timeout: None,
     }));
     runtime.set_session_repair_scope(Some(SessionRepairScope {
-        state_root: Some("/srv/homecore/state".into()),
+        state_root: Some("/srv/example/state".into()),
         realm: Some("mobkit".to_string()),
         runtime_store: None,
     }));
@@ -250,14 +250,14 @@ fn assert_hold_names_session(
     assert_eq!(
         hold.diagnose_command,
         format!(
-            "rkat --state-root /srv/homecore/state --realm mobkit session repair-wholeblob \
+            "rkat --state-root /srv/example/state --realm mobkit session repair-wholeblob \
              {session_id} --json"
         )
     );
     assert_eq!(
         hold.apply_command,
         format!(
-            "rkat --state-root /srv/homecore/state --realm mobkit session repair-wholeblob \
+            "rkat --state-root /srv/example/state --realm mobkit session repair-wholeblob \
              {session_id} --apply --json"
         )
     );
@@ -488,7 +488,7 @@ async fn reload_member_on_a_still_refused_document_reparks_typed() {
     assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 3);
 }
 
-/// Registration reload path (the HomeCore shape: an Active member whose every
+/// Registration reload path (the downstream-app shape: an Active member whose every
 /// send reports reload-required): the typed divergence from the reload
 /// primitive parks the member with the hold instead of the retryable
 /// "store not healthy yet" refusal, and the next `reload_member` after the

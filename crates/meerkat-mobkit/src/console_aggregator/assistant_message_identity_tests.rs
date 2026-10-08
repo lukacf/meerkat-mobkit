@@ -1568,7 +1568,7 @@ async fn assistant_identity_pending_refresh_retries_unchanged_head_through_disco
     Ok(())
 }
 
-/// Boot-time staged-turn shape (HomeCore, 0.8.45: a 453 s first turn after a
+/// Boot-time staged-turn shape (a downstream app, 0.8.45: a 453 s first turn after a
 /// cold boot, 6-7 minutes of it staged). A member whose turn is staged or
 /// running is not idle, so its recovery refresh stays unsettled and the
 /// member stays on the retry list. Every 5 s discovery pass used to re-read
@@ -2018,7 +2018,7 @@ impl EpochFixture {
     }
 }
 
-/// HomeCore and idle_cpu_gate shape (#570): a recovery refresh lands while
+/// Downstream app and idle_cpu_gate shape (#570): a recovery refresh lands while
 /// the member is idle between runs of a queued burst, its later inputs and
 /// their commits still landing. The gate reads `Draining`: the pass skips
 /// its whole-document read, keeps the retry, and arms one re-drive. That

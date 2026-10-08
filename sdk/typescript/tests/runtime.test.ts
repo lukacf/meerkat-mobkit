@@ -404,13 +404,13 @@ describe("MobKitRuntime", () => {
 
   it("builds meerkat_config_path runtime option", () => {
     const { rt } = createMockRuntime();
-    (rt as any)._config.meerkatConfigPath = "/etc/homecore/config.toml";
+    (rt as any)._config.meerkatConfigPath = "/etc/example/config.toml";
 
     const params = (rt as any)._buildInitParams();
 
     assert.equal(
       params.runtime_options.meerkat_config_path,
-      "/etc/homecore/config.toml",
+      "/etc/example/config.toml",
     );
   });
 
@@ -570,7 +570,7 @@ describe("MobKitRuntime", () => {
       realm: "family",
       authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      sessionInstructions: "You are Reachy's voice embodiment.",
+      sessionInstructions: "You are the robot's voice embodiment.",
     };
 
     const params = (rt as any)._buildInitParams();
@@ -580,7 +580,7 @@ describe("MobKitRuntime", () => {
       realm: "family",
       auth_binding: { realm: "family", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      session_instructions: "You are Reachy's voice embodiment.",
+      session_instructions: "You are the robot's voice embodiment.",
     });
     assert.equal("experimental_live" in params.runtime_options, false);
   });
@@ -601,8 +601,8 @@ describe("MobKitRuntime", () => {
       voice: "marin",
       executionProfiles: [
         {
-          profileId: "homecore.reachy.open-room.v1",
-          sessionInstructions: "You are Reachy's voice embodiment.",
+          profileId: "example.device.open-room.v1",
+          sessionInstructions: "You are the robot's voice embodiment.",
         },
       ],
     };
@@ -623,8 +623,8 @@ describe("MobKitRuntime", () => {
       voice: "marin",
       execution_profiles: [
         {
-          profile_id: "homecore.reachy.open-room.v1",
-          session_instructions: "You are Reachy's voice embodiment.",
+          profile_id: "example.device.open-room.v1",
+          session_instructions: "You are the robot's voice embodiment.",
         },
       ],
     });
@@ -3118,20 +3118,20 @@ describe("MobHandle live methods", () => {
       transport: { type: "websocket", url: "ws://x/live/ws", token: "t" },
     }));
 
-    const opened = await handle.liveOpen("reachy", {
+    const opened = await handle.liveOpen("robot", {
       model: "gpt-realtime-2",
       instructions: "Use the current room voice.",
     });
     assert.equal(calls[0].method, "mobkit/live/open");
     assert.deepEqual(calls[0].params, {
-      identity: "reachy",
+      identity: "robot",
       model: "gpt-realtime-2",
       instructions: "Use the current room voice.",
     });
     assert.equal((opened.transport as Record<string, unknown>).type, "websocket");
 
     setResponse(() => ({ open: true }));
-    await handle.liveStatus("reachy");
+    await handle.liveStatus("robot");
     assert.equal(calls[1].method, "mobkit/live/status");
 
     setResponse(() => ({ closed: true }));
@@ -3140,14 +3140,14 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[2].params, { channel_id: "live-channel-1" });
 
     setResponse(() => ({ refreshed: true }));
-    await handle.liveRefresh("reachy");
+    await handle.liveRefresh("robot");
     assert.equal(calls[3].method, "mobkit/live/refresh");
 
     setResponse(() => ({ accepted: true }));
-    await handle.liveSendInputImage("reachy", "frame-0001", "image/jpeg", "aGVsbG8=");
+    await handle.liveSendInputImage("robot", "frame-0001", "image/jpeg", "aGVsbG8=");
     assert.equal(calls[4].method, "mobkit/live/send_input");
     assert.deepEqual(calls[4].params, {
-      identity: "reachy",
+      identity: "robot",
       chunk: {
         kind: "image",
         idempotency_key: "frame-0001",
@@ -3159,7 +3159,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "truncated" }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3170,7 +3170,7 @@ describe("MobHandle live methods", () => {
     );
     assert.equal(calls[5].method, "mobkit/live/truncate");
     assert.deepEqual(calls[5].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       activation_receipt: "active-receipt",
       output_id: "opaque-output-1",
@@ -3190,7 +3190,7 @@ describe("MobHandle live methods", () => {
       ],
     } : ({
       channel_id: "ch-typed",
-      target_identity: "identity:reachy",
+      target_identity: "identity:robot",
       execution_mode: "function_bridge",
       pending_receipt: "pending-receipt",
       transport: { transport: "webrtc", token: "t", answer_method: "live/webrtc/answer" },
@@ -3208,18 +3208,18 @@ describe("MobHandle live methods", () => {
       continuity: { mode: "transcript_only" },
     }));
 
-    const opened = await handle.liveOpenTyped("identity:reachy", {
-      profileId: "homecore.reachy.open-room.v1",
+    const opened = await handle.liveOpenTyped("identity:robot", {
+      profileId: "example.device.open-room.v1",
     });
 
     assert.equal(opened.channelId, "ch-typed");
-    assert.equal(opened.targetIdentity, "identity:reachy");
+    assert.equal(opened.targetIdentity, "identity:robot");
     assert.equal(calls[0].method, "mobkit/capabilities");
     assert.deepEqual(calls[1].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       execution_identity: {
         version: "v1",
-        profile_id: "homecore.reachy.open-room.v1",
+        profile_id: "example.device.open-room.v1",
       },
     });
   });
@@ -3233,8 +3233,8 @@ describe("MobHandle live methods", () => {
     }));
 
     await assert.rejects(
-      handle.liveOpenTyped("identity:reachy", {
-        profileId: "homecore.reachy.open-room.v1",
+      handle.liveOpenTyped("identity:robot", {
+        profileId: "example.device.open-room.v1",
       }),
       CapabilityUnavailableError,
     );
@@ -3257,9 +3257,9 @@ describe("MobHandle live methods", () => {
       const { handle, calls } = createMockRuntime();
       await assert.rejects(
         handle.liveOpenTyped(
-          "identity:reachy",
+          "identity:robot",
           {
-            profileId: "homecore.reachy.open-room.v1",
+            profileId: "example.device.open-room.v1",
           },
           { [field]: value },
         ),
@@ -3295,7 +3295,7 @@ describe("MobHandle live methods", () => {
     }));
     await assert.rejects(
       handle.liveOpenTyped("caller-alias", {
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       }),
       /unknown field|non-empty string/,
     );
@@ -3335,7 +3335,7 @@ describe("MobHandle live methods", () => {
       };
       if (method === "mobkit/live/open") return {
         channel_id: "chan-1",
-        target_identity: "identity:reachy",
+        target_identity: "identity:robot",
         execution_mode: "function_bridge",
         pending_receipt: "pending-receipt",
         transport: {
@@ -3365,7 +3365,7 @@ describe("MobHandle live methods", () => {
         phase: "active",
         handle: {
           channel_id: "chan-1",
-          target_identity: "identity:reachy",
+          target_identity: "identity:robot",
           execution_mode: "function_bridge",
           activation_receipt: "active-receipt",
         },
@@ -3377,9 +3377,9 @@ describe("MobHandle live methods", () => {
     });
 
     const active = await handle.liveConnect(
-      "identity:reachy",
+      "identity:robot",
       {
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       },
       {
         async prepare(pending) {
@@ -3415,13 +3415,13 @@ describe("MobHandle live methods", () => {
       "mobkit/live/status",
     ]);
     assert.deepEqual(calls[2].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
     assert.equal(calls[3].params?.readiness_receipt, "ready-receipt");
     assert.deepEqual(calls[4].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
@@ -3430,7 +3430,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls.at(-1), {
       method: "mobkit/live/playback_owner/revoke",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         pending_receipt: "pending-receipt",
         readiness_receipt: "ready-receipt",
@@ -3454,7 +3454,7 @@ describe("MobHandle live methods", () => {
       };
       if (method === "mobkit/live/open") return {
         channel_id: "chan-1",
-        target_identity: "identity:reachy",
+        target_identity: "identity:robot",
         execution_mode: "function_bridge",
         pending_receipt: "pending-receipt",
         transport: {
@@ -3487,9 +3487,9 @@ describe("MobHandle live methods", () => {
 
     await assert.rejects(
       handle.liveConnect(
-        "identity:reachy",
+        "identity:robot",
         {
-          profileId: "homecore.reachy.open-room.v1",
+          profileId: "example.device.open-room.v1",
         },
         {
           async prepare() {
@@ -3521,7 +3521,7 @@ describe("MobHandle live methods", () => {
       "mobkit/live/close",
     ]);
     assert.deepEqual(calls.at(-1)?.params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
@@ -3531,7 +3531,7 @@ describe("MobHandle live methods", () => {
     const { handle, calls } = createMockRuntime();
     const pending = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       pendingReceipt: "pending-receipt",
       transport: {
@@ -3564,7 +3564,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ required: false }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3573,7 +3573,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[0], {
       method: "mobkit/live/replacement_required",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         activation_receipt: "active-receipt",
       },
@@ -3585,7 +3585,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "completed" }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3598,7 +3598,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[0], {
       method: "mobkit/live/playback_complete",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         activation_receipt: "active-receipt",
         output_id: "opaque-output-1",
@@ -3613,7 +3613,7 @@ describe("MobHandle live methods", () => {
       : { status: "closed" });
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3643,7 +3643,7 @@ describe("MobHandle live methods", () => {
       {
         method: "mobkit/live/playback_complete",
         params: {
-          identity: "identity:reachy",
+          identity: "identity:robot",
           channel_id: "chan-1",
           activation_receipt: "active-receipt",
           output_id: "opaque-output-1",
@@ -3652,7 +3652,7 @@ describe("MobHandle live methods", () => {
       {
         method: "mobkit/live/close",
         params: {
-          identity: "identity:reachy",
+          identity: "identity:robot",
           channel_id: "chan-1",
           activation_receipt: "active-receipt",
         },
@@ -3665,7 +3665,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "closed" }));
     const outputs = handle.liveOutputs({
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge",
       activationReceipt: "active-receipt",
     }, { capacity: 1 });

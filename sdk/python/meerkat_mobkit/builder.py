@@ -1,4 +1,4 @@
-"""MobKit builder chain — matches HomeCore's app.py patterns."""
+"""MobKit builder chain - matches the downstream app's app.py patterns."""
 from __future__ import annotations
 
 import math
@@ -882,7 +882,7 @@ class MobKitBuilder:
         ``ApplicationToolPolicyBinding``::
 
             .child_application_tool_policy(
-                {"kind": "provider", "provider_id": "homecore", "policy_id": "child-tools"}
+                {"kind": "provider", "provider_id": "example", "policy_id": "child-tools"}
             )
 
         or the explicit opt-out ``{"kind": "unmanaged"}``, which lets child

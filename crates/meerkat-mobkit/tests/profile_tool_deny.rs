@@ -1,4 +1,4 @@
-//! HomeCore's per-profile deny set through MobKit's production runtime
+//! A downstream app's per-profile deny set through MobKit's production runtime
 //! (meerkat 0.8.51 `[profiles.*.tools] deny`).
 //!
 //! A household identity agent's profile enables the mob tools but denies the
@@ -31,9 +31,9 @@ mod llm_usage;
 
 static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-const PROBE: &str = "HOMECORE-DENY-PROBE";
+const PROBE: &str = "DOWNSTREAM-DENY-PROBE";
 
-/// HomeCore's deny set: the agent mob tools and the mob operator tools that
+/// The downstream app's deny set: the agent mob tools and the mob operator tools that
 /// spawn or rewire members.
 const DENIED: &[&str] = &[
     "spawn_member",
@@ -67,7 +67,7 @@ fn definition_denying(names: &[&str]) -> MobDefinition {
     MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "homecore-deny-mob-{}"
+id = "downstream-deny-mob-{}"
 
 [profiles.household]
 model = "gpt-5.5"
@@ -81,7 +81,7 @@ deny = [{deny}]
 "#,
         NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ))
-    .expect("parse the HomeCore definition")
+    .expect("parse the downstream definition")
 }
 
 /// What the probe turn saw: the tools the member had mounted, and each probe
@@ -277,7 +277,7 @@ async fn an_unknown_deny_entry_fails_ensure_member_with_invalid_params_naming_it
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn homecore_deny_set_builds_and_refuses_denied_mob_tools() {
+async fn downstream_deny_set_builds_and_refuses_denied_mob_tools() {
     let store_dir = tempfile::tempdir().expect("store dir");
     let client = ProbeClient::default();
     let runtime = runtime_for(definition(), &client, store_dir.path()).await;
@@ -287,7 +287,7 @@ async fn homecore_deny_set_builds_and_refuses_denied_mob_tools() {
     runtime
         .spawn_many(vec![SpawnMemberSpec::new("household", "kitchen")])
         .await
-        .expect("a member builds with HomeCore's deny set");
+        .expect("a member builds with the downstream app's deny set");
 
     let done = client.done.notified();
     tokio::pin!(done);
@@ -310,7 +310,7 @@ async fn homecore_deny_set_builds_and_refuses_denied_mob_tools() {
         )
     };
     // The mob operator tools a `mob = true` member mounts are the core of the
-    // HomeCore restriction; the probe is meaningless without them.
+    // downstream app's restriction; the probe is meaningless without them.
     for operator_tool in ["spawn_member", "wire_members"] {
         assert!(
             mounted.iter().any(|name| name == operator_tool),

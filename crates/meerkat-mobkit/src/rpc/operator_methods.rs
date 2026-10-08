@@ -1,6 +1,6 @@
 //! Operator verbs for oversized/wedged member transcripts.
 //!
-//! Two verbs, one incident class (HomeCore parent-1: a member transcript
+//! Two verbs, one incident class (downstream app parent-1: a member transcript
 //! grows past what a turn can carry and the only prior remedy was row
 //! surgery):
 //!
@@ -1891,7 +1891,7 @@ comms = true
         let handle = runtime.mob_handle();
 
         // Identity-first member: the roster id is the mk--encoded generated
-        // runtime alias, the shape HomeCore fleets address. The
+        // runtime alias, the shape downstream app fleets address. The
         // `agent_identity` label is what the identity health monitor uses to
         // map this member's RunCompleted events onto the durable identity's
         // completion cursor.

@@ -384,7 +384,7 @@ fn console_experience_projects_read_only_policy_and_capabilities() {
 fn console_experience_projects_durable_identity_for_runtime_member_rows() {
     let state = decision_state(false);
     let runtime_snapshot = ConsoleLiveSnapshot::new(
-        Some("ob3".to_string()),
+        Some("ops".to_string()),
         true,
         vec!["rt:review:singleton:0".to_string()],
         vec![],
@@ -559,12 +559,12 @@ fn console_experience_projects_configurable_sidebar_and_agent_grouping() {
     let mut state = decision_state(false);
     state.console.ui = meerkat_mobkit::load_console_ui_config_from_toml(
         r#"
-title = "OB3"
+title = "Ops"
 
 [brand]
-label = "Open Brain"
-logo_url = "/assets/ob3.svg"
-logo_alt = "OB3"
+label = "Ops Console"
+logo_url = "/assets/ops.svg"
+logo_alt = "Ops"
 
 [appearance]
 default_theme = "dark"
@@ -593,9 +593,9 @@ alert_levels = ["critical"]
 visible_controls = ["topology", "roster", "logs"]
 
 [[sidebar.buttons]]
-id = "ob3-board"
-label = "OB3 Board"
-href = "https://example.test/ob3"
+id = "ops-board"
+label = "Ops Board"
+href = "https://example.test/ops"
 target = "_blank"
 
 [agent_list]
@@ -632,13 +632,13 @@ show_reset = false
     );
 
     assert_eq!(response.status, 200);
-    assert_eq!(response.body["base_panel"]["title"], json!("OB3"));
+    assert_eq!(response.body["base_panel"]["title"], json!("Ops"));
     assert_eq!(
         response.body["console_config"]["brand"],
         json!({
-            "label": "Open Brain",
-            "logo_url": "/assets/ob3.svg",
-            "logo_alt": "OB3",
+            "label": "Ops Console",
+            "logo_url": "/assets/ops.svg",
+            "logo_alt": "Ops",
         })
     );
     assert_eq!(
@@ -656,9 +656,9 @@ show_reset = false
     assert_eq!(
         response.body["console_config"]["sidebar"]["buttons"][0],
         json!({
-            "id": "ob3-board",
-            "label": "OB3 Board",
-            "href": "https://example.test/ob3",
+            "id": "ops-board",
+            "label": "Ops Board",
+            "href": "https://example.test/ops",
             "target": "_blank",
         })
     );

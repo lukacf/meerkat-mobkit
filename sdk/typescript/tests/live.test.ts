@@ -42,7 +42,7 @@ describe("openai live gateway registration", () => {
         realm: "family",
         authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are Reachy's voice embodiment.",
+        sessionInstructions: "You are the robot's voice embodiment.",
         summary: { model: "gpt-5.4-mini", maxInputBytes: 32768, maxOutputBytes: 2048 },
       }),
       fixture.openai_live_gateway_config_with_summary,
@@ -73,7 +73,7 @@ describe("openai live gateway registration", () => {
         realm: "family",
         authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are Reachy's voice embodiment.",
+        sessionInstructions: "You are the robot's voice embodiment.",
       }),
       fixture.openai_live_gateway_config,
     );
@@ -162,8 +162,8 @@ describe("experimental live gateway registration", () => {
         voice: "marin",
         executionProfiles: [
           {
-            profileId: "homecore.reachy.open-room.v1",
-            sessionInstructions: "You are Reachy's voice embodiment.",
+            profileId: "example.device.open-room.v1",
+            sessionInstructions: "You are the robot's voice embodiment.",
           },
         ],
       }),
@@ -212,7 +212,7 @@ describe("experimental live gateway registration", () => {
     };
     for (const executionProfiles of [
       [{ profileId: " ", sessionInstructions: "voice" }],
-      [{ profileId: "reachy", sessionInstructions: " " }],
+      [{ profileId: "robot", sessionInstructions: " " }],
       [
         {
           profileId: "openai.gpt-live-1-codex.client-context.v1",
@@ -232,8 +232,8 @@ describe("experimental live gateway registration", () => {
         },
       ],
       [
-        { profileId: "reachy", sessionInstructions: "voice" },
-        { profileId: " reachy ", sessionInstructions: "other" },
+        { profileId: "robot", sessionInstructions: "voice" },
+        { profileId: " robot ", sessionInstructions: "other" },
       ],
     ]) {
       assert.throws(() =>
@@ -262,7 +262,7 @@ describe("experimental live gateway registration", () => {
           ...base,
           executionProfiles: [
             {
-              profileId: "reachy",
+              profileId: "robot",
               sessionInstructions: "voice",
               [field]: "forbidden",
             },
@@ -277,7 +277,7 @@ describe("live execution identity v1", () => {
   it("serializes the shared host-profile fixture", () => {
     assert.deepEqual(
       liveExecutionIdentityV1ToWire({
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       }),
       fixture.execution_identity,
     );
@@ -286,7 +286,7 @@ describe("live execution identity v1", () => {
   it("rejects unknown nested fields and legacy conflicts", () => {
     assert.throws(() =>
       liveExecutionIdentityV1ToWire({
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
         extra: true,
       } as never),
     );
@@ -299,17 +299,17 @@ describe("live execution identity v1", () => {
     ] as const) {
       assert.throws(() =>
         liveOpenExecutionIdentityParams(
-          { profileId: "homecore.reachy.open-room.v1" },
+          { profileId: "example.device.open-room.v1" },
           { [field]: value },
         ),
       );
     }
     for (const input of [
       { profileId: "  " },
-      { profileId: "homecore.reachy.open-room.v1", model: "gpt-live-1-codex" },
-      { profileId: "homecore.reachy.open-room.v1", provider: "openai" },
-      { profileId: "homecore.reachy.open-room.v1", selfHostedServerId: "server" },
-      { profileId: "homecore.reachy.open-room.v1", authBinding: { action: "clear" } },
+      { profileId: "example.device.open-room.v1", model: "gpt-live-1-codex" },
+      { profileId: "example.device.open-room.v1", provider: "openai" },
+      { profileId: "example.device.open-room.v1", selfHostedServerId: "server" },
+      { profileId: "example.device.open-room.v1", authBinding: { action: "clear" } },
     ]) {
       assert.throws(() => liveExecutionIdentityV1ToWire(input as never));
     }

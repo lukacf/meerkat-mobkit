@@ -522,7 +522,7 @@ impl RecallCoordinator {
 
     /// Announce a skip once per (identity, reason) at INFO, then at DEBUG.
     ///
-    /// HomeCore ran for two months with zero turn-surface injections because
+    /// A downstream app ran for two months with zero turn-surface injections because
     /// the gateway defaulted `per_turn_injection` to off while the library
     /// default was budgeted, and nothing anywhere said so: the ledger only
     /// records what WAS injected, so "off" and "no memory" and "budget spent"

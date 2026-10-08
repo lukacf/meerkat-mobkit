@@ -561,7 +561,7 @@ fn is_catalogued_model(model: &str) -> bool {
 /// meerkat's rule (`validate_definition`) accepts such a profile at init: the
 /// provider annotation is what makes the model resolvable, so
 /// `unknown_model_init_error` says nothing about it, and a dated or misspelled
-/// id on a `provider = "openai"` profile (every HomeCore profile is annotated)
+/// id on a `provider = "openai"` profile (every downstream-app profile is annotated)
 /// surfaces at the first LLM call rather than at init. These lines keep that
 /// visible without making the gateway a second refusal authority; the catalog
 /// hint rides along for the typo case. A `provider = "self_hosted"` alias is
@@ -939,7 +939,7 @@ mod tests {
                 "restart_policy": "on_failure",
                 "boundary": "mcp",
                 "env": {
-                    "ROUTER_FIXTURE": "homecore"
+                    "ROUTER_FIXTURE": "example"
                 }
             }]
         });
@@ -961,7 +961,7 @@ mod tests {
                 module_id: "router".to_string(),
                 env: vec![
                     ("MOBKIT_MODULE_BOUNDARY".to_string(), "mcp".to_string()),
-                    ("ROUTER_FIXTURE".to_string(), "homecore".to_string()),
+                    ("ROUTER_FIXTURE".to_string(), "example".to_string()),
                 ],
             }]
         );
@@ -1034,7 +1034,7 @@ mod tests {
     ///
     /// Both of these shipped in 0.8.24 with a working handler, a documented
     /// struct field, and NO allowlist entry, so the unknown-field rejection ran
-    /// first and the handlers were dead code in the published binary. HomeCore
+    /// first and the handlers were dead code in the published binary. A downstream app
     /// found it by sending the documented line to the released artifact and
     /// getting `unsupported runtime_options fields: mob_composition` - one step
     /// EARLIER than the refusal the flag existed to avoid.
@@ -1658,7 +1658,7 @@ default_binding = "local"
         );
         let error = refuse_misplaced_runtime_options(&json!({
             "http_listen": "0.0.0.0:8080",
-            "meerkat_config_path": "/etc/homecore/config.toml"
+            "meerkat_config_path": "/etc/example/config.toml"
         }))
         .err()
         .unwrap_or_default();
@@ -2940,7 +2940,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -2962,7 +2962,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -2984,7 +2984,7 @@ default_binding = "local"
                     "name": "report_export",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.report_export", "version": "1"},
+                        "runner": {"name": "example.report_export", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -3017,17 +3017,13 @@ default_binding = "local"
         };
         assert!(runtime.owns_callback_job(&make_spec(
             "security_scan",
-            "homecore.security_scan",
+            "example.security_scan",
             "1"
         )));
-        assert!(!runtime.owns_callback_job(&make_spec(
-            "other_tool",
-            "homecore.security_scan",
-            "1"
-        )));
+        assert!(!runtime.owns_callback_job(&make_spec("other_tool", "example.security_scan", "1")));
         assert!(!runtime.owns_callback_job(&make_spec(
             "security_scan",
-            "homecore.security_scan",
+            "example.security_scan",
             "2"
         )));
     }
@@ -3044,7 +3040,7 @@ default_binding = "local"
             meerkat::ExecutionIntentId::from_string("intent:reconcile").expect("intent"),
             meerkat::InteractionLineageId::from_string("lineage:reconcile").expect("lineage"),
             meerkat::ToolIdentity::new("security_scan", "1").expect("tool"),
-            meerkat::RunnerIdentity::new("homecore.security_scan", "1").expect("runner"),
+            meerkat::RunnerIdentity::new("example.security_scan", "1").expect("runner"),
             meerkat::RestartClass::Adoptable,
             meerkat::CanonicalArgumentsHash::new(format!("sha256:{}", "a".repeat(64)))
                 .expect("arguments hash"),
@@ -3076,7 +3072,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -3539,7 +3535,7 @@ actions = ["agent.view"]
         assert_eq!(options.max_sessions, 320);
     }
 
-    /// Task #62 (HomeCore field ask): the build callback must carry the
+    /// Task #62 (downstream app field ask): the build callback must carry the
     /// mint-vs-resume signal so a host can append standing instructions on
     /// MINT and inherit on RESUME. Measured field gap: both boots printed
     /// session_id=None resume_session_id=None, so every host composing
@@ -4215,7 +4211,7 @@ comms = true
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
     }
 
-    /// HomeCore's exact call shape (`.agent_memory(selection="contextual",
+    /// The downstream app's exact call shape (`.agent_memory(selection="contextual",
     /// max_entries=3)`), which for two months yielded 10,283 build-surface
     /// injections and zero turn-surface rows: the object form omitted
     /// `per_turn_injection` and the gateway supplied its own "off" while the
@@ -5502,7 +5498,7 @@ comms = true
                             "profile": "luka"
                         },
                         "voice": "marin",
-                        "session_instructions": "You are Reachy's voice embodiment."
+                        "session_instructions": "You are the robot's voice embodiment."
                     }
                 }
             }),
@@ -5522,7 +5518,7 @@ comms = true
                     origin: meerkat_core::BindingOrigin::Configured,
                 },
                 voice: "marin".to_string(),
-                session_instructions: Some("You are Reachy's voice embodiment.".to_string()),
+                session_instructions: Some("You are the robot's voice embodiment.".to_string()),
                 summary: Default::default(),
             })
         );
@@ -5662,8 +5658,8 @@ comms = true
                         },
                         "voice": "marin",
                         "execution_profiles": [{
-                            "profile_id": "homecore.reachy.open-room.v1",
-                            "session_instructions": "You are Reachy's voice embodiment."
+                            "profile_id": "example.device.open-room.v1",
+                            "session_instructions": "You are the robot's voice embodiment."
                         }]
                     }
                 }
@@ -5680,8 +5676,8 @@ comms = true
         assert_eq!(
             experimental.execution_profiles,
             vec![GatewayExperimentalLiveExecutionProfile {
-                profile_id: "homecore.reachy.open-room.v1".to_string(),
-                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+                profile_id: "example.device.open-room.v1".to_string(),
+                session_instructions: "You are the robot's voice embodiment.".to_string(),
             }]
         );
         assert_eq!(options.live, GatewayLiveOption::Disabled);
@@ -5752,7 +5748,7 @@ comms = true
                 "gate0_qualification": "gate0-v1",
                 "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
                 "voice": "marin",
-                "execution_profiles": [{"profile_id": "reachy", "session_instructions": " "}]
+                "execution_profiles": [{"profile_id": "robot", "session_instructions": " "}]
             }),
             json!({
                 "principal": "user:luka",
@@ -5763,7 +5759,7 @@ comms = true
                 "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
-                    "profile_id": "reachy",
+                    "profile_id": "robot",
                     "session_instructions": "voice",
                     "tools": []
                 }]
@@ -5777,8 +5773,8 @@ comms = true
                 "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [
-                    {"profile_id": "reachy", "session_instructions": "voice"},
-                    {"profile_id": " reachy ", "session_instructions": "other"}
+                    {"profile_id": "robot", "session_instructions": "voice"},
+                    {"profile_id": " robot ", "session_instructions": "other"}
                 ]
             }),
             json!({
@@ -5826,8 +5822,8 @@ comms = true
             "capabilities",
         ] {
             let mut profile = json!({
-                "profile_id": "homecore.reachy.open-room.v1",
-                "session_instructions": "You are Reachy's voice embodiment."
+                "profile_id": "example.device.open-room.v1",
+                "session_instructions": "You are the robot's voice embodiment."
             });
             profile
                 .as_object_mut()
@@ -5878,8 +5874,8 @@ comms = true
             },
             voice: "marin".to_string(),
             execution_profiles: vec![GatewayExperimentalLiveExecutionProfile {
-                profile_id: "homecore.reachy.open-room.v1".to_string(),
-                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+                profile_id: "example.device.open-room.v1".to_string(),
+                session_instructions: "You are the robot's voice embodiment.".to_string(),
             }],
         };
         let operator =
@@ -5909,7 +5905,7 @@ comms = true
             .experimental_live_execution_feature_capabilities(
                 &realm,
                 &selected_factory,
-                "homecore.reachy.open-room.v1",
+                "example.device.open-room.v1",
             )
             .expect("host-trusted named client-context qualification");
         assert_eq!(named_capabilities, capabilities);
@@ -12230,7 +12226,7 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
             request_labels
                 .and_then(|labels| labels.get("profile_name").or_else(|| labels.get("role")))
         });
-    // Mint-vs-resume signal (task #62, HomeCore field ask 2026-08-06): a
+    // Mint-vs-resume signal (task #62, a downstream app field ask 2026-08-06): a
     // spawn-level resume is known here via `build.resume_session`, so the
     // host can honor the System-message contract (append standing
     // instructions on MINT, inherit on RESUME) instead of inferring
@@ -12369,7 +12365,7 @@ impl StdioCallbackAgentBuilder {
         // explicit SystemPromptOverride::Set, a transcript-authoring
         // ruling this layer does not own: an explicit Set at resume
         // IS new transcript intent by contract, so the runtime
-        // recorded one assembled System row per boot (the HomeCore
+        // recorded one assembled System row per boot (the downstream app's
         // accretion: parent-1 reached 1,294,962 tokens against a
         // 922,000 ceiling). Standing instructions are per-session
         // build state baked at mint; a deliberate mid-life change
@@ -12502,7 +12498,7 @@ impl StdioCallbackAgentBuilder {
                             meerkat_core::service::SessionBuildOptions::default()
                         });
                         // COMPOSE over whatever an earlier installer
-                        // put in the slot (HomeCore Bug D: assigning
+                        // put in the slot (downstream app Bug D: assigning
                         // wholesale silently discarded the agent-memory
                         // recorder's `memory` tool for every
                         // callback-built agent). Python-registered
@@ -13968,7 +13964,7 @@ external_addressable = true
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
             .with_workgraph_service(workgraph_service.clone())
-            // Agent mob tools + the schedule host's mob authority (HomeCore
+            // Agent mob tools + the schedule host's mob authority (a downstream app
             // 0.7.26 last-link fix): without this, agent-authored schedules
             // can't rewrite to mob-member targets or deliver them.
             .with_runtime_delivery(runtime_delivery.composition.clone())
@@ -15714,7 +15710,7 @@ external_addressable = true
     // Python/TS callback round-trip, and the host may issue further RPCs
     // (e.g. mobkit/agent_memory/recall) from INSIDE that callback. With
     // sequential dispatch those reentrant requests starve behind the turn
-    // until the callback times out (HomeCore recall deadlock). Both SDK
+    // until the callback times out (downstream app recall deadlock). Both SDK
     // transports match responses by id, and the HTTP surface already serves
     // the same methods concurrently, so completion order is free.
     let identity_ctx = identity_ctx.map(Arc::new);

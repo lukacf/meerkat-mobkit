@@ -190,7 +190,7 @@ Corrected only item 37 (one physical line) in the isolated upstream Meerkat work
 
 **Final review: pass.** The correction accurately distinguishes healthy Active restore reuse from due-lease renewal, lost authority, and explicit lifecycle reacquisition. Independent inspection of executable source confirms that the Active branch returns before acquisition and customization; healthy authority preserves its exact fence, due authority invokes provider renewal, and lost authority becomes a member-local Broken outcome before publishing the requested spec. The inspected regression tests assert these distinctions, including bypassing a deliberately failing customizer. Explicit LocalLeaseProvider acquisitions still advance fencing, lifecycle operations still reacquire, and fresh materialization still acquires before customization. Persisted restart-floor guidance remains valid and its historical paragraph tail is byte-for-byte preserved. Exactly item 37 at line 48 changed; the obsolete claims and nonexistent test citation are removed, and all three current test citations exist. No significant issues found in the reviewed changes.
 
-**`/Users/luka/src/copilot-worktrees/meerkat/luka-crnkovicfriis-abk-didactic-train/.claude/skills/meerkat-architecture/references/gotchas.md:48`**
+**`(operator-retained path)/.claude/skills/meerkat-architecture/references/gotchas.md:48`**
 
 ```text
 For an already `Active` identity, `restore_flow` instead reuses the exact healthy live lease and skips build customization; due authority is renewed through the provider and may return a newer fence, while lost authority fails closed.
@@ -198,7 +198,7 @@ For an already `Active` identity, `restore_flow` instead reuses the exact health
 
 The replacement states the implementation's conditional behavior rather than promising either unconditional rotation or unconditional token preservation.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/identity_first/runtime.rs:5260-5282`**
+**`(operator-retained path)/meerkat-mobkit/src/identity_first/runtime.rs:5260-5282`**
 
 ```text
 let record = self.reuse_active_restore_state(&spec).await?;
@@ -208,7 +208,7 @@ let record = self.reuse_active_restore_state(&spec).await?;
 
 External MobKit implementation, verified byte-identical to af82b6b3ab34faed9bf3e962d148d55f10dcd1dc: the Active branch returns before fresh acquisition at 5337-5341 and customize_build at 5404.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/identity_first/runtime.rs:7183-7263`**
+**`(operator-retained path)/meerkat-mobkit/src/identity_first/runtime.rs:7183-7263`**
 
 ```text
 Some(lease) if lease.is_healthy() => return Ok(lease.fencing_token),
@@ -216,7 +216,7 @@ Some(lease) if lease.is_healthy() => return Ok(lease.fencing_token),
 
 Healthy authority returns the existing token directly. The remaining branch calls renew_leases and publishes its returned grant; Lost or missing renewal results call mark_lease_lost and return LeaseLost. The inspected health predicate at 957-960 uses remaining TTL, so 'due' is not restricted to already-expired grants.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/identity_first/orchestrator.rs:343-380`**
+**`(operator-retained path)/meerkat-mobkit/src/identity_first/orchestrator.rs:343-380`**
 
 ```text
 let failure = runtime
@@ -226,7 +226,7 @@ let failure = runtime
 
 restore_flow delegates to embody_identity with the requested spec and customizer. Its error arm produces RestoreOutcome::Broken for that member instead of propagating the member failure as a fleet-level error.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/tests/identity_first_runtime.rs:9119-9203`**
+**`(operator-retained path)/meerkat-mobkit/tests/identity_first_runtime.rs:9119-9203`**
 
 ```text
 preserved_lease.fencing_token, initial_grant.fencing_token,
@@ -234,7 +234,7 @@ preserved_lease.fencing_token, initial_grant.fencing_token,
 
 Inspected, not executed: identity_first_runtime_restore_flow_reuses_exact_active_lease_without_customizing supplies a customizer whose body returns BuildFailed, requires successful Resumed restore, asserts exact fence equality, asserts subsequent send uses that same fence, and checks another holder cannot acquire the preserved lease.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/tests/identity_first_runtime.rs:9351-9407`**
+**`(operator-retained path)/meerkat-mobkit/tests/identity_first_runtime.rs:9351-9407`**
 
 ```text
 renewed.fencing_token > initial_grant.fencing_token,
@@ -242,7 +242,7 @@ renewed.fencing_token > initial_grant.fencing_token,
 
 Inspected, not executed: the cited renewal test selects RenewRotatedToken, asserts one renewal, and requires subsequent send to use the renewed fence. The provider's actual implementation at 650-655 allocates and installs the newer token, supporting 'may return a newer fence' rather than mandatory rotation for all providers.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/tests/identity_first_runtime.rs:9410-9463`**
+**`(operator-retained path)/meerkat-mobkit/tests/identity_first_runtime.rs:9410-9463`**
 
 ```text
 assert_eq!(status.state, IdentityLifecycleState::Broken);
@@ -251,7 +251,7 @@ assert_eq!(status.state, IdentityLifecycleState::Broken);
 
 Inspected, not executed: lost renewal must produce a member-local Broken outcome while the fleet pass succeeds, remove the lease, and retain the old spec label. Actual mark_lease_lost source likewise sets Broken and clears the lease; reuse_active_restore_state validates authority before updating entry.spec.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/identity_first/local_lease.rs:83-146`**
+**`(operator-retained path)/meerkat-mobkit/src/identity_first/local_lease.rs:83-146`**
 
 ```text
 let token = FencingToken::new(state.next_token);
@@ -260,7 +260,7 @@ let token = FencingToken::new(state.next_token);
 
 The acquisition body rejects a different holder but reaches this allocation for the same holder, preserving explicit reacquisition fencing. In contrast, local renewal returns the existing matching record token. The correction correctly scopes the acquisition rule to LocalLeaseProvider.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/identity_first/runtime.rs:7266-7281`**
+**`(operator-retained path)/meerkat-mobkit/src/identity_first/runtime.rs:7266-7281`**
 
 ```text
 entry.state = state;
@@ -269,7 +269,7 @@ entry.state = state;
 
 The retained lifecycle caveat describes actual state clearing. Inspected retire, respawn, live-respawn rebind, and reset bodies at 9045-9067, 9633-9641, 9843-9850, and 10066-10074 call this lifecycle transition before explicit acquire_leases. The wording remains limited to the bundled single-process provider.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/tests/identity_first_runtime.rs:3799-3835`**
+**`(operator-retained path)/meerkat-mobkit/tests/identity_first_runtime.rs:3799-3835`**
 
 ```text
 token > old_grant.fencing_token,
@@ -277,7 +277,7 @@ token > old_grant.fencing_token,
 
 Inspected, not executed: the retained retire test requires a higher returned token and calls assert_old_token_snapshot_write_rejected. That helper's actual body at 2023-2046 attempts a snapshot write under the old token and requires ContinuityStoreError::StaleFencingToken.
 
-**`/Users/luka/src/copilot-worktrees/meerkat-mobkit/luka-crnkovicfriis-abk-literate-guacamole/meerkat-mobkit/src/unified_runtime/builder.rs:1229-1242`**
+**`(operator-retained path)/meerkat-mobkit/src/unified_runtime/builder.rs:1229-1242`**
 
 ```text
 Arc::new(LocalLeaseProvider::with_floor(high_water)),
@@ -301,7 +301,7 @@ This finding belongs to `lukacf/meerkat`, not the MobKit-owned symlink. Its corr
     "Normal git commit succeeded as 4b97c131d8c8213f7b53c0d5d3753da70016f797 with the required co-author trailer. Pre-commit hooks correctly skipped unrelated Rust/Bazel/dogma paths. Worktree clean afterward.",
     "Verified the existing gh keyring account lukacf has push permission for lukacf/meerkat without exposing credential values or changing global auth. Push used per-command env -u GH_TOKEN -u GITHUB_TOKEN git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -u origin HEAD, with normal hooks enabled.",
     "Normal pre-push hooks passed dogma mirror verification, secret detection, whitespace/EOF/YAML/TOML/conflict/size checks, CI nextest archive contracts, cargo fmt, and changed-crate Clippy. machine-codegen-verify then FAILED (exit 2): TLC rejected 18446744073709551615 in meerkat_machine (ci.cfg); make machine-verify exited 1 and the dispatcher rejected the push. No failed hook was bypassed.",
-    "Post-failure authenticated git ls-remote --heads origin refs/heads/luka-crnkovicfriis-abk-mobkit-lease-skill-correction: exit 0, empty result (branch not published). git status --porcelain: empty. Commit still contains exactly one insertion/one deletion in item 37.",
+    "Post-failure authenticated git ls-remote --heads origin refs/heads/mobkit-lease-skill-correction: exit 0, empty result (branch not published). git status --porcelain: empty. Commit still contains exactly one insertion/one deletion in item 37.",
     "Exported upstream-skill-correction.patch directly from git diff HEAD^ HEAD -- .claude/skills/meerkat-architecture/references/gotchas.md. git apply --check --reverse against the clean committed worktree passed without modifying files. SHA-256: 4de1cbf3e10de0f6e2b393f33f3fdd227da14631fdc1ce64927e6170d246b0b7."
   ],
   "caveats": [

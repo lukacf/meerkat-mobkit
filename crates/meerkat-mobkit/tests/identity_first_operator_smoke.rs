@@ -2,7 +2,7 @@
 #![allow(clippy::all)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! OB3-scenario E2E smoke test with REAL LLM API calls.
+//! Operator-scenario E2E smoke test with REAL LLM API calls.
 //!
 //! Proves the identity-first pipeline works end-to-end through the shipped
 //! MobKit UnifiedRuntimeBuilder → SessionBridge → real agent sessions.
@@ -89,8 +89,8 @@ fn spec(name: &str, addr: AgentAddressability, profile: &str) -> DurableAgentSpe
     }
 }
 
-/// Build a MobDefinition for OB3 smoke tests.
-fn ob3_definition(model: &str) -> MobDefinition {
+/// Build a MobDefinition for operator smoke tests.
+fn operator_definition(model: &str) -> MobDefinition {
     let mut profiles = BTreeMap::new();
 
     profiles.insert(
@@ -143,7 +143,7 @@ fn ob3_definition(model: &str) -> MobDefinition {
         })),
     );
 
-    let mut definition = MobDefinition::explicit(MobId::from("ob3-smoke"));
+    let mut definition = MobDefinition::explicit(MobId::from("ops-smoke"));
     definition.profiles = profiles;
     definition.wiring = WiringRules {
         auto_wire_orchestrator: false,
@@ -197,7 +197,7 @@ impl AgentCustomizer for NoopCustomizer {
 }
 
 // ===========================================================================
-// OB3-01: Identity-first send → real LLM response
+// SMOKE-01: Identity-first send → real LLM response
 //
 // Full chain: UnifiedRuntimeBuilder.build() → SessionBridge
 // → IdentityRuntime.send() → bridge.deliver() → MobHandle.member().send()
@@ -206,9 +206,9 @@ impl AgentCustomizer for NoopCustomizer {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_01_identity_first_send_real_llm() {
+async fn e2e_smoke_01_identity_first_send_real_llm() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-01: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-01: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -217,11 +217,11 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-01] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-01] Building UnifiedRuntime with model={model}...");
 
     // --- Build the shipped runtime ---
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -243,7 +243,7 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-01".to_string(),
+        runtime_instance_id: "ops-01".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -258,7 +258,7 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
     )];
 
     // --- restore_flow: spawns a REAL mob member ---
-    eprintln!("[OB3-01] Running restore_flow (spawns real agent)...");
+    eprintln!("[SMOKE-01] Running restore_flow (spawns real agent)...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -273,14 +273,14 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
         other => panic!("expected Created, got {other:?}"),
     };
     eprintln!(
-        "[OB3-01] alice created: session={}, runtime_id={}",
+        "[SMOKE-01] alice created: session={}, runtime_id={}",
         alice_record.session_id, alice_record.agent_runtime_id
     );
 
     // --- Send via identity-first API ---
     // Prompt asks the LLM to compute 7*6 and say SMOKE_OK.
     // We verify "42" appears in the ASSISTANT response (not in the prompt).
-    eprintln!("[OB3-01] Sending message via identity_runtime.send()...");
+    eprintln!("[SMOKE-01] Sending message via identity_runtime.send()...");
     let content = meerkat_core::ContentInput::Text(
         "What is 7 multiplied by 6? State the number and say SMOKE_OK.".to_string(),
     );
@@ -308,7 +308,7 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
         );
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-01] LLM output_preview: {output}");
+    eprintln!("[SMOKE-01] LLM output_preview: {output}");
 
     // Verify the LLM actually computed the answer — "42" can only come from the model
     assert!(
@@ -318,7 +318,7 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-01] Real LLM responded in {:.1}s",
+        "[SMOKE-01] Real LLM responded in {:.1}s",
         elapsed.as_secs_f64()
     );
 
@@ -350,11 +350,11 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
         "send to InternalOnly should be NotAddressable: {reject:?}"
     );
 
-    eprintln!("[OB3-01] PASSED — identity-first → bridge → mob → real LLM ✓");
+    eprintln!("[SMOKE-01] PASSED - identity-first → bridge → mob → real LLM ✓");
 }
 
 // ===========================================================================
-// OB3-02: Dynamic roster change — add subscriber mid-lifecycle
+// SMOKE-02: Dynamic roster change - add subscriber mid-lifecycle
 //
 // Boot with 1 initiative + 1 personal, verify LLM works, then reconcile
 // to add a second personal agent ("personal:carol"). Verify carol fresh-creates
@@ -363,9 +363,9 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
+async fn e2e_smoke_02_dynamic_roster_add_subscriber() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-02: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-02: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -374,10 +374,10 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-02] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-02] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -397,7 +397,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-02".to_string(),
+        runtime_instance_id: "ops-02".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -411,7 +411,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
         "personal",
     )];
 
-    eprintln!("[OB3-02] Phase 1: restore_flow with alice only...");
+    eprintln!("[SMOKE-02] Phase 1: restore_flow with alice only...");
     let result = restore_flow(
         &identity_rt,
         &roster_v1,
@@ -427,12 +427,12 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
     };
     let alice_session_v1 = alice_record.session_id.clone();
     eprintln!(
-        "[OB3-02] alice created: session={}",
+        "[SMOKE-02] alice created: session={}",
         alice_record.session_id
     );
 
     // Send to alice to prove she works
-    eprintln!("[OB3-02] Sending to alice...");
+    eprintln!("[SMOKE-02] Sending to alice...");
     let content =
         meerkat_core::ContentInput::Text("Say only the word ALPHA. Nothing else.".to_string());
     identity_rt
@@ -456,7 +456,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
         );
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-02] alice responded to first message");
+    eprintln!("[SMOKE-02] alice responded to first message");
 
     // --- Phase 2: Add carol via full-roster restore_flow ---
     let roster_v2 = vec![
@@ -472,7 +472,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
         ),
     ];
 
-    eprintln!("[OB3-02] Phase 2: restore_flow with full roster (alice + carol)...");
+    eprintln!("[SMOKE-02] Phase 2: restore_flow with full roster (alice + carol)...");
     let result2 = restore_flow(
         &identity_rt,
         &roster_v2,
@@ -488,7 +488,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
         other => panic!("expected Created for carol, got {other:?}"),
     };
     eprintln!(
-        "[OB3-02] carol created: session={}",
+        "[SMOKE-02] carol created: session={}",
         carol_record.session_id
     );
 
@@ -514,7 +514,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
     );
 
     // Verify carol can receive messages
-    eprintln!("[OB3-02] Sending to carol...");
+    eprintln!("[SMOKE-02] Sending to carol...");
     let carol_content =
         meerkat_core::ContentInput::Text("Say only the word BRAVO. Nothing else.".to_string());
     identity_rt
@@ -539,14 +539,14 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-02] PASSED in {:.1}s — roster reconciliation + carol fresh-create ✓",
+        "[SMOKE-02] PASSED in {:.1}s - roster reconciliation + carol fresh-create ✓",
         elapsed.as_secs_f64()
     );
     assert!(elapsed.as_secs() >= 1, "too fast for real LLM calls");
 }
 
 // ===========================================================================
-// OB3-03: Respawn stuck agent without losing history
+// SMOKE-03: Respawn stuck agent without losing history
 //
 // Send a message, then respawn the agent. Verify same AgentRuntimeId,
 // same generation, and that the agent can respond to new messages after
@@ -555,9 +555,9 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_03_respawn_preserves_history() {
+async fn e2e_smoke_03_respawn_preserves_history() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-03: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-03: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -566,10 +566,10 @@ async fn e2e_ob3_03_respawn_preserves_history() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-03] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-03] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -589,7 +589,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-03".to_string(),
+        runtime_instance_id: "ops-03".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -602,7 +602,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
         "personal",
     )];
 
-    eprintln!("[OB3-03] Bootstrapping alice...");
+    eprintln!("[SMOKE-03] Bootstrapping alice...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -619,11 +619,11 @@ async fn e2e_ob3_03_respawn_preserves_history() {
     let original_runtime_id = alice_record.agent_runtime_id.clone();
     let original_generation = alice_record.generation;
     eprintln!(
-        "[OB3-03] alice created: runtime_id={original_runtime_id}, gen={original_generation}"
+        "[SMOKE-03] alice created: runtime_id={original_runtime_id}, gen={original_generation}"
     );
 
     // Send first message
-    eprintln!("[OB3-03] Sending first message...");
+    eprintln!("[SMOKE-03] Sending first message...");
     let content =
         meerkat_core::ContentInput::Text("What is 3+4? Reply with just the number.".to_string());
     identity_rt
@@ -644,7 +644,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
         assert!(Instant::now() < deadline, "timed out waiting for response");
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-03] Got first response, now respawning...");
+    eprintln!("[SMOKE-03] Got first response, now respawning...");
 
     // Respawn
     let respawn_record = identity_rt
@@ -662,7 +662,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
         "respawn should NOT advance ContinuityGeneration"
     );
     eprintln!(
-        "[OB3-03] Respawn preserved: runtime_id={}, gen={}",
+        "[SMOKE-03] Respawn preserved: runtime_id={}, gen={}",
         respawn_record.agent_runtime_id, respawn_record.generation
     );
 
@@ -676,7 +676,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
     // Send post-respawn message that tests whether the agent remembers
     // the prior conversation. If session resume works, the agent should
     // know we asked about 3+4 = 7 earlier.
-    eprintln!("[OB3-03] Sending post-respawn memory test...");
+    eprintln!("[SMOKE-03] Sending post-respawn memory test...");
     let post_content = meerkat_core::ContentInput::Text(
         "What number did I ask you to compute in my previous message? \
          Reply with that number and the word MEMORY_OK."
@@ -708,7 +708,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
         );
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-03] Post-respawn response: {post_respawn_output}");
+    eprintln!("[SMOKE-03] Post-respawn response: {post_respawn_output}");
 
     // The LLM should reference "7" (from 3+4) — proving it has history
     assert!(
@@ -718,14 +718,14 @@ async fn e2e_ob3_03_respawn_preserves_history() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-03] PASSED in {:.1}s — respawn preserves identity + agent works ✓",
+        "[SMOKE-03] PASSED in {:.1}s - respawn preserves identity + agent works ✓",
         elapsed.as_secs_f64()
     );
     assert!(elapsed.as_secs() >= 1, "too fast for real LLM calls");
 }
 
 // ===========================================================================
-// OB3-04: Reset agent — intentional clean slate
+// SMOKE-04: Reset agent - intentional clean slate
 //
 // Send a message, then reset the agent. Verify generation advances,
 // new SessionId minted, checkpoint version resets to 0.
@@ -733,9 +733,9 @@ async fn e2e_ob3_03_respawn_preserves_history() {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_04_reset_clean_slate() {
+async fn e2e_smoke_04_reset_clean_slate() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-04: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-04: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -744,10 +744,10 @@ async fn e2e_ob3_04_reset_clean_slate() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-04] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-04] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -767,7 +767,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-04".to_string(),
+        runtime_instance_id: "ops-04".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -780,7 +780,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
         "personal",
     )];
 
-    eprintln!("[OB3-04] Bootstrapping alice...");
+    eprintln!("[SMOKE-04] Bootstrapping alice...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -796,10 +796,10 @@ async fn e2e_ob3_04_reset_clean_slate() {
     };
     let old_session = alice_record.session_id.clone();
     let old_generation = alice_record.generation;
-    eprintln!("[OB3-04] alice created: session={old_session}, gen={old_generation}");
+    eprintln!("[SMOKE-04] alice created: session={old_session}, gen={old_generation}");
 
     // Send initial message to build history
-    eprintln!("[OB3-04] Sending initial message...");
+    eprintln!("[SMOKE-04] Sending initial message...");
     let content = meerkat_core::ContentInput::Text("Remember this number: 42. Say OK.".to_string());
     identity_rt
         .send(&id("personal:alice"), &content)
@@ -819,7 +819,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
         assert!(Instant::now() < deadline, "timed out waiting for response");
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-04] Got response, now resetting...");
+    eprintln!("[SMOKE-04] Got response, now resetting...");
 
     // Reset the agent
     let reset_record = identity_rt
@@ -861,7 +861,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-04] PASSED in {:.1}s — reset: new gen={}, new session={}, cpv=0 ✓",
+        "[SMOKE-04] PASSED in {:.1}s - reset: new gen={}, new session={}, cpv=0 ✓",
         elapsed.as_secs_f64(),
         reset_record.generation,
         reset_record.session_id,
@@ -870,7 +870,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
 }
 
 // ===========================================================================
-// OB3-05: Scheduled review with async checkpoint durability
+// SMOKE-05: Scheduled review with async checkpoint durability
 //
 // Tests checkpoint semantics: dispatch with correlation_id, verify checkpoint
 // version advances, verify checkpoint not stalled. Does NOT need LLM calls
@@ -880,9 +880,9 @@ async fn e2e_ob3_04_reset_clean_slate() {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_05_async_checkpoint_durability() {
+async fn e2e_smoke_05_async_checkpoint_durability() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-05: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-05: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -891,10 +891,10 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-05] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-05] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -914,7 +914,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-05".to_string(),
+        runtime_instance_id: "ops-05".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -931,7 +931,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
         ),
     ];
 
-    eprintln!("[OB3-05] Bootstrapping roster...");
+    eprintln!("[SMOKE-05] Bootstrapping roster...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -951,7 +951,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
     };
 
     // Dispatch to review agent (InternalOnly) with correlation_id
-    eprintln!("[OB3-05] Dispatching to review:main with correlation_id...");
+    eprintln!("[SMOKE-05] Dispatching to review:main with correlation_id...");
     let dispatch_input = DispatchInput {
         content: meerkat_core::ContentInput::Text(
             "Run weekly review. Say REVIEW_DONE.".to_string(),
@@ -969,7 +969,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
         is_durable,
         "dispatch should be durable with has_runtime_store=true"
     );
-    eprintln!("[OB3-05] Dispatch succeeded: fencing_token={token}, durable={is_durable}");
+    eprintln!("[SMOKE-05] Dispatch succeeded: fencing_token={token}, durable={is_durable}");
 
     // Wait for review to process
     let mob_handle = unified.mob_handle();
@@ -987,7 +987,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
         );
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-05] Review agent responded");
+    eprintln!("[SMOKE-05] Review agent responded");
 
     // Verify send() to InternalOnly is rejected
     let reject = identity_rt
@@ -1002,7 +1002,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
     );
 
     // Send to alice (Addressable)
-    eprintln!("[OB3-05] Sending to alice...");
+    eprintln!("[SMOKE-05] Sending to alice...");
     identity_rt
         .send(
             &id("personal:alice"),
@@ -1043,14 +1043,14 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-05] PASSED in {:.1}s — dispatch with correlation_id + checkpoint semantics ✓",
+        "[SMOKE-05] PASSED in {:.1}s - dispatch with correlation_id + checkpoint semantics ✓",
         elapsed.as_secs_f64(),
     );
     assert!(elapsed.as_secs() >= 1, "too fast for real LLM calls");
 }
 
 // ===========================================================================
-// OB3-06: Lease contention — rolling deploy
+// SMOKE-06: Lease contention - rolling deploy
 //
 // Tests lease semantics: Runtime A acquires leases, Runtime B tries to
 // acquire (gets AlreadyHeld), A releases, B acquires successfully.
@@ -1097,9 +1097,9 @@ impl LeaseProvider for ContendedLeaseProvider {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_06_lease_contention_rolling_deploy() {
+async fn e2e_smoke_06_lease_contention_rolling_deploy() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-06: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-06: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -1108,10 +1108,10 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-06] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-06] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -1131,7 +1131,7 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
     let shared_leases = Arc::new(ContendedLeaseProvider::new());
 
     // --- Runtime A boots and acquires leases ---
-    eprintln!("[OB3-06] Runtime A booting...");
+    eprintln!("[SMOKE-06] Runtime A booting...");
     let rt_a = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: shared_leases.clone() as Arc<dyn LeaseProvider>,
@@ -1161,10 +1161,10 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
         RestoreOutcome::Created { record, .. } => record.clone(),
         other => panic!("expected Created, got {other:?}"),
     };
-    eprintln!("[OB3-06] Runtime A holds lease for alice");
+    eprintln!("[SMOKE-06] Runtime A holds lease for alice");
 
     // --- Runtime B tries to acquire — should get AlreadyHeld ---
-    eprintln!("[OB3-06] Runtime B attempting lease acquisition...");
+    eprintln!("[SMOKE-06] Runtime B attempting lease acquisition...");
     let identities = vec![id("personal:alice")];
     let b_results = shared_leases
         .acquire_leases(&identities, "pod-B")
@@ -1175,13 +1175,13 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
     match alice_result {
         LeaseAcquireResult::AlreadyHeld { holder, .. } => {
             assert_eq!(holder, "pod-A", "should be held by pod-A");
-            eprintln!("[OB3-06] Runtime B correctly got AlreadyHeld (holder=pod-A)");
+            eprintln!("[SMOKE-06] Runtime B correctly got AlreadyHeld (holder=pod-A)");
         }
         other => panic!("expected AlreadyHeld, got {other:?}"),
     }
 
     // --- Runtime A releases leases (simulates graceful shutdown) ---
-    eprintln!("[OB3-06] Runtime A releasing leases...");
+    eprintln!("[SMOKE-06] Runtime A releasing leases...");
     // We need the grant from A's lease to release it
     let a_status = rt_a.status(&id("personal:alice")).await.expect("status");
     let a_token = a_status
@@ -1198,10 +1198,10 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
         .release_leases(&release_grants)
         .await
         .expect("release");
-    eprintln!("[OB3-06] Runtime A released leases");
+    eprintln!("[SMOKE-06] Runtime A released leases");
 
     // --- Runtime B retries — should succeed now ---
-    eprintln!("[OB3-06] Runtime B retrying lease acquisition...");
+    eprintln!("[SMOKE-06] Runtime B retrying lease acquisition...");
     let b_results2 = shared_leases
         .acquire_leases(&identities, "pod-B")
         .await
@@ -1210,7 +1210,7 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
     match b_results2.get(&id("personal:alice")).unwrap() {
         LeaseAcquireResult::Acquired(grant) => {
             eprintln!(
-                "[OB3-06] Runtime B acquired lease: fencing_token={}",
+                "[SMOKE-06] Runtime B acquired lease: fencing_token={}",
                 grant.fencing_token
             );
             // The new fencing token should be higher than A's
@@ -1239,7 +1239,7 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
                 "B should see A's session in continuity store"
             );
             eprintln!(
-                "[OB3-06] Runtime B sees alice continuity: session={}",
+                "[SMOKE-06] Runtime B sees alice continuity: session={}",
                 record.session_id
             );
         }
@@ -1248,13 +1248,13 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-06] PASSED in {:.1}s — lease contention + rolling deploy ✓",
+        "[SMOKE-06] PASSED in {:.1}s - lease contention + rolling deploy ✓",
         elapsed.as_secs_f64(),
     );
 }
 
 // ===========================================================================
-// OB3-07: Delete subscriber — full identity removal
+// SMOKE-07: Delete subscriber - full identity removal
 //
 // Create 2 personal agents, delete one, verify continuity record gone.
 // Re-run restore_flow — deleted identity should be Uninitialized → fresh-create
@@ -1263,9 +1263,9 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_07_delete_and_recreate() {
+async fn e2e_smoke_07_delete_and_recreate() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-07: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-07: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -1274,10 +1274,10 @@ async fn e2e_ob3_07_delete_and_recreate() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-07] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-07] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -1297,7 +1297,7 @@ async fn e2e_ob3_07_delete_and_recreate() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-07".to_string(),
+        runtime_instance_id: "ops-07".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -1313,7 +1313,7 @@ async fn e2e_ob3_07_delete_and_recreate() {
         spec("personal:bob", AgentAddressability::Addressable, "personal"),
     ];
 
-    eprintln!("[OB3-07] Bootstrapping alice + bob...");
+    eprintln!("[SMOKE-07] Bootstrapping alice + bob...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -1332,12 +1332,12 @@ async fn e2e_ob3_07_delete_and_recreate() {
         other => panic!("expected Created for bob, got {other:?}"),
     };
     eprintln!(
-        "[OB3-07] alice={}, bob={}",
+        "[SMOKE-07] alice={}, bob={}",
         alice_record.agent_runtime_id, bob_record.agent_runtime_id
     );
 
     // Send to both to build some history
-    eprintln!("[OB3-07] Sending to both agents...");
+    eprintln!("[SMOKE-07] Sending to both agents...");
     identity_rt
         .send(
             &id("personal:alice"),
@@ -1366,10 +1366,10 @@ async fn e2e_ob3_07_delete_and_recreate() {
         assert!(Instant::now() < deadline, "timed out waiting for alice");
         sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("[OB3-07] alice responded");
+    eprintln!("[SMOKE-07] alice responded");
 
     // Delete bob — delete_identity retires the mob member and removes continuity
-    eprintln!("[OB3-07] Deleting bob...");
+    eprintln!("[SMOKE-07] Deleting bob...");
     identity_rt
         .delete_identity(&id("personal:bob"))
         .await
@@ -1395,14 +1395,14 @@ async fn e2e_ob3_07_delete_and_recreate() {
         .expect("resolve bob after delete");
     match resolved.get(&id("personal:bob")).unwrap() {
         meerkat_mobkit::identity_first::ContinuityResolveState::Uninitialized => {
-            eprintln!("[OB3-07] bob correctly resolves as Uninitialized after delete");
+            eprintln!("[SMOKE-07] bob correctly resolves as Uninitialized after delete");
         }
         other => panic!("expected Uninitialized for deleted bob, got {other:?}"),
     }
 
     // Re-bootstrap with full roster — bob reappears as Uninitialized → fresh-create,
     // alice is already active so restore_flow skips her bridge calls.
-    eprintln!("[OB3-07] Re-bootstrapping with full roster...");
+    eprintln!("[SMOKE-07] Re-bootstrapping with full roster...");
     let result2 = restore_flow(
         &identity_rt,
         &roster,
@@ -1428,7 +1428,7 @@ async fn e2e_ob3_07_delete_and_recreate() {
         "reappearing bob should start at generation 0"
     );
     eprintln!(
-        "[OB3-07] bob recreated: old_session={}, new_session={}, rt={}",
+        "[SMOKE-07] bob recreated: old_session={}, new_session={}, rt={}",
         bob_record.session_id, bob_new.session_id, bob_new.agent_runtime_id,
     );
 
@@ -1447,27 +1447,27 @@ async fn e2e_ob3_07_delete_and_recreate() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-07] PASSED in {:.1}s — delete + recreate with new runtime ID ✓",
+        "[SMOKE-07] PASSED in {:.1}s - delete + recreate with new runtime ID ✓",
         elapsed.as_secs_f64(),
     );
     assert!(elapsed.as_secs() >= 1, "too fast for real LLM calls");
 }
 
 // ===========================================================================
-// OB3-08: Customizer uses topology for dynamic prompts
+// SMOKE-08: Customizer uses topology for dynamic prompts
 //
 // TopologyProvider wires alpha↔alice and alpha↔bob. Customizer appends
 // subscriber names to alpha's system prompt. Verify the prompt content
 // matches the topology edges.
 // ===========================================================================
 
-/// Topology provider that wires specific edges for OB3-08.
-struct Ob3Topology {
+/// Topology provider that wires specific edges for SMOKE-08.
+struct OperatorTopology {
     edges: Vec<(String, String)>,
 }
 
 #[async_trait]
-impl TopologyProvider for Ob3Topology {
+impl TopologyProvider for OperatorTopology {
     async fn compute_edges(
         &self,
         _target_identities: &[AgentIdentity],
@@ -1528,9 +1528,9 @@ impl AgentCustomizer for TopologyAwareCustomizer {
 
 #[tokio::test]
 #[ignore = "integration-real: live API"]
-async fn e2e_ob3_08_customizer_topology_prompts() {
+async fn e2e_smoke_08_customizer_topology_prompts() {
     if !has_api_key() {
-        eprintln!("Skipping OB3-08: no ANTHROPIC_API_KEY");
+        eprintln!("Skipping SMOKE-08: no ANTHROPIC_API_KEY");
         return;
     }
 
@@ -1539,10 +1539,10 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
     let state_path = temp.path().join("state");
     let start = Instant::now();
 
-    eprintln!("[OB3-08] Building UnifiedRuntime with model={model}...");
+    eprintln!("[SMOKE-08] Building UnifiedRuntime with model={model}...");
 
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(ob3_definition(&model))
+        .definition(operator_definition(&model))
         .persistent_state(&state_path)
         .comms(true)
         .build()
@@ -1562,7 +1562,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
     let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: store.clone() as Arc<dyn ContinuityStore>,
         lease_provider: leases.clone(),
-        runtime_instance_id: "ob3-08".to_string(),
+        runtime_instance_id: "ops-08".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
         bridge: Some(bridge),
@@ -1570,7 +1570,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
     });
 
     // Topology: alpha↔alice, alpha↔bob, beta↔carol
-    let topology = Ob3Topology {
+    let topology = OperatorTopology {
         edges: vec![
             ("review:alpha".into(), "personal:alice".into()),
             ("review:alpha".into(), "personal:bob".into()),
@@ -1594,7 +1594,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
         ),
     ];
 
-    eprintln!("[OB3-08] Phase 1: Bootstrap with topology...");
+    eprintln!("[SMOKE-08] Phase 1: Bootstrap with topology...");
     let result = restore_flow(
         &identity_rt,
         &roster,
@@ -1624,7 +1624,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
         !alpha_prompt.contains("personal:carol"),
         "alpha prompt should NOT mention carol: {alpha_prompt}"
     );
-    eprintln!("[OB3-08] alpha prompt: {alpha_prompt}");
+    eprintln!("[SMOKE-08] alpha prompt: {alpha_prompt}");
 
     // Verify beta's draft has carol but not alice/bob
     let beta_draft = match result.outcomes.get(&id("review:beta")).unwrap() {
@@ -1646,7 +1646,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
         !beta_prompt.contains("personal:bob"),
         "beta prompt should NOT mention bob: {beta_prompt}"
     );
-    eprintln!("[OB3-08] beta prompt: {beta_prompt}");
+    eprintln!("[SMOKE-08] beta prompt: {beta_prompt}");
 
     // Verify managed_edges in result
     assert_eq!(
@@ -1656,8 +1656,8 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
     );
 
     // Phase 2: Add dave wired to alpha, re-run restore_flow with full roster
-    eprintln!("[OB3-08] Phase 2: Adding dave wired to alpha...");
-    let topology_v2 = Ob3Topology {
+    eprintln!("[SMOKE-08] Phase 2: Adding dave wired to alpha...");
+    let topology_v2 = OperatorTopology {
         edges: vec![
             ("review:alpha".into(), "personal:alice".into()),
             ("review:alpha".into(), "personal:bob".into()),
@@ -1700,7 +1700,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
     let dave_outcome = result2.outcomes.get(&id("personal:dave")).unwrap();
     match dave_outcome {
         RestoreOutcome::Created { .. } => {
-            eprintln!("[OB3-08] dave fresh-created");
+            eprintln!("[SMOKE-08] dave fresh-created");
         }
         other => panic!("expected Created for dave, got {other:?}"),
     }
@@ -1719,7 +1719,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
         alpha_v2_prompt.contains("personal:dave"),
         "alpha v2 prompt should mention dave: {alpha_v2_prompt}"
     );
-    eprintln!("[OB3-08] alpha v2 prompt: {alpha_v2_prompt}");
+    eprintln!("[SMOKE-08] alpha v2 prompt: {alpha_v2_prompt}");
 
     // beta's prompt should be unchanged (still only carol)
     let beta_v2_draft = match result2.outcomes.get(&id("review:beta")).unwrap() {
@@ -1749,7 +1749,7 @@ async fn e2e_ob3_08_customizer_topology_prompts() {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "[OB3-08] PASSED in {:.1}s — customizer + topology dynamic prompts ✓",
+        "[SMOKE-08] PASSED in {:.1}s - customizer + topology dynamic prompts ✓",
         elapsed.as_secs_f64(),
     );
 }

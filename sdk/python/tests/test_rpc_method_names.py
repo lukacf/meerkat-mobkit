@@ -1678,7 +1678,7 @@ async def test_live_method_names_and_identity_param():
     })
 
     opened = await handle.live_open(
-        "reachy",
+        "robot",
         model="gpt-realtime-2",
         instructions=[
             "Use the current room voice.",
@@ -1688,14 +1688,14 @@ async def test_live_method_names_and_identity_param():
     assert opened["channel_id"] == "ch-1"
     assert opened["transport"]["type"] == "websocket"
 
-    status = await handle.live_status("reachy")
+    status = await handle.live_status("robot")
     assert status["open"] is True
 
     closed = await handle.live_close("live-channel-1")
     assert closed["closed"] is True
     assert calls[-1] == ("mobkit/live/close", {"channel_id": "live-channel-1"})
 
-    refreshed = await handle.live_refresh("reachy")
+    refreshed = await handle.live_refresh("robot")
     assert refreshed["refreshed"] is True
 
     assert [c[0] for c in calls] == [
@@ -1705,14 +1705,14 @@ async def test_live_method_names_and_identity_param():
         "mobkit/live/refresh",
     ]
     assert calls[0][1] == {
-        "identity": "reachy",
+        "identity": "robot",
         "model": "gpt-realtime-2",
         "instructions": [
             "Use the current room voice.",
             "Keep replies concise.",
         ],
     }
-    assert calls[1][1] == {"identity": "reachy"}
+    assert calls[1][1] == {"identity": "robot"}
 
 
 @pytest.mark.asyncio
@@ -1731,7 +1731,7 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
         },
         "mobkit/live/open": {
             "channel_id": "ch-typed",
-            "target_identity": "identity:reachy",
+            "target_identity": "identity:robot",
             "execution_mode": "function_bridge",
             "pending_receipt": "pending-receipt",
             "transport": {"transport": "webrtc", "token": "t", "answer_method": "live/webrtc/answer"},
@@ -1751,23 +1751,23 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
     })
 
     opened = await handle.live_open_typed(
-        "identity:reachy",
+        "identity:robot",
         LiveExecutionIdentityV1(
-            profile_id="homecore.reachy.open-room.v1",
+            profile_id="example.device.open-room.v1",
         ),
     )
 
     assert opened.channel_id == "ch-typed"
-    assert opened.target_identity == "identity:reachy"
+    assert opened.target_identity == "identity:robot"
     assert opened.execution_mode == "function_bridge"
     assert calls[0][0] == "mobkit/capabilities"
     assert calls[1] == (
         "mobkit/live/open",
         {
-            "identity": "identity:reachy",
+            "identity": "identity:robot",
             "execution_identity": {
                 "version": "v1",
-                "profile_id": "homecore.reachy.open-room.v1",
+                "profile_id": "example.device.open-room.v1",
             },
         },
     )
@@ -1788,9 +1788,9 @@ async def test_live_open_typed_refuses_execution_identity_before_old_gateway_ope
 
     with pytest.raises(CapabilityUnavailableError):
         await handle.live_open_typed(
-            "identity:reachy",
+            "identity:robot",
             LiveExecutionIdentityV1(
-                profile_id="homecore.reachy.open-room.v1",
+                profile_id="example.device.open-room.v1",
             ),
         )
 
@@ -1821,9 +1821,9 @@ async def test_strict_live_open_rejects_catalog_and_responses_bridge_overrides(
     handle, calls = make_mock_mob_handle({})
     with pytest.raises(ValueError, match="experimental live/open does not accept"):
         await handle.live_open_typed(
-            "identity:reachy",
+            "identity:robot",
             LiveExecutionIdentityV1(
-                profile_id="homecore.reachy.open-room.v1",
+                profile_id="example.device.open-room.v1",
             ),
             **{field: value},
         )
@@ -1856,7 +1856,7 @@ async def test_strict_live_open_refuses_missing_server_target_identity():
         await handle.live_open_typed(
             "caller-alias",
             LiveExecutionIdentityV1(
-                profile_id="homecore.reachy.open-room.v1",
+                profile_id="example.device.open-room.v1",
             ),
         )
 
@@ -1906,7 +1906,7 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
         },
         "mobkit/live/open": {
             "channel_id": "chan-1",
-            "target_identity": "identity:reachy",
+            "target_identity": "identity:robot",
             "execution_mode": "function_bridge",
             "pending_receipt": "pending-receipt",
             "transport": {
@@ -1936,7 +1936,7 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
             "phase": "active",
             "handle": {
                 "channel_id": "chan-1",
-                "target_identity": "identity:reachy",
+                "target_identity": "identity:robot",
                 "execution_mode": "function_bridge",
                 "activation_receipt": "active-receipt",
             },
@@ -1945,9 +1945,9 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
     })
 
     active = await handle.live_connect(
-        "identity:reachy",
+        "identity:robot",
         LiveExecutionIdentityV1(
-            profile_id="homecore.reachy.open-room.v1",
+            profile_id="example.device.open-room.v1",
         ),
         Owner(),
         activation_poll_interval=0,
@@ -1968,13 +1968,13 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
         "mobkit/live/status",
     ]
     assert calls[2][1] == {
-        "identity": "identity:reachy",
+        "identity": "identity:robot",
         "channel_id": "chan-1",
         "pending_receipt": "pending-receipt",
     }
     assert calls[3][1]["readiness_receipt"] == "ready-receipt"
     assert calls[4][1] == {
-        "identity": "identity:reachy",
+        "identity": "identity:robot",
         "channel_id": "chan-1",
         "pending_receipt": "pending-receipt",
     }
@@ -1984,7 +1984,7 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
     assert calls[-1] == (
         "mobkit/live/playback_owner/revoke",
         {
-            "identity": "identity:reachy",
+            "identity": "identity:robot",
             "channel_id": "chan-1",
             "pending_receipt": "pending-receipt",
             "readiness_receipt": "ready-receipt",
@@ -2025,7 +2025,7 @@ async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revo
         },
         "mobkit/live/open": {
             "channel_id": "chan-1",
-            "target_identity": "identity:reachy",
+            "target_identity": "identity:robot",
             "execution_mode": "function_bridge",
             "pending_receipt": "pending-receipt",
             "transport": {
@@ -2057,9 +2057,9 @@ async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revo
 
     with pytest.raises(RuntimeError, match="revoked before activation"):
         await handle.live_connect(
-            "identity:reachy",
+            "identity:robot",
             LiveExecutionIdentityV1(
-                profile_id="homecore.reachy.open-room.v1",
+                profile_id="example.device.open-room.v1",
             ),
             Owner(),
             activation_poll_interval=0,
@@ -2075,7 +2075,7 @@ async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revo
         "mobkit/live/close",
     ]
     assert calls[-1][1] == {
-        "identity": "identity:reachy",
+        "identity": "identity:robot",
         "channel_id": "chan-1",
         "pending_receipt": "pending-receipt",
     }
@@ -2087,7 +2087,7 @@ async def test_pending_handle_cannot_invoke_active_provider_operations():
 
     pending = PendingLiveChannelHandle.from_dict({
         "channel_id": "chan-1",
-        "target_identity": "identity:reachy",
+        "target_identity": "identity:robot",
         "execution_mode": "function_bridge",
         "pending_receipt": "pending-receipt",
         "transport": {
@@ -2122,14 +2122,14 @@ async def test_live_replacement_required_uses_active_channel_authority():
         "mobkit/live/replacement_required": {"required": False},
     })
     active = ActiveLiveChannelHandle(
-        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+        "chan-1", "identity:robot", "function_bridge", "active-receipt"
     )
     result = await handle.live_replacement_required(active)
     assert result.required is False
     assert calls == [(
         "mobkit/live/replacement_required",
         {
-            "identity": "identity:reachy",
+            "identity": "identity:robot",
             "channel_id": "chan-1",
             "activation_receipt": "active-receipt",
         },
@@ -2144,7 +2144,7 @@ async def test_live_playback_complete_has_no_caller_interaction_identity():
         "mobkit/live/playback_complete": {"status": "completed"},
     })
     active = ActiveLiveChannelHandle(
-        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+        "chan-1", "identity:robot", "function_bridge", "active-receipt"
     )
     output = LiveAssistantOutputAddress("chan-1", "opaque-output-1", 0)
     result = await handle.live_playback_complete(active, output)
@@ -2152,7 +2152,7 @@ async def test_live_playback_complete_has_no_caller_interaction_identity():
     assert calls == [(
         "mobkit/live/playback_complete",
         {
-            "identity": "identity:reachy",
+            "identity": "identity:robot",
             "channel_id": "chan-1",
             "activation_receipt": "active-receipt",
             "output_id": "opaque-output-1",
@@ -2168,14 +2168,14 @@ async def test_live_truncate_wire_shape():
         "mobkit/live/truncate": {"status": "truncated"},
     })
     active = ActiveLiveChannelHandle(
-        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+        "chan-1", "identity:robot", "function_bridge", "active-receipt"
     )
     output = LiveAssistantOutputAddress("chan-1", "opaque-output-1", 0)
     result = await handle.live_truncate(active, output, 1200)
     assert result["status"] == "truncated"
     assert calls[0][0] == "mobkit/live/truncate"
     assert calls[0][1] == {
-        "identity": "identity:reachy",
+        "identity": "identity:robot",
         "channel_id": "chan-1",
         "activation_receipt": "active-receipt",
         "output_id": "opaque-output-1",
@@ -2195,7 +2195,7 @@ async def test_live_output_callback_streams_to_terminal_and_closes_on_teardown()
     dispatcher = CallbackDispatcher()
     handle._runtime._dispatcher = dispatcher
     active = ActiveLiveChannelHandle(
-        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+        "chan-1", "identity:robot", "function_bridge", "active-receipt"
     )
     stream = handle.live_outputs(active, capacity=1)
     next_output = asyncio.create_task(anext(stream))
@@ -2212,7 +2212,7 @@ async def test_live_output_callback_streams_to_terminal_and_closes_on_teardown()
         (
             "mobkit/live/playback_complete",
             {
-                "identity": "identity:reachy",
+                "identity": "identity:robot",
                 "channel_id": "chan-1",
                 "activation_receipt": "active-receipt",
                 "output_id": "opaque-output-1",
@@ -2221,7 +2221,7 @@ async def test_live_output_callback_streams_to_terminal_and_closes_on_teardown()
         (
             "mobkit/live/close",
             {
-                "identity": "identity:reachy",
+                "identity": "identity:robot",
                 "channel_id": "chan-1",
                 "activation_receipt": "active-receipt",
             },
@@ -2258,12 +2258,12 @@ async def test_live_send_input_image_wire_shape():
         "mobkit/live/send_input": {"accepted": True},
     })
     result = await handle.live_send_input_image(
-        "reachy", "frame-0001", "image/jpeg", "aGVsbG8="
+        "robot", "frame-0001", "image/jpeg", "aGVsbG8="
     )
     assert result["accepted"] is True
     assert calls[0][0] == "mobkit/live/send_input"
     assert calls[0][1] == {
-        "identity": "reachy",
+        "identity": "robot",
         "chunk": {
             "kind": "image",
             "idempotency_key": "frame-0001",

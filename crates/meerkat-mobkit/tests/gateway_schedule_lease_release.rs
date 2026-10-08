@@ -40,7 +40,7 @@
 //!
 //! Fixed, it is green on repeats rather than on a sample: 6 local runs out of 6,
 //! plus both tests inside the full CI suite (0.8s and 2.4s there, against a 60s
-//! acquisition budget). ob3 measured the neighbouring shutdown race at 4 hangs
+//! acquisition budget). A production deployment measured the neighbouring shutdown race at 4 hangs
 //! in 6 runs on identical Rust, so a single green run on any gateway teardown
 //! path is worth about as much as a coin flip; repeat, do not sample.
 //!

@@ -1,4 +1,4 @@
-//! Operator surgery helper (task #58, HomeCore parent-1 context cliff):
+//! Operator surgery helper (task #58, a downstream app's parent-1 context cliff):
 //! drop byte-identical duplicate System rows from a live mob-hosted
 //! session's durable transcript, keeping the first copy, through the
 //! typed rewrite door - one full-range rewrite commit composed onto the
@@ -191,7 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         meerkat_core::TranscriptRewriteReason::new(
             "operator dedup of byte-identical authored System copies",
         ),
-        Some("homecore-operator/dedup_system_rows".to_string()),
+        Some("operator/dedup_system_rows".to_string()),
         Some(parent_revision),
     )?;
     meerkat::SessionStore::save_transcript_rewrite(adapter.as_ref(), &rewritten, &commit).await?;

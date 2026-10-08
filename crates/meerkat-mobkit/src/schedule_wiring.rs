@@ -876,7 +876,7 @@ fn attach_schedule_tools_with_store_and_binding(
 /// ingress. The stock meerkat-mob-mcp host routes `member_send` through the
 /// EXTERNAL work door, which rejects members whose profile is
 /// `external_addressable = false` ("mob member is not externally
-/// addressable") — HomeCore's domain agents are internal-only by design, and
+/// addressable") — the downstream app's domain agents are internal-only by design, and
 /// flipping them externally addressable to receive their own schedules would
 /// be the wrong fix. This wrapper delivers member-addressed prompts through
 /// the same internal work lane the identity bridge uses
@@ -907,7 +907,7 @@ impl InternalDeliveryScheduleMobHost {
         // identity-first members are already `mk--`-encoded, and the codec
         // deliberately RE-encodes marker-prefixed input — encoding the raw
         // binding id double-encodes those and misses the roster (the 0.7.28
-        // HomeCore field failure: the miss fell through to the external
+        // Downstream app field failure: the miss fell through to the external
         // door). Decode-then-encode canonicalizes both spaces to the roster
         // key; it is the identity on plain member names.
         let member_alias = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
@@ -1429,7 +1429,7 @@ fn triage_poisoned_rows(
 /// Probe whether the schedule firing pipeline can actually deliver, and if
 /// not, name the reason — down to the poisoned row where possible.
 ///
-/// Born on HomeCore 0.7.24, where a tick aborted wholesale on the FIRST
+/// Born on a downstream app on 0.7.24, where a tick aborted wholesale on the FIRST
 /// poisoned row anywhere in the store and the host discarded the error: 31
 /// pending occurrences sat with `lease_expires_at_ms=NULL` and nothing in
 /// any log. meerkat 0.8.11 fixed the starvation half — the driver's listing
@@ -1877,7 +1877,7 @@ mod tests {
         assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 6);
     }
 
-    /// The caller-injected store seam (library mode, the OB3 shape) never
+    /// The caller-injected store seam (library mode, the production shape) never
     /// gates: firing responsibility rides with the injector, and ruling on a
     /// store mobkit does not own is exactly the seam violation the
     /// dual-authority invariant forbids.
@@ -1936,7 +1936,7 @@ mod tests {
         let rewritten =
             rewrite_resumable_session_target_to_mob_member(args, |session_id| async move {
                 assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
-                Some(("homecore".to_string(), "domain:security".to_string()))
+                Some(("example".to_string(), "domain:security".to_string()))
             })
             .await;
 
@@ -1945,7 +1945,7 @@ mod tests {
             json!({
                 "target_kind": "mob",
                 "type": "member",
-                "mob_id": "homecore",
+                "mob_id": "example",
                 "member_id": "domain:security",
                 "action": {
                     "type": "send",
@@ -1997,7 +1997,7 @@ mod tests {
         });
 
         let rewritten = rewrite_resumable_session_target_to_mob_member(args.clone(), |_| async {
-            Some(("homecore".to_string(), "domain:security".to_string()))
+            Some(("example".to_string(), "domain:security".to_string()))
         })
         .await;
 
@@ -2022,7 +2022,7 @@ mod tests {
         });
 
         let rewritten = rewrite_resumable_session_target_to_mob_member(args, |_| async {
-            Some(("homecore".to_string(), "domain:security".to_string()))
+            Some(("example".to_string(), "domain:security".to_string()))
         })
         .await;
 
@@ -2031,7 +2031,7 @@ mod tests {
             json!({
                 "target_kind": "mob",
                 "type": "member",
-                "mob_id": "homecore",
+                "mob_id": "example",
                 "member_id": "domain:security",
                 "action": {
                     "type": "send",
@@ -2049,7 +2049,7 @@ mod tests {
             schedule_dispatcher,
             |session_id| async move {
                 assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
-                Some(("homecore".to_string(), "domain:security".to_string()))
+                Some(("example".to_string(), "domain:security".to_string()))
             },
         ));
         let session_id =
@@ -2096,7 +2096,7 @@ mod tests {
         let schedule_id = schedules[0].schedule_id.to_string();
         assert_mob_member_target(
             &schedules[0].target,
-            "homecore",
+            "example",
             "domain:security",
             "Send the morning digest.",
             "external_event",
@@ -2135,7 +2135,7 @@ mod tests {
         assert_eq!(updated.len(), 1);
         assert_mob_member_target(
             &updated[0].target,
-            "homecore",
+            "example",
             "domain:security",
             "Send the updated digest.",
             "peer_request",
@@ -2544,7 +2544,7 @@ mod tests {
     /// meerkat 0.7.19 carry guard (asks 16-19): a poisoned occurrence row no
     /// longer starves the whole claim — the sqlite claim scan skips it as a
     /// typed row fault and claims healthy due neighbors. This is the exact
-    /// HomeCore shape: one stale row, everything else due.
+    /// Downstream app shape: one stale row, everything else due.
     #[tokio::test]
     async fn schedule_claim_tolerates_poisoned_neighbor_row() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2922,7 +2922,7 @@ comms = true
         let handle = runtime.mob_handle();
 
         // An identity-first member: the roster id is the mk--encoded
-        // generated runtime alias, exactly the shape HomeCore schedules
+        // generated runtime alias, exactly the shape a downstream app schedules
         // address (the binding stores the roster id).
         let roster_id = crate::member_comms_id::mob_member_id_str("digest:main").into_owned();
         assert!(
@@ -3317,7 +3317,7 @@ external_addressable = true
         runtime.shutdown().await;
     }
 
-    /// HomeCore 0.7.26 "last link" e2e: an agent-authored one-shot must
+    /// A downstream app on 0.7.26 "last link" e2e: an agent-authored one-shot must
     /// DELIVER through the real schedule host — the full rpc_gateway chain
     /// (attach_schedule_tools_with_identity_targets → agent tool dispatch →
     /// planning → claim → delivery). `register_mob_state` toggles whether
@@ -3697,7 +3697,7 @@ schedule = true
         );
     }
 
-    /// HomeCore field case: domain agents are internal_only by design (only
+    /// Downstream app field case: domain agents are internal_only by design (only
     /// person identities are externally addressable). A schedule firing back
     /// into ITS OWN AUTHOR's session is internal addressing — the external
     /// addressability posture must not block self-delivery.
@@ -3710,7 +3710,7 @@ schedule = true
         );
     }
 
-    /// HomeCore 0.7.28 field case: identity-first bridge members' ROSTER ids
+    /// A downstream app on 0.7.28 field case: identity-first bridge members' ROSTER ids
     /// are comms-ENCODED (`mk--domain_chome` for the durable identity
     /// `domain:home` - bridge.rs member_id_for_spawn_spec), and the
     /// authoring rewrite stores that roster id in the binding. The internal
@@ -3733,7 +3733,7 @@ schedule = true
         );
     }
 
-    /// Unresolved-at-authoring shape (the HomeCore 0.7.26 field path): the
+    /// Unresolved-at-authoring shape (the downstream app's 0.7.26 field path): the
     /// target stays a resumable session, and DELIVERY-TIME recovery resolves
     /// the mob-member identity through the (now installed) mob authority.
     /// Before the with_agent_mob_tools fix this failed with
@@ -4490,7 +4490,7 @@ schedule = true
         assert_eq!(probe, ScheduleFiringProbe::Healthy);
     }
 
-    /// HomeCore Observation A: due occurrences sit pending with no lease and
+    /// Downstream app Observation A: due occurrences sit pending with no lease and
     /// the driver says nothing. The probe must call that out loudly.
     ///
     /// 0.8.22: the WHY half of that report is no longer inferred. This store
@@ -4531,7 +4531,7 @@ schedule = true
         );
     }
 
-    /// HomeCore Observation B: one poisoned schedule row (e.g. a Deleted
+    /// Downstream app Observation B: one poisoned schedule row (e.g. a Deleted
     /// tombstone the recovery invariant rejects) fails the whole
     /// all-or-nothing list. The 0.8.11 driver skips it per-row, but that
     /// schedule never fires and list-backed surfaces are blind. The probe
@@ -4669,7 +4669,7 @@ schedule = true
         let repaired =
             repair_resumable_session_targets_with_resolver(&service, |session_id| async move {
                 assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
-                Some(("homecore".to_string(), "domain:security".to_string()))
+                Some(("example".to_string(), "domain:security".to_string()))
             })
             .await
             .expect("repair");
@@ -4679,7 +4679,7 @@ schedule = true
         assert_eq!(schedules.len(), 1);
         assert_mob_member_target(
             &schedules[0].target,
-            "homecore",
+            "example",
             "domain:security",
             "Send the morning digest.",
             "external_event",

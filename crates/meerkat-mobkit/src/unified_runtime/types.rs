@@ -690,7 +690,7 @@ pub enum ErrorEvent {
     /// fail-stopped actor closes its command channel, which resolves a parked
     /// probe with a typed channel-closed error; before this variant existed
     /// the probe read any completion as "the loop drains" and emitted a
-    /// recovery for a mob that was dead (OB3 2026-09-04: `actor_loop_recovered`
+    /// recovery for a mob that was dead (a 2026-09-04 production incident: `actor_loop_recovered`
     /// while every subsequent send failed instantly). Nothing in this process
     /// can restart the actor; the operator must restart the process. The
     /// delivery path fails fast on this state with `ActorTerminated`.

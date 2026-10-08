@@ -49,12 +49,12 @@ fn execution_identity_v1_rejects_unknown_fields_and_ambiguous_clear() {
     );
 
     for invalid in [
-        json!({"profile_id": "homecore.reachy.open-room.v1"}),
-        json!({"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "model": "gpt-live-1-codex"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "provider": "openai"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "self_hosted_server_id": "server"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "auth_binding": {"action": "clear"}}),
+        json!({"profile_id": "example.device.open-room.v1"}),
+        json!({"version": "v2", "profile_id": "example.device.open-room.v1"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "model": "gpt-live-1-codex"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "provider": "openai"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "self_hosted_server_id": "server"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "auth_binding": {"action": "clear"}}),
     ] {
         assert!(serde_json::from_value::<LiveExecutionIdentityV1>(invalid).is_err());
     }

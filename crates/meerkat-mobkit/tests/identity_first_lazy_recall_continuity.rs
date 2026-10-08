@@ -1,4 +1,4 @@
-//! LazyMaterialize cross-boot recall guard (OB3 field report, 2026-07-29:
+//! LazyMaterialize cross-boot recall guard (production field report, 2026-07-29:
 //! "silent resume context loss").
 //!
 //! # The coverage hole this closes
@@ -31,12 +31,12 @@
 //! exercises neither the continuity adapter nor the resume read path the
 //! deployment runs. `continuity_from_state_dir` installs the substrate as BOTH
 //! the identity authority and (via `ContinuitySessionStoreAdapter`) meerkat's
-//! `SessionStore` — the gateway/OB3 topology. Every boot therefore probes
+//! `SessionStore` - the gateway/production topology. Every boot therefore probes
 //! `assert_durable_continuity_document` before asserting behavior, so a
 //! mis-wired harness fails as MIS-WIRED instead of passing while proving
 //! nothing.
 //!
-//! Scope note: OB3's store is a BigQuery WHOLE-BLOB store behind that same
+//! Scope note: the production deployment's store is a BigQuery WHOLE-BLOB store behind that same
 //! adapter; this runs the local `LocalContinuityStore` behind it. What is held
 //! constant with the field deployment is the bootstrap mode and the adapter
 //! seam, not the remote store implementation.
@@ -442,7 +442,7 @@ fn continuity_db(state: &Path) -> std::path::PathBuf {
 const PROFILE_PROMPT_MARKER: &str = "PROFILE-PROMPT-MARKER-16-YANKEE";
 
 /// The lazy-recall mob with a PROFILE-declared system prompt - the one
-/// configuration shape proven (HomeCore/OB3 field contrast, 2026-08-06) to
+/// configuration shape proven (downstream-app/production field contrast, 2026-08-06) to
 /// re-author one assembled System row per automatic revival on the
 /// 0.8.16-0.8.18 line: the assembled prompt lands in persisted spawn state
 /// at original spawn and the mob-resume AppendExplicit branches re-lower it
@@ -734,7 +734,7 @@ fn copy_tree(from: &Path, to: &Path) {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// The OB3 report, deterministically: with `LazyMaterialize`, a restart that
+/// The production report, deterministically: with `LazyMaterialize`, a restart that
 /// materializes the member ON FIRST SEND must replay the persisted transcript
 /// into the LLM request.
 ///
@@ -1285,7 +1285,7 @@ async fn lazy_resume_after_a_mid_turn_kill_is_loud_or_recalls_never_silently_emp
     runtime.shutdown().await;
 }
 
-/// OB3 release-critical regression (2026-07-31), the v2-row variant of the
+/// Production release-critical regression (2026-07-31), the v2-row variant of the
 /// every-boot runtime-authority mint: an identity whose durable truth is a
 /// RELEASED 0.8.10 whole-blob envelope must, on one cold activation, (1) mint
 /// store-issued runtime authority (the ephemeral RuntimeStore has no record
@@ -1300,7 +1300,7 @@ async fn lazy_resume_after_a_mid_turn_kill_is_loud_or_recalls_never_silently_emp
 /// (tests/fixtures/README.md); current code cannot and must not mint it.
 ///
 /// Harness note: unlike the lazy tests above, this boots with the runtime
-/// store DECLARED ephemeral (`ephemeral_runtime_store(true)`) - the OB3
+/// store DECLARED ephemeral (`ephemeral_runtime_store(true)`) - the production
 /// pod-scratch shape the mint exists for. Durable truth lives in the
 /// continuity store; runtime authority reconstructs on every boot. With a
 /// persistent (SQLite) runtime store the facade correctly refuses to mint,
@@ -1324,7 +1324,7 @@ async fn boot_scratch_runtime(
         .default_llm_client(Arc::new(capture));
     Box::pin(builder.build())
         .await
-        .expect("build the OB3-scratch-shaped UnifiedRuntime")
+        .expect("build the pod-scratch-shaped UnifiedRuntime")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1398,7 +1398,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
             .await
             .expect("rebind the record to the released session");
         let conn = rusqlite::Connection::open(&db).expect("seed connection");
-        // The released document was written by ANOTHER deployment (OB3's
+        // The released document was written by ANOTHER deployment (the production
         // summarizer), and resume validates the persisted comms identity
         // against the current member. The seed therefore adopts this
         // harness's own persisted comms_name from boot 1's durable
@@ -1469,7 +1469,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
             .await
             .expect(
                 "the released v2 document must mint runtime authority and resume; a refusal \
-                 here is the OB3 cold-activation wall",
+                 here is the production cold-activation wall",
             );
         wait_for_turn(&capture, 1, "the post-mint turn").await;
         let last = capture.last().expect("a post-mint request was captured");
@@ -1510,7 +1510,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
     }
 }
 
-/// HomeCore's class-3 binding leg on their REAL bytes: the byte-lossless
+/// The downstream app's class-3 binding leg on their REAL bytes: the byte-lossless
 /// continuity closure of the exact fleet session both binding verdicts
 /// cited (domain:calendar, 019fae11-4dd7-7301-9754-67b646603fb3 - the
 /// fleet's max-depth 26-rewrite chain, 57-message head, 191 strand rows).
@@ -1547,9 +1547,9 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
 /// recomputation (tests/fixtures/README.md). It still goes red on the
 /// parent of the adoption fix with the class-3 refusal.
 #[tokio::test(flavor = "multi_thread")]
-async fn homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
+async fn downstream_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
     if proxied_to_memo_free_child(
-        "homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn",
+        "downstream_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn",
     ) {
         return;
     }
@@ -1695,7 +1695,7 @@ comms = true
 "#
     );
     let fleet_definition = MobDefinition::from_toml(&fleet_definition_toml)
-        .expect("parse the homecore-shaped mob definition");
+        .expect("parse the downstream-shaped mob definition");
     struct CalendarRoster;
     #[async_trait]
     impl RosterProvider for CalendarRoster {
@@ -1734,13 +1734,13 @@ comms = true
                 .expect("open the reconstituted identity substrate")
                 .roster_provider(Arc::new(CalendarRoster))
                 .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-                .identity_runtime_instance_id("homecore-closure")
+                .identity_runtime_instance_id("downstream-closure")
                 .comms(true)
                 .ephemeral_runtime_store(true)
                 .default_llm_client(Arc::new(capture.clone()));
             Box::pin(builder.build())
                 .await
-                .expect("build the homecore-shaped UnifiedRuntime over the closure")
+                .expect("build the downstream-shaped UnifiedRuntime over the closure")
         };
         let identity_runtime = runtime
             .identity_runtime()
@@ -1919,7 +1919,7 @@ comms = true
         );
     }
 
-    // --- Boot 2: ZERO-TURN, EAGER materialization - HomeCore's reconcile
+    // --- Boot 2: ZERO-TURN, EAGER materialization - the downstream app's reconcile
     // boot shape (resume-spawn + control-snapshot boundary + projection,
     // no turn). EXACTLY-ONCE adoption demands ZERO head writes here: the
     // adopted head is current (the released-adoption arm keys on envelope
@@ -1944,7 +1944,7 @@ comms = true
             let builder = UnifiedRuntimeBuilder::default()
                 .definition(
                     MobDefinition::from_toml(&fleet_definition_toml)
-                        .expect("parse the homecore-shaped mob definition (zero-turn boot)"),
+                        .expect("parse the downstream-shaped mob definition (zero-turn boot)"),
                 )
                 .persistent_state(&state)
                 .continuity_from_state_dir(&state)
@@ -1952,7 +1952,7 @@ comms = true
                 .expect("reopen the adopted identity substrate (zero-turn boot)")
                 .roster_provider(Arc::new(CalendarRoster))
                 .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
-                .identity_runtime_instance_id("homecore-closure")
+                .identity_runtime_instance_id("downstream-closure")
                 .comms(true)
                 .ephemeral_runtime_store(true)
                 .default_llm_client(Arc::new(capture.clone()));
@@ -1991,7 +1991,7 @@ comms = true
             let builder = UnifiedRuntimeBuilder::default()
                 .definition(
                     MobDefinition::from_toml(&fleet_definition_toml)
-                        .expect("parse the homecore-shaped mob definition (boot 2)"),
+                        .expect("parse the downstream-shaped mob definition (boot 2)"),
                 )
                 .persistent_state(&state)
                 .continuity_from_state_dir(&state)
@@ -1999,7 +1999,7 @@ comms = true
                 .expect("reopen the adopted identity substrate")
                 .roster_provider(Arc::new(CalendarRoster))
                 .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-                .identity_runtime_instance_id("homecore-closure")
+                .identity_runtime_instance_id("downstream-closure")
                 .comms(true)
                 .ephemeral_runtime_store(true)
                 .default_llm_client(Arc::new(capture.clone()));
@@ -2230,7 +2230,7 @@ async fn current_row_mints_authority_resumes_and_takes_a_turn() {
 }
 
 /// The sanctioned runtime-store-reset recovery path in miniature (the
-/// HomeCore 0.8.11 upgrade shape): continuity intact, runtime.sqlite
+/// downstream app's 0.8.11 upgrade shape): continuity intact, runtime.sqlite
 /// DELETED. The next boot must reseed runtime authority from the durable
 /// continuity rows - the member resumes with the exact preserved
 /// transcript and takes a real turn whose boundary commits - instead of
@@ -2349,7 +2349,7 @@ async fn reset_runtime_store_reseeds_from_continuity_and_resumes() {
     }
 }
 
-/// COLD-MINT COUNT FAITHFULNESS (2026-08-05 HomeCore window-4 boot
+/// COLD-MINT COUNT FAITHFULNESS (2026-08-05 downstream-app window-4 boot
 /// blocker, released-0.8.16 lineage): a fleet that had accumulated
 /// customizer-prompt boot appends took the sanctioned runtime-store reset
 /// and came back 0 active / 17 broken - the machine-authorized revival's
@@ -2628,7 +2628,7 @@ async fn reset_after_repeated_customizer_boots_preserves_exact_counts_and_projec
 /// turn's boundary projection composed rewrite-shaped state with no graph
 /// authority and the store refused fail-closed ("rewritten session has no
 /// validated compact graph authority") - every member wedged in a
-/// refuse-retry loop (HomeCore window 4: 0 active / 17 broken,
+/// refuse-retry loop (downstream-app window 4: 0 active / 17 broken,
 /// reproduced byte-exact offline on both released 0.8.16 and the 0.8.17
 /// candidate). The mint must hydrate the graph from the store's own
 /// adopted rewrite records so the seed carries the authority its durable
@@ -2836,7 +2836,7 @@ async fn reset_after_operator_rewrite_cold_mints_with_graph_authority() {
     }
 }
 
-/// STEER INTO A NON-RESIDENT MEMBER (OB3 0.8.18 field-acceptance shape,
+/// STEER INTO A NON-RESIDENT MEMBER (production 0.8.18 field-acceptance shape,
 /// 2026-08-06): a console steer whose arrival TRIGGERS the member build
 /// persisted its interaction id into the first run's input row with an
 /// EMPTY body - identity survived the whole chain, content did not, and
@@ -2883,7 +2883,7 @@ async fn steer_into_non_resident_member_delivers_content() {
     }
 
     // Boot 2: the very first contact is a STEER-mode tracked send - the
-    // steer's own arrival drives materialization (the OB3 shape).
+    // steer's own arrival drives materialization (the production shape).
     {
         let capture = CaptureClient::default();
         let runtime = boot(
@@ -3113,7 +3113,7 @@ async fn mobkit_repair_binary_prunes_duplicates_and_member_resumes() {
 /// from the store). MEASURED FINDING: this is ALREADY GREEN on the
 /// 0.8.18 pairing - the identity-first lazy revival and the cold-mint
 /// recovery lane both take PreservePersisted paths (host_materialize) and
-/// do not mint. The field defect (HomeCore parent-1: one assembled row per
+/// do not mint. The field defect (downstream-app parent-1: one assembled row per
 /// boot, 263 copies) therefore lives in resume paths this harness does not
 /// traverse (the mob actor resume AppendExplicit branches, reached through
 /// the gateway's bridge session lanes). This test pins the clean lanes as

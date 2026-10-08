@@ -1129,7 +1129,7 @@ impl MemberEventSubscriptions {
             // decode/strip to the durable identity the memory scopes, the
             // write gate, and the SDK surface key on. Keying sinks by the
             // roster id is what split distiller scopes per incarnation
-            // (HomeCore activation smoke). Subscription bookkeeping
+            // (downstream app activation smoke). Subscription bookkeeping
             // (`subscribed`/`Closed`/backoff) stays keyed by the roster id -
             // that is the handle's namespace.
             let sink_identity = crate::member_comms_id::logical_memory_identity(&identity);

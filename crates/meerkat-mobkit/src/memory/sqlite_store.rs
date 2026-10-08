@@ -4687,7 +4687,7 @@ mod tests {
     }
 
     /// Task #53 migration: a v2 realm file holding runtime-id-keyed identity
-    /// scopes (the HomeCore shape - distiller output stranded under
+    /// scopes (the downstream app's shape - distiller output stranded under
     /// mk--rt_c... roster ids, one scope per respawn generation) folds into
     /// the logical identity scope on open, across every identity-keyed
     /// table, and stamps the ledger at v3. Already-logical rows and

@@ -2345,7 +2345,7 @@ impl StewardEngine {
         // not runtime-usefulness evidence - only ambient per-turn injections
         // say a record earned its context slot. Auditing hydration counts
         // manufactures dead-weight verdicts wholesale on stores that have
-        // never turn-injected (HomeCore: 53/53 noise verdicts), so with zero
+        // never turn-injected (a downstream app: 53/53 noise verdicts), so with zero
         // Turn rows there is nothing to judge: skip and queue NOTHING.
         let turn_ledger: Vec<&crate::memory::records::InjectionLogEntry> = signals
             .ledger
@@ -7849,7 +7849,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_audit_skips_on_build_only_ledger_and_queues_nothing() {
-        // The pre-#54 HomeCore shape: a never-dreamed store whose entire
+        // The pre-#54 downstream app shape: a never-dreamed store whose entire
         // injection ledger is build-surface hydration. Hydration is not
         // runtime-usefulness evidence, so the audit must not run and the
         // durable operator review queue must stay empty. The reply script
@@ -8091,7 +8091,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_dream_records_failure_row_resolving_verdict_run_ids() {
-        // The HomeCore rehearsal evidence shape: the audit persisted its
+        // The downstream app's rehearsal evidence shape: the audit persisted its
         // dead-weight sheet, then the consolidate call died. The run id the
         // verdict rows reference must still resolve in dream_runs as a
         // failure row instead of vanishing with the Err.

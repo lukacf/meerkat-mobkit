@@ -1,4 +1,4 @@
-"""HomeCore Kitchen Sink: School Closure + Calendar Conflict + Household Coordination.
+"""Downstream Kitchen Sink: School Closure + Calendar Conflict + Household Coordination.
 
 Exercises the identity-first control plane on top of real multi-agent
 coordination: triage receives connector events and fans out to domain agents via
@@ -6,7 +6,7 @@ comms, gate evaluates proposed actions, family-facing delivery goes to addressab
 identities. Runtime shutdown/restore, respawn, and roster reconciliation happen
 mid-incident.
 
-Agents explicitly use turn_driven mode, matching HomeCore, with comms wiring via
+Agents explicitly use turn_driven mode, matching the downstream app, with comms wiring via
 role_wiring rules. The test dispatches events to triage and waits for the agent
 graph to process - agents use the comms `send` tool to coordinate.
 
@@ -81,7 +81,7 @@ _skip_no_binary = pytest.mark.skipif(
 
 _HOUSEHOLD_MOB_TOML = """\
 [mob]
-id = "homecore-household"
+id = "example-household"
 
 # Wiring rules: triage is the hub, wired to all domain agents and identities.
 [wiring]
@@ -112,7 +112,7 @@ a = "gate"
 b = "family_group"
 
 # --- Profiles ---
-# All profiles explicitly use turn_driven mode, matching HomeCore. The runtime
+# All profiles explicitly use turn_driven mode, matching the downstream app. The runtime
 # schedules admitted messages as turns. Agents can use the comms send tool to
 # forward messages to wired peers.
 
@@ -261,7 +261,7 @@ class HouseholdCustomizer:
 
 _ROSTER = [
     DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
-    DurableAgentSpec(identity="identity:louise", profile="personal", addressability="addressable"),
+    DurableAgentSpec(identity="identity:erin", profile="personal", addressability="addressable"),
     DurableAgentSpec(identity="family-group:main", profile="family_group", addressability="addressable"),
     DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
     DurableAgentSpec(identity="domain:school", profile="school", addressability="internal_only"),
@@ -271,7 +271,7 @@ _ROSTER = [
 
 _EDGES = [
     ("identity:luka", "triage:main"),
-    ("identity:louise", "triage:main"),
+    ("identity:erin", "triage:main"),
     ("family-group:main", "triage:main"),
     ("triage:main", "domain:school"),
     ("triage:main", "domain:calendar"),
@@ -300,7 +300,7 @@ async def _boot(state_dir, roster, topology, customizer):
     )
 
 
-_LUKA_CLOSURE_NOTICE = (
+_DANA_CLOSURE_NOTICE = (
     "School closed tomorrow (pipe burst). Kids must stay home. "
     "This affects your morning schedule."
 )
@@ -354,7 +354,7 @@ def _closure_notice_frame_matches(frame, identity, session_id):
         and frame.get("session_id") == session_id
         and frame.get("kind") == "user_input"
         and frame.get("source", {}).get("kind") == "session_history"
-        and _content_text(frame.get("payload", {}).get("content")) == _LUKA_CLOSURE_NOTICE
+        and _content_text(frame.get("payload", {}).get("content")) == _DANA_CLOSURE_NOTICE
     )
 
 
@@ -753,7 +753,7 @@ def test_kitchen_notice_oracle_requires_exact_persisted_content(mismatch):
         "session_id": "luka-session",
         "kind": "user_input",
         "source": {"kind": "session_history", "source_cursor": "luka-session:4"},
-        "payload": {"content": [{"type": "text", "text": _LUKA_CLOSURE_NOTICE}]},
+        "payload": {"content": [{"type": "text", "text": _DANA_CLOSURE_NOTICE}]},
     }
     if mismatch == "other_session":
         frame["session_id"] = "unrelated-session"
@@ -924,7 +924,7 @@ def test_kitchen_conversation_requires_accepted_interaction_input_history(mismat
         "identity": "identity:luka", "session_id": "luka-session",
         "interaction_id": "accepted-send", "kind": "user_input",
         "source": {"kind": "session_history"},
-        "payload": {"content": [{"type": "text", "text": _LUKA_CLOSURE_NOTICE}]},
+        "payload": {"content": [{"type": "text", "text": _DANA_CLOSURE_NOTICE}]},
     }
     frames.append(notice)
     if mismatch == "other_interaction":
@@ -934,7 +934,7 @@ def test_kitchen_conversation_requires_accepted_interaction_input_history(mismat
     elif mismatch == "changed_content":
         notice["payload"]["content"] = "Ready for school tasks."
     result = _conversation_result(
-        frames, "identity:luka", "luka-session", "accepted-send", _LUKA_CLOSURE_NOTICE,
+        frames, "identity:luka", "luka-session", "accepted-send", _DANA_CLOSURE_NOTICE,
     )
     assert (result is not None) is (mismatch is None)
 
@@ -998,7 +998,7 @@ async def test_kitchen_console_send_uses_acceptance_id_and_original_deadline(mon
     accepted = {"identity": "identity:luka", "session_id": "luka-session",
                 "interaction_id": "accepted-send"}
     if mismatch == "other_identity":
-        accepted["identity"] = "identity:louise"
+        accepted["identity"] = "identity:erin"
     elif mismatch == "other_session":
         accepted["session_id"] = "old-session"
 
@@ -1023,7 +1023,7 @@ async def test_kitchen_console_send_uses_acceptance_id_and_original_deadline(mon
         frames.append({
             "id": "input-history", "identity": "identity:luka", "session_id": "luka-session",
             "interaction_id": "accepted-send", "kind": "user_input",
-            "source": {"kind": "session_history"}, "payload": {"content": _LUKA_CLOSURE_NOTICE},
+            "source": {"kind": "session_history"}, "payload": {"content": _DANA_CLOSURE_NOTICE},
         })
         return {"frames": frames, "exhausted": True}
 
@@ -1032,7 +1032,7 @@ async def test_kitchen_console_send_uses_acceptance_id_and_original_deadline(mon
     monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
     operation = _send_console_and_wait(
         SimpleNamespace(rust_http_base_url="http://127.0.0.1:8080"),
-        "identity:luka", "luka-session", _LUKA_CLOSURE_NOTICE,
+        "identity:luka", "luka-session", _DANA_CLOSURE_NOTICE,
         "school:luka-notice-1", timeout=60,
     )
     if mismatch:
@@ -1087,7 +1087,7 @@ def _sdk_run_only_fixture():
         "identity:luka", "luka-session", interaction=None, run="requested-run",
     )
     frames[0]["payload"] = {
-        "input": {"kind": "content", "content": _LUKA_CLOSURE_NOTICE},
+        "input": {"kind": "content", "content": _DANA_CLOSURE_NOTICE},
     }
     for frame in frames[1:]:
         frame["status"] = "completed"
@@ -1097,7 +1097,7 @@ def _sdk_run_only_fixture():
         "id": "sdk-user", "identity": "identity:luka", "session_id": "luka-session",
         "interaction_id": None, "run_id": None, "kind": "user_input", "status": "completed",
         "source": {"kind": "session_history"},
-        "payload": {"content": [{"type": "text", "text": _LUKA_CLOSURE_NOTICE}]},
+        "payload": {"content": [{"type": "text", "text": _DANA_CLOSURE_NOTICE}]},
     })
     return frames
 
@@ -1121,7 +1121,7 @@ async def test_kitchen_sdk_run_only_lineage_requires_own_committed_output(monkey
     async def read_page(runtime, params, remaining):
         assert transport.waited_turns() == [{"identity": "identity:luka", "ticket": ticket}]
         foreign = _interaction_fixture("identity:luka", "luka-session", None, "peer-run")
-        foreign[0]["payload"] = {"input": {"kind": "peer_message", "content": _LUKA_CLOSURE_NOTICE}}
+        foreign[0]["payload"] = {"input": {"kind": "peer_message", "content": _DANA_CLOSURE_NOTICE}}
         if intermediate:
             earlier = copy.deepcopy(_sdk_run_only_fixture()[2])
             earlier["id"] = "earlier-identical-text"
@@ -1136,7 +1136,7 @@ async def test_kitchen_sdk_run_only_lineage_requires_own_committed_output(monkey
     monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
     monkeypatch.setitem(globals(), "_timeline_pause", pause)
     operation = _send_sdk_and_verify(
-        object(), handle, "identity:luka", "luka-session", _LUKA_CLOSURE_NOTICE, timeout=60,
+        object(), handle, "identity:luka", "luka-session", _DANA_CLOSURE_NOTICE, timeout=60,
     )
     if sdk_output == "unrelated peer reply":
         with pytest.raises(AssertionError, match="returned another turn"):
@@ -1173,13 +1173,13 @@ async def test_kitchen_sdk_run_only_lineage_rejects_unowned_or_uncommitted_frame
         "changed_input": (user["payload"], "content", "Earlier input"),
         "other_input_session": (user, "session_id", "old-session"),
         "other_input_run": (user, "run_id", "other-run"),
-        "other_input_identity": (user, "identity", "identity:louise"),
+        "other_input_identity": (user, "identity", "identity:erin"),
         "uncommitted_input": (user, "status", "delivered"),
         "input_interaction": (user, "interaction_id", "other-interaction"),
         "empty_input_interaction": (user, "interaction_id", ""),
         "missing_run": (start, "run_id", None),
         "other_start_session": (start, "session_id", "old-session"),
-        "other_start_identity": (start, "identity", "identity:louise"),
+        "other_start_identity": (start, "identity", "identity:erin"),
         "peer_start": (start["payload"]["input"], "kind", "peer_message"),
         "changed_start_content": (start["payload"]["input"], "content", "Earlier input"),
         "start_interaction": (start, "interaction_id", "other-interaction"),
@@ -1187,7 +1187,7 @@ async def test_kitchen_sdk_run_only_lineage_rejects_unowned_or_uncommitted_frame
         "empty_terminal": (terminal["payload"], "result", ""),
         "other_terminal_run": (terminal, "run_id", "other-run"),
         "other_terminal_session": (terminal, "session_id", "old-session"),
-        "other_terminal_identity": (terminal, "identity", "identity:louise"),
+        "other_terminal_identity": (terminal, "identity", "identity:erin"),
         "terminal_interaction": (terminal, "interaction_id", "other-interaction"),
         "terminal_assistant": (terminal["payload"], "assistant_message_id", "other-assistant"),
         "mirrored_terminal": (terminal["payload"], "source_event_type", "interaction_complete"),
@@ -1195,7 +1195,7 @@ async def test_kitchen_sdk_run_only_lineage_rejects_unowned_or_uncommitted_frame
         "live_history": (history["source"], "kind", "console_event"),
         "other_history_run": (history, "run_id", "other-run"),
         "other_history_session": (history, "session_id", "old-session"),
-        "other_history_identity": (history, "identity", "identity:louise"),
+        "other_history_identity": (history, "identity", "identity:erin"),
         "history_interaction": (history, "interaction_id", "other-interaction"),
         "history_assistant": (history["payload"], "assistant_message_id", None),
         "uncommitted_history": (history, "status", "delivered"),
@@ -1228,7 +1228,7 @@ async def test_kitchen_sdk_run_only_lineage_rejects_unowned_or_uncommitted_frame
     with pytest.raises(AssertionError, match="deadline|admitted more than once"):
         await _send_sdk_and_verify(
             object(), SimpleNamespace(send_and_wait=send_and_wait),
-            "identity:luka", "luka-session", _LUKA_CLOSURE_NOTICE, timeout=60,
+            "identity:luka", "luka-session", _DANA_CLOSURE_NOTICE, timeout=60,
         )
 
 
@@ -1456,7 +1456,7 @@ class TestHouseholdIncident:
         try:
             # Agent handles — identity-scoped, no member IDs
             all_names = [
-                "identity:luka", "identity:louise", "family-group:main",
+                "identity:luka", "identity:erin", "family-group:main",
                 "triage:main", "domain:school", "domain:calendar", "gate:main",
             ]
             agents = {name: rt.agent(name) for name in all_names}
@@ -1474,11 +1474,11 @@ class TestHouseholdIncident:
             triage_inspection = await triage.inspect()
             assert triage_inspection.peer_reachable_count >= 5, (
                 f"triage should be wired to at least 5 peers (school, calendar, gate, "
-                f"luka, louise), got {triage_inspection.peer_reachable_count}"
+                f"luka, erin), got {triage_inspection.peer_reachable_count}"
             )
             print(f"[Phase 1] triage peers: {triage_inspection.peer_reachable_count} reachable")
             school_session = (await school.status()).session_id
-            luka_session = (await luka.status()).session_id
+            dana_session = (await luka.status()).session_id
             triage_session = (await triage.status()).session_id
             gate_session = (await gate.status()).session_id
             triage_peer = await rt.mob_handle().peer_info("triage:main")
@@ -1546,12 +1546,12 @@ class TestHouseholdIncident:
             print(f"[Phase 2] domain:school received comms: {school_result['output']}")
 
             # Deliver closure notice to luka (simulates end of triage→domain→gate→identity chain).
-            # Exercise HomeCore's actual SDK completion path and verify its run.
-            luka_notice = await _send_sdk_and_verify(
-                rt, luka, "identity:luka", luka_session, _LUKA_CLOSURE_NOTICE,
+            # Exercise the downstream app's actual SDK completion path and verify its run.
+            dana_notice = await _send_sdk_and_verify(
+                rt, luka, "identity:luka", dana_session, _DANA_CLOSURE_NOTICE,
                 timeout=60,
             )
-            closure_history = luka_notice["input_history"]
+            closure_history = dana_notice["input_history"]
             print("[Phase 2] identity:luka notified about school closure")
 
             # =============================================================
@@ -1619,7 +1619,7 @@ class TestHouseholdIncident:
         try:
             # Re-create agent handles on the new runtime
             agents2 = {name: rt2.agent(name) for name in all_names}
-            luka2 = agents2["identity:luka"]
+            dana2 = agents2["identity:luka"]
 
             # Stable IDs across restart
             for name, before in pre_shutdown.items():
@@ -1641,7 +1641,7 @@ class TestHouseholdIncident:
 
             restored_history = await _wait_for_history_frame(
                 rt2, "identity:luka",
-                lambda frame: _closure_notice_frame_matches(frame, "identity:luka", luka_session),
+                lambda frame: _closure_notice_frame_matches(frame, "identity:luka", dana_session),
             )
             assert restored_history["source"]["source_cursor"] == closure_history["source"]["source_cursor"], (
                 "restart must preserve the exact durable school notice in Luka's session"
@@ -1652,17 +1652,17 @@ class TestHouseholdIncident:
             # After restore, asking about school should reference the closure.
             # Correlate this question's accepted interaction and committed answer;
             # a resumed peer reply must not satisfy the continuity assertion.
-            luka_result = await _send_sdk_and_verify(
-                rt2, luka2, "identity:luka", luka_session,
+            dana_result = await _send_sdk_and_verify(
+                rt2, dana2, "identity:luka", dana_session,
                 "Is school open or closed tomorrow, and why? Answer in one sentence only.",
                 timeout=90,
             )
-            luka_output = luka_result["output"]
-            assert _remembers_school_closure(luka_output), (
+            dana_output = dana_result["output"]
+            assert _remembers_school_closure(dana_output), (
                 "Luka must recall both the closure and its pipe-burst cause from persisted "
-                f"history, not merely respond after restart: {luka_output}"
+                f"history, not merely respond after restart: {dana_output}"
             )
-            print(f"[Phase 5] luka remembers school closure: {luka_output}")
+            print(f"[Phase 5] luka remembers school closure: {dana_output}")
 
             # =============================================================
             # Phase 6: Respawn domain:calendar
@@ -1705,8 +1705,8 @@ class TestHouseholdIncident:
             assert olivia_status.state == "active"
             assert olivia_status.generation == 0
 
-            luka_post = await luka2.status()
-            assert luka_post.session_id == pre_shutdown["identity:luka"].session_id
+            dana_post = await dana2.status()
+            assert dana_post.session_id == pre_shutdown["identity:luka"].session_id
             triage_post = await rt2.agent("triage:main").status()
             assert triage_post.session_id == pre_shutdown["triage:main"].session_id
             print("[Phase 7] olivia added, existing actors preserved")
@@ -1717,7 +1717,7 @@ class TestHouseholdIncident:
             print("\n--- Phase 8: Final coherence ---")
 
             all_identities = [
-                "identity:luka", "identity:louise", "identity:olivia",
+                "identity:luka", "identity:erin", "identity:olivia",
                 "family-group:main", "triage:main", "domain:school",
                 "domain:calendar", "gate:main",
             ]

@@ -816,12 +816,12 @@ mod tests {
     -> Result<(), ConsoleConfigError> {
         let config = load_console_ui_config_from_toml(
             r#"
-title = "OB3"
+title = "Ops"
 
 [brand]
 label = "Open Brain"
-logo_url = "/assets/ob3.svg"
-logo_alt = "OB3"
+logo_url = "/assets/ops.svg"
+logo_alt = "Ops"
 
 [appearance]
 default_theme = "dark"
@@ -850,9 +850,9 @@ alert_levels = ["critical"]
 visible_controls = ["topology", "roster", "logs"]
 
 [[sidebar.buttons]]
-id = "ob3"
-label = "OB3"
-href = "https://example.test/ob3"
+id = "ops"
+label = "Ops"
+href = "https://example.test/ops"
 target = "_blank"
 
 [agent_list]
@@ -881,10 +881,10 @@ show_reset = false
 "#,
         )?;
 
-        assert_eq!(config.title.as_deref(), Some("OB3"));
+        assert_eq!(config.title.as_deref(), Some("Ops"));
         assert_eq!(config.brand.label.as_deref(), Some("Open Brain"));
-        assert_eq!(config.brand.logo_url.as_deref(), Some("/assets/ob3.svg"));
-        assert_eq!(config.brand.logo_alt.as_deref(), Some("OB3"));
+        assert_eq!(config.brand.logo_url.as_deref(), Some("/assets/ops.svg"));
+        assert_eq!(config.brand.logo_alt.as_deref(), Some("Ops"));
         assert_eq!(config.appearance.default_theme.as_deref(), Some("dark"));
         assert_eq!(config.environment.label.as_deref(), Some("prod"));
         assert_eq!(config.layout.initial_preset.as_deref(), Some("two_columns"));
@@ -922,27 +922,27 @@ visible_controls = ["topology", "roster"]
 [agent_list]
 group_by = ["labels.group"]
 
-[realms.ob3]
-title = "OB3"
+[realms.ops]
+title = "Ops"
 
-[realms.ob3.brand]
-label = "OB3"
+[realms.ops.brand]
+label = "Ops"
 
-[realms.ob3.agent_list]
+[realms.ops.agent_list]
 subgroup_by = ["labels.org"]
 
-[realms.ob3.layout]
+[realms.ops.layout]
 initial_control = "logs"
 "#,
-            Some("ob3"),
+            Some("ops"),
         )?;
 
-        assert_eq!(config.title.as_deref(), Some("OB3"));
+        assert_eq!(config.title.as_deref(), Some("Ops"));
         assert_eq!(
             config.sidebar.visible_controls,
             Some(vec!["topology".to_string(), "roster".to_string()])
         );
-        assert_eq!(config.brand.label.as_deref(), Some("OB3"));
+        assert_eq!(config.brand.label.as_deref(), Some("Ops"));
         assert_eq!(config.layout.initial_control.as_deref(), Some("logs"));
         assert_eq!(config.agent_list.group_by, vec!["labels.group"]);
         assert_eq!(config.agent_list.subgroup_by, vec!["labels.org"]);

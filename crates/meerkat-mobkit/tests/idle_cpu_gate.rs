@@ -1,4 +1,4 @@
-//! Idle-CPU regression gate (HomeCore activation blocker, 2026-07).
+//! Idle-CPU regression gate (downstream-app activation blocker, 2026-07).
 //!
 //! A fully idle mobkit gateway burned ~0.3 CPU cores PER durable member
 //! forever: the mob actor's identity reconcile re-read and re-verified each

@@ -213,17 +213,17 @@ test("filter bar builds the server's scope/identity/scope_key/status params", ()
     { status: "quarantined", limit: 200, cursor: "123:m-1" },
   );
   // Realm names the single realm whose keyset cursor makes paging honest.
-  assert.deepEqual(buildRecordsQueryParams({ realm: "homecore" }), { realm: "homecore" });
+  assert.deepEqual(buildRecordsQueryParams({ realm: "example" }), { realm: "example" });
   assert.deepEqual(
-    buildRecordsQueryParams({ scope: "mob", key: "research", realm: "homecore" }),
-    { scope: "mob", scope_key: "research", realm: "homecore" },
+    buildRecordsQueryParams({ scope: "mob", key: "research", realm: "example" }),
+    { scope: "mob", scope_key: "research", realm: "example" },
   );
   assert.equal(hasActiveFilter({}), false);
   assert.equal(hasActiveFilter({ key: "  " }), false);
   assert.equal(hasActiveFilter({ status: "active" }), true);
-  assert.equal(hasActiveFilter({ realm: "homecore" }), true);
-  assert.equal(filtersEquivalent({ realm: "homecore" }, { realm: " homecore " }), true);
-  assert.equal(filtersEquivalent({ realm: "homecore" }, {}), false);
+  assert.equal(hasActiveFilter({ realm: "example" }), true);
+  assert.equal(filtersEquivalent({ realm: "example" }, { realm: " example " }), true);
+  assert.equal(filtersEquivalent({ realm: "example" }, {}), false);
 });
 
 test("memory section outcomes classify -32030 as denied and -32601 as unavailable", () => {
@@ -743,10 +743,10 @@ test("memory frames pivot to the record their payload names", () => {
       frame({
         id: "f-1",
         event: "memory.record.promoted",
-        data: { record_id: "m-7", realm: "homecore" },
+        data: { record_id: "m-7", realm: "example" },
       }),
     ),
-    { recordId: "m-7", realm: "homecore" },
+    { recordId: "m-7", realm: "example" },
   );
   assert.equal(
     memoryFramePivot(frame({ id: "f-2", event: "memory.dream.started", data: {} })),

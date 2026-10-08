@@ -2,7 +2,7 @@
 
 Once compiled application tool policies are served, Meerkat refuses a
 member's ``mob_create`` and ``delegate`` until the host chooses the policy
-child mob members run under. HomeCore composes through this SDK only, so the
+child mob members run under. A downstream app composes through this SDK only, so the
 key must be reachable from the builder and absent unless the host chose one.
 """
 
@@ -18,7 +18,7 @@ def _init_params(builder):
 
 HOUSEHOLD = {
     "kind": "provider",
-    "provider_id": "homecore",
+    "provider_id": "example",
     "policy_id": "household-tools",
 }
 
@@ -54,10 +54,10 @@ def test_the_builder_keeps_its_own_copy():
     [
         ({"kind": "inherit"}, "inherit is not valid for child mobs"),
         ({}, "kind must be 'provider' or 'unmanaged'"),
-        ({"kind": "unmanaged", "provider_id": "homecore"}, "takes no other keys"),
-        ({"kind": "provider", "provider_id": "homecore"}, "needs exactly"),
+        ({"kind": "unmanaged", "provider_id": "example"}, "takes no other keys"),
+        ({"kind": "provider", "provider_id": "example"}, "needs exactly"),
         (
-            {"kind": "provider", "provider_id": "homecore", "policy_id": " "},
+            {"kind": "provider", "provider_id": "example", "policy_id": " "},
             "policy_id must be a non-empty string",
         ),
         (

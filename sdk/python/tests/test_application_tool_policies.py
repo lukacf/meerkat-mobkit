@@ -6,8 +6,8 @@ the host asked for it.
 
 This is the second time that first claim has needed a test. The role-migration
 carrier shipped with a gateway that parsed the parameter and a Python SDK that
-could not send it, HomeCore found it, and test_role_migrations.py exists because
-of it. The tool-policy lowering then shipped exactly the same way. HomeCore
+could not send it, a downstream app found it, and test_role_migrations.py exists because
+of it. The tool-policy lowering then shipped exactly the same way. The downstream app
 composes through this SDK only, so a parameter it cannot send is a feature that
 does not exist for the one consumer there is.
 """

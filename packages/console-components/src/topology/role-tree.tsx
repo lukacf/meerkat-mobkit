@@ -1,5 +1,5 @@
 // Role tree — agents grouped by role under a single root mob. Mirrors
-// the OB3 "flat variety" from the reference: one collapsible root with
+// the production "flat variety" from the reference: one collapsible root with
 // per-role sections; high-cardinality roles default-collapsed.
 //
 // Real activity: a section header gets a "hot" halo when any of its
@@ -54,8 +54,8 @@ export function RoleTree({
 
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = { __root: true };
-    // Default: expand small role sections, collapse big ones (the OB3
-    // pattern from the reference). Threshold is intentionally low — most
+    // Default: expand small role sections, collapse big ones (the production
+    // pattern from the reference). Threshold is intentionally low - most
     // production deployments will exceed it for `personal:`/`channel:`
     // roles, and keeping them collapsed avoids the wall-of-chips problem.
     for (const r of graph.roles) {

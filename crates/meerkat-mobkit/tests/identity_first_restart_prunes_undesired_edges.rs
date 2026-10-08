@@ -1,6 +1,6 @@
 //! A managed peer edge the topology no longer wants is unwired across a
-//! restart (HomeCore privacy rule: children's agents must not keep reaching
-//! the parents').
+//! restart (a downstream app's privacy rule: one group's agents must not keep
+//! reaching another group's).
 //!
 //! Every boot runs the production activation path
 //! (`install_and_bootstrap_identity_first_context`) on durable state:

@@ -2668,7 +2668,7 @@ comms = true
     }
 
     /// Round-6 T2 + round-7 correction: `load_persisted_session`
-    /// deserializes the FULL session — multi-GB for OB3-profile eternal
+    /// deserializes the FULL session — multi-GB for production-profile eternal
     /// members — under the runtime-wide gate, so POSITIVE resolutions are
     /// memoized (TTL-bounded). Session ADOPTION is legitimate (a
     /// free-floating session, or another mob's member, resumed into a

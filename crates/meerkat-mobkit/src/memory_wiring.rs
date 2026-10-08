@@ -5,7 +5,7 @@
 //!
 //! Until this module existed the stack was hand-assembled inside
 //! `rpc_gateway.rs`, which made the judgment plane unreachable for Rust
-//! embedders driving `UnifiedRuntimeBuilder` directly (the OB3 deployment
+//! embedders driving `UnifiedRuntimeBuilder` directly (the production deployment
 //! shape: no gateways, no SDKs — builder or nothing). The builder now exposes
 //! it through [`crate::UnifiedRuntimeBuilder::persistent_agent_memory_stack`].
 //!

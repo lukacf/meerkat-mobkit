@@ -1,11 +1,12 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const root = path.join(__dirname, "..");
 const zipPath = process.env.MOBKIT_EDITOR_HANDOFF_ZIP ||
-  "/Users/luka/Downloads/Meerkat-MobKit Editor-handoff.zip";
+  path.join(os.homedir(), "Downloads", "Meerkat-MobKit Editor-handoff.zip");
 const zipRoot = "meerkat-mobkit-editor/project";
 
 function fromZip(entry) {

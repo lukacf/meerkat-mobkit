@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! mobkit-repair tool-result bounding contract (HomeCore parent-1 incident,
+//! mobkit-repair tool-result bounding contract (downstream-app parent-1 incident,
 //! 2026-08-14: a durable member strand of 820 messages / 3.75 MB was 72.4%
 //! tool_results - the System-row modes could recover almost none of it).
 //!

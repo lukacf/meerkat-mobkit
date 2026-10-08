@@ -411,7 +411,7 @@ const IN_FLIGHT_SPAWN_PROBE_INTERVAL: std::time::Duration = std::time::Duration:
 /// while a spawn for the identity is still in asynchronous custody. Only the
 /// first names something that can be stale. The second is a build in progress
 /// that the roster does not show yet, so "collision without a roster member"
-/// is the observable signature of an in-flight spawn. OB3 2026-09-22 (item 3)
+/// is the observable signature of an in-flight spawn. A 2026-09-22 production incident (item 3)
 /// read that signature as a stale occupant: the retire was inert, the resume
 /// retry collided with the build that had just finished, and the identity was
 /// marked Broken over a race that needed 250 ms of patience.
@@ -629,7 +629,7 @@ pub enum BridgeError {
     /// (Broken) with this error attached and retry on the next reconcile.
     /// Never fresh-spawn on this error — the durable transcript is the only
     /// copy of the conversation, and rebinding the identity to a fresh empty
-    /// session permanently abandons it (the HomeCore restart-loss regression).
+    /// session permanently abandons it (the downstream app's restart-loss regression).
     ResumeRejected {
         kind: ResumeRejectionKind,
         detail: String,
@@ -693,7 +693,7 @@ pub enum BridgeError {
     /// The actor-loop probe has an OPEN stall, so this delivery was refused
     /// before the call or while its observation was in flight. The latter
     /// does not retract a command. Circuit breaker, not a timeout: the caller waited at most
-    /// until the stall opened, never the admission budget (OB3 2026-09-04
+    /// until the stall opened, never the admission budget (a 2026-09-04 production incident
     /// waited 600 s per send behind a stall the probe had already paged).
     /// `stall_id` is the `ErrorEvent::ActorLoopStalled` correlation id, so the
     /// refusal joins to the open incident. Deliveries resume on the correlated
@@ -1377,7 +1377,7 @@ pub enum ResumeRejectionKind {
     /// refuses revival (the 0.6.x body-carried dispose shape with no runtime
     /// record). A STABLE, deterministic wall: no retry can change the
     /// verdict, so consumers park the identity typed on the FIRST encounter
-    /// (OB3 rehearsal: 4 identities heal/refusal-looped because the roster
+    /// (production rehearsal: 4 identities heal/refusal-looped because the roster
     /// heal succeeded while this materialize precondition stayed terminal).
     /// Upstream revive-by-document-authority lands in meerkat 0.8.15; until
     /// then `mobkit/reset` is the deliberate fresh start.
@@ -1390,7 +1390,7 @@ pub enum ResumeRejectionKind {
     /// `rkat session repair-wholeblob` repair is the only way forward, after
     /// which `mobkit/reload_member` resumes the same session. Consumers park
     /// the identity with the typed [`super::types::SessionRepairRequired`]
-    /// hold on the FIRST encounter (the HomeCore 2026-09-22 wedge).
+    /// hold on the FIRST encounter (the downstream app's 2026-09-22 wedge).
     AuditedEndpointDivergence,
     /// A role migration this activation declared for the identity was not
     /// applied: meerkat refused it (`MobError::MemberRoleMigrationRequired` or
@@ -1619,7 +1619,7 @@ fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
     // both hand their failure to `resume_rejected` this way. Classify what
     // they carry, exactly as `provider_auth_rejection` does, or a wrapped
     // ArchivedNotRevivable reads as `Other`, never reaches the typed park in
-    // the identity runtime, and the identity heal-loops (the OB3 incident).
+    // the identity runtime, and the identity heal-loops (the production incident).
     if let meerkat_mob::MobError::SharedRetirementFailure(inner)
     | meerkat_mob::MobError::SharedLifecycleFailure(inner) = error
     {
@@ -2503,7 +2503,7 @@ fn map_committed_boundary_recovery_error(
         }
         // The one hold an operator must repair by hand: recovery cannot read
         // the committed document, so retrying recovery every pass is the
-        // HomeCore 2026-09-22 retry storm. Typed verdict, typed park.
+        // A downstream app's 2026-09-22 retry storm. Typed verdict, typed park.
         error @ meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { .. } => {
             let meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { id } = &error
             else {
@@ -3538,7 +3538,7 @@ pub struct MobSessionBridge {
     /// through [`SessionBridge::observe_actor_loop_health`]). While a stall is
     /// open, admission round trips fail fast naming the `stall_id`.
     actor_loop_health: std::sync::RwLock<Option<Arc<ActorLoopHealth>>>,
-    /// Machine-level ingress authority for the repair disposal paths (OB3
+    /// Machine-level ingress authority for the repair disposal paths (production
     /// run 33758a41: repair destroyed 15 queued inputs with the member).
     /// Lets repair capture a member's queued/steered inputs BEFORE the
     /// destructive retire and re-admit them into the healed successor
@@ -3552,7 +3552,7 @@ pub struct MobSessionBridge {
 }
 
 /// One queued/steered member input captured before a repair disposal, for
-/// re-admission into the healed successor session (OB3 run 33758a41: the
+/// re-admission into the healed successor session (production run 33758a41: the
 /// disposal destroyed 15 queued review inputs with the member).
 struct CarriedMemberInput {
     original_input_id: meerkat_core::lifecycle::InputId,
@@ -3891,7 +3891,7 @@ impl MobSessionBridge {
     }
 
     /// Inject the machine-level ingress authority the repair disposal paths
-    /// use to carry a member's queued work across a heal (OB3 run 33758a41:
+    /// use to carry a member's queued work across a heal (production run 33758a41:
     /// disposal destroyed 15 queued inputs with the member). Compositions
     /// with a runtime machine pass it here; without it, repair proceeds but
     /// cannot observe or carry pending inputs.
@@ -4033,7 +4033,7 @@ impl MobSessionBridge {
     }
 
     /// Capture a member session's pending machine ingress BEFORE a repair
-    /// disposal destroys it (OB3 run 33758a41: queue_len=5 steer_queue_len=10
+    /// disposal destroys it (production run 33758a41: queue_len=5 steer_queue_len=10
     /// destroyed with the member). Pending = admitted but not yet run
     /// (`Accepted`/`Queued`); mid-run and terminal inputs are not queue work.
     /// Best-effort observation: an unregistered runtime or a probe fault
@@ -4912,7 +4912,7 @@ impl MobSessionBridge {
             metadata.provider,
         );
         if divergence.model || divergence.provider {
-            // One line, BOTH pairs: the OB3 cutover incident's first symptom
+            // One line, BOTH pairs: the production cutover incident's first symptom
             // was a (model, provider) pair mismatch, and a model-only line
             // hid the half that mattered.
             tracing::info!(
@@ -4979,7 +4979,7 @@ impl MobSessionBridge {
     ) -> Result<(), BridgeError> {
         // Resume-repair first: the recorded durable session IS the
         // conversation. `MobHandle::respawn` retires and spawns FRESH — it
-        // rotates the bridge session and abandons the transcript (the OB3
+        // rotates the bridge session and abandons the transcript (the production
         // `identity_alias_respawn_rotation` data-loss class). When we know
         // the durable session and the member's role, rebuild the member ONTO
         // that session instead; spawn fresh under the same identity only
@@ -4996,7 +4996,7 @@ impl MobSessionBridge {
         ) {
             // The repair below starts with a destructive retire: capture the
             // wedged member's queued inputs FIRST so the healed successor can
-            // re-admit them instead of losing them with the disposal (OB3
+            // re-admit them instead of losing them with the disposal (production
             // run 33758a41).
             let capture = self
                 .capture_pending_member_ingress(&session_id)
@@ -5548,7 +5548,7 @@ pub(crate) fn build_spawn_spec(
             // None: on resume the profile's resume-override mask applies
             // model and provider as a pair, and a None provider falls back to
             // the durable one — minting exactly the invalid (model, provider)
-            // pair the OB3 cutover rejected typed. Catalog-unknown ids keep
+            // pair the production cutover rejected typed. Catalog-unknown ids keep
             // None (definition `[models.<id>]` / config-entry resolution
             // downstream, durable-wins on resume).
             Some(base) if base.provider.is_some() || base.self_hosted_server_id.is_some() => {
@@ -6174,7 +6174,7 @@ impl SessionBridge for MobSessionBridge {
                 // is a separate question the roster answers: a collision with
                 // no roster member came from MobMachine's in-flight spawn
                 // guard, and a build in progress for this very identity is
-                // convergence to await, not debris to clear (OB3 2026-09-22
+                // convergence to await, not debris to clear (a 2026-09-22 production incident
                 // item 3: the inert retire and the retry that collided with
                 // the just-finished build marked a healthy identity Broken).
                 match classify_colliding_occupant(self.handle.get_member(&mid).await) {
@@ -6200,7 +6200,7 @@ impl SessionBridge for MobSessionBridge {
                     }
                     // Committed, and already bound to the very session being
                     // resumed: this IS the member, not a stale predecessor.
-                    // OB3 had a 245 ms window between the collision and the
+                    // The production deployment had a 245 ms window between the collision and the
                     // spawn completing; a resume that classifies inside that
                     // window sees the roster row and must adopt it exactly as
                     // the in-flight path does. Retiring it would destroy a
@@ -6270,7 +6270,7 @@ impl SessionBridge for MobSessionBridge {
                         "resume_session hit a roster collision; retiring the stale member and retrying resume"
                     );
                 }
-                // Preconditions FIRST (OB3 run 33758a41): the retire below is
+                // Preconditions FIRST (production run 33758a41): the retire below is
                 // destructive — on the ephemeral runtime-store shape it takes
                 // the stale member's in-memory state and queued inputs with
                 // it. Before destroying anything, prove the session this
@@ -6352,11 +6352,11 @@ impl SessionBridge for MobSessionBridge {
             // Any other resume failure: REFUSE to fall back to a fresh spawn.
             // The durable session row exists and is the only copy of the
             // conversation; rebinding the identity to a fresh empty session
-            // would permanently abandon it (the HomeCore restart-loss bug).
+            // would permanently abandon it (the downstream app's restart-loss bug).
             // Surface a typed rejection so the caller marks the identity
             // degraded and the next reconcile retries the resume.
             //
-            // ONE narrowly-typed exception (OB3 2026-07-30 fleet wedge, 30
+            // ONE narrowly-typed exception (a 2026-07-30 production fleet wedge, 30
             // identities): meerkat's typed Absent - "no durable session
             // exists for this id" - combined with the store confirming no
             // row was ever persisted, is the never-persisted continuity
@@ -7867,7 +7867,7 @@ mod tests {
     /// value, and whoever changes either side needs to know which half they are
     /// standing on.
     ///
-    /// Measured in production, HomeCore activation-89: the same declaration was
+    /// Measured in production, a downstream app activation-89: the same declaration was
     /// armed on two consecutive boots of one activation; the first performed the
     /// restamp and the second did nothing. A host-side gate cannot catch a wrong
     /// repeat, because after a successful migration the durable record agrees
@@ -7948,7 +7948,7 @@ mod tests {
 
     /// A draft model pin on a pinned-provider base must carry the DRAFT
     /// model's catalog owner in the snapshot, applied with the model as a
-    /// pair. Clearing it to None (the pre-OB3 shape) let resume fall back to
+    /// pair. Clearing it to None (the pre-incident shape) let resume fall back to
     /// the durable provider under the pinned model — the exact invalid
     /// (model, provider) pair the incident rejected typed.
     #[test]
@@ -8631,7 +8631,7 @@ mod tests {
     /// The delivery-repair fallback ladder hinges on telling "the durable
     /// snapshot is gone" (fresh respawn is legitimate recovery) apart from
     /// every other resume failure (fresh respawn would abandon a live
-    /// transcript — the OB3 `identity_alias_respawn_rotation` class). The
+    /// transcript — the production `identity_alias_respawn_rotation` class). The
     /// classification is a TYPED variant match: only
     /// `SessionUnavailableForResume { reason: Absent }` authorizes the
     /// fallback, and no error WORDING can impersonate it.
@@ -8833,7 +8833,7 @@ mod tests {
         );
 
         // The typed archived refusal classifies from the VARIANT, never the
-        // wording: the stable wall consumers park on (OB3 rehearsal).
+        // wording: the stable wall consumers park on (production rehearsal).
         let archived = meerkat_mob::MobError::SessionUnavailableForResume {
             session_id: meerkat_core::types::SessionId::new(),
             reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
@@ -9284,7 +9284,7 @@ mod tests {
         );
     }
 
-    /// The OB3 circuit breaker: while the probe has an OPEN stall, an
+    /// The production circuit breaker: while the probe has an OPEN stall, an
     /// admission round trip is refused immediately, typed, naming the
     /// stall, and never waits the admission budget.
     #[tokio::test]
@@ -9826,7 +9826,7 @@ mod tests {
     /// Heal contract: `DurableTailRecoveryRefused` is a typed refusal only an
     /// external change clears — it must PARK as the terminal `Unprovable`
     /// verdict, not escape as a retryable bridge error that loops the
-    /// reconcile repair pass forever (the HomeCore 9/17-Broken shape would
+    /// reconcile repair pass forever (the downstream app's 9/17-Broken shape would
     /// then never reach an operator as a parked reason).
     #[test]
     fn heal_error_tier_recovery_refused_parks_terminal_unprovable() {
@@ -9886,7 +9886,7 @@ mod tests {
     }
 
     /// The audited-endpoint divergence is the one hold whose exit is the
-    /// operator's sanctioned repair (HomeCore 2026-09-22): the heal authority
+    /// operator's sanctioned repair (downstream app 2026-09-22): the heal authority
     /// reports it as the typed repair verdict, not as the retryable error tier
     /// (a recovery retry every pass is the retry storm) and not as the
     /// operator-opaque `Unprovable` text.

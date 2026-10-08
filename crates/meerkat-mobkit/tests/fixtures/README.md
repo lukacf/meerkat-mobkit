@@ -82,7 +82,7 @@ regression shipped past a synthetic 26-chain test for that reason).
   per-table column lists; sha256 pinned in checksums.sha256, source DDL in
   continuity-schema.sql. Consumed by
   identity_first_lazy_recall_continuity.rs
-  (homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn),
+  (downstream_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn),
   which reconstitutes it at test time VERBATIM - every row of every table
   through the bundle's own DDL, zero document surgery - and boots the
   harness under the bundle's OWN identity space (the mob id read from the
@@ -107,7 +107,7 @@ regression shipped past a synthetic 26-chain test for that reason).
   by deterministic synthetic text, the mob namespace is renamed, and each
   cas_token is recomputed over its new head_json. sha256 pinned in
   checksums.sha256. Consumed by
-  identity_first::adapters::tests::homecore_security_boot_drift_is_zero_durable_change,
+  identity_first::adapters::tests::downstream_security_boot_drift_is_zero_durable_change,
   which pins that strict head equality SEES the two-boot drift (updated_at +
   the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
   while the scoped exact-resave equality reads it as zero durable change.
@@ -120,7 +120,7 @@ only to released and forensic captures.
 - role_migrations_init_params.json - the hand-authored wire contract for boot-scoped member
   role migrations: one gateway init-params object carrying a top-level
   role_migrations array of {identity, from_role} declarations (values are
-  HomeCore activation-83: identity domain:home-automation migrating from role
+  a downstream app's activation-83: identity domain:home-automation migrating from role
   domain). Read by BOTH languages from this ONE file. Rust:
   identity_first::bridge::tests::
   the_committed_wire_fixture_deserializes_into_declarations include_str!s it

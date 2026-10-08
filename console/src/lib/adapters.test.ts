@@ -5785,7 +5785,7 @@ test("mapFramesToTimelineEntries renders live untyped peer system notices", () =
           blocks: [{
             content: [{
               type: "text",
-              text: "Peer message from ob3/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
+              text: "Peer message from ops/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
             }],
           }],
         },
@@ -5983,7 +5983,7 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
     timestampMs: 5,
     data: {
       message: typedCommsNotice({
-        peer: "ob3/delegate/worker",
+        peer: "ops/delegate/worker",
         body: "Peer result landed.",
       }),
     },
@@ -5996,7 +5996,7 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
       blocks: [{
         content: [{
           type: "text",
-          text: "Peer message from ob3/worker:\nFinished.",
+          text: "Peer message from ops/worker:\nFinished.",
         }],
       }],
     },
@@ -6275,20 +6275,20 @@ test("mapFramesToTimelineEntries renders live typed peer blob-ref image notices 
             blocks: [{
               type: "comms",
               kind: "message",
-              peer: { display_name: "ob3/delegate/image-artist-2" },
+              peer: { display_name: "ops/delegate/image-artist-2" },
               request_id: "peer-image-live-1",
               content: [
-                { type: "text", text: "Saved to generated_images/ob3_admin_role_v2.png." },
+                { type: "text", text: "Saved to generated_images/ops_admin_role_v2.png." },
                 {
                   type: "image",
                   image: {
                     blob_ref: {
-                      blob_id: "sha256:ob3-admin-role",
+                      blob_id: "sha256:ops-admin-role",
                       media_type: "image/png",
                     },
                     width: 1024,
                     height: 1024,
-                    image_id: "image-ob3-admin-role",
+                    image_id: "image-ops-admin-role",
                   },
                 },
               ],
@@ -6309,15 +6309,15 @@ test("mapFramesToTimelineEntries renders live typed peer blob-ref image notices 
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0]?.type, "tool-call");
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "image-artist-2");
-  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Saved to generated_images/ob3_admin_role_v2.png.");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Saved to generated_images/ops_admin_role_v2.png.");
   const peerImages = blocks[0]?.type === "tool-call" ? blocks[0].peerImages || [] : [];
   assert.equal(peerImages.length, 1);
   assert.equal(
     peerImages[0]?.src || "",
-    "http://127.0.0.1:7000/blobs/sha256%3Aob3-admin-role",
+    "http://127.0.0.1:7000/blobs/sha256%3Aops-admin-role",
   );
   assert.equal(peerImages[0]?.width || 0, 1024);
-  assert.equal(peerImages[0]?.imageId || "", "image-ob3-admin-role");
+  assert.equal(peerImages[0]?.imageId || "", "image-ops-admin-role");
 });
 
 test("mapFramesToTimelineEntries suppresses raw peer image prompts when structured comms image exists", () => {
@@ -6733,7 +6733,7 @@ test("mapFramesToTimelineEntries keeps no-interaction peer turns after the origi
         timestampMs: Date.parse("2026-05-25T10:43:26.000Z"),
         data: {
           prompt:
-            "Peer message from ob3/review-worker/review-worker-vibe-forward-chat-review-fix: { result: true }",
+            "Peer message from ops/review-worker/review-worker-vibe-forward-chat-review-fix: { result: true }",
         },
       },
       {
@@ -6781,7 +6781,7 @@ test("mapFramesToTimelineEntries keeps no-interaction peer turns after the origi
   );
   const promptIndex = texts.findIndex((text) => text.includes("Console chat smoke"));
   const handoffIndex = texts.findIndex((text) => text.includes("Worker handoff"));
-  const peerIndex = texts.findIndex((text) => text.includes("Peer message from ob3/review-worker"));
+  const peerIndex = texts.findIndex((text) => text.includes("Peer message from ops/review-worker"));
   const finalIndex = texts.findIndex((text) => text.includes("Full review result forwarded"));
 
   assert(promptIndex >= 0, `missing operator prompt: ${texts.join("\n---\n")}`);
@@ -9485,7 +9485,7 @@ test("a deduped user input keeps the typed origin carried by any of its twins", 
       interactionId,
       timestampMs: 1_000,
       cursor: "console:2",
-      data: { content: "Reply with the proof token.", origin: "homecore:gate", origin_kind: "operator_probe" },
+      data: { content: "Reply with the proof token.", origin: "example:gate", origin_kind: "operator_probe" },
     },
   ];
   for (const map of [mapFramesToTimelineEntries, mapFramesToTimelineEntriesShared]) {
@@ -9493,7 +9493,7 @@ test("a deduped user input keeps the typed origin carried by any of its twins", 
     const users = entries.filter((entry) => entry.kind === "message" && entry.identity.role === "user");
     assert.equal(users.length, 1);
     const origin = users[0].kind === "message" ? users[0].origin : null;
-    assert.deepEqual(origin, { sendOrigin: "homecore:gate", originKind: "operator_probe" });
+    assert.deepEqual(origin, { sendOrigin: "example:gate", originKind: "operator_probe" });
   }
 });
 

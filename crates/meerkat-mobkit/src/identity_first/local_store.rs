@@ -1779,7 +1779,7 @@ fn materialize_slim_in_txn(
         // blobs. Every 0.8.10-written head refuses current materialization
         // (`Session::from_head_parts` fails typed on the envelope version),
         // so without this lane an entire released head-canonical fleet is
-        // unreadable at resume (HomeCore binding, 17/17 identities:
+        // unreadable at resume (downstream app binding, 17/17 identities:
         // "failed to restore session from head row: ... expected current 3,
         // got 2").
         Err(restore_error)

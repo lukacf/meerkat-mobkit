@@ -5,7 +5,7 @@
  * gateway as local JSON under `persistent_state`, with an optional HTTP
  * health-check gate. `localJson()` is the honest configuration for that
  * backend; `elephant()` is a deprecated alias kept for wire compatibility
- * with older gateways (it never wrote data to Elephant).
+ * with older gateways (it never wrote data to the external memory hub).
  */
 
 export interface LocalJsonMemoryConfig {
@@ -42,8 +42,8 @@ let warnedElephantDeprecated = false;
 
 /**
  * @deprecated Use {@link localJson} instead. Despite the name, this backend
- * never sent data to Elephant: the gateway only health-checks `endpoint` and
- * persists the ledger as local JSON. `spaceId`, `collection`, and `stores`
+ * never sent data to the external memory hub: the gateway only health-checks
+ * `endpoint` and persists the ledger as local JSON. `spaceId`, `collection`, and `stores`
  * are not sent to the gateway and have never had any effect. The legacy wire
  * shape is still emitted for compatibility with older gateways.
  */

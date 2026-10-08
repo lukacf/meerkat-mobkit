@@ -13,8 +13,8 @@
     "voice": "marin",
     "execution_profiles": [
       {
-        "profile_id": "homecore.reachy.open-room.v1",
-        "session_instructions": "You are Reachy's voice embodiment."
+        "profile_id": "example.device.open-room.v1",
+        "session_instructions": "You are the robot's voice embodiment."
       }
     ]
   },
@@ -27,7 +27,7 @@
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are Reachy's voice embodiment."
+    "session_instructions": "You are the robot's voice embodiment."
   },
   "openai_live_gateway_config_with_summary": {
     "principal": "user:luka",
@@ -38,7 +38,7 @@
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are Reachy's voice embodiment.",
+    "session_instructions": "You are the robot's voice embodiment.",
     "summary": {
       "model": "gpt-5.4-mini",
       "max_input_bytes": 32768,
@@ -48,7 +48,7 @@
   "openai_live_public_profile_id": "openai.gpt-live-1.client-context.v1",
   "execution_identity": {
     "version": "v1",
-    "profile_id": "homecore.reachy.open-room.v1"
+    "profile_id": "example.device.open-room.v1"
   },
   "channel_handle": {
     "channel_id": "live-ch-1",

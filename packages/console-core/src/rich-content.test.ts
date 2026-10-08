@@ -153,9 +153,9 @@ desktop/renderer/src/app/App.tsx +4 -3
   });
 
   test("normalizes legacy machine-token labels before shared console rendering", () => {
-    expect(normalizeConversationDisplayLabel("HomeCore peer target peer-root-1781853922227")).toBe("HomeCore peer thread");
+    expect(normalizeConversationDisplayLabel("Example peer target peer-root-1781853922227")).toBe("Example peer thread");
     expect(normalizeConversationDisplayLabel("HSNS request source peer-req-1781854233913")).toBe("HSNS request thread");
-    expect(normalizeConversationDisplayLabel("HomeCore merged response peer-merge-1781854428883")).toBe("HomeCore peer response");
+    expect(normalizeConversationDisplayLabel("Example merged response peer-merge-1781854428883")).toBe("Example peer response");
     expect(normalizeConversationDisplayLabel("Peer live hsns peer-live-1781853108762")).toBe("HSNS peer thread");
     expect(normalizeConversationDisplayLabel("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).toBe("");
     expect(normalizeConversationDisplayLabel("Design review")).toBe("Design review");
@@ -214,14 +214,14 @@ desktop/renderer/src/app/App.tsx +4 -3
 
   test("summarizes generated peer steering prompts for display", () => {
     expect(parseConversationRichBlocks([
-      "Connected to HomeCore peer thread. Each thread keeps its own transcript and can message the other through MobKit.",
+      "Connected to Example peer thread. Each thread keeps its own transcript and can message the other through MobKit.",
       "",
       "Use your MobKit peer tools only. Do not run shell commands and do not edit files.",
-      "Send this exact message body to the peered HomeCore thread: \"Please reply with acknowledgement and do not edit files.\"",
+      "Send this exact message body to the peered Example thread: \"Please reply with acknowledgement and do not edit files.\"",
       "After the peer message is sent, stop.",
     ].join("\n"))).toEqual([{
       type: "paragraph",
-      text: "Connected to HomeCore peer thread.\nRequested an acknowledgement from HomeCore peer thread.",
+      text: "Connected to Example peer thread.\nRequested an acknowledgement from Example peer thread.",
     }]);
     expect(parseConversationRichBlocks([
       "Call peers, then send_request with params {\"subject\":\"peer-merge-1781854428883\"}.",
@@ -231,50 +231,50 @@ desktop/renderer/src/app/App.tsx +4 -3
       text: "Requested a peer response.",
     }]);
     expect(parseConversationRichBlocks([
-      "Connected to HomeCore peer response. Each thread keeps its own transcript and can message the other through MobKit.",
+      "Connected to Example peer response. Each thread keeps its own transcript and can message the other through MobKit.",
       "",
       "Use your MobKit peer tools only. Do not run shell commands and do not edit files.",
-      "Call peers, then send a send_request to the peered HomeCore thread using intent checksum_token and params {\"subject\":\"response token\"}.",
+      "Call peers, then send a send_request to the peered Example thread using intent checksum_token and params {\"subject\":\"response token\"}.",
       "In the request blocks, ask it to send_response with result.token exactly \"response token\".",
       "After the request is sent, stop.",
     ].join("\n"))).toEqual([{
       type: "paragraph",
-      text: "Connected to HomeCore peer response.\nRequested a peer response from HomeCore peer response.",
+      text: "Connected to Example peer response.\nRequested a peer response from Example peer response.",
     }]);
     expect(parseConversationRichBlocks([
       "Use your MobKit peer tools only. Do not run shell commands and do not edit files.",
-      "Send this exact message body to the peered HomeCore thread: \"Please reply with acknowledgement and do not edit files.\"",
+      "Send this exact message body to the peered Example thread: \"Please reply with acknowledgement and do not edit files.\"",
       "After the peer message is sent, stop.",
     ].join("\n"))).toEqual([{
       type: "paragraph",
-      text: "Requested an acknowledgement from HomeCore thread.",
+      text: "Requested an acknowledgement from Example thread.",
     }]);
     expect(parseConversationRichBlocks([
       "Use your MobKit peer tools only. Do not run shell commands and do not edit files.",
-      "Call peers, then send a send_request to the peered HomeCore thread using intent checksum_token and params {\"subject\":\"response token\"}.",
+      "Call peers, then send a send_request to the peered Example thread using intent checksum_token and params {\"subject\":\"response token\"}.",
       "In the request blocks, ask it to send_response with result.token exactly \"response token\".",
       "After the request is sent, stop.",
     ].join("\n"))).toEqual([{
       type: "paragraph",
-      text: "Requested a peer response from HomeCore thread.",
+      text: "Requested a peer response from Example thread.",
     }]);
     expect(parseConversationRichBlocks("Use your MobKit peer tools only. Do not run shell commands and do not edit files.")).toEqual([]);
-    expect(parseConversationRichBlocks("Send this exact message body to the peered HomeCore thread: \"Please reply with acknowledgement and do not edit files.\"")).toEqual([{
+    expect(parseConversationRichBlocks("Send this exact message body to the peered Example thread: \"Please reply with acknowledgement and do not edit files.\"")).toEqual([{
       type: "paragraph",
-      text: "Requested an acknowledgement from HomeCore thread.",
+      text: "Requested an acknowledgement from Example thread.",
     }]);
-    expect(parseConversationRichBlocks("Call peers, then send a send_request to the peered HomeCore thread using intent checksum_token and params {\"subject\":\"response token\"}.")).toEqual([{
+    expect(parseConversationRichBlocks("Call peers, then send a send_request to the peered Example thread using intent checksum_token and params {\"subject\":\"response token\"}.")).toEqual([{
       type: "paragraph",
-      text: "Requested a peer response from HomeCore thread.",
+      text: "Requested a peer response from Example thread.",
     }]);
     expect(parseConversationRichBlocks([
-      "Connected to HomeCore peer thread. Each thread keeps its own transcript. They can now message each other.",
+      "Connected to Example peer thread. Each thread keeps its own transcript. They can now message each other.",
       "",
       "Find your trusted peer and use send_message with handling_mode steer to send this exact body: \"MobKit live peer smoke. Please reply in your own thread in one sentence. If you can, send a one sentence peer message back. Do not edit files.\".",
       "Then stop after reporting delivery.",
     ].join("\n"))).toEqual([{
       type: "paragraph",
-      text: "Connected to HomeCore peer thread.\nRequested a peer reply from HomeCore peer thread.",
+      text: "Connected to Example peer thread.\nRequested a peer reply from Example peer thread.",
     }]);
     expect(parseConversationRichBlocks("Find your trusted peer and use send_message with handling_mode steer to send this exact body: \"Hello\". Then stop after reporting delivery.")).toEqual([{
       type: "paragraph",

@@ -1292,7 +1292,7 @@ fn assert_no_reserved_member_identity(value: &Value, path: &str) {
 /// member_status. That path had NO alias coverage at all, which is the condition
 /// under which the get_member defect survived a full green suite. It also reaches
 /// further than a gateway binary - any embedder merging mobkit_console_router
-/// exposes this method, which OB3 pointed out after measuring their own tree.
+/// exposes this method, which a production embedder pointed out after measuring their own tree.
 /// `mobkit/identity/routing_status` must be REACHABLE on both planes, and its
 /// negative must be CLASSIFIABLE.
 ///
@@ -1307,7 +1307,7 @@ fn assert_no_reserved_member_identity(value: &Value, path: &str) {
 ///     so an ERROR is the expected answer and "no error" would be the wrong
 ///     property to demand.
 ///
-///  2. That error must carry a machine-readable `reason`. OB3 sweeps a fleet
+///  2. That error must carry a machine-readable `reason`. A production embedder sweeps a fleet
 ///     of materialized identities, where "no session yet" is the EXPECTED
 ///     state at boot and "the machine does not hold a resolved session" is a
 ///     real defect. A bare -32000 collapses those into one unusable verdict.

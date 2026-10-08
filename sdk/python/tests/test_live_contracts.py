@@ -44,7 +44,7 @@ def test_openai_live_gateway_registration_matches_shared_fixture(contracts_fixtu
             realm="family", binding="openai-api-key", profile="luka"
         ),
         voice="marin",
-        session_instructions="You are Reachy's voice embodiment.",
+        session_instructions="You are the robot's voice embodiment.",
     )
     assert config.to_dict() == contracts_fixture["openai_live_gateway_config"]
     assert (
@@ -121,8 +121,8 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict(
         voice="marin",
         execution_profiles=(
             ExperimentalLiveExecutionProfileConfig(
-                profile_id="homecore.reachy.open-room.v1",
-                session_instructions="You are Reachy's voice embodiment.",
+                profile_id="example.device.open-room.v1",
+                session_instructions="You are the robot's voice embodiment.",
             ),
         ),
     )
@@ -161,7 +161,7 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
             profile_id=" ", session_instructions="voice"
         ),
         ExperimentalLiveExecutionProfileConfig(
-            profile_id="reachy", session_instructions=" "
+            profile_id="robot", session_instructions=" "
         ),
         *[
             ExperimentalLiveExecutionProfileConfig(
@@ -179,21 +179,21 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
             config_with(profile).to_dict()
 
     duplicate = ExperimentalLiveExecutionProfileConfig(
-        profile_id="reachy", session_instructions="voice"
+        profile_id="robot", session_instructions="voice"
     )
     with pytest.raises(ValueError, match="duplicate"):
         config_with(
             duplicate,
             ExperimentalLiveExecutionProfileConfig(
-                profile_id=" reachy ", session_instructions="other"
+                profile_id=" robot ", session_instructions="other"
             ),
         ).to_dict()
     with pytest.raises(TypeError, match="entries"):
-        config_with({"profile_id": "reachy"}).to_dict()
+        config_with({"profile_id": "robot"}).to_dict()
     for field in ["mode", "model", "provider", "tools", "responses", "capabilities"]:
         with pytest.raises(TypeError):
             ExperimentalLiveExecutionProfileConfig(
-                profile_id="reachy",
+                profile_id="robot",
                 session_instructions="voice",
                 **{field: "forbidden"},
             )
@@ -201,7 +201,7 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
 
 def test_execution_identity_matches_shared_profile_fixture(contracts_fixture):
     selected = LiveExecutionIdentityV1(
-        profile_id="homecore.reachy.open-room.v1",
+        profile_id="example.device.open-room.v1",
     )
     assert selected.to_dict() == contracts_fixture["execution_identity"]
     assert LiveExecutionIdentityV1.from_dict(selected.to_dict()) == selected
@@ -224,17 +224,17 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
         with pytest.raises(ValueError, match=f"legacy top-level {field}"):
             live_open_execution_identity_params(
                 LiveExecutionIdentityV1(
-                    profile_id="homecore.reachy.open-room.v1"
+                    profile_id="example.device.open-room.v1"
                 ),
                 **{field: value},
             )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
-            {"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}
+            {"version": "v2", "profile_id": "example.device.open-room.v1"}
         )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
-            {"profile_id": "homecore.reachy.open-room.v1"}
+            {"profile_id": "example.device.open-room.v1"}
         )
     for field, value in [
         ("model", "gpt-live-1-codex"),
@@ -246,7 +246,7 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
             LiveExecutionIdentityV1.from_dict(
                 {
                     "version": "v1",
-                    "profile_id": "homecore.reachy.open-room.v1",
+                    "profile_id": "example.device.open-room.v1",
                     field: value,
                 }
             )
@@ -382,7 +382,7 @@ def test_openai_live_gateway_summary_bounds_match_shared_fixture(contracts_fixtu
             realm="family", binding="openai-api-key", profile="luka"
         ),
         voice="marin",
-        session_instructions="You are Reachy's voice embodiment.",
+        session_instructions="You are the robot's voice embodiment.",
         summary=OpenAiLiveSummaryConfig(
             model="gpt-5.4-mini", max_input_bytes=32768, max_output_bytes=2048
         ),

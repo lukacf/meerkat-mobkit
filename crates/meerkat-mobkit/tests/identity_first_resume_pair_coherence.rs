@@ -1,4 +1,4 @@
-//! OB3 cutover regression (2026-07-29): model and provider are a COHERENT
+//! Production cutover regression (2026-07-29): model and provider are a COHERENT
 //! PAIR, never independently masked on resume.
 //!
 //! Incident shape: an explicit operator resume override moved a profile's
@@ -338,7 +338,7 @@ async fn explicit_model_override_resumes_with_catalog_derived_pair() {
             }
             other => panic!(
                 "an explicit model override must RESUME with the catalog-derived pair \
-                 (the OB3 rejected-resume regression), got: {other:?}"
+                 (the production rejected-resume regression), got: {other:?}"
             ),
         }
 
@@ -670,11 +670,11 @@ fn prompt_bearing(system_contents: &[String], base_marker: &str) -> usize {
 ///
 /// Consequences pinned here, per incident lineage: definition/profile prompt
 /// edits are INERT for existing members BY DESIGN (they apply to new
-/// members; the released stack's silent inertness — OB3's 0/449 — becomes
+/// members; the released stack's silent inertness - a production deployment's 0/449 - becomes
 /// the specified behavior instead of a trap); no resume can mint transcript
 /// rewrite commits for prompts (the 60-100× revision-bloat class stays
 /// dead); no resume can refuse over retained rewrite history for prompt
-/// reasons (the HomeCore 9/17-Broken class is structurally unreachable);
+/// reasons (the downstream app's 9/17-Broken class is structurally unreachable);
 /// and every ordered System survives resume byte-for-byte (token replay).
 ///
 /// The authored-System leg (+1 exactly once via an explicit turn) is proven
@@ -688,7 +688,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
     const PARAGRAPH_A: &str = "Source-index collections available: alpha.";
 
     // The definition-owned assembled role instructions (an inline profile
-    // skill) — the surface HomeCore edited. Under the final contract this
+    // skill) - the surface the downstream app edited. Under the final contract this
     // edit must change NOTHING for the existing member.
     let definition_with = |role_instructions: &str| {
         let toml = format!(
