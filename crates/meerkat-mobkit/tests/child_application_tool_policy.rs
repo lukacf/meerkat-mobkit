@@ -304,7 +304,7 @@ impl meerkat_client::LlmClient for DelegatingModel {
             })
             .flatten()
             .find(|result| result.tool_use_id == "call-delegate")
-            .map(|result| result.text_content());
+            .map(meerkat_core::ToolResult::text_content);
         let call_delegate = probe_turn && delegate_result.is_none();
         if let Some(result) = delegate_result.filter(|_| probe_turn) {
             *self.delegated.lock().unwrap() = Some(result);
