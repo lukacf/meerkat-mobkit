@@ -225,6 +225,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Process-local launches now run a native delivery owner over persistent
+  composition. Both gateways' default process-local launches and the library
+  `MobBootstrapSpec::ephemeral_runtime_backed*` path use a
+  `PersistentSessionService` over an in-memory `MemoryStore` instead of
+  `EphemeralSessionService`, so their storage-health session label reads
+  `MemoryStore` instead of `EphemeralSessionService`.
+- The session-service wrapper no longer absorbs the ephemeral service's
+  `Unsupported` refusal of a boundary acknowledgement; the refusal reaches the
+  caller.
+- Image-generation ephemeral specs build their machine with
+  `MeerkatMachine::ephemeral()`.
+- Ephemeral launches now install the agent mob tools with an in-memory
+  detached-job store, so their members can create child mobs, delegate and run
+  detached jobs.
+- The persistent `mobkit_gateway` opens the canonical `jobs.sqlite3` detached-job
+  store.
+- A restored classic mob resumes through a deferred activation that runs only
+  after its address resolver has its handle and the delivery owner is armed.
+- Runtime shutdown and teardown stop the native delivery owner explicitly
+  after the mob stops, instead of when the last runtime clone drops.
+  Undelivered rows stay pending in the durable inbox.
 - The published crate no longer includes in-repo forensic test captures.
 - The memory steward's quarantine `release` and `tombstone` verdicts run the
   operator review's store transaction (`StewardStore::review_quarantined`,
@@ -588,6 +609,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `MobRuntimeDelivery` (`new`, `inbox`, `last_pass`, `is_running`) composes a
+  host's native job and continuation delivery owner, and
+  `MobRuntime::runtime_delivery_pass` and `MobRuntime::stop_runtime_delivery`
+  observe and stop it.
 - Operators can decide quarantined agent memory from the console:
   `mobkit/memory/quarantine/decide` releases or tombstones one quarantined
   identity-scope record, without the memory steward or the gating flow.
@@ -1057,6 +1082,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Identity repair no longer destroys a member's queued inputs when the runtime
+  owner refuses to serve: a refused acquisition defers the repair disposal
+  instead of being read as an empty queue.
 - A conversation pane following the live edge no longer stops following
   when a tool opened at the end grows the transcript before the browser's
   own one-pixel scroll event arrives. The pane only leaves the live edge on
