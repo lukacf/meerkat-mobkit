@@ -11,7 +11,7 @@ dependency). Per the audit below, mobkit's gateways already bind tools +
 host + watchdog from one `ScheduleService`, so NO mobkit code change was
 needed. Stranded-data recovery also resolves upstream: an embedder on
 0.7.25 gets a driver pointed at the previously-undriven store automatically
-(HomeCore's pending occurrences fire on their upgrade, subject to catch-up
+(the downstream app's pending occurrences fire on their upgrade, subject to catch-up
 policy). Items 1–3 below stay as the design record; item 2's ordering
 discipline remains good hygiene for any future build path.
 
@@ -53,7 +53,7 @@ Both defects were checked against mobkit's gateways. Findings:
   Mobkit does NOT depend on meerkat-rpc, so the second writer
   (`SessionRuntime` self-seeding) is unreachable in a mobkit-only process.
   The race bites deployments that ALSO construct meerkat-rpc surfaces
-  against the same realm store (HomeCore).
+  against the same realm store (the downstream app).
 - **Tools ↔ firing authority — already coupled.** Whenever tools are
   attached, `schedule_host_inputs` is `Some` and the gateway unconditionally
   spawns the firing host AND the claim watchdog from the SAME
@@ -90,7 +90,7 @@ surfaces in-process) from reintroducing a second binding.
    `FactoryAgentBuilder` slot semantics, re-verify no path re-seeds after
    attach.
 3. **Stranded-data recovery.** Schedules already written into an undriven
-   realm-bundle store (HomeCore: domain:security's daily digest, ~30 pending
+   realm-bundle store (the downstream app: a security-domain agent's daily digest, ~30 pending
    occurrences in `sessions.sqlite3`) will not retroactively fire from the
    code fix. Ship the recovery matched to what 0.7.25 exposes: prefer a
    one-time migration of live schedules into the driven store; otherwise a

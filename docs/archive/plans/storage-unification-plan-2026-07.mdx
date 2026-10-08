@@ -90,8 +90,8 @@ post-review hardening requires exactly one durability declaration per slot
 in `REQUIRED_MOBKIT_DURABILITY_DOMAINS`, so a provider cannot dodge the
 fail-closed rule by omission.
 
-**Revision 3.** Revision 2 incorporated the second review round (HomeCore,
-ob3, and an independent static review): the provider layering is split into
+**Revision 3.** Revision 2 incorporated the second review round (the downstream app,
+the operator deployment, and an independent static review): the provider layering is split into
 a MobKit-owned composite over Meerkat's seam, the filename-ownership
 boundary is resolved, H3 gains the lazy-at-restore variant and the
 deploy-transition composition plus the joint divergent-bytes acceptance
@@ -164,7 +164,7 @@ with Meerkat's, plus three failure classes Meerkat does not have:
    (`identity_first/runtime.rs:326-345`), hardwired to
    `LocalContinuityStore` / `LocalLeaseProvider` in `gateway_wiring.rs`.
    `UnifiedRuntimeBuilder` has no method for either. A downstream with a
-   BigQuery continuity store (ob3) must bypass the builder and hand-rebuild
+   BigQuery continuity store (the operator deployment) must bypass the builder and hand-rebuild
    the identity substrate — one of the two "no public seam" gaps that force
    shadow infrastructure downstream.
 6. **A confirmed capability swallow in the identity-first session path.**
@@ -229,7 +229,7 @@ are the model, not the exception.
 The same two downstreams that shaped the Meerkat plan shape this one, and
 their MobKit-specific asks are sharper:
 
-**ob3 (ephemeral disk, BigQuery).** Implements `ContinuityStore` and
+**The operator deployment (ephemeral disk, BigQuery).** Implements `ContinuityStore` and
 `EventLogStore` remotely and a BigQuery session store
 (`runtime/session_store.rs` already carries a native
 `BigQuerySessionStoreAdapter`). Has no seam for continuity/lease injection
@@ -239,7 +239,7 @@ zombie-sibling-row incident that drove Meerkat's append-only conformance
 chapter happened in a store implementing *MobKit's* contracts. Wants: one
 provider bundle, one conformance suite, fail-closed blob slots.
 
-**HomeCore (state-generation deploys, local SQLite).** Byte-clones the
+**The downstream app (state-generation deploys, local SQLite).** Byte-clones the
 state directory per generation; reads MobKit's SQLite files directly in
 sanctioned diagnostics. Wants: machine-readable durability classes so
 clones can be Durable-only (the console/metadata/memory HNSW split
@@ -312,7 +312,7 @@ known real datasets) are unaffected.
 
 Two sanctioned invocation shapes, matching the two deployment worlds:
 
-- **Batch, in a maintenance/candidate window** (HomeCore). Because the
+- **Batch, in a maintenance/candidate window** (the downstream app). Because the
   entry point is a library call, it composes directly with
   state-generation deploy machinery: clone the generation → run H3 against
   the clone as a deploy data transition → boot the candidate → the
@@ -320,23 +320,23 @@ Two sanctioned invocation shapes, matching the two deployment worlds:
   with rollback a pointer flip to the untouched previous generation. That
   composition turns the scariest migration class into a certified,
   reversible deploy step with zero new machinery.
-- **Lazy, at restore** (ob3). Single-replica always-on deployments have no
+- **Lazy, at restore** (the operator deployment). Single-replica always-on deployments have no
   natural window — the pod restart *is* the window. Meerkat PR #909
   upstreamed exactly this shape for meerkat-side documents, so the
-  meerkat-facing half of ob3's shipped lazy shim is superseded by the
+  meerkat-facing half of the operator deployment's shipped lazy shim is superseded by the
   resolver's auto-migration; the continuity-side half maps onto H3's lazy
   mode, adopting each snapshot at first restore with the same helper and
   the same CAS discipline. Retirement chain: meerkat #909 released → H3 →
-  ob3 shim removal.
+  the operator deployment shim removal.
 
 **Joint acceptance case (with the meerkat hotfix): the byte-divergent
 pair.** A canonical runtime snapshot and a continuity projection can
-legitimately differ in bytes at the same generation/checkpoint (HomeCore's
+legitimately differ in bytes at the same generation/checkpoint (the downstream app's
 real dump: 82,261,276 B vs 82,262,809 B at checkpoint 859). Where meerkat's
 resolver sees both copies, PR #909's machine defines the rule: a projection
 that provably extends the canonical is adopted (no trailing turn lost), a
 stale prefix is rebuilt from canonical, and unrelated transcripts refuse
-fail-closed — HomeCore's dump pair is expected to classify as an extension.
+fail-closed — the downstream app's dump pair is expected to classify as an extension.
 What remains joint is the **independently-adopted** variant: on
 identity-first gateways the continuity copy lives where meerkat never sees
 it, so H3's adoption and meerkat's adoption happen independently — two
@@ -349,7 +349,7 @@ validated against the real dump.
 ## Phase M0 — Conformance adoption
 
 Runs against Meerkat Phase 0 (`meerkat-store-conformance`) and extends it
-with MobKit-owned suites, published as `mobkit-store-conformance` so ob3
+with MobKit-owned suites, published as `mobkit-store-conformance` so the operator deployment
 runs the identical suite against its BigQuery implementations.
 
 - **Consume the Meerkat profiles** for the session-store surface MobKit
@@ -380,9 +380,9 @@ runs the identical suite against its BigQuery implementations.
     capability flag backed by a behavioral test — a provider advertising a
     capability must pass its chapter, one refusing must return the typed
     `Unsupported` error.
-- **Legacy-data axis**, seeded with real dumps: a HomeCore
+- **Legacy-data axis**, seeded with real dumps: a downstream app
   `continuity.db` + memory-realm corpus with genuine `ensure_column` scar
-  tissue, and ob3-shaped fixtures for the emulated-CAS chapters. As with
+  tissue, and production-shaped fixtures for the emulated-CAS chapters. As with
   Meerkat: release-day incidents have been legacy-shape issues, not
   fresh-store bugs.
 
@@ -401,7 +401,7 @@ Reports:
 - **File-name twins**: `sessions.db` *and* `sessions.sqlite` present;
   `continuity.db` *and* `identity_continuity.sqlite` present — the
   MobKit split-brain census (scoped strictly to the resolved state
-  directory, per the HomeCore rule; byte-identical generation clones
+  directory, per the downstream app's rule; byte-identical generation clones
   elsewhere are none of its business).
 - Schema-ledger state per database (post-M3: version per domain;
   pre-M3: "no ledger" is itself a finding).
@@ -444,7 +444,7 @@ inline in `mobkit_gateway.rs:104-116`.
   under the canonical name. The invariant, exactly as in Meerkat Phase 2:
   the resolver must never *create* a twin. Physical renames to canonical
   names happen only in Phase M6 under the fence, with changelog entries
-  (HomeCore reads these files by name).
+  (the downstream app reads these files by name).
 - Canonical spellings are decided once, in this phase, and documented:
   stores shared with Meerkat (sessions, runtime, schedule, workgraph)
   adopt whatever Meerkat's layout names them; MobKit-owned files converge
@@ -481,7 +481,7 @@ in-crate openers. MobKit adds no second mechanics layer.
   becomes migration 0001 per domain; the memory store's `ensure_column`
   probes (`ever_quarantined`, `proposals.taint`) become migrations 0002+
   and the probe code is deleted. `SchemaFromTheFuture` surfaces through
-  gateway health as a typed refusal — a HomeCore rollback candidate fails
+  gateway health as a typed refusal — a downstream app rollback candidate fails
   certification cleanly instead of crash-looping under a process manager.
 - **Store error taxonomy at MobKit boundaries**: classify
   `ContinuityStore` and `EventLogStore` errors transient / stale / corrupt
@@ -529,7 +529,7 @@ The core of the arc: MobKit plugs into Meerkat's `RealmStorageProvider`
   `persistent_metadata`, and `start_event_log`. `gateway_wiring.rs` stops
   hardwiring `LocalContinuityStore` construction; it becomes the disk
   factory's implementation detail. The schedule path gets the public
-  trait seam ob3 lacks — with the Meerkat plan's caveat repeated
+  trait seam the operator deployment lacks — with the Meerkat plan's caveat repeated
   verbatim: injection is a *foundation*, and any shadow-scheduler
   deletion downstream requires a feature-parity audit first
   (multi-replica claims, timezone cron, jitter, delivery-policy
@@ -553,7 +553,7 @@ The core of the arc: MobKit plugs into Meerkat's `RealmStorageProvider`
   `ContinuitySessionStoreAdapter` can genuinely forward
   `as_incremental` instead of the H2 warning. Remote backends want this
   as badly as disk does — O(session) per turn over BigQuery is the reason
-  ob3 invented transcript chunking. Conformance-gated via the M0
+  the operator deployment invented transcript chunking. Conformance-gated via the M0
   continuity profile; the capability is typed and discoverable, never
   assumed.
 - **De-weld the judgment plane.** Target state: the full judgment plane
@@ -611,7 +611,7 @@ The core of the arc: MobKit plugs into Meerkat's `RealmStorageProvider`
   `reference/configuration`, and the SDK pages describe the layout, the
   durability classes, and the declaration requirement. Changelog policy:
   any file rename or table move gets the binary-rename treatment, because
-  HomeCore-class operators read these files directly.
+  downstream-app-class operators read these files directly.
 
 ## Phase M6 — Migration participation
 
@@ -645,7 +645,7 @@ Migration cases:
 
 Backup and retention follow the Meerkat discipline verbatim:
 `*.pre-<version>-<timestamp>` renames, never deletes, registered so doctor
-lists them and prune owns their lifecycle — HomeCore's generation-cloning
+lists them and prune owns their lifecycle — the downstream app's generation-cloning
 must be able to recognize them.
 
 ## Sequencing, risk, and gates
@@ -712,14 +712,14 @@ rather than filename literals (P2, applied consistently in M2 and M5);
 retryability as a method-level contract layered onto the error taxonomy
 (P2, inherited from the Meerkat rule).
 
-Accepted from HomeCore: the version-line correction (this repo is 0.8.1,
+Accepted from the downstream app: the version-line correction (this repo is 0.8.1,
 tags `v0.8.x`; the draft's "0.6.55 / 0.6.x line" was wrong — hotfixes ship
 on 0.8.x); H3 as a deploy data transition composed with state-generation
 cloning and the materialization gate; the joint divergent-bytes acceptance
 case for the H3 + meerkat-hotfix pair, validated against their real dump;
 their `continuity.db` + memory-realm fixture corpus contribution to M0.
 
-Accepted from ob3: the lazy-at-restore adoption variant as a sanctioned H3
+Accepted from the operator deployment: the lazy-at-restore adoption variant as a sanctioned H3
 mechanism for always-on single-replica deployments, with the shipped shim
 as prototype and the retirement chain meerkat hotfix → H3 → shim removal;
 this disposition-ledger section itself. Noted, out of scope: "explosion #3"
@@ -731,7 +731,7 @@ machine-owned lazy auto-migration plus the exported
 `meerkat_core::adopt_legacy_session` / `legacy_session_transcript_relation`.
 Consequences applied here: H3 narrows to continuity snapshots (meerkat's
 resolver heals its own store and runtime-snapshot shapes); the
-meerkat-facing half of ob3's lazy shim is superseded upstream while the
+meerkat-facing half of the operator deployment's lazy shim is superseded upstream while the
 continuity half maps onto H3's lazy mode; the joint acceptance case narrows
 to the independently-adopted variant (where meerkat sees both copies, the
 machine's extension/rebuild/refuse dispositions own the rule); and the

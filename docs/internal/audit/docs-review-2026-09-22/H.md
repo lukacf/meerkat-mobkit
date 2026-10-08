@@ -19,7 +19,7 @@ Original documentation and initial evidence line ranges refer to baseline `af82b
 
 Readers can mistake the allocation policy 'use the mob plane for ephemeral workers' for a storage guarantee, assume worker/member data cannot survive restart, or confuse the core member's AgentIdentity with a runtime binding ID.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4738`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4738`**
 
 ```text
 pub identity: AgentIdentity,
@@ -43,7 +43,7 @@ MobBuilder::for_resume(spec.storage)
 
 A nonempty stored mob event log selects the upstream resume builder; lines 8593-8596 call builder.resume().await. Mob state does not necessarily die with the process.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/runtime/builder.rs:7085-7097`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/runtime/builder.rs:7085-7097`**
 
 ```text
 let (all_events, definition) = storage.replay_with_created_definition().await?;
@@ -63,7 +63,7 @@ Confirmed as an inaccurate description of substrate capabilities, not as a rejec
 
 This is the unqualified technical comparison; the separate D1 policy follows it.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4758`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4758`**
 
 ```text
 pub identity: AgentIdentity,
@@ -116,7 +116,7 @@ storage limits of the underlying mob/session substrate.
 
 The revised key/durability rows and the following explicit non-guarantee now separate policy from implementation.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4758`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/runtime/handle.rs:4732-4758`**
 
 ```text
 pub identity: AgentIdentity,
@@ -178,7 +178,7 @@ if let Err(error) = self.spawn_member_spec(spawn_spec).await {
 
 The implementation actually resubmits the same resume specification after repair; this is not only an obsolete explanatory comment.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/build.rs:706-725`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/build.rs:706-725`**
 
 ```text
 return Err(MobError::MemberRoleMigrationRejected {
@@ -222,7 +222,7 @@ if durable_snapshot_is_typed_absent(&error)
 
 A distinct branch additionally requires durable_session_row_is_absent before creating a fresh successor. It must not be accidentally contradicted by a new global fallback prohibition.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/build.rs:704-725`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/build.rs:704-725`**
 
 ```text
 if declared_predecessor_role.as_str() != stored_role {
@@ -268,7 +268,7 @@ if durable_snapshot_is_typed_absent(&error)
 
 A separate, narrowly gated fresh-spawn fallback still exists; the revised prose does not globally prohibit it.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-mob-0.8.40/src/build.rs:706-725`**
+**`(operator-retained path)/meerkat-mob-0.8.40/src/build.rs:706-725`**
 
 ```text
 if declared_predecessor_role.as_str() != stored_role {
@@ -637,7 +637,7 @@ The ten-second close observation timeout maps to Busy/voice_busy rather than suc
    `mobkit/live/send_input`, `mobkit/live/commit_input`,
    `mobkit/live/interrupt`, `mobkit/live/truncate`. Params accept an
    IDENTITY TARGET —
-   `{identity: "reachy"}` or `{member_id}` or raw `{session_id}` —
+   `{identity: "device"}` or `{member_id}` or raw `{session_id}` —
 ```
 
 A browser/LAN integrator following this section calls absent HTTP methods or supplies unsupported target forms. It also conflicts with this document's otherwise-correct request-fenced console voice boundary.
@@ -1016,7 +1016,7 @@ Production calls the dependency's seed-window projection, not a MobKit oldest-me
 
 The openai-live ordinary branch also forwards the window into shared upstream projection authority.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-587`**
+**`(operator-retained path)/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-587`**
 
 ```text
 /// Select a bounded, deterministic projection. Existing typed compaction
@@ -1055,7 +1055,7 @@ let seed_window = match parsed.seed_max_chars.or(ctx.seed_max_chars) {
 
 The openai-live ordinary path preserves per-open-over-gateway precedence, constructs LiveSeedWindow and passes it to prepare_open_projection.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-598`**
+**`(operator-retained path)/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-598`**
 
 ```text
 /// summary content is the optional head; the tail is retained only at complete
@@ -1063,7 +1063,7 @@ The openai-live ordinary path preserves per-open-over-gateway precedence, constr
 
 The pinned API contract describes complete-turn selection, not individual oldest-message removal.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:608-680`**
+**`(operator-retained path)/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:608-680`**
 
 ```text
 status: LiveSeedProjectionStatus::Windowed {
@@ -1108,7 +1108,7 @@ let seed_max_chars = parsed.seed_max_chars.or(ctx.seed_max_chars);
 
 The ordinary compatibility branch forwards into realtime_projection_messages_with_window; the openai-live branch builds LiveSeedWindow and supplies it to prepare_open_projection.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-682`**
+**`(operator-retained path)/meerkat-0.8.40/src/session_runtime/live_orchestration.rs:584-682`**
 
 ```text
 status: LiveSeedProjectionStatus::Windowed {
@@ -1283,7 +1283,7 @@ The smoke builds from the repository's current manifest/lockfile. Both manifests
 
 A client abstraction built on the claimed universal CAS requirement cannot correctly model creation/link/prune and may invent revision parameters that provide no concurrency guarantee.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/types.rs:1613-1621`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/types.rs:1613-1621`**
 
 ```text
 pub struct LinkWorkItemsRequest {
@@ -1351,7 +1351,7 @@ pub struct LinkWorkItemsRequest {
 
 Independent historical proof: the complete v0.7.23 link request has no revision token. The same fetch showed no token on create at 1083-1109 and goal/create at 1223-1240.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/types.rs:1613-1621`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/types.rs:1613-1621`**
 
 ```text
 pub struct LinkWorkItemsRequest {
@@ -1359,7 +1359,7 @@ pub struct LinkWorkItemsRequest {
 
 The current complete struct still contains scope/kind/from_id/to_id and no expected_revision.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/types.rs:1991-2002`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/types.rs:1991-2002`**
 
 ```text
 pub struct AttentionPruneRequest {
@@ -1403,7 +1403,7 @@ Corrected both universal CAS statements. Explicitly excluded create, goal/create
 
 The same correction appears in workgraph-wire-contract.md:12-18, including create/goal-create/link/prune exclusions.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/types.rs:1462-1492,1613-1621,1637-1674,1993-2002`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/types.rs:1462-1492,1613-1621,1637-1674,1993-2002`**
 
 ```text
 pub struct LinkWorkItemsRequest {
@@ -1445,7 +1445,7 @@ A reader using this still-referenced contract for the currently pinned SDK sends
 
 Current SDK source still directs implementers to this document as its contract; the opening says 'Binding contract', not archived/superseded. The correction should retain its versioned history but delimit present applicability.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/service.rs:1618-1623`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/service.rs:1618-1623`**
 
 ```text
 "all_namespaces requires a separate host capability; a namespace grant authorizes exactly one immutable namespace"
@@ -1453,7 +1453,7 @@ Current SDK source still directs implementers to this document as its contract; 
 
 events rejects all_namespaces=true; normalize_item_filter and normalize_snapshot_filter at lines 1653-1692 make the same rejection for list and snapshot.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/service.rs:1635-1650`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/service.rs:1635-1650`**
 
 ```text
 if realm_id != self.namespace_grant.realm_id
@@ -1507,7 +1507,7 @@ The page is still presented as a binding contract, although version-titled.
 
 This current SDK reference gives a concrete reason current callers will use the old method table, not merely archival curiosity.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/service.rs:1618-1623`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/service.rs:1618-1623`**
 
 ```text
 all_namespaces requires a separate host capability; a namespace grant authorizes exactly one immutable namespace
@@ -1515,7 +1515,7 @@ all_namespaces requires a separate host capability; a namespace grant authorizes
 
 The events filter rejects true. normalize_item_filter and normalize_snapshot_filter at 1653-1692 independently impose the same restriction.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/service.rs:1635-1650`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/service.rs:1635-1650`**
 
 ```text
 if realm_id != self.namespace_grant.realm_id
@@ -1577,7 +1577,7 @@ WorkGraphService::with_scope(store, realm, WorkNamespace::default())
 
 Stock composition derives realm through mob_realm_id and forwards the service's own namespace grant to tools.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-workgraph-0.8.40/src/service.rs:1614-1692`**
+**`(operator-retained path)/meerkat-workgraph-0.8.40/src/service.rs:1614-1692`**
 
 ```text
 all_namespaces requires a separate host capability; a namespace grant authorizes exactly one immutable namespace
