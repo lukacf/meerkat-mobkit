@@ -819,7 +819,7 @@ mod tests {
 title = "Ops"
 
 [brand]
-label = "Open Brain"
+label = "Ops Console"
 logo_url = "/assets/ops.svg"
 logo_alt = "Ops"
 
@@ -882,7 +882,7 @@ show_reset = false
         )?;
 
         assert_eq!(config.title.as_deref(), Some("Ops"));
-        assert_eq!(config.brand.label.as_deref(), Some("Open Brain"));
+        assert_eq!(config.brand.label.as_deref(), Some("Ops Console"));
         assert_eq!(config.brand.logo_url.as_deref(), Some("/assets/ops.svg"));
         assert_eq!(config.brand.logo_alt.as_deref(), Some("Ops"));
         assert_eq!(config.appearance.default_theme.as_deref(), Some("dark"));
