@@ -486,11 +486,15 @@ impl GatewayCallbackToolDispatcher {
         scope_id: String,
         external_tools: Vec<super::types::ExternalToolDef>,
     ) -> Self {
-        // Callback provenance, as the rpc gateway's callback tools carry: a
-        // member's visible tools must each be witnessable for the parent tool
-        // ceiling that profile, minimal and inherited tooling hand to a
-        // delegate helper or spawned child. Without it every such delegate
-        // from a member with SDK tools is refused.
+        // Callback provenance, as the rpc gateway's callback tools carry.
+        // Profile, minimal and inherited tooling hand a delegate helper or
+        // spawned child a ceiling over its parent's visible tools, and every
+        // tool that ceiling includes must be witnessed by its provenance: a
+        // delegate whose EFFECTIVE ceiling includes an unwitnessed SDK tool is
+        // refused. Minimal selects only the comms tools, and overlays can
+        // exclude a tool, so not every such delegate includes these. The
+        // source id is registration identity for this build, not a durable
+        // identity across builds.
         let provenance_source_id = format!("mobkit-callback:{scope_id}");
         let tool_defs = external_tools
             .into_iter()
