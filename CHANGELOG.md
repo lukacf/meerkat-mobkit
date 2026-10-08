@@ -1027,6 +1027,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A conversation pane following the live edge no longer stops following
+  when a tool opened at the end grows the transcript before the browser's
+  own one-pixel scroll event arrives. The pane only leaves the live edge on
+  an upward move; this fixes an intermittent console acceptance failure
+  ("opening the actual tool at live edge remains following").
 - Identity members: tools published by `customize_build` now resolve their
   execution plan through the dispatcher that serves them. The identity
   dispatcher used Meerkat's default resolution from its own catalog, so a
