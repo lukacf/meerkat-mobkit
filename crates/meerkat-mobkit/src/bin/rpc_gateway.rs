@@ -2768,7 +2768,14 @@ default_binding = "local"
                 .health_projection()
                 .await
                 .unwrap_or_else(|error| panic!("tick {tick}: health projection failed: {error}"));
-            assert_eq!(projection["status"], json!("ok"));
+            // This helper composes delivery but arms no native owner, so the
+            // owner's pass dimension has nothing to read and the overall
+            // status says so. The backlog census itself is read and counted.
+            assert_eq!(projection["status"], json!("unreadable"));
+            assert_eq!(
+                projection["detached_jobs"]["runtime_delivery_pass"],
+                Value::Null
+            );
             assert_eq!(
                 projection["detached_jobs"]["runtime_inbox_backlog"],
                 json!(0)
