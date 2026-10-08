@@ -713,6 +713,37 @@ describe("a native settle of the end after a content press", () => {
     expect(viewport.scrollTop).toBe(2336);
   });
 
+  test("a native scroll down after a tool opens at the end keeps following", () => {
+    // browser-e2e "opening the actual tool at live edge remains following",
+    // locally reproduced trace (shared host, tall layout): following at the
+    // computed end 2225, the tool header press, the disclosure grows the
+    // content by 111 px, and only then the browser's own scroll event reports
+    // 2226 (a pixel down). Judged against the grown end 2336 that position
+    // was outside the live-edge band, so the pane left following.
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    press(row(viewport, "tool"), "mouse");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2536 });
+    userScroll(viewport, 2226);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    expect(viewport.scrollTop).toBe(2336);
+  });
+
+  test("a native scroll down after content growth does not resume following while reading", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 2200);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2536 });
+    userScroll(viewport, 2201);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2201);
+  });
+
   test.each([2, 5, 40])("a %i px upward drag after a content press still leaves the live edge", (distance) => {
     const view = render(<Harness rows={rows} />);
     const viewport = screen.getByTestId("viewport");

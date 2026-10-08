@@ -6757,7 +6757,7 @@ function useConversationScrollController(options) {
       const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
       const settle = previous3 !== null && previous3 - observed <= CONVERSATION_END_ROUNDING_PX && (session.lastGesture === "down" || session.lastGesture === "content-press" && session.mode === "following-end" && end - observed <= CONVERSATION_END_ROUNDING_PX);
       const movedUp = previous3 !== null && observed < previous3 - 0.5 && end - observed > 0.5 && !settle;
-      session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
+      session.mode = !movedUp && (session.mode === "following-end" || conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight)) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
       cancelReveal(session);
