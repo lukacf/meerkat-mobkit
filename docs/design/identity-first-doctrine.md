@@ -42,7 +42,7 @@ mob plane.** We do not force workers onto identities and we do not build an
 
 Why: workers have no resume story by design — nobody wants a person-sweeper's
 transcript restored across a restart — and per-worker continuity records +
-leases are pure overhead in the hottest path of the largest deployment (OB3:
+leases are pure overhead in the hottest path of the largest deployment (the operator deployment:
 ~600 eternal identities, heavy worker churn, BigQuery-backed stores; every
 reconcile would pay for a table of dead worker identities). The bug that made
 "identity everywhere" look necessary (retire/respawn stranding never-ran
@@ -66,12 +66,12 @@ Consequences:
 
 Deployment census at decision time (audit-verified):
 
-- **OB3** (production, 100+ users): dual-plane already — eternal fleet
+- **The operator deployment** (production, 100+ users): dual-plane already — eternal fleet
   identity-first via the builder (roster + BigQuery continuity store +
   leases, LazyMaterialize); ALL worker churn on the mob plane (programmatic
   `spawn_worker_with_parent` + agent `mob_spawn_member`, idle-retire reaping).
-  This doctrine formalizes OB3's model; OB3 migrates nothing.
-- **HomeCore**: identity-first end to end for durables (SDK roster provider,
+  This doctrine formalizes the operator deployment's model; the operator deployment migrates nothing.
+- **The downstream app**: identity-first end to end for durables (SDK roster provider,
   `reconcile_identity` on boot, console lifecycle buttons hidden); mob plane
   used only for agent-spawned helper churn. Already doctrine-conformant.
 - **meerkat-studio**: currently all mob-plane via `mobkit_gateway`; migrates
@@ -217,9 +217,9 @@ red instead of both staying green while a host arms nothing.
 - **Phase 3 (0.8):** binary merge as packaging; deprecate mob-plane NAMES
   for durable use only. The worker plane remains.
 
-**OB3 constraint (binding):** OB3 is the only system in serious production.
+**Operator deployment constraint (binding):** The operator deployment is the only system in serious production.
 Every phase is additive to the library-builder path; the eternal-fleet path
-and the worker plane are untouched; anything that could affect OB3 gets an
+and the worker plane are untouched; anything that could affect the operator deployment gets an
 explicit migration note in the changelog before release.
 
 ## Related

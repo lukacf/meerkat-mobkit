@@ -330,7 +330,7 @@ Read through gh API, first at v0.7.15 and then at the exact tag-resolved commit 
 
 The same 0.7.15 source carries typed provenance into HookToolCall. It also has HookToolResult.provenance at 269-273. The tracker must distinguish upstream capability availability from a specific downstream observer-only integration.
 
-**`/Users/luka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-core-0.8.40/src/types.rs:3728-3735`**
+**`(operator-retained path)/meerkat-core-0.8.40/src/types.rs:3728-3735`**
 
 ```text
 pub struct ToolDef {

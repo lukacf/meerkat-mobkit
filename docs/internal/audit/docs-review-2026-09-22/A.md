@@ -374,7 +374,7 @@ Even the gateway's no-config fallback defines only default, not the personal/tri
 
 Added explicit instructions to create config/mob.toml from a complete minimal definition with personal, triage, and calendar profiles. All three use gpt-5.5 and enable comms; only personal is externally addressable. Documented OPENAI_API_KEY, the SDK installation prerequisite, relative working-directory semantics, and the existing top-level-await example's async context. Preserved the user-supplied gateway-path placeholder.
 
-**Validation:** PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=sdk/python python3 -B extracted and parsed the documented TOML, compiled the Python with top-level await enabled, executed its provider definitions and builder expression without build(), and passed builder validation. It verified all 3 profile/roster/addressability mappings and both topology edges, then confirmed _build_init_params reads config/mob.toml and serializes that exact TOML using mock_open. Source cross-checks: rpc_gateway.rs:10971-10982 supplies the supported gpt-5.5 baseline; sdk/python/tests/test_identity_first_homecore_e2e.py:79-105 uses the same profile/tools/addressability schema. No gateway or provider request was executed.
+**Validation:** PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=sdk/python python3 -B extracted and parsed the documented TOML, compiled the Python with top-level await enabled, executed its provider definitions and builder expression without build(), and passed builder validation. It verified all 3 profile/roster/addressability mappings and both topology edges, then confirmed _build_init_params reads config/mob.toml and serializes that exact TOML using mock_open. Source cross-checks: rpc_gateway.rs:10971-10982 supplies the supported gpt-5.5 baseline; sdk/python/tests/test_identity_first_downstream_e2e.py:79-105 uses the same profile/tools/addressability schema. No gateway or provider request was executed.
 
 **Final review: pass.** The missing startup prerequisite is fully supplied: an explicit working-directory-relative config/mob.toml, a mob id, and all three roster profiles with matching addressability and comms-enabled tools. The added provider credential, SDK installation, async-context and gateway-placeholder instructions are consistent with source. Independently extracted TOML and Python passed parsing/compilation, provider construction, exact roster/profile/addressability checks, canonical undirected topology checks, builder validation and mocked-file init serialization. This establishes the corrected configuration/SDK contract, not an unperformed live gateway/provider run.
 
@@ -422,7 +422,7 @@ The added prerequisites match the example's exact profiles and execution form; t
 
 The actual SDK reads the advertised path. An independent mock_open check required one call with config/mob.toml and verified byte-for-byte serialization of the documented TOML, plus roster/topology flags and persistent_state.
 
-**`sdk/python/tests/test_identity_first_homecore_e2e.py:79-105`**
+**`sdk/python/tests/test_identity_first_downstream_e2e.py:79-105`**
 
 ```text
 [profiles.triage]
@@ -1081,7 +1081,7 @@ configuredAgentGroup reverses the child-to-ancestor chain before looking for a v
     },
     wired_to: ["initiative:parent"],
   };
-  const grouped = __sidebarTest.groupSidebarAgents([child, parent], ob3Grouping);
+  const grouped = __sidebarTest.groupSidebarAgents([child, parent], opsGrouping);
 
   assert.deepEqual(
     grouped.get("initiatives")?.map((row) => [row.agent.member_id, row.subgroup, row.depth]),

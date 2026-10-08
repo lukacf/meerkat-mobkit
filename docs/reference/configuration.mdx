@@ -225,7 +225,7 @@ authorized to change the durable definition:
 runtime = await (
     MobKit.builder()
     .mob("config/mob.toml")  # complete replacement definition
-    .persistent_state("/var/lib/homecore")
+    .persistent_state("/var/lib/example")
     .declare_spec_update(expected_revision=1)
     .gateway("/path/to/rpc_gateway")
     .build()
@@ -390,7 +390,7 @@ creates the mob.
 
 **Provider-annotated profiles bypass the refusal.** By Meerkat's rule a
 profile that sets `provider = "..."` is resolvable whatever its `model` string
-says, so a dated or misspelled id on such a profile (every HomeCore profile
+says, so a dated or misspelled id on such a profile (every profile in the downstream app
 carries `provider = "openai"`) passes init and surfaces at the first LLM call.
 `rpc_gateway` does not add a second refusal authority for that case; it logs
 one WARN per such profile at init naming the profile, the model and the closest
@@ -504,8 +504,8 @@ The value is an `ApplicationToolPolicyBinding` object, a top-level
   "application_tool_policies": ["{\"schema_version\":1,...}\n"],
   "child_application_tool_policy": {
     "kind": "provider",
-    "provider_id": "homecore",
-    "policy_id": "household-tools"
+    "provider_id": "example",
+    "policy_id": "example-tools"
   }
 }
 ```
@@ -522,7 +522,7 @@ with `-32602` when it is malformed, `inherit`, or a provider binding whose
 provider or policy no `application_tool_policies` entry carries, so a binding
 that could never resolve does not surface later as a refused `delegate`.
 
-- Python: `MobKit.builder().child_application_tool_policy({"kind": "provider", "provider_id": "homecore", "policy_id": "household-tools"})`.
+- Python: `MobKit.builder().child_application_tool_policy({"kind": "provider", "provider_id": "example", "policy_id": "example-tools"})`.
 - Rust: `MobBootstrapSpec::with_child_application_tool_policy(binding)` or
   `UnifiedRuntimeBuilder::child_application_tool_policy(binding)`. A
   conflicting binding from the two refuses the build with
@@ -542,7 +542,7 @@ members:
 use meerkat_mobkit::ChildToolBundleAvailability;
 
 let spec = spec
-    .register_tool_bundle("household", household_tools.clone())
+    .register_tool_bundle("team", team_tools.clone())
     .register_tool_bundle_with_availability(
         "calendar",
         calendar_tools.clone(),
@@ -876,12 +876,12 @@ View-level configuration for the stock console. `mobkit_gateway` discovers `conf
 The config is normalized and projected through `GET /console/experience` as `console_config`.
 
 ```toml
-title = "OB3"
+title = "Ops"
 
 [brand]
-label = "Open Brain"
-logo_url = "/assets/ob3.svg"
-logo_alt = "OB3"
+label = "Ops Console"
+logo_url = "/assets/ops.svg"
+logo_alt = "Ops"
 
 [appearance]
 default_theme = "dark"
@@ -913,9 +913,9 @@ visible_controls = ["topology", "roster", "logs", "health"]
 hidden_controls = []
 
 [[sidebar.buttons]]
-id = "ob3-board"
-label = "OB3 Board"
-href = "https://example.test/ob3"
+id = "ops-board"
+label = "Ops Board"
+href = "https://example.test/ops"
 target = "_blank"
 icon_name = "external-link"
 
@@ -949,10 +949,10 @@ retire_label = "Retire"
 reset_label = "Reset"
 show_reset = false
 
-[realms.ob3]
-title = "OB3"
+[realms.ops]
+title = "Ops"
 
-[realms.ob3.agent_list]
+[realms.ops.agent_list]
 subgroup_by = ["labels.org"]
 ```
 
@@ -1105,7 +1105,7 @@ LocalJsonMemoryBackendConfig {
 | `state_path` | `String` | Local JSON file holding the operational assertion ledger (`mobkit/memory/*`). Runtime-owned: read once at bootstrap into memory, and rewritten wholesale on every `mobkit/memory/index`. The whole state is written to the sibling `state_path.with_extension("tmp")` (replacing the final extension: `memory-ledger-state.json` stages through `memory-ledger-state.tmp`), then renamed over the original file. Not a shared append log; see below. |
 | `health_check_endpoint` | `Option<String>` | Optional HTTP base URL probed with `GET /v1/health` at the bootstrap load and before every persist; a failed probe refuses that load or persist. No ledger data is ever sent to it |
 
-For SDK builds that boot through `rpc_gateway`, `state_path` is derived from `.persistent_state(path)` as `<path>/memory-ledger-state.json`; callers provide only `backend: "local_json"` (and optionally `health_check_endpoint`). The legacy `ElephantMemoryBackendConfig` / `backend: "elephant"` shape is deprecated: it was always local JSON persistence plus a health check — no data ever reached Elephant — and it converts to this config on load. Real Elephant integration is the wire-boundary provider described in `docs/design/memory-hub-roadmap.md`.
+For SDK builds that boot through `rpc_gateway`, `state_path` is derived from `.persistent_state(path)` as `<path>/memory-ledger-state.json`; callers provide only `backend: "local_json"` (and optionally `health_check_endpoint`). The legacy `ElephantMemoryBackendConfig` / `backend: "elephant"` shape is deprecated: it was always local JSON persistence plus a health check — no data ever reached an external memory hub - and it converts to this config on load. Real external memory hub integration is the wire-boundary provider described in `docs/design/memory-hub-roadmap.md`.
 
 **Ownership of the assertion ledger.** The file is a snapshot of runtime
 state, not a log that other writers may append to. `MobkitRuntimeHandle` loads
@@ -1138,7 +1138,7 @@ can carry configured typed injected context for `autonomous_host` too. This
 exception does not cover arbitrary external bindings, and steer input bypasses
 injection in either mode.
 
-The bundled gateway provider is one SQLite database per realm under `<persistent_state>/agent-memory` (`store: "sqlite"`, the only live gateway store). The earlier per-identity markdown files are import-only: `store: "markdown"` is refused at init with a migration verdict, and pointing SQLite at the same directory imports a realm's un-imported markdown files when that realm is first accessed and its SQLite connection is opened, preserving ids, tag content and timestamps and renaming each original `<file>.imported` rather than deleting it (tags are collated on insert, so tag ORDER is not preserved - assert on the set, not the sequence). The path is server-owned and cannot be overridden from SDK init input. Elephant remains an optional deeper knowledge backend for graph/document/truth/provenance use cases and is not required for this hot path.
+The bundled gateway provider is one SQLite database per realm under `<persistent_state>/agent-memory` (`store: "sqlite"`, the only live gateway store). The earlier per-identity markdown files are import-only: `store: "markdown"` is refused at init with a migration verdict, and pointing SQLite at the same directory imports a realm's un-imported markdown files when that realm is first accessed and its SQLite connection is opened, preserving ids, tag content and timestamps and renaming each original `<file>.imported` rather than deleting it (tags are collated on insert, so tag ORDER is not preserved - assert on the set, not the sequence). The path is server-owned and cannot be overridden from SDK init input. An external memory hub remains an optional deeper knowledge backend for graph/document/truth/provenance use cases and is not required for this hot path.
 
 With the SQLite store, build-time injection also composes a metadata index (record ids, kinds, titles, descriptions, human-phrased age) over the identity's readable scopes, budgeted at ~8 KiB, ahead of the selected record bodies. Every injected record is logged to an injection ledger inside the realm database and counted in per-record usage statistics; explicit `mobkit/agent_memory/recall` reads are counted separately from ambient injection.
 
@@ -1146,7 +1146,7 @@ Inbound anti-spoofing is on by default (`defang_inbound: true`): every non-steer
 
 Rust builders can use `.persistent_agent_memory_stack(config, engines)` with `.persistent_state(path)` to install the full SQLite stack (store plus taint firewall plus the enabled judgment-plane engines). Callers that need a different authority use `.agent_memory(provider, config)`. The former `.persistent_agent_memory(...)` markdown constructor is removed; legacy markdown is accepted only by the one-shot SQLite importer.
 
-Gateway callers can write records with `mobkit/agent_memory/remember`, read them with `mobkit/agent_memory/recall`, and delete individual records with `mobkit/agent_memory/forget`. TypeScript callers can use `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, `handle.recallAgentMemory(identity, { realm, selection, queryText, queryTerms, maxEntries })`, and `handle.forgetAgentMemory(identity, memoryId, { realm })`; Python callers can use `handle.remember_agent_memory(identity, title=..., body=..., tags=..., realm=...)`, `handle.recall_agent_memory(identity, realm=..., selection=..., query_text=..., query_terms=..., max_entries=...)`, and `handle.forget_agent_memory(identity, memory_id, realm=...)`. Writes and deletes are identity-scoped and require the identity to be registered in the identity runtime. Writes are eligible for turn context on the next identity-first send, subject to the runtime-mode and recall policies, plus build context on materialization/resume/respawn/reset for that identity. A successful write means the configured hot provider accepted the record; it does not mean optional Elephant extraction/enrichment has completed. Bundled SQLite writes enforce the staged-memory validator's record limits. The retired markdown parser is used only while importing existing files.
+Gateway callers can write records with `mobkit/agent_memory/remember`, read them with `mobkit/agent_memory/recall`, and delete individual records with `mobkit/agent_memory/forget`. TypeScript callers can use `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, `handle.recallAgentMemory(identity, { realm, selection, queryText, queryTerms, maxEntries })`, and `handle.forgetAgentMemory(identity, memoryId, { realm })`; Python callers can use `handle.remember_agent_memory(identity, title=..., body=..., tags=..., realm=...)`, `handle.recall_agent_memory(identity, realm=..., selection=..., query_text=..., query_terms=..., max_entries=...)`, and `handle.forget_agent_memory(identity, memory_id, realm=...)`. Writes and deletes are identity-scoped and require the identity to be registered in the identity runtime. Writes are eligible for turn context on the next identity-first send, subject to the runtime-mode and recall policies, plus build context on materialization/resume/respawn/reset for that identity. A successful write means the configured hot provider accepted the record; it does not mean optional external memory hub extraction/enrichment has completed. Bundled SQLite writes enforce the staged-memory validator's record limits. The retired markdown parser is used only while importing existing files.
 
 When `selection = "always"`, the latest memories for the identity are injected. When `selection = "contextual"` (the default), build-time injection sends synthesized identity/profile/label query text and deterministic terms; per-turn injection sends the raw current identity-first message plus normalized terms. Common stopwords are ignored by the bundled provider and records below the relevance threshold are not injected. MobKit does not send app context or customizer-added instructions to the memory provider. Semantic/vector retrieval remains a provider concern rather than a MobKit runtime authority.
 

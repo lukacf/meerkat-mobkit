@@ -13,7 +13,7 @@ WebSocket boundary, explicit SDP-delivery acknowledgement, generated activation,
 active-target readiness, and close. Only the provider is simulated; runtime
 receipts are issued by the shared Meerkat owners.
 
-Consumer shape: a LAN client (HomeCore's robot or a satellite process) opens
+Consumer shape: a LAN client (the downstream app's device client or a satellite process) opens
 a realtime audio/text channel to a Mob member identity. The GPT Live endpoint
 owns conversation and transport only. When GPT Live initiates client
 delegation, Meerkat admits the exact canonical final transcript. The default
@@ -182,7 +182,7 @@ opens, carrying the close sequence it would use on itself:
   `{identity, available: false, reason: "external_live_active", holder:
   {identity, channel_id}}` while the external door holds the path. Plain
   unavailability keeps the old two-field shape.
-- The same door re-engaging for the same member (a console reopen, reachyd
+- The same door re-engaging for the same member (a console reopen, the device daemon
   reopening) is not a preemption and announces nothing, but it never leaves two
   channels live: a previous channel still bound is closed as
   `replaced_by_same_owner` (reported through `close_reason` and the console's
@@ -663,7 +663,7 @@ published-version limitations below do not require a development pin today.
    ws_base_url}` built by `attach_live(...)` in the gateway (persistent
    mode only — live needs the runtime-backed service). The gateway merges
    `meerkat_live::live_ws_router(ws_state)` onto the reference app router,
-   so the live WS shares the existing HTTP listener/port (HomeCore's
+   so the live WS shares the existing HTTP listener/port (the downstream app's
    `app.py` proxy or direct LAN access both work).
 4. **Credential source**: `EnvRealtimeConfigSource` implementing
    `RealtimeCurrentConfigSource` by returning the gateway's effective
@@ -677,7 +677,7 @@ published-version limitations below do not require a development pin today.
    `mobkit/live/send_input`, `mobkit/live/commit_input`,
    `mobkit/live/interrupt`, `mobkit/live/truncate`. Params accept an
    IDENTITY TARGET —
-   `{identity: "reachy"}` or `{member_id}` or raw `{session_id}` —
+   `{identity: "device"}` or `{member_id}` or raw `{session_id}` —
    resolved via `resolve_bridge_session_id` + the roster `agent_identity`
    label fallback (the same canonicalization class as
    `/agents/{id}/events` and `cross_mob/peer_info`). Handlers are ports of
@@ -696,7 +696,7 @@ published-version limitations below do not require a development pin today.
    a per-profile `realtime_model` map can ride `runtime_options.live` in a
    follow-up once field usage settles. (Deliberately NOT a mob.toml
    profile field — profiles are upstream schema.) For members whose text
-   PROVIDER differs too (HomeCore: Anthropic text profiles opening the
+   PROVIDER differs too (the downstream app: Anthropic text profiles opening the
    OpenAI realtime lane), `mobkit/live/open` also accepts a strict
    optional `provider` paired with `model`: an unrecognized provider name
    is a typed invalid-params error (never a silent fallthrough), the
@@ -771,9 +771,9 @@ host-owned; callers cannot select a model, provider, or binding:
 ```json
 "runtime_options": {
   "openai_live": {
-    "principal": "user:luka",
-    "realm": "family",
-    "auth_binding": { "realm": "family", "binding": "openai-api-key", "profile": "luka" },
+    "principal": "user:alice",
+    "realm": "home",
+    "auth_binding": { "realm": "home", "binding": "openai-api-key", "profile": "alice" },
     "voice": "marin",
     "session_instructions": "optional trusted voice guidance"
   }

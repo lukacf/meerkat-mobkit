@@ -83,7 +83,7 @@ shipped.
   (`browser_smoke.cjs`, `ts_smoke.ts`) it describes. The deployment model for
   that pack is still live at `docs/design/mdm-mob-target-deployment.md`.
 - `design/evidence/memory-survey-2026-07/` - the 2026-07-01 five-system memory
-  survey (Claude Code, Codex, Meerkat, MobKit, Elephant): seven system reports
+  survey (Claude Code, Codex, Meerkat, MobKit, an external memory hub): seven system reports
   plus six adversarial follow-up investigations. It is the evidence base cited
   by the live `docs/design/agent-memory-architecture.md`, and its own README
   already carries the staleness caveat that its file:line citations reflect the
@@ -92,7 +92,7 @@ shipped.
 ### proposals/
 
 - `proposals/seam-assessment-mobkit-2026-08.md` - the mobkit chair's
-  row-by-row answer to HomeCore's dual-authority seam inventory, ending in a
+  row-by-row answer to the downstream app's dual-authority seam inventory, ending in a
   0.8.15 commitment queue. Its two mobkit-side stopgaps shipped in 0.8.15
   (firing-intent schedule writes refuse typed while a gateway-owned store has no
   firing host bound; external-tool composition warns per shadowed pre-installed

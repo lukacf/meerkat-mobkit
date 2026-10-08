@@ -114,7 +114,7 @@ const runtime = await MobKit.builder()
         {
           description: "Run a durable security scan",
           execution: new DetachedJobExecution({
-            runner: "homecore.security_scan",
+            runner: "example.security_scan",
             version: "v1",
             restartClass: "checkpoint_resumable",
             idempotencyScope: "interaction_and_arguments",
@@ -296,7 +296,7 @@ The TypeScript SDK targets the JSON-RPC gateway. Rust also exposes lower-level n
 External identity providers are all-or-nothing: configure `continuityStore()`, `leaseProvider()`, and `scratchDir()` together. The SDK sends the corresponding init flags to Rust, and provider callbacks use Rust's wire shape (`result` tags and `ttl`). `LeaseProvider.renewLeases(...)` is atomic from the caller's perspective: a rejected promise means no input grant was changed, while every returned `renewed` or `lost` result is already committed for that identity. Providers must not commit a replacement grant and then reject.
 Continuity stores should treat `checkpoint_version` as monotonic per identity and continuity generation. A live session rebind changes `session_id` without resetting the version; only destructive reset advances `generation` and starts the version stream over.
 
-Raw gateway memory config accepts `{ backend: "local_json", health_check_endpoint: url }`, with `health_check_endpoint` optional. The TypeScript helper is `memory.localJson({ healthCheckEndpoint: url })`; it translates that option to the snake_case wire key. The legacy Elephant `{ backend, endpoint }` shape still works but is deprecated. Store, collection, and space selectors are retained on the helper object for app code but are not sent to the Rust gateway. Gateway auth config supports JWT validation; Google/OIDC helpers are model objects, not accepted by `mobkit/init` today.
+Raw gateway memory config accepts `{ backend: "local_json", health_check_endpoint: url }`, with `health_check_endpoint` optional. The TypeScript helper is `memory.localJson({ healthCheckEndpoint: url })`; it translates that option to the snake_case wire key. The legacy `elephant` `{ backend, endpoint }` shape still works but is deprecated. Store, collection, and space selectors are retained on the helper object for app code but are not sent to the Rust gateway. Gateway auth config supports JWT validation; Google/OIDC helpers are model objects, not accepted by `mobkit/init` today.
 
 The builder exposes no `roleMigrations(...)` setter and sends no `role_migrations` init param, so a TypeScript host cannot authorize a role-migrating resume: a durable member whose role changed keeps refusing to resume with `MobError::MemberRoleMigrationRequired`. Declaring the migration currently requires the Python builder's `.role_migrations([...])` or a hand-built `mobkit/init` payload; see the [configuration reference](/reference/configuration#member-role-migrations).
 

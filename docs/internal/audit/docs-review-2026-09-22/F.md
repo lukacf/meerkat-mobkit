@@ -2427,7 +2427,7 @@ Confirmed as a false exclusivity statement, not as a generic demand for an exhau
 # The digest inside is computed from the canonical bytes by the Rust generator,
 # so this cannot be hand-edited into validity.
 / "application_tool_policies_init_params.json"
-POLICY_HOUSEHOLD = json.loads(FIXTURE.read_text())["application_tool_policies"][0]
+POLICY_PRIMARY = json.loads(FIXTURE.read_text())["application_tool_policies"][0]
 ```
 
 Python reads another current shared fixture in this directory.

@@ -29,11 +29,11 @@ import-only: selecting `store: "markdown"` is refused at gateway init, while
 the SQLite provider imports a realm's files when that realm is first accessed
 and renames each source to `.md.imported`.
 
-Elephant is not integrated today. A real Elephant integration — a deep-memory
+No external memory hub is integrated today. A real hub integration - a deep-memory
 hub with a knowledge graph, document/vector retrieval, truth maintenance,
-provenance, and ABAC/redaction — is the wire-boundary provider described in the
+provenance, and ABAC/redaction - is the wire-boundary provider described in the
 memory hub roadmap (`docs/design/memory-hub-roadmap.md` in the repository).
-Nothing in the current runtime sends data to Elephant.
+Nothing in the current runtime sends data to an external memory hub.
 
 Meerkat's session semantic memory is a separate layer again: it indexes
 compacted session content and exposes semantic recall through Meerkat's
@@ -60,7 +60,7 @@ LocalJsonMemoryBackendConfig {
 
 The legacy `ElephantMemoryBackendConfig` shape (`kind = "elephant"` with an
 `endpoint`) is still accepted for config compatibility and logs a deprecation
-warning: despite its name it never sent data to Elephant — the `endpoint` was
+warning: despite its name it never sent data to an external memory hub - the `endpoint` was
 only ever health-checked and the ledger persisted locally. It maps to the
 local-JSON backend with `endpoint` as the health-check endpoint.
 
@@ -163,7 +163,7 @@ MobKit.builder()
 
 By default, the bundled provider stores one SQLite database per realm under `<persistent_state>/agent-memory`. Records are injected as a quoted observation block for the matching durable identity. Contextual recall receives the raw turn or RPC `query_text`, ignores common stopwords, scores matching records, and size-caps injected records. Existing markdown files under a realm's legacy subdirectory are parsed only when that realm is first accessed, imported through the SQLite validator, and renamed rather than deleted; malformed records are skipped instead of being promoted into runtime context. Automatic build/turn injection is time-bounded by `recall_timeout_ms` (default `500`) and defaults to `recall_failure_policy: "skip"`, so provider slowness or outage does not block normal delivery. Set `recall_failure_policy: "fail"` for fail-closed deployments. Explicit `mobkit/agent_memory/recall` calls still return provider errors to the caller.
 
-Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/remember`, TypeScript `handle.rememberAgentMemory(...)`, or Python `handle.remember_agent_memory(...)`; read it through `mobkit/agent_memory/recall`, `handle.recallAgentMemory(...)`, or `handle.recall_agent_memory(...)`; and delete individual records through `mobkit/agent_memory/forget`, `handle.forgetAgentMemory(...)`, or `handle.forget_agent_memory(...)`. A successful `remember` means the configured hot identity-memory provider durably accepted the record and it is available to the next identity-first send for that identity, plus build context on materialization/resume/respawn/reset. It does not imply Elephant entity extraction, truth maintenance, or document/vector indexing has completed. Custom providers receive both raw `query_text` and normalized `query_terms` so they can implement stronger retrieval without changing MobKit runtime authority.
+Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/remember`, TypeScript `handle.rememberAgentMemory(...)`, or Python `handle.remember_agent_memory(...)`; read it through `mobkit/agent_memory/recall`, `handle.recallAgentMemory(...)`, or `handle.recall_agent_memory(...)`; and delete individual records through `mobkit/agent_memory/forget`, `handle.forgetAgentMemory(...)`, or `handle.forget_agent_memory(...)`. A successful `remember` means the configured hot identity-memory provider durably accepted the record and it is available to the next identity-first send for that identity, plus build context on materialization/resume/respawn/reset. It does not imply external memory hub entity extraction, truth maintenance, or document/vector indexing has completed. Custom providers receive both raw `query_text` and normalized `query_terms` so they can implement stronger retrieval without changing MobKit runtime authority.
 
 Agent memory is identity-scoped rather than session-scoped. A session respawn or identity reset does not delete stored memory; apps that need privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use a provider that clears memory as part of the app's identity lifecycle. `forget` removes records from future recall and injection, but it cannot remove text already delivered into an active model context; reset or respawn the identity after deletion when immediate context revocation matters.
 
@@ -322,5 +322,5 @@ Embedders wire the panel by handing the runtime any panel-capable store handle (
 
 - [Gating](/concepts/gating) -- conflict-aware approval gates
 - [Access control](/concepts/access-control) -- the memory read actions governing panel visibility
-- `docs/design/memory-hub-roadmap.md` (in the repository) -- the roadmap for a real Elephant-backed memory hub
+- `docs/design/memory-hub-roadmap.md` (in the repository) -- the roadmap for a real external memory hub
 - [RPC API](/api/rpc) -- `memory.*` methods

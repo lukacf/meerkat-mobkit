@@ -54,7 +54,7 @@ Every new RPC pays the CI-enforced process tax: a `CONSOLE_RPC_METHODS` constant
 **Purpose.** One glance answers "what does this mob know, where is it concentrated, is anything unhealthy, and are the architecture's claims holding right now." Scope rows (identity > mob > operator > realm, reusing `groupRecordsByScope` ranking, `MemoryPanel.tsx:96`) show status counts, byte pressure against the floors (4,000 records / 32MB per scope, `sqlite_store.rs:46-48`), trust mix, and in-transit badges. The grafted verdict-tile strip sits above it.
 
 ```
-┌─ Memory · realm: homecore ───────────────────────────────────────────────────┐
+┌─ Memory · realm: example  ───────────────────────────────────────────────────┐
 │ [Holdings] [Records] [Knowledge] [Pipeline] [Dreams]            ⟳ Refresh    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ ECHO-SAFETY   TAINT WALL    LATTICE       RECALL        DREAMS    STORE FLOOR│
@@ -194,7 +194,7 @@ A grafted **Recall Utility mode** (from the Claims Board) mounts as a sort/flag 
 **Purpose.** Dreams framed state-first: every mutation the steward committed against the store, plus its verdict sheet. Collapsible run cards (AgentPrism progressive disclosure — collapse repetitive rank ops, red-flag quarantined ops); every touched `memory_id` links into a Biography, closing the Marquez-style node→run→node loop.
 
 ```
-┌─ Dreams · realm: homecore ──────────────────────────────────────────┐
+┌─ Dreams · realm: example  ──────────────────────────────────────────┐
 │ ▾ run_88  today 04:00 · 14 ops · ⚠1 quarantined      ● dreaming now │
 │    ├ orient       ok                                                │
 │    ├ gather       31 candidates                                     │
@@ -241,7 +241,7 @@ The Flight Recorder's Loop Trace (per-agent lanes, mob grouping toggle, dream sp
 
 ## 4. The follow-a-fact walkthrough
 
-Luka tells agent **ada**: *"we use keyset pagination, cursors are ms:id."*
+The operator tells agent **ada**: *"we use keyset pagination, cursors are ms:id."*
 
 1. **TURN** — nothing stored yet. **Health strip** (§3.6) shows ada's distiller cursor at `sess_9: 2 interactions pending` (`min_interactions` default 3) — the *absence* is explained, not mysterious.
 2. **DISTILLER** — on the third interaction the distiller fires. In the proposal snapshot this hop is visible live **only on failure** (`memory.distill.timed_out`, `memory.budget.denied`); the **proposed phase-2 event `memory.distill.completed`** (§6, graft) would close the blind spot. When extraction produces successful ordinary writes, they appear directly as identity-scope **Records** with Distiller provenance on refresh; write-gated results appear as quarantined records in the reviewer-visible quarantine surface. No-op extraction creates neither a record nor a proposal. A pending mob/operator promotion proposal is a distinct action, not an automatic extraction hop, so this step has no `taint@propose` queue row.
