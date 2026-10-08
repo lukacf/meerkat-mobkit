@@ -1587,21 +1587,21 @@ mod tests {
         let resolver = ConsolePrincipalOperatorResolver::new();
         assert_eq!(resolver.active_operator("realm-a", "personal:alice"), None);
 
-        resolver.note_interaction("personal:alice", "luka@king.com");
+        resolver.note_interaction("personal:alice", "user@example.com");
         assert_eq!(
             resolver.active_operator("realm-a", "personal:alice"),
-            Some("luka@king.com".to_string())
+            Some("user@example.com".to_string())
         );
         // Identity-keyed provisional semantics: realm does not partition.
         assert_eq!(
             resolver.active_operator("realm-b", "personal:alice"),
-            Some("luka@king.com".to_string())
+            Some("user@example.com".to_string())
         );
         // Sticky until a DIFFERENT principal speaks.
-        resolver.note_interaction("personal:alice", "ops@king.com");
+        resolver.note_interaction("personal:alice", "ops@example.com");
         assert_eq!(
             resolver.active_operator("realm-a", "personal:alice"),
-            Some("ops@king.com".to_string())
+            Some("ops@example.com".to_string())
         );
         // Empty principals never bind (unauthenticated consoles).
         resolver.note_interaction("personal:bob", "");

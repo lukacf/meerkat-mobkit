@@ -3797,8 +3797,9 @@ mod tests {
     /// session envelope (v2) held by a continuity store must import exactly
     /// once on the adapter load path - the seam every external whole-blob
     /// store traverses - and adopt durably, so the second load takes the
-    /// already-current path. The fixture is a frozen 0.8.10-written document
-    /// (tests/fixtures/README.md); current code cannot and must not mint it.
+    /// already-current path. The fixture keeps the frozen 0.8.10 envelope
+    /// shape with synthetic content (tests/fixtures/README.md); current code
+    /// cannot and must not mint it.
     #[tokio::test]
     async fn released_v2_snapshot_imports_once_on_adapter_load() {
         const RELEASED: &[u8] =
@@ -4003,12 +4004,13 @@ mod tests {
     /// the shipping contract so a later "fix" cannot silently turn the
     /// refusal into a panic or an adoption.
     ///
-    /// PROVENANCE: the fixture is RELEASED-MINTED bytes (a real 0.8.10
-    /// mob-supervisor snapshot from the HomeCore forensic bundle,
-    /// tests/fixtures/README.md), never re-synthesized by the pinned
-    /// writer - a self-minted fixture silently passes writer-drift bugs
-    /// (the released wire even omits the empty `commits` key, a spelling a
-    /// synthetic fixture gets wrong).
+    /// PROVENANCE: the fixture keeps the RELEASED-MINTED envelope of a real
+    /// 0.8.10 mob-supervisor snapshot (key order, spelling, and the omitted
+    /// empty `commits` key, a spelling a writer-synthesized fixture gets
+    /// wrong); only its free text is synthetic, with the transcript revision
+    /// digest recomputed by the released recomputation
+    /// (tests/fixtures/README.md). It is never re-synthesized by the pinned
+    /// writer - a self-minted fixture silently passes writer-drift bugs.
     #[tokio::test]
     async fn released_zero_rewrite_history_refuses_typed_on_adapter_load() {
         const RELEASED: &[u8] =
@@ -4380,8 +4382,9 @@ mod tests {
         );
     }
 
-    /// The HomeCore boot-2 exactly-once violation, pinned on their REAL head
-    /// rows (fixtures/homecore_security_idempotency/, sha256 9f5fdb6b...,
+    /// The HomeCore boot-2 exactly-once violation, pinned on its captured
+    /// head rows with synthetic content
+    /// (fixtures/homecore_security_idempotency/, sha256 2f2c8443...,
     /// domain:security 019fae11-4e87-...): two consecutive boots of the same
     /// binary wrote two byte-different heads for an unchanged document. The
     /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility

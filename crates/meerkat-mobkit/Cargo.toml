@@ -18,6 +18,7 @@ exclude = [
     "tests/fixtures/homecore_ledgerv1_closure/",
     "tests/fixtures/homecore_security_idempotency/",
     "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
+    "tests/fixtures/v0_8_10_released_session.json",
 ]
 
 [package.metadata.cargo-machete]
