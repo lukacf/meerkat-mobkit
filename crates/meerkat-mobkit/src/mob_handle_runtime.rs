@@ -11282,6 +11282,15 @@ impl MobRuntime {
     }
 
     /// Latest native delivery-owner pass, if this runtime owns delivery.
+    /// Stop the native delivery owner now, even while clones of this runtime
+    /// live. Teardown calls it after the mob stops; undelivered rows stay
+    /// pending in the durable inbox for the next owner.
+    pub fn stop_runtime_delivery(&self) {
+        if let Some(delivery) = self.runtime_delivery.as_ref() {
+            delivery.stop();
+        }
+    }
+
     pub fn runtime_delivery_pass(&self) -> Option<meerkat::RuntimeDeliveryPass> {
         self.runtime_delivery
             .as_ref()

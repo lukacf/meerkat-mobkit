@@ -150,7 +150,7 @@ impl MobRuntimeDelivery {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .and_then(|value| value.running.upgrade())
-            .is_some_and(|running| !running.handle.is_stopped())
+            .is_some_and(|running| !running.is_stopped())
     }
 
     pub(super) fn shares_composition(&self, other: &Self) -> bool {
@@ -229,7 +229,8 @@ impl MobRuntimeDelivery {
             .arm(host)?;
         let passes = handle.subscribe_passes();
         let running = Arc::new(RunningMobRuntimeDelivery {
-            handle,
+            passes: passes.clone(),
+            handle: std::sync::Mutex::new(Some(handle)),
             _service: service,
             _runtime: runtime,
         });
@@ -244,17 +245,40 @@ impl MobRuntimeDelivery {
     }
 }
 
-/// Retained by all clones of the live MobRuntime. The last clone drops the
-/// native handle, stops its owner and releases delivery ownership.
+/// Retained by all clones of the live MobRuntime. [`Self::stop`] stops the
+/// native owner explicitly when the mob stops for teardown; otherwise the
+/// last clone drops the native handle, which stops its owner and releases
+/// delivery ownership.
 pub(super) struct RunningMobRuntimeDelivery {
-    handle: meerkat::RuntimeDeliveryOwnerHandle,
+    passes: tokio::sync::watch::Receiver<meerkat::RuntimeDeliveryPass>,
+    handle: std::sync::Mutex<Option<meerkat::RuntimeDeliveryOwnerHandle>>,
     _service: Arc<PreBuildMobSessionService>,
     _runtime: Arc<meerkat_runtime::MeerkatMachine>,
 }
 
 impl RunningMobRuntimeDelivery {
     pub(super) fn last_pass(&self) -> meerkat::RuntimeDeliveryPass {
-        self.handle.subscribe_passes().borrow().clone()
+        self.passes.borrow().clone()
+    }
+
+    /// Stop the native owner now, even while clones of the runtime live:
+    /// a stopped mob must not keep applying deliveries. Undelivered rows stay
+    /// pending in the durable inbox.
+    pub(super) fn stop(&self) {
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(handle);
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(meerkat::RuntimeDeliveryOwnerHandle::is_stopped)
     }
 }
 
@@ -459,6 +483,29 @@ mod tests {
         drop(retained);
         owner_released(&fixture.delivery).await;
         assert!(!fixture.delivery.is_running());
+    }
+
+    #[tokio::test]
+    async fn stopping_runtime_delivery_releases_the_owner_while_clones_live() {
+        let dir = tempfile::tempdir().expect("temp");
+        let fixture = memory_fixture(dir.path());
+        let runtime = MobRuntime::bootstrap(fixture.spec)
+            .await
+            .expect("first boot");
+        first_pass(&fixture.delivery).await;
+        let retained = runtime.clone();
+        assert!(fixture.delivery.is_running());
+        runtime.stop_runtime_delivery();
+        owner_released(&fixture.delivery).await;
+        assert!(
+            !fixture.delivery.is_running(),
+            "an explicit stop releases delivery ownership while a runtime clone lives"
+        );
+        assert!(
+            retained.runtime_delivery_pass().is_some(),
+            "the last observed pass stays readable after the stop"
+        );
+        retained.handle().shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]
