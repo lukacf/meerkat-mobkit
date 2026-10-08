@@ -15887,6 +15887,7 @@ realm_profile = "worker-v2"
                 known_base_names: self.catalog_names.clone(),
                 visible_names: self.catalog_names.clone(),
                 capability_base_filter: meerkat_core::ToolFilter::All,
+                policy_base_filter: meerkat_core::ToolFilter::All,
                 base_filter: meerkat_core::ToolFilter::All,
                 active_external_filter: meerkat_core::ToolFilter::All,
                 active_turn_allow: None,
