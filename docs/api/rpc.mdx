@@ -34,7 +34,7 @@ enforce contract compatibility compare `result.contract_version` before
 sending later requests. After init, `mobkit/capabilities` returns the methods
 available on that runtime.
 
-#### Accepted, then settled (opt-in)
+#### Accepted then settled (opt-in)
 
 Startup runs provider callbacks (roster, leases, continuity, agent builds),
 each bounded at 130 seconds by the gateway, and native work such as
@@ -1493,7 +1493,7 @@ not.
 ### `mobkit/init_progress` and `mobkit/init_settled`
 
 Sent only to an SDK that opted in to the accepted-then-settled init. See
-[Accepted, then settled](#accepted-then-settled-opt-in).
+[Accepted then settled](#accepted-then-settled-opt-in).
 
 ### `mobkit/on_error`
 
