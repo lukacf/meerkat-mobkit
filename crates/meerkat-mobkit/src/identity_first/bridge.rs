@@ -10067,7 +10067,9 @@ mod tests {
     async fn a_refused_runtime_acquisition_defers_repair_disposal() {
         let dir = tempfile::tempdir().expect("fixture directory");
         let definition =
-            meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"refused-acquisition-repair\"\n")
+            meerkat_mob::MobDefinition::from_toml(
+                "[mob]\nid = \"refused-acquisition-repair\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+            )
                 .expect("mob definition");
         let spec = crate::MobBootstrapSpec::ephemeral(
             definition,
