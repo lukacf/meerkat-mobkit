@@ -60,10 +60,10 @@ afterEach(async () => {
 describe("pending row language", () => {
   it("words an uncertain row plainly, offers Check, Send again and Discard, and never shows protocol terms", async () => {
     saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("outcome-unknown", { failureKind: "connection_failed" })]);
-    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "HomeCore", true)} />);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "Example", true)} />);
     const row = await screen.findByTestId("pending-item:row-1");
     expect(within(row).getByText(`We couldn't confirm ${agentLabel} got this.`)).toBeVisible();
-    expect(within(row).getByText("Couldn't reach HomeCore (offline or signed out).")).toBeVisible();
+    expect(within(row).getByText("Couldn't reach Example (offline or signed out).")).toBeVisible();
     for (const name of ["Check", "Send again", "Discard"]) expect(within(row).getByRole("button", { name })).toBeEnabled();
     for (const term of [/acceptance/i, /Failed to fetch/, /receipt/i, /gateway/i]) expect(row.textContent).not.toMatch(term);
   });
@@ -129,12 +129,12 @@ describe("Check always ends in a visible result", () => {
 
   it("names a failed check plainly instead of the raw fetch error", async () => {
     saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("outcome-unknown", { failureKind: "timeout" })]);
-    const fake = transport(vi.fn(), "HomeCore");
+    const fake = transport(vi.fn(), "Example");
     fake.executeCommand = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
     render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
     const row = await screen.findByTestId("pending-item:row-1");
     fireEvent.click(within(row).getByRole("button", { name: "Check" }));
-    expect(await within(row).findByTestId("pending-check:row-1")).toHaveTextContent("Couldn't check: couldn't reach HomeCore (offline or signed out).");
+    expect(await within(row).findByTestId("pending-check:row-1")).toHaveTextContent("Couldn't check: couldn't reach Example (offline or signed out).");
     expect(row.textContent).not.toMatch(/Failed to fetch/);
     expect(saved()[0].state).toBe("outcome-unknown");
   });
@@ -176,7 +176,7 @@ describe("Send again on an uncertain row follows the gateway's dedupe durability
     ["missing (older gateway)", undefined, false],
   ] as const)("send_dedupe %s", async (_label, durable, offered) => {
     saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("outcome-unknown", { failureKind: "connection_failed" })]);
-    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "HomeCore", durable)} />);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "Example", durable)} />);
     const row = await screen.findByTestId("pending-item:row-1");
     // The wording stays honest either way: delivery is unconfirmed.
     expect(within(row).getByText(`We couldn't confirm ${agentLabel} got this.`)).toBeVisible();

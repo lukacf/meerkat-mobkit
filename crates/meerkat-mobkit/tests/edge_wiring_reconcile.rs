@@ -1,5 +1,5 @@
 //! Regression: declared definition wiring (`auto_wire_orchestrator`,
-//! `role_wiring`) must converge regardless of bring-up order (HomeCore,
+//! `role_wiring`) must converge regardless of bring-up order (a downstream app,
 //! 2026-07-09). Upstream applies the rules only at spawn time and only from
 //! the non-orchestrator side, so a lead ensured AFTER its workers ended with
 //! `wired_to: []` and multi-member crews were dead on arrival. The

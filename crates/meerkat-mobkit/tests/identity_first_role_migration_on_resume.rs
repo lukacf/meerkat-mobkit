@@ -29,9 +29,9 @@ use meerkat_mobkit::{DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKi
 #[path = "support/llm_usage.rs"]
 mod llm_usage;
 
-const IDENTITY: &str = "identity:child-1";
+const IDENTITY: &str = "identity:member-1";
 const FROM_ROLE: &str = "identity";
-const TO_ROLE: &str = "identity-child";
+const TO_ROLE: &str = "identity-member";
 
 fn definition(mob_id: &str) -> MobDefinition {
     MobDefinition::from_toml(&format!(
@@ -48,16 +48,16 @@ runtime_mode = "turn_driven"
 comms = true
 mob = true
 
-[profiles.identity-child]
+[profiles.identity-member]
 model = "gpt-5.5"
 external_addressable = true
 runtime_mode = "turn_driven"
 
-[profiles.identity-child.tools]
+[profiles.identity-member.tools]
 comms = true
 "#
     ))
-    .expect("parse the household definition")
+    .expect("parse the team definition")
 }
 
 fn spec(profile: &str) -> DurableAgentSpec {

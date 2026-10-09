@@ -32,11 +32,11 @@ def test_define_module_preserves_module_boundary_and_env_copy():
         module_id="router",
         command="python3",
         boundary="mcp",
-        env={"ROUTER_FIXTURE": "homecore"},
+        env={"ROUTER_FIXTURE": "example"},
     )
 
     definition = define_module(spec=spec)
     definition.spec.env["ROUTER_FIXTURE"] = "other"
 
     assert definition.spec.boundary == "mcp"
-    assert spec.env == {"ROUTER_FIXTURE": "homecore"}
+    assert spec.env == {"ROUTER_FIXTURE": "example"}

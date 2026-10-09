@@ -560,7 +560,7 @@ impl std::fmt::Display for LocalJsonMemoryStoreError {
 impl std::error::Error for LocalJsonMemoryStoreError {}
 
 /// Deprecated: kept as an alias for the pre-rename error type. The backend
-/// never sent data to Elephant, so the type is now named for what it does.
+/// never sent data to the external memory hub, so the type is now named for what it does.
 pub type ElephantMemoryStoreError = LocalJsonMemoryStoreError;
 
 /// Operational-ledger backend that persists assertions/conflicts as local
@@ -573,7 +573,7 @@ pub struct LocalJsonMemoryBackendConfig {
 }
 
 /// Deprecated legacy config shape. Despite the name, this backend never
-/// wrote to Elephant: `endpoint` is only health-checked and the ledger is
+/// wrote to the external memory hub: `endpoint` is only health-checked and the ledger is
 /// persisted as local JSON at `state_path`. Use
 /// [`LocalJsonMemoryBackendConfig`]; this shape is still accepted for wire
 /// and config compatibility.

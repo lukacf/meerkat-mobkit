@@ -4,6 +4,11 @@ fixture re-synthesized by the pinned writer silently passes exactly the
 writer-drift bugs these tests exist to catch (the 0.8.11 fleet-import
 regression shipped past a synthetic 26-chain test for that reason).
 
+All free-text content in these fixtures (system prompts, instructions,
+message bodies, labels) is synthetic. Only the structural shape (keys, key
+order, row layout, ids, timestamps, digests) is preserved, because that
+shape is what the tests pin.
+
 - v0_8_10_released_session.json - SYNTHETIC: a meerkat 0.8.10 (producer
   version) system-only session envelope, byte-identical to Meerkat core's
   synthetic recovery-migration fixture. It keeps the released envelope
@@ -16,36 +21,33 @@ regression shipped past a synthetic 26-chain test for that reason).
   adapter import-on-load regression and the released-v2 import leg of
   identity_first_lazy_recall_continuity.rs.
 
-- v0_8_10_zero_rewrite_supervisor_session.json - a released-minted 0.8.10
+- v0_8_10_zero_rewrite_supervisor_session.json - a 0.8.10-shaped
   mob-supervisor snapshot envelope (zero-rewrite transcript graph: one
   revision, no commits key on the wire, singleton live-head body equal to
   the live transcript; session 019f2bdc-a781-7060-bff8-0b97b7a4fcee) with
   SYNTHETIC content. The released envelope's keys, key order, ids,
   timestamps and spelling are kept; every free-text value (system prompt,
-  build-state prompts) is replaced by deterministic synthetic text, the mob
-  namespace is renamed, and the transcript revision digest (and head) is
-  recomputed with meerkat_core::released_0810_transcript_serialized_rows_digest.
+  build-state prompts) is deterministic synthetic text, the mob namespace
+  is generic, and the transcript revision digest (and head) is computed
+  with meerkat_core::released_0810_transcript_serialized_rows_digest.
   The retired checkpoint stamp is kept verbatim: the importer strips it as
-  untrusted metadata. The strict importer refuses it with the same typed
-  error as the original capture. Used by
+  untrusted metadata. The strict importer refuses it with a typed error.
+  Excluded from the published crate. Used by
   `released_zero_rewrite_history_refuses_typed_on_adapter_load` in
   `src/identity_first/adapters.rs`, which pins typed, session-scoped import
-  refusal, byte preservation, and unrelated-session usability. The meerkat
-  d6cafd405 acceptance was an unshipped historical follow-up, not the
-  contract asserted by this regression.
+  refusal, byte preservation, and unrelated-session usability.
 
 - released_0_8_8_realms/ - four COMPLETE realms (continuity.sqlite3 v2 +
   runtime.sqlite v1 + mobkit satellites + WAL/SHM/.mfence sidecars, no
-  realm_manifest.json) minted by the PUBLIC-RELEASE mobkit 0.8.8
-  rpc_gateway (embedding meerkat SDK 0.8.10) via the stdin-JSONL capture
-  driver (capture_0810_fixture.py, job 6b689d90). Consumed by
-  tests/released_realm_upgrade_drive.rs, which boots the CURRENT gateway
-  over a staged copy. Never regenerate with current code, and never open
-  these files with sqlite in place: a read/write open checkpoints and
-  truncates the WAL, destroying the released byte shape (the test pins the
-  continuity main/WAL sizes and fails loudly). The empty blobs/ directory
-  is part of the released shape; git cannot track it, so the test's
-  staging helper restores it.
+  realm_manifest.json) minted by the released mobkit 0.8.8 rpc_gateway
+  (embedding meerkat SDK 0.8.10), driven over stdin JSONL with synthetic
+  turns. Consumed by tests/released_realm_upgrade_drive.rs, which boots the
+  CURRENT gateway over a staged copy. Never regenerate with current code,
+  and never open these files with sqlite in place: a read/write open
+  checkpoints and truncates the WAL, destroying the released byte shape
+  (the test pins the continuity main/WAL sizes and fails loudly). The empty
+  blobs/ directory is part of the released shape; git cannot track it, so
+  the test's staging helper restores it.
     - baseline/       multi-boot clean-shutdown history, 5 turns
                       (head: 11 messages)
     - burst_drain/    pipelined 6-send burst fully drained by
@@ -54,60 +56,55 @@ regression shipped past a synthetic 26-chain test for that reason).
                       WALs, no shutdown attestation; all 10 inputs consumed
                       and the legacy runtime snapshot in sync with the head
                       (the kill landed at idle)
-    - deploy_cycles/  4 boot/turn/clean-shutdown deploy cycles (head: 9
+    - deploy_cycles/  4 boot/turn/clean-shutdown cycles (head: 9
                       messages); rewrite_count is 0 - the released binary
                       minted no resume rewrites for an unchanged system
                       prompt
 
-- homecore_ledgerv1_closure/ - the continuity closure of the fleet session
-  cited in the class-2 and class-3 0.8.11 binding verdicts (domain:calendar,
-  019fae11-4dd7-7301-9754-67b646603fb3 - the fleet's max-depth 26-rewrite
-  chain), with SYNTHETIC content. Built by schema-level synthesis from the
-  forensic capture (2026-08-01): the row layout, strand topology (7 strands,
-  26 resume-system-prompt-refresh rewrites, a 57-message head), session
-  ids, envelope timestamps and every non-content column are kept; every
-  free-text value is replaced by deterministic synthetic text, the mob
-  namespace is renamed, action argument dates become synthetic dates in the
-  same order and format (time zone UTC), and provider call, response and
-  reasoning ids are remapped consistently (same prefix and length, every
-  reference kept equal); every strand id, commit digest (revision, parent revision,
-  original and replacement spans) and the head revision are recomputed
-  with meerkat_core::released_0810_transcript_serialized_rows_digest (the
-  recomputation reproduced every original digest before synthesis); the
-  cas_token is recomputed over the new head_json. Retired checkpoint
-  stamps stay verbatim (the importer strips them). With the synthetic
-  closure the leg still goes red on the parent of the adoption fix
-  (0251f56b) with the class-3 refusal. JSON encoding: every
-  TEXT/BLOB value is lossless base64 {b64,len}, numbers/nulls verbatim,
-  per-table column lists; sha256 pinned in checksums.sha256, source DDL in
-  continuity-schema.sql. Consumed by
+- ledger_v1_closure/ - the continuity closure of one member session
+  (019fae11-4dd7-7301-9754-67b646603fb3) carrying a 26-rewrite
+  resume-system-prompt-refresh chain, with SYNTHETIC content. The row
+  layout, strand topology (7 strands, 26 rewrites, a 57-message head),
+  session ids, envelope timestamps and every non-content column have the
+  released shape; every free-text value is deterministic synthetic text,
+  the mob namespace is generic, action argument dates are synthetic dates
+  (time zone UTC), and provider call, response and reasoning ids are
+  consistent synthetic ids (same prefix and length, every reference kept
+  equal). Every strand id, commit digest (revision, parent revision,
+  original and replacement spans) and the head revision are computed with
+  meerkat_core::released_0810_transcript_serialized_rows_digest; the
+  cas_token is computed over head_json. Retired checkpoint stamps stay
+  verbatim (the importer strips them). The leg goes red without the
+  adoption fix, with the class-3 refusal. JSON encoding: every TEXT/BLOB
+  value is lossless base64 {b64,len}, numbers/nulls verbatim, per-table
+  column lists; sha256 pinned in checksums.sha256, source DDL in
+  continuity-schema.sql. Excluded from the published crate. Consumed by
   identity_first_lazy_recall_continuity.rs
-  (homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn),
+  (downstream_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn),
   which reconstitutes it at test time VERBATIM - every row of every table
   through the bundle's own DDL, zero document surgery - and boots the
   harness under the bundle's OWN identity space (the mob id read from the
-  released head's comms name, profile domain, member domain:calendar), so
-  the persisted mob_member_binding and
-  comms_name match the booting mob by construction (lead ruling: fix the
-  harness, never the bundle). The class-3 property the
-  head carries: released envelope version 2, rewrite_count 26, and NONE of
-  the current authority fields (graph_prefix / rewrite_prefix /
-  message_row_prefix) - a head that structurally cannot authorize a current
-  mutation and must be ADOPTED under the import receipt on the first
-  projected write.
+  head's comms name, the profile and member identity read from the
+  bundle), so the persisted mob_member_binding and comms_name match the
+  booting mob by construction (the harness adapts to the bundle, never the
+  reverse). The class-3 property the head carries: released envelope
+  version 2, rewrite_count 26, and NONE of the current authority fields
+  (graph_prefix / rewrite_prefix / message_row_prefix) - a head that
+  structurally cannot authorize a current mutation and must be ADOPTED
+  under the import receipt on the first projected write.
 
-- homecore_security_idempotency/ - the three-state head+snapshot evolution
-  of domain:security (019fae11-4e87-7482-8796-54b2dac1f410) from a forensic
-  bundle (2026-08-01) - untouched gen-20 corpus, the row after ONE boot of
-  the fixed binary on a fresh seed, and the row after a SECOND boot (the
-  exactly-once violation: identical head_revision, same length, different
-  bytes) - with SYNTHETIC content. Keys, ids, timestamps, the
-  tool-visibility state and the boot-to-boot drift are the captured values;
-  every free-text value (prompts, instructions, message bodies) is replaced
-  by deterministic synthetic text, the mob namespace is renamed, and each
-  cas_token is recomputed over its new head_json. sha256 pinned in
-  checksums.sha256. Consumed by
-  identity_first::adapters::tests::homecore_security_boot_drift_is_zero_durable_change,
+- security_idempotency/ - a three-state head+snapshot evolution of one
+  member session (019fae11-4e87-7482-8796-54b2dac1f410): the untouched
+  gen-20 corpus, the row after ONE boot of the fixed binary on a fresh
+  seed, and the row after a SECOND boot (the exactly-once violation:
+  identical head_revision, same length, different bytes) - with SYNTHETIC
+  content. Keys, ids, timestamps, the tool-visibility state and the
+  boot-to-boot drift keep their structural shape; every free-text value
+  (prompts, instructions, message bodies) is deterministic synthetic text,
+  the mob namespace is generic, and each cas_token is computed over its
+  head_json. sha256 pinned in checksums.sha256. Excluded from the
+  published crate. Consumed by
+  identity_first::adapters::tests::downstream_security_boot_drift_is_zero_durable_change,
   which pins that strict head equality SEES the two-boot drift (updated_at +
   the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
   while the scoped exact-resave equality reads it as zero durable change.
@@ -115,14 +112,14 @@ regression shipped past a synthetic 26-chain test for that reason).
 The current wire-contract fixtures below are shared across languages and are
 not part of the frozen corpus. They are expected to change when the wire
 changes, following each fixture's maintenance rules. The freeze above applies
-only to released and forensic captures.
+only to the released corpora.
 
-- role_migrations_init_params.json - the hand-authored wire contract for boot-scoped member
-  role migrations: one gateway init-params object carrying a top-level
-  role_migrations array of {identity, from_role} declarations (values are
-  HomeCore activation-83: identity domain:home-automation migrating from role
-  domain). Read by BOTH languages from this ONE file. Rust:
-  identity_first::bridge::tests::
+- role_migrations_init_params.json - the hand-authored wire contract for
+  boot-scoped member role migrations: one gateway init-params object
+  carrying a top-level role_migrations array of {identity, from_role}
+  declarations (synthetic example values: identity domain:automation
+  migrating from role domain). Read by BOTH languages from this ONE file.
+  Rust: identity_first::bridge::tests::
   the_committed_wire_fixture_deserializes_into_declarations include_str!s it
   and deserializes params["role_migrations"] into Vec<RoleMigrationDeclaration>.
   Python: sdk/python/tests/test_role_migrations.py::
@@ -145,8 +142,16 @@ only to released and forensic captures.
     the_committed_wire_fixture_installs_its_carried_provider
   ```
 
-- live_contracts_v1.json - shared live wire-contract cases read by Rust
-  `crates/meerkat-mobkit/tests/live_contracts.rs`, Python
+- live_contracts_v1.json - shared live wire-contract cases (synthetic
+  realm, principal, auth binding and session instructions) read by Rust
+  `crates/meerkat-mobkit/tests/live_contracts.rs` and
+  `src/public_live_config.rs`, Python
   `sdk/python/tests/test_live_contracts.py`, and TypeScript
   `sdk/typescript/tests/live.test.ts`. Update the current contract and its
   cross-language expectations together; this is not a frozen released capture.
+
+- console_voice_v1.json - shared console voice wire-contract cases (typed
+  voice error payloads, context-status and captions methods with synthetic
+  request and channel ids) read by the Rust `src/console_voice/` modules and
+  `console/src/lib/voice-session.test.ts`. Update it together with both
+  readers when the console voice wire changes.

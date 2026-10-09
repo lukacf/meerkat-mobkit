@@ -1,12 +1,12 @@
-"""HomeCore-scenario E2E smoke tests for the Python SDK surface.
+"""Downstream-scenario E2E smoke tests for the Python SDK surface.
 
-Covers HC-01 through HC-08 from phase5_scenarios.md Track B.
+Covers downstream scenarios DS-01 through DS-08.
 These tests exercise the REAL round-trip: Python SDK -> rpc_gateway binary
 -> Rust UnifiedRuntime -> LLM API -> back. No mocks for the RPC layer.
 
 Run:
     PYTHONPATH=sdk/python ANTHROPIC_API_KEY=... \
-        python3 -m pytest sdk/python/tests/test_identity_first_homecore.py -v --timeout=120
+        python3 -m pytest sdk/python/tests/test_identity_first_downstream.py -v --timeout=120
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from meerkat_mobkit.errors import RpcError
 
 # The gateway-backed suites must exercise THIS worktree's freshly built
 # rpc_gateway, not whichever binary the main checkout last built. The default
-# path below is the main worktree's scripts/repo-cargo lane; running from a
+# path below is the repository's plain cargo target directory; running from a
 # feature worktree would silently test the wrong artifact (and hide the wire
 # drift the branch introduces). Prefer an explicit override:
 #   MOBKIT_GATEWAY_BIN=$(./scripts/repo-cargo --print-env CARGO_TARGET_DIR)/debug/rpc_gateway
@@ -35,12 +35,8 @@ def _resolve_gateway_bin() -> str:
     if override:
         return override
     return os.path.join(
-        os.path.expanduser("~/Library/Caches/rust-workspaces"),
-        "meerkat-mobkit-2783c42580",
-        "targets",
-        "meerkat-mobkit-44eecf13a1",
-        "debug",
-        "rpc_gateway",
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "target", "debug", "rpc_gateway",
     )
 
 
@@ -63,12 +59,12 @@ _skip_no_binary = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Mob definition (TOML) for HomeCore scenarios
+# Mob definition (TOML) for downstream app scenarios
 # ---------------------------------------------------------------------------
 
-_HOMECORE_MOB_TOML = """\
+_DOWNSTREAM_MOB_TOML = """\
 [mob]
-id = "homecore-e2e"
+id = "example-e2e"
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
@@ -154,9 +150,9 @@ async def _boot_runtime(state_dir: str, mob_toml_path: str):
 
 @pytest.fixture
 def mob_toml(tmp_path):
-    """Write the HomeCore mob.toml to a temp file and return its path."""
+    """Write the downstream app mob.toml to a temp file and return its path."""
     p = tmp_path / "mob.toml"
-    p.write_text(_HOMECORE_MOB_TOML)
+    p.write_text(_DOWNSTREAM_MOB_TOML)
     return str(p)
 
 
@@ -169,13 +165,13 @@ def state_dir(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# HC-01: Family Bootstrap And Mixed Delivery
+# DS-01: Team Bootstrap And Mixed Delivery
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC01FamilyBootstrapAndMixedDelivery:
-    """HC-01: Family roster with mixed addressability and real LLM round-trip."""
+class TestDS01TeamBootstrapAndMixedDelivery:
+    """DS-01: Team roster with mixed addressability and real LLM round-trip."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(60)
@@ -186,7 +182,7 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
 
             # Ensure personal (addressable) and triage (internal) members
             luka = await handle.ensure_member(
-                "luka", role="personal", labels={"role": "family"},
+                "luka", role="personal", labels={"role": "team"},
             )
             assert luka.agent_identity == "luka"
             assert luka.role == "personal"
@@ -245,13 +241,13 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
 
 
 # ---------------------------------------------------------------------------
-# HC-02: Session Continuity Across Messages
+# DS-02: Session Continuity Across Messages
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC02SessionContinuity:
-    """HC-02: Same member keeps the same session_id across multiple sends."""
+class TestDS02SessionContinuity:
+    """DS-02: Same member keeps the same session_id across multiple sends."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(90)
@@ -286,13 +282,13 @@ class TestHC02SessionContinuity:
 
 
 # ---------------------------------------------------------------------------
-# HC-03: Reconcile New Family Member Without Breaking Existing Continuity
+# DS-03: Reconcile New Team Member Without Breaking Existing Continuity
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC03ReconcileNewMember:
-    """HC-03: Adding a new member doesn't disturb existing members."""
+class TestDS03ReconcileNewMember:
+    """DS-03: Adding a new member doesn't disturb existing members."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(90)
@@ -302,22 +298,22 @@ class TestHC03ReconcileNewMember:
             handle = rt.mob_handle()
 
             await handle.ensure_member("luka", role="personal")
-            await handle.ensure_member("louise", role="personal")
+            await handle.ensure_member("alice", role="personal")
 
             r1 = await handle.send("luka", message="Remember: my favorite color is blue.")
             session_before = r1.session_id
 
             # Add a third member
-            olivia = await handle.ensure_member("olivia", role="personal")
-            assert olivia.agent_identity == "olivia"
-            assert olivia.role == "personal"
+            bob = await handle.ensure_member("bob", role="personal")
+            assert bob.agent_identity == "bob"
+            assert bob.role == "personal"
 
             # Existing member session_id unchanged
             r2 = await handle.send("luka", message="What is my favorite color?")
             assert r2.session_id == session_before
 
             # New member works independently
-            r3 = await handle.send("olivia", message="Hello, who are you?")
+            r3 = await handle.send("bob", message="Hello, who are you?")
             assert r3.accepted
             assert r3.session_id != session_before
         finally:
@@ -330,26 +326,26 @@ class TestHC03ReconcileNewMember:
         try:
             handle = rt.mob_handle()
             await handle.ensure_member("luka", role="personal")
-            await handle.ensure_member("louise", role="personal")
-            await handle.ensure_member("olivia", role="personal")
+            await handle.ensure_member("alice", role="personal")
+            await handle.ensure_member("bob", role="personal")
 
             members = await handle.list_members()
             ids = {m.agent_identity for m in members}
             assert "luka" in ids
-            assert "louise" in ids
-            assert "olivia" in ids
+            assert "alice" in ids
+            assert "bob" in ids
         finally:
             await rt.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# HC-04: Hot-Update Labels And Metadata
+# DS-04: Hot-Update Labels And Metadata
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC04HotUpdateMetadata:
-    """HC-04: Labels and metadata can be updated via re-ensure."""
+class TestDS04HotUpdateMetadata:
+    """DS-04: Labels and metadata can be updated via re-ensure."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(60)
@@ -379,14 +375,14 @@ class TestHC04HotUpdateMetadata:
         try:
             handle = rt.mob_handle()
             await handle.ensure_member(
-                "luka", role="personal", labels={"role": "family"},
+                "luka", role="personal", labels={"role": "team"},
             )
             await handle.ensure_member(
                 "triage-main", role="triage", labels={"role": "triage"},
             )
 
-            family = await handle.find_members("role", "family")
-            assert any(m.agent_identity == "luka" for m in family)
+            team = await handle.find_members("role", "team")
+            assert any(m.agent_identity == "luka" for m in team)
 
             triage = await handle.find_members("role", "triage")
             assert any(m.agent_identity == "triage-main" for m in triage)
@@ -395,13 +391,13 @@ class TestHC04HotUpdateMetadata:
 
 
 # ---------------------------------------------------------------------------
-# HC-05: Durable Respawn After Wedged Agent
+# DS-05: Durable Respawn After Wedged Agent
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC05DurableRespawn:
-    """HC-05: Respawn preserves identity and allows continued operation."""
+class TestDS05DurableRespawn:
+    """DS-05: Respawn preserves identity and allows continued operation."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(90)
@@ -440,13 +436,13 @@ class TestHC05DurableRespawn:
 
 
 # ---------------------------------------------------------------------------
-# HC-06: Retire Stops New Work
+# DS-06: Retire Stops New Work
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC06RetireStopsWork:
-    """HC-06: Retired member transitions to retiring state."""
+class TestDS06RetireStopsWork:
+    """DS-06: Retired member transitions to retiring state."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(60)
@@ -486,13 +482,13 @@ class TestHC06RetireStopsWork:
 
 
 # ---------------------------------------------------------------------------
-# HC-07: Reset vs Delete Semantics
+# DS-07: Reset vs Delete Semantics
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC07ResetVsDelete:
-    """HC-07: Retire+re-ensure gives fresh session, respawn preserves identity."""
+class TestDS07ResetVsDelete:
+    """DS-07: Retire+re-ensure gives fresh session, respawn preserves identity."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(90)
@@ -537,19 +533,19 @@ class TestHC07ResetVsDelete:
 
 
 # ---------------------------------------------------------------------------
-# HC-08: External-Authoritative Restart Smoke (Persistent State)
+# DS-08: External-Authoritative Restart Smoke (Persistent State)
 # ---------------------------------------------------------------------------
 
 @_skip_no_key
 @_skip_no_binary
-class TestHC08PersistentStateRestart:
-    """HC-08: Persistent state survives gateway restart."""
+class TestDS08PersistentStateRestart:
+    """DS-08: Persistent state survives gateway restart."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
     async def test_gateway_restarts_with_persistent_state(self, tmp_path):
         mob_toml_path = tmp_path / "mob.toml"
-        mob_toml_path.write_text(_HOMECORE_MOB_TOML)
+        mob_toml_path.write_text(_DOWNSTREAM_MOB_TOML)
         sd = str(tmp_path / "state")
         os.makedirs(sd, exist_ok=True)
 
@@ -589,7 +585,7 @@ class TestHC08PersistentStateRestart:
     @pytest.mark.timeout(60)
     async def test_persistent_state_creates_sqlite(self, tmp_path):
         mob_toml_path = tmp_path / "mob.toml"
-        mob_toml_path.write_text(_HOMECORE_MOB_TOML)
+        mob_toml_path.write_text(_DOWNSTREAM_MOB_TOML)
         sd = str(tmp_path / "state")
         os.makedirs(sd, exist_ok=True)
 

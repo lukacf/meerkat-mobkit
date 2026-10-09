@@ -26,7 +26,7 @@ def start_params(
 ) -> dict[str, Any]:
     return {
         "authority": dict(authority),
-        "runner": {"name": "homecore.security_scan", "version": "1"},
+        "runner": {"name": "example.security_scan", "version": "1"},
         "restart_class": "non_resumable",
         "runner_handle": runner_handle,
         "runner_specification_ref": "blob-args",
@@ -46,7 +46,7 @@ class Builder:
             "security_scan",
             lambda _args: None,
             execution=DetachedJobExecution(
-                runner="homecore.security_scan",
+                runner="example.security_scan",
                 version="1",
                 restart_class="non_resumable",
                 idempotency_scope="interaction_and_arguments",
@@ -82,7 +82,7 @@ def test_detached_registration_emits_exact_private_execution_contract() -> None:
         description="Scan the LAN",
         input_schema={"type": "object"},
         execution=DetachedJobExecution(
-            runner="homecore.security_scan",
+            runner="example.security_scan",
             version="1",
             restart_class="non_resumable",
             idempotency_scope="interaction_and_arguments",
@@ -99,7 +99,7 @@ def test_detached_registration_emits_exact_private_execution_contract() -> None:
             "input_schema": {"type": "object"},
             "execution": {
                 "mode": "detached",
-                "runner": {"name": "homecore.security_scan", "version": "1"},
+                "runner": {"name": "example.security_scan", "version": "1"},
                 "restart_class": "non_resumable",
                 "idempotency_scope": "interaction_and_arguments",
                 "submission_timeout_ms": 30_000,
@@ -291,7 +291,7 @@ async def test_reconcile_only_reports_exact_live_authority_and_never_starts_work
             "attempts": [
                 {
                     "authority": AUTHORITY_1,
-                    "runner": {"name": "homecore.security_scan", "version": "1"},
+                    "runner": {"name": "example.security_scan", "version": "1"},
                     "restart_class": "non_resumable",
                     "runner_handle": "callback:job-1:attempt:1",
                     "lease_expires_at_ms": 999,
@@ -302,7 +302,7 @@ async def test_reconcile_only_reports_exact_live_authority_and_never_starts_work
                         "attempt_id": "attempt-missing",
                         "fence": 11,
                     },
-                    "runner": {"name": "homecore.security_scan", "version": "1"},
+                    "runner": {"name": "example.security_scan", "version": "1"},
                     "restart_class": "adoptable",
                     "runner_handle": "external:missing",
                     "lease_expires_at_ms": 999,
@@ -342,7 +342,7 @@ async def test_external_adoption_and_cancel_are_runner_owned_but_authority_exact
 
     offered = {
         "authority": AUTHORITY_1,
-        "runner": {"name": "homecore.security_scan", "version": "1"},
+        "runner": {"name": "example.security_scan", "version": "1"},
         "restart_class": "adoptable",
         "runner_handle": "external:still-live",
         "lease_expires_at_ms": 999,
@@ -359,7 +359,7 @@ async def test_external_adoption_and_cancel_are_runner_owned_but_authority_exact
                         "fence": 1,
                     },
                     "runner": {
-                        "name": "homecore.security_scan",
+                        "name": "example.security_scan",
                         "version": "1",
                     },
                     "restart_class": "replayable",

@@ -93,7 +93,7 @@ impl ContactDirectory {
     /// # envelopes. `pubkey` is base64 of the 32-byte Ed25519 verifying
     /// # key, optionally prefixed with `ed25519:` for parity with
     /// # meerkat-comms trust files.
-    /// home-assistant = { transport = "tcp://192.168.1.50:9002", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
+    /// automation-hub = { transport = "tcp://192.168.1.50:9002", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
     /// ```
     pub fn from_toml(text: &str) -> Result<Self, ContactDirectoryError> {
         let table: toml::Value =
@@ -243,8 +243,8 @@ mod tests {
             r#"
             [mobs]
             google-workspace = "inproc"
-            home-assistant = "tcp://192.168.1.50:9002"
-            smart-home = "uds:///var/run/meerkat/smart-home.sock"
+            automation-hub = "tcp://192.168.1.50:9002"
+            device-hub = "uds:///var/run/meerkat/device-hub.sock"
             "#,
         )
         .unwrap();
@@ -254,12 +254,12 @@ mod tests {
             MobTransport::Inproc
         );
         assert_eq!(
-            dir.get("home-assistant").unwrap().transport,
+            dir.get("automation-hub").unwrap().transport,
             MobTransport::Tcp("192.168.1.50:9002".to_string())
         );
         assert_eq!(
-            dir.get("smart-home").unwrap().transport,
-            MobTransport::Uds("/var/run/meerkat/smart-home.sock".to_string())
+            dir.get("device-hub").unwrap().transport,
+            MobTransport::Uds("/var/run/meerkat/device-hub.sock".to_string())
         );
         // Bare-string form leaves pubkey unset (backward compatible).
         for entry in dir.list() {
@@ -273,11 +273,11 @@ mod tests {
         let dir = ContactDirectory::from_toml(&format!(
             r#"
             [mobs]
-            home-assistant = {{ transport = "tcp://192.168.1.50:9002", pubkey = "{pubkey_b64}" }}
+            automation-hub = {{ transport = "tcp://192.168.1.50:9002", pubkey = "{pubkey_b64}" }}
             "#,
         ))
         .unwrap();
-        let entry = dir.get("home-assistant").unwrap();
+        let entry = dir.get("automation-hub").unwrap();
         assert!(matches!(entry.transport, MobTransport::Tcp(_)));
         assert_eq!(entry.pubkey, Some([42u8; 32]));
     }
@@ -287,11 +287,11 @@ mod tests {
         let dir = ContactDirectory::from_toml(
             r#"
             [mobs]
-            home-assistant = { transport = "tcp://1.2.3.4:9000", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
+            automation-hub = { transport = "tcp://1.2.3.4:9000", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
             "#,
         )
         .unwrap();
-        assert_eq!(dir.get("home-assistant").unwrap().pubkey, Some([42u8; 32]));
+        assert_eq!(dir.get("automation-hub").unwrap().pubkey, Some([42u8; 32]));
     }
 
     #[test]
@@ -299,7 +299,7 @@ mod tests {
         let result = ContactDirectory::from_toml(
             r#"
             [mobs]
-            home-assistant = { transport = "tcp://1.2.3.4:9000", pubkey = "not-base64!!" }
+            automation-hub = { transport = "tcp://1.2.3.4:9000", pubkey = "not-base64!!" }
             "#,
         );
         assert!(matches!(

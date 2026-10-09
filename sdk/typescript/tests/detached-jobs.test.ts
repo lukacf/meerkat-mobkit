@@ -18,7 +18,7 @@ function startParams(
 ): Record<string, unknown> {
   return {
     authority: { ...authority },
-    runner: { name: "homecore.security_scan", version: "1" },
+    runner: { name: "example.security_scan", version: "1" },
     restart_class: "non_resumable",
     runner_handle: runnerHandle,
     runner_specification_ref: "blob-args",
@@ -38,7 +38,7 @@ async function register(
       options.profileName = profileName;
       options.registerTool("security_scan", () => null, {
         execution: new DetachedJobExecution({
-          runner: "homecore.security_scan",
+          runner: "example.security_scan",
           version: "1",
           restartClass: "non_resumable",
           idempotencyScope: "interaction_and_arguments",
@@ -62,7 +62,7 @@ describe("detached callback jobs", () => {
       description: "Scan the LAN",
       inputSchema: { type: "object" },
       execution: new DetachedJobExecution({
-        runner: "homecore.security_scan",
+        runner: "example.security_scan",
         version: "1",
         restartClass: "non_resumable",
         idempotencyScope: "interaction_and_arguments",
@@ -78,7 +78,7 @@ describe("detached callback jobs", () => {
       input_schema: { type: "object" },
       execution: {
         mode: "detached",
-        runner: { name: "homecore.security_scan", version: "1" },
+        runner: { name: "example.security_scan", version: "1" },
         restart_class: "non_resumable",
         idempotency_scope: "interaction_and_arguments",
         submission_timeout_ms: 30_000,
@@ -251,7 +251,7 @@ describe("detached callback jobs", () => {
       attempts: [
         {
           authority: AUTHORITY_1,
-          runner: { name: "homecore.security_scan", version: "1" },
+          runner: { name: "example.security_scan", version: "1" },
           restart_class: "adoptable",
           runner_handle: "external:live",
           lease_expires_at_ms: 999,
@@ -262,7 +262,7 @@ describe("detached callback jobs", () => {
             attempt_id: "attempt-replay",
             fence: 1,
           },
-          runner: { name: "homecore.security_scan", version: "1" },
+          runner: { name: "example.security_scan", version: "1" },
           restart_class: "replayable",
           runner_handle: "external:live",
           lease_expires_at_ms: 999,

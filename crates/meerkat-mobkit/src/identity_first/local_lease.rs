@@ -180,7 +180,7 @@ mod tests {
     use super::*;
 
     async fn first_token(provider: &LocalLeaseProvider, holder: &str) -> u64 {
-        let id = AgentIdentity::parse("identity:parent-1").unwrap();
+        let id = AgentIdentity::parse("identity:lead-1").unwrap();
         let result = provider
             .acquire_leases(std::slice::from_ref(&id), holder)
             .await

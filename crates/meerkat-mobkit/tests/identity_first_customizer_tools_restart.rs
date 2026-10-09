@@ -57,7 +57,7 @@ comms = true
 "#;
 
 const MEMBER: &str = "personal:alice";
-const TOOL: &str = "lookup_household";
+const TOOL: &str = "lookup_workspace";
 
 fn id(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).expect("parse identity")
@@ -97,7 +97,7 @@ impl AgentToolDispatcher for HostTools {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         vec![Arc::new(ToolDef {
             name: TOOL.into(),
-            description: "Look up the household record.".to_string(),
+            description: "Look up the workspace record.".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
             provenance: None,
         })]

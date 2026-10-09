@@ -10304,7 +10304,7 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
-    /// Regression (HomeCore dispatch-path mirroring asymmetry): a console
+    /// Regression (downstream app dispatch-path mirroring asymmetry): a console
     /// send targets the DURABLE identity, but the member is rostered under
     /// its fenced runtime incarnation (`rt:{identity}:{generation}`). The
     /// send's interaction reservation must key the pending interaction under
@@ -10428,7 +10428,7 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
-    /// HomeCore field report (2026-08-17), and the case neither sibling test
+    /// Downstream app field report (2026-08-17), and the case neither sibling test
     /// covers: a SCHEDULED turn's completions, arriving on a member that was
     /// addressed through console send EARLIER in the same process.
     ///
@@ -10440,7 +10440,7 @@ comms = true
     /// ingress produced it. A recurring scheduled prompt reaches the runtime
     /// through `WorkSpec`/`MobHandle` and reserves nothing on the console
     /// store, so it never keyed anything itself - it was collateral damage,
-    /// and it is the path a household actually runs on. The operator-visible
+    /// and it is the path a real deployment actually runs on. The operator-visible
     /// symptom was a scheduled agent that appeared to answer nothing for days
     /// while it was in fact answering.
     ///
@@ -11193,15 +11193,15 @@ comms = true
         let mut labels = BTreeMap::new();
         labels.insert(
             "agent_identity".to_string(),
-            "channel:C0SMOKEOB3".to_string(),
+            "channel:C0SMOKEOPS".to_string(),
         );
-        labels.insert("display_name".to_string(), "C0SMOKEOB3".to_string());
+        labels.insert("display_name".to_string(), "C0SMOKEOPS".to_string());
         spawn_trusted_identity_projected_member(
             &runtime,
             SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:channel:C0SMOKEOB3:0".to_string(),
-                Some("You are C0SMOKEOB3.".into()),
+                "rt:channel:C0SMOKEOPS:0".to_string(),
+                Some("You are C0SMOKEOPS.".into()),
                 None,
                 None,
             )
@@ -11229,18 +11229,18 @@ comms = true
         let records = aggregator.list_identities_fresh().await?;
         let record = records
             .iter()
-            .find(|record| record.identity == "channel:C0SMOKEOB3")
+            .find(|record| record.identity == "channel:C0SMOKEOPS")
             .expect("durable identity is exposed");
-        assert_eq!(record.runtime_member_id, "rt:channel:C0SMOKEOB3:0");
+        assert_eq!(record.runtime_member_id, "rt:channel:C0SMOKEOPS:0");
 
         let inspection = aggregator
-            .inspect_identity("channel:C0SMOKEOB3")
+            .inspect_identity("channel:C0SMOKEOPS")
             .await?
             .expect("durable identity resolves back to runtime member");
-        assert_eq!(inspection.identity.identity, "channel:C0SMOKEOB3");
+        assert_eq!(inspection.identity.identity, "channel:C0SMOKEOPS");
         assert_eq!(
             inspection.identity.runtime_member_id,
-            "rt:channel:C0SMOKEOB3:0"
+            "rt:channel:C0SMOKEOPS:0"
         );
 
         let _ = runtime.mob_handle().stop().await;
@@ -18143,7 +18143,7 @@ comms = true
                         "data": {
                             "id": "toolu-send-1",
                             "name": "send_message",
-                            "args": { "peer_id": "peer-1", "body": "lights updated" }
+                            "args": { "peer_id": "peer-1", "body": "status updated" }
                         }
                     },
                     {
@@ -18184,7 +18184,7 @@ comms = true
         assert_eq!(message_frame.payload["tool_call_id"], json!("toolu-send-1"));
         assert_eq!(
             message_frame.payload["args"]["body"],
-            json!("lights updated")
+            json!("status updated")
         );
         assert_eq!(message_frame.conversation_id.as_deref(), Some("agent-a"));
         let request_frame = tool_frames
@@ -18206,7 +18206,7 @@ comms = true
                 "id": "toolu-send-1",
                 "tool_call_id": "toolu-send-1",
                 "name": "send_message",
-                "args": { "peer_id": "peer-1", "body": "lights updated" },
+                "args": { "peer_id": "peer-1", "body": "status updated" },
                 "source_event_type": "tool_call_requested",
             }),
         );

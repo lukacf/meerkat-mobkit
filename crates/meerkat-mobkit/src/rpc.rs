@@ -1763,7 +1763,7 @@ pub const CONSOLE_READ_TIMEOUT_CODE: i64 = -32017;
 ///
 /// Both seams are strict sequential command loops, so a member that is busy -
 /// a long tool chain, a post-cycle compaction - makes every console read on
-/// that member queue behind the turn with no signal at all. That is the OB3
+/// that member queue behind the turn with no signal at all. That is the production incident
 /// shape (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
 /// and never completed, because a read has no way to say "the loop is busy".
 ///
@@ -3510,7 +3510,7 @@ async fn handle_unified_rpc_json_inner(
         // Same deadline posture as `resolved_tools`: this crosses the
         // identity-runtime status read and then a runtime-machine command,
         // so it can queue behind a member's in-flight turn exactly the way
-        // OB3 observed for `resolved_tools`.
+        // the operator deployment observed for `resolved_tools`.
         "mobkit/identity/routing_status" => {
             with_read_deadline(
                 "mobkit/identity/routing_status",
@@ -6611,7 +6611,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "identity": "identity:luka",
-                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
             }),
             json!(1),
             false,
@@ -6628,7 +6628,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "model": "legacy",
-                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
             }),
             json!(2),
             true,
@@ -6652,7 +6652,7 @@ mod tests {
                 "mobkit/live/open",
                 &json!({
                     "identity": "identity:luka",
-                    "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                    "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
                 }),
                 json!(4),
                 true,
@@ -6741,7 +6741,7 @@ mod tests {
         );
     }
 
-    /// OB3 (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
+    /// a 2026-08-16 production incident: `mobkit/identity/resolved_tools` hung past 60 seconds
     /// with no completion because the member's session task was mid-turn and
     /// the read had no deadline - the session task is a strict sequential
     /// command loop, so the read queued instead of degrading. A read that
@@ -8533,10 +8533,10 @@ shell = true
                     "method": "mobkit/agent_memory/remember",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
-                        "title": "School pickup",
-                        "body": "Pickup is before calendar planning.",
-                        "tags": ["family", "calendar"]
+                        "realm": "team",
+                        "title": "Weekly standup",
+                        "body": "Standup is before calendar planning.",
+                        "tags": ["team", "calendar"]
                     },
                 })
                 .to_string(),
@@ -8552,17 +8552,17 @@ shell = true
             .as_str()
             .ok_or("memory_id should be present")?
             .to_string();
-        assert_eq!(response["result"]["title"], json!("School pickup"));
+        assert_eq!(response["result"]["title"], json!("Weekly standup"));
         assert_eq!(
             response["result"]["body"],
-            json!("Pickup is before calendar planning.")
+            json!("Standup is before calendar planning.")
         );
-        assert_eq!(response["result"]["tags"], json!(["calendar", "family"]));
+        assert_eq!(response["result"]["tags"], json!(["calendar", "team"]));
 
         let records = store
             .recall(AgentMemoryRecallRequest {
                 identity: memory_identity.clone(),
-                realm: "family".to_string(),
+                realm: "team".to_string(),
                 query_text: None,
                 query_terms: Vec::new(),
                 selection: AgentMemorySelection::Always,
@@ -8570,8 +8570,8 @@ shell = true
             })
             .await?;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].title, "School pickup");
-        assert_eq!(records[0].tags, vec!["calendar", "family"]);
+        assert_eq!(records[0].title, "Weekly standup");
+        assert_eq!(records[0].tags, vec!["calendar", "team"]);
 
         let recall_response: Value = serde_json::from_str(
             &handle_unified_rpc_json(
@@ -8582,9 +8582,9 @@ shell = true
                     "method": "mobkit/agent_memory/recall",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "selection": "contextual",
-                        "query_terms": ["pickup"],
+                        "query_terms": ["standup"],
                         "max_entries": 4
                     },
                 })
@@ -8605,7 +8605,7 @@ shell = true
         );
         assert_eq!(
             recall_response["result"]["records"][0]["body"],
-            json!("Pickup is before calendar planning.")
+            json!("Standup is before calendar planning.")
         );
 
         let forget_response: Value = serde_json::from_str(
@@ -8617,7 +8617,7 @@ shell = true
                     "method": "mobkit/agent_memory/forget",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "memory_id": memory_id.clone()
                     },
                 })
@@ -8635,7 +8635,7 @@ shell = true
             store
                 .recall(AgentMemoryRecallRequest {
                     identity: memory_identity.clone(),
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     query_text: None,
                     query_terms: Vec::new(),
                     selection: AgentMemorySelection::Always,
@@ -8654,7 +8654,7 @@ shell = true
                     "method": "mobkit/agent_memory/recall",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "selection": "always"
                     },
                 })
@@ -8848,9 +8848,9 @@ shell = true
                     "method": "mobkit/agent_memory/remember",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
-                        "title": "School pickup",
-                        "body": "Pickup is before calendar planning.",
+                        "realm": "team",
+                        "title": "Weekly standup",
+                        "body": "Standup is before calendar planning.",
                     },
                 })
                 .to_string(),
@@ -8878,11 +8878,11 @@ shell = true
                     "method": "mobkit/agent_memory/update",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "memory_id": memory_id.clone(),
-                        "title": "School pickup",
-                        "body": "Pickup moved to after calendar planning.",
-                        "tags": ["family"]
+                        "title": "Weekly standup",
+                        "body": "Standup moved to after calendar planning.",
+                        "tags": ["team"]
                     },
                 })
                 .to_string(),
@@ -8910,7 +8910,7 @@ shell = true
                     "method": "mobkit/agent_memory/recall",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "selection": "always"
                     },
                 })
@@ -8942,7 +8942,7 @@ shell = true
                     "method": "mobkit/agent_memory/manifest",
                     "params": {
                         "identity": "identity:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "tier": "working_set",
                         "k": 4
                     },

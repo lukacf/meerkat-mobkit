@@ -647,39 +647,39 @@ async fn a_fanned_out_correlation_gets_a_ticket_per_identity() {
     let bridge = TicketBridge::new(true, session.clone());
     let runtime = make_runtime(Some(bridge.clone()));
     let luka = register_bound(&runtime, "luka", &session).await;
-    let louise = register_bound(&runtime, "louise", &session).await;
+    let erin = register_bound(&runtime, "erin", &session).await;
 
     let correlation = "telegram:primary/i:769";
     let to_luka = runtime
         .dispatch_with_turn_ticket(&luka, None, &correlated("hi", "luka-769", correlation))
         .await
         .expect("dispatch to luka");
-    let to_louise = runtime
-        .dispatch_with_turn_ticket(&louise, None, &correlated("hi", "louise-769", correlation))
+    let to_erin = runtime
+        .dispatch_with_turn_ticket(&erin, None, &correlated("hi", "erin-769", correlation))
         .await
-        .expect("dispatch to louise");
-    let (luka_ticket, louise_ticket) = (tracked(&to_luka.turn), tracked(&to_louise.turn));
-    assert_ne!(luka_ticket, louise_ticket);
+        .expect("dispatch to erin");
+    let (luka_ticket, erin_ticket) = (tracked(&to_luka.turn), tracked(&to_erin.turn));
+    assert_ne!(luka_ticket, erin_ticket);
     // Both admissions carry the one (canonicalized) correlation as their
     // interaction id, as meerkat requires; the tickets are not derived from it.
     let carried = bridge.tracked_admissions();
     assert_eq!(carried[0].interaction_id, carried[1].interaction_id);
     assert_eq!(
-        runtime.turn_outcome(&louise, louise_ticket),
+        runtime.turn_outcome(&erin, erin_ticket),
         TurnOutcome::Pending
     );
 
-    bridge.finish(1, Ok("louise's reply"));
+    bridge.finish(1, Ok("erin's reply"));
     assert_eq!(
         runtime
-            .wait_for_turn(&louise, louise_ticket, Duration::from_secs(5))
+            .wait_for_turn(&erin, erin_ticket, Duration::from_secs(5))
             .await,
-        completed("louise's reply")
+        completed("erin's reply")
     );
     assert_eq!(
         runtime.turn_outcome(&luka, luka_ticket),
         TurnOutcome::Pending,
-        "louise's completion must never settle luka's ticket"
+        "erin's completion must never settle luka's ticket"
     );
     bridge.finish(0, Ok("luka's reply"));
     assert_eq!(

@@ -90,7 +90,7 @@ fn identity(value: &str) -> AgentIdentity {
 #[tokio::test]
 async fn a_publication_swaps_the_tool_list_and_the_serving_scope_together() {
     let registry = CustomizerToolRegistry::new();
-    let id = identity("domain:school");
+    let id = identity("domain:analysis");
     let first = Scope::new("customize-1", vec!["lookup", "notify"]);
     let entry = registry.publish(&id, Some(first.clone()));
     assert_eq!(names(entry.as_ref()), ["lookup", "notify"]);
@@ -162,7 +162,7 @@ fn the_registry_is_keyed_by_roster_member_id_and_ensure_is_idempotent() {
 #[tokio::test]
 async fn a_rebuild_of_a_registered_member_reattaches_its_dispatcher() {
     let registry = CustomizerToolRegistry::new();
-    let id = identity("domain:school");
+    let id = identity("domain:analysis");
     let member_id = crate::member_comms_id::mob_member_id(id.as_str());
     // Registered before the mob is lifted, with nothing published yet: the
     // restart restore attaches the empty dispatcher...
@@ -186,10 +186,10 @@ async fn a_rebuild_of_a_registered_member_reattaches_its_dispatcher() {
 #[test]
 fn unregistered_members_are_left_untouched() {
     let registry = CustomizerToolRegistry::new();
-    registry.ensure(&identity("domain:school"));
+    registry.ensure(&identity("domain:analysis"));
     let customizer = CustomizerToolsSpawnCustomizer::new(registry);
     // Helpers, forks and flow-provisioned members spawn under their own ids.
-    for member in ["helper-1", "fork-of-school-1", "flow-target-1"] {
+    for member in ["helper-1", "fork-of-analysis-1", "flow-target-1"] {
         let mut spec = SpawnMemberSpec::new("worker", member);
         customizer.apply(&mut spec);
         assert!(spec.external_tools.is_none());
@@ -199,7 +199,7 @@ fn unregistered_members_are_left_untouched() {
 #[test]
 fn mobkits_own_attachment_is_not_wrapped_twice_and_a_foreign_overlay_is_composed() {
     let registry = CustomizerToolRegistry::new();
-    let id = identity("domain:school");
+    let id = identity("domain:analysis");
     let member_id = crate::member_comms_id::mob_member_id(id.as_str());
     let entry = registry.publish(&id, Some(Scope::new("customize-1", vec!["lookup"])));
     let customizer = CustomizerToolsSpawnCustomizer::new(registry);
@@ -228,7 +228,7 @@ fn a_restored_identity_member_is_registered_from_its_identity_label() {
     // building it, before any roster callback: the restored spec carries the
     // runtime-authoritative `agent_identity` label MobKit set at spawn.
     let registry = CustomizerToolRegistry::new();
-    let id = identity("domain:school");
+    let id = identity("domain:analysis");
     let member_id = crate::member_comms_id::mob_member_id(id.as_str());
     let customizer = CustomizerToolsSpawnCustomizer::new(registry.clone());
     let mut restored = SpawnMemberSpec::new("worker", member_id.clone());

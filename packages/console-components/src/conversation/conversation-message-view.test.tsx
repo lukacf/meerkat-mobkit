@@ -106,7 +106,7 @@ describe("ConversationMessageView", () => {
       runtimeEvent: {
         eventType: "peer_content_ingested",
         kind: "message",
-        peer: { id: "978419a8", displayName: "homecore/identity/mk--identity_cparent-1" },
+        peer: { id: "978419a8", displayName: "example/identity/mk--identity_cparent-1" },
         senderTaint: "tainted",
         payload: { kind: "message", sender_taint: "tainted" },
       },
@@ -114,7 +114,7 @@ describe("ConversationMessageView", () => {
 
     const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
     const line = container.querySelector(".cc-message__event-line");
-    expect(line?.textContent).toContain("Received a message from identity:parent-1 (homecore mob).");
+    expect(line?.textContent).toContain("Received a message from identity:parent-1 (example mob).");
     expect(screen.getByText("untrusted source").getAttribute("title")).toContain("tainted");
     expect(line?.textContent).not.toContain("sender_taint");
     expect(container.querySelector(".cc-message__event-details pre")?.textContent).toContain("sender_taint");
@@ -127,13 +127,13 @@ describe("ConversationMessageView", () => {
       variant: "plain",
       identity: { id: "user", label: "You", role: "user" },
       text: "Operator gate probe. Reply with exactly the token.",
-      origin: { sendOrigin: "homecore-gate" },
+      origin: { sendOrigin: "example-gate" },
     };
 
     const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
     const header = container.querySelector(".cc-message__source");
     expect(header?.textContent).toContain("User message");
-    expect(header?.textContent).toContain("via homecore-gate");
+    expect(header?.textContent).toContain("via example-gate");
   });
 
   test("renders typed connection history as a compact immutable peer snapshot", () => {

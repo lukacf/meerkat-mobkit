@@ -357,7 +357,7 @@ comms = true
         realtime: Arc<meerkat::test_fixtures::realtime::ScriptedRealtimeSessionFactory>,
     }
 
-    /// The OB3 shape: a library embedder builds through the builder with a
+    /// The production shape: a library embedder builds through the builder with a
     /// caller-owned SQLite session store, registers console voice and the
     /// external live channel, and serves the router on its own listener.
     async fn build_embedder_runtime(id: &str, with_live: bool) -> Built {

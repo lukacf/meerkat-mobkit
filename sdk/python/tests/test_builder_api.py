@@ -198,7 +198,7 @@ class TestForkSource:
     def _fork_source_wire(self) -> dict:
         return {
             "source_member": {
-                "mob_id": "home",
+                "mob_id": "example",
                 "role": "domain",
                 "member": "mk--domain_ccalendar",
                 "future_member_field": True,
@@ -237,7 +237,7 @@ class TestForkSource:
         opts = seen["opts"]
         assert opts.fork_source == ForkBuildSource(
             source_member=MobMemberBinding(
-                mob_id="home", role="domain", member="mk--domain_ccalendar"
+                mob_id="example", role="domain", member="mk--domain_ccalendar"
             ),
             source_session_id=self.SOURCE_SESSION_ID,
         )
@@ -313,7 +313,7 @@ class TestForkSource:
                     "options": {
                         "scope_id": "s1",
                         "fork_source": {
-                            "source_member": {"mob_id": "home", "role": "domain", "member": "m"}
+                            "source_member": {"mob_id": "example", "role": "domain", "member": "m"}
                         },
                     }
                 },

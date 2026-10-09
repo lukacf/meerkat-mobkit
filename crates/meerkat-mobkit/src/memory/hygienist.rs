@@ -2430,7 +2430,7 @@ mod tests {
             seam,
             Arc::new(ScriptedSpans(spans)),
             gate,
-            "family",
+            "team",
         ))
     }
 

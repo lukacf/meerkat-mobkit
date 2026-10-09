@@ -562,7 +562,7 @@ impl UnifiedRuntime {
             // (auto_wire_orchestrator / role_wiring): upstream applies those
             // rules only at spawn time and only from the non-orchestrator
             // side, so bring-up order and restarts leave declared crews
-            // unwired (HomeCore, 2026-07-09). With the default installed,
+            // unwired (a downstream app, 2026-07-09). With the default installed,
             // `reconcile_edges` converges the roster onto the declaration;
             // embedder-supplied policies (builder) override it.
             edge_discovery: definition_edge_discovery,
@@ -1278,7 +1278,7 @@ impl UnifiedRuntime {
                     // measuring a slow flow trigger therefore sees a
                     // materialization burst in their telemetry with nothing
                     // linking the two, which is how a 358-second trigger read
-                    // as a hang rather than as work (OB3, 2026-08-31: 144
+                    // as a hang rather than as work (a 2026-08-31 production incident: 144
                     // spawns, 17 -> 161, the entire identity count).
                     //
                     // The scope itself is not fixable here: `FlowTargetProvisioner`
@@ -3603,7 +3603,7 @@ fn actor_terminated_detail(result: &Result<MobState, MobError>) -> Option<String
 /// not whether the mob is healthy. The one exception is a channel-closed
 /// error ([`actor_terminated_detail`]): that is not the loop answering, it is
 /// the loop being gone. It is emitted as [`ErrorEvent::ActorLoopTerminated`],
-/// never as a recovery (OB3 2026-09-04 read exactly such a resolution as
+/// never as a recovery (a 2026-09-04 production incident read exactly such a resolution as
 /// `actor_loop_recovered` while every later send failed instantly), the
 /// shared [`ActorLoopHealth`] is marked terminated so deliveries fail fast,
 /// and the probe ends: there is no loop left to watch and nothing in this
@@ -4660,7 +4660,7 @@ model = "gpt-5.5"
 
     /// Additivity: an `ActorLoopStalled` payload written before the
     /// correlation fields existed must still load, and a stall carrying them
-    /// must round-trip. OB3 pages on this enum today.
+    /// must round-trip. The operator deployment pages on this enum today.
     #[test]
     fn actor_loop_stall_wire_shape_stays_additive() {
         let legacy_json = serde_json::json!({
@@ -4818,7 +4818,7 @@ model = "gpt-5.5"
         probe_task.abort();
     }
 
-    /// The wedge that OB3 misread as a recovery: the parked probe resolves
+    /// The wedge that the operator deployment misread as a recovery: the parked probe resolves
     /// because the actor's command channel CLOSED, not because the loop
     /// drained. That must page `ActorLoopTerminated`, never
     /// `ActorLoopRecovered`, must mark the shared health terminated so every
@@ -6548,7 +6548,7 @@ model = "gpt-5.5"
         )
     }
 
-    /// The HomeCore crash loop: an explicit resume that stalls past Meerkat's
+    /// The downstream app's crash loop: an explicit resume that stalls past Meerkat's
     /// patience window is re-joined in-process, and bootstrap completes on
     /// the same runtime instead of shutting down.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

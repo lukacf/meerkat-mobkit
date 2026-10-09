@@ -530,7 +530,7 @@ impl UnifiedRuntimeBuilder {
 
     /// Enable the FULL agent-memory stack (bundled SQLite store + the taint
     /// firewall + the enabled judgment-plane engines) — the same stack the
-    /// rpc gateway assembles, reachable from the Rust builder (the OB3
+    /// rpc gateway assembles, reachable from the Rust builder (the operator
     /// deployment shape). Requires `persistent_state()`; the store lives
     /// under the layout's agent-memory root (canonical
     /// `<persistent_state>/agent-memory`, with a legacy
@@ -710,7 +710,7 @@ impl UnifiedRuntimeBuilder {
     /// Requires an identity-first configuration (`roster_provider()`): the
     /// provider's continuity store is the session authority. The realm root
     /// comes from `persistent_state()` or `scratch_dir()` (ephemeral local
-    /// disk — the ob3 shape).
+    /// disk — the operator shape).
     ///
     /// [`MobKitStorageProvider`]: crate::storage_provider::MobKitStorageProvider
     pub fn storage_provider(
@@ -1662,7 +1662,7 @@ impl UnifiedRuntimeBuilder {
             drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
             discovery: self.discovery,
             // A custom embedder policy overrides the definition-derived
-            // default `bootstrap_with_options` installed (HomeCore,
+            // default `bootstrap_with_options` installed (a downstream app,
             // 2026-07-09); with none supplied the default is preserved.
             edge_discovery: self
                 .edge_discovery

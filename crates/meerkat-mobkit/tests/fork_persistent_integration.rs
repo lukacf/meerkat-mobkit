@@ -565,7 +565,7 @@ fn with_image_blob_id(
     messages
 }
 
-/// HomeCore regression: MobKit before 0.8.41 stored meerkat images under its
+/// Downstream-app regression: MobKit before 0.8.41 stored meerkat images under its
 /// raw-bytes address, `sha256(media_type || 0x00 || decoded_bytes)`, and those
 /// references stay in committed transcripts. meerkat's durable-fork preflight
 /// recomputes its own content address and refused every fork of such a

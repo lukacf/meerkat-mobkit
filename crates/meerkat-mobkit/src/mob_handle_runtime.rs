@@ -257,7 +257,7 @@ impl ReplaySanitizingLlmClient {
 /// [`LlmClient::provider`] claim turns that composition into a typed factory
 /// rejection ("raw LLM client override claims provider 'openai' but canonical
 /// model ... belongs to 'anthropic'") the moment any member's canonical
-/// provider differs from the claim — the OB3 pair-coherence fix surfaced
+/// provider differs from the claim — the production pair-coherence fix surfaced
 /// exactly this on the resume path. `Provider::Other` is meerkat's typed
 /// "serves any provider" claim; the member's canonical (model, provider)
 /// identity keeps coming from the build config and catalog, never from this
@@ -358,7 +358,7 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
     // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
     // omits it compiles cleanly and silently downgrades every wrapped client.
     // meerkat 0.8.31 rejects resume for a client reporting LegacySplit when the
-    // inner adapter is Unified: ob3 measured 72 identities marked Broken at boot
+    // inner adapter is Unified: production measured 72 identities marked Broken at boot
     // on the candidate and 0 across three 0.8.30 runs. A decorator must report
     // what it wraps, never what it is.
     fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
@@ -2722,7 +2722,7 @@ fn is_legacy_shell_and_comms_allow_filter(filter: &meerkat_core::ToolFilter) -> 
 /// must no longer enable the broad builtin category and hide the resulting
 /// surface behind a global allow-list. Existing sessions can still carry that
 /// old filter durably. Match only the byte-era fingerprint established from
-/// the HomeCore production specimen:
+/// the downstream app's production specimen:
 ///
 /// - active filter set-equals the four shell plus four comms tools;
 /// - staged filter set-equals the same set, or is `All` because the field was
@@ -2963,7 +2963,7 @@ pub fn epoch_tracking_runtime_store_with_durable_projection(
 ///
 /// meerkat-mob 0.8.5's identity reconcile loop re-reads and checkpoint-
 /// verifies each durable member's full session document once per scan
-/// interval even when nothing changed — on the HomeCore fleet that is one
+/// interval even when nothing changed — on the downstream app's fleet that is one
 /// 82 MB deserialize + canonical sha256 per member per second (~0.3 CPU
 /// cores per idle member). This absorber serves the previously decoded
 /// document (a cheap copy-on-write clone) while the runtime-store write
@@ -3663,7 +3663,7 @@ impl SessionStoreBackedRuntimeStore {
         let Some(mut session) = session else {
             return Ok(false);
         };
-        // Cold-mint graph hydration (task #61, HomeCore window-4 fleet
+        // Cold-mint graph hydration (task #61, a downstream app window-4 fleet
         // blocker): the durable load materializes SLIM - the compact
         // rewrite graph stays out-of-line - but a rewritten durable head
         // demands graph authority from every boundary projection composed
@@ -3782,7 +3782,7 @@ impl SessionStoreBackedRuntimeStore {
     /// terminal blocks the RESEED direction only (terminal lifecycle facts
     /// outrank content recovery; re-seeding runtime authority is where
     /// resurrection risk lives) - the opposite direction, durable BEHIND
-    /// committed (the parent-1 tear), reconciles even under a terminal
+    /// committed (the member tear), reconciles even under a terminal
     /// because repairing the durable projection of already-committed
     /// authority mints no runtime life.
     async fn freshen_stale_runtime_authority_from_durable(
@@ -3877,7 +3877,7 @@ impl SessionStoreBackedRuntimeStore {
         // durable Session reports rewrite generation 0 whatever its head row
         // adopted, and a probe reading the generation off the Session orders
         // the row behind on every boot after the first projection landed
-        // (HomeCore gen 119: 16 identical re-walks per launch). The head row
+        // (downstream app gen 119: 16 identical re-walks per launch). The head row
         // is the generation authority - SessionHead::rewrite_count advances
         // 1:1 with each adopted commit - so read it there, and use the
         // session's own history only when the row carries one.
@@ -4003,7 +4003,7 @@ impl SessionStoreBackedRuntimeStore {
         }
         if durable_order < committed_order {
             let reconciliation_started = std::time::Instant::now();
-            // Durable BEHIND committed: the parent-1 tear shape. A projection
+            // Durable BEHIND committed: the member tear shape. A projection
             // that failed (or, pre-fix, could not install a rewrite
             // generation) left the durable row behind authority the runtime
             // store already committed - a PLAIN RESUME must converge it, not
@@ -4181,7 +4181,7 @@ impl SessionStoreBackedRuntimeStore {
     /// appends rows. The provers then walk the rewrite chain, try both
     /// admissions (durable-behind replays the graph per commit), find
     /// nothing to repair, and the trailing projection saves the appends -
-    /// all under the runtime's driver mutex, on every turn (HomeCore, ~3.6 s
+    /// all under the runtime's driver mutex, on every turn (a downstream app, ~3.6 s
     /// per pass across 16 identities).
     ///
     /// The proof has two typed parts, no content heuristic:
@@ -4229,7 +4229,7 @@ impl SessionStoreBackedRuntimeStore {
         Ok(successor_prefix == durable_revision)
     }
 
-    /// INVERSE-APPEND ADMISSION (task #56 corpus, HomeCore parent-1 field
+    /// INVERSE-APPEND ADMISSION (task #56 corpus, a production member field
     /// shape): the chain walk accepts a durable predecessor that the commit
     /// parent EXTENDS (appends before compaction), but the wedged-retire
     /// tear leaves the INVERSE - a durable row extending PAST the sealed
@@ -4290,8 +4290,8 @@ impl SessionStoreBackedRuntimeStore {
         Ok(None)
     }
 
-    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, HomeCore
-    /// parent-1 true field shape; admission authored by HomeCore and landed
+    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, a production
+    /// member's true field shape; admission authored downstream and landed
     /// here with the lane's conventions): the tear is a FAILED projection,
     /// so the durable row never received the wedged turn's final appends -
     /// durable is a strict digest-PREFIX of the sealed commit parent (the
@@ -4390,7 +4390,7 @@ impl SessionStoreBackedRuntimeStore {
         // Already-converged rows match no admission BY DESIGN (there is
         // nothing to repair): repair passes after a heal land here on every
         // reconciliation, and a WARN there reads as a failure that is not
-        // one (HomeCore field observation on v0.8.11). Content equality with
+        // one (downstream app field observation on v0.8.11). Content equality with
         // the committed authority is the converged proof; quiet debug.
         if let (Ok(durable_revision), Ok(successor_revision)) = (
             durable_predecessor.transcript_revision(),
@@ -4576,7 +4576,7 @@ impl SessionStoreBackedRuntimeStore {
             return Ok(());
         };
         let successor = snapshot.session();
-        // Parent-1 tear (task #56): `save_authoritative_projection` alone
+        // Member tear (task #56): `save_authoritative_projection` alone
         // cannot INSTALL a new rewrite generation on the durable row - a
         // retire committing a rewrite-advanced WholeBlob over an older
         // durable head left graph-ahead-of-head state that meerkat's
@@ -4795,7 +4795,7 @@ impl SessionStoreBackedRuntimeStore {
                 // the injected store's save guard stays the only authority
                 // (commitless projections, adopted seeds): the INVERSE
                 // append shape, where the durable row extends PAST the
-                // sealed commit parent (HomeCore parent-1 - the wedged
+                // sealed commit parent (a production member - the wedged
                 // turn's final appends projected durably while the retire
                 // compacted from the quiesced pre-append state). The proof
                 // is exact content: the durable row's own first
@@ -8800,7 +8800,7 @@ impl MobBootstrapSpec {
     /// host, so agent-authored schedules could neither rewrite to mob-member
     /// targets at authoring nor deliver identity/mob targets at fire time
     /// ("scheduled identity targets are not supported by this session host",
-    /// the HomeCore 0.7.26 last-link failure).
+    /// the downstream app's 0.7.26 last-link failure).
     ///
     /// Call AFTER any session-service wrapping (`with_session_runtime_adapter`)
     /// so the installed tools hold the final wrapped service, and AFTER
@@ -10204,7 +10204,7 @@ impl MobBootstrapSpec {
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-        // Injected schedule store (M4 builder seam): the ob3 shape — an
+        // Injected schedule store (M4 builder seam): the operator shape — an
         // otherwise-ephemeral local runtime whose durable schedule rows live
         // in a caller-supplied remote store. Library mode wires no firing
         // host (see `UnifiedRuntimeBuilder::schedule_store`).
@@ -10548,7 +10548,7 @@ pub type RealMobRuntime = MobRuntime;
 /// original profile on cold restart.
 ///
 /// **Model and provider are a COHERENT PAIR, never independently masked**
-/// (OB3 cutover incident, 2026-07-29): masking the model alone lets the
+/// (production cutover incident, 2026-07-29): masking the model alone lets the
 /// durable provider survive under a profile model it was never registered
 /// for, and the resume is REJECTED typed ("model 'claude-fable-5' is
 /// registered for provider 'anthropic', not 'openai'"). When the profile
@@ -13708,7 +13708,7 @@ mod tests {
                 Ok(meerkat_core::ToolDispatchOutcome::sync_result(
                     meerkat_core::types::ToolResult::new(
                         call.id.to_string(),
-                        serde_json::json!({"mob_id": "ob3", "agent_identity": member}).to_string(),
+                        serde_json::json!({"mob_id": "ops", "agent_identity": member}).to_string(),
                         false,
                     ),
                 ))
@@ -13732,7 +13732,7 @@ mod tests {
             ] {
                 let args = serde_json::value::RawValue::from_string(
                     serde_json::json!({
-                        "mob_id": "ob3",
+                        "mob_id": "ops",
                         "member_id": member,
                         "task": "inspect",
                         "idle_retire_secs": idle_retire_secs,
@@ -13753,12 +13753,12 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{tool} dispatch: {error}"));
             }
             assert_eq!(
-                overrides.get("ob3", "null-child").await,
+                overrides.get("ops", "null-child").await,
                 unset,
                 "{tool}: null must register the same policy as omitting"
             );
             assert_eq!(
-                overrides.get("ob3", "counted-child").await,
+                overrides.get("ops", "counted-child").await,
                 Some(DelegateIdleRetireOverride::Seconds(90)),
                 "{tool}: an integer still registers its override"
             );
@@ -13800,7 +13800,7 @@ mod tests {
     #[test]
     fn mob_spawn_idle_retire_targets_use_args_when_result_omits_mob_id() {
         let args = serde_json::json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "profile": "review-worker",
             "member_id": "review-worker-vibe-forward",
         });
@@ -13809,7 +13809,7 @@ mod tests {
         assert_eq!(
             fallback_targets,
             vec![IdleRetireTarget {
-                mob_id: "ob3".to_string(),
+                mob_id: "ops".to_string(),
                 member_id: "review-worker-vibe-forward".to_string(),
             }]
         );
@@ -13825,7 +13825,7 @@ mod tests {
     #[test]
     fn mob_spawn_idle_retire_targets_support_canonical_specs_shape() {
         let args = serde_json::json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "specs": [
                 {"profile": "person-worker", "agent_identity": "person-worker-a"},
                 {"profile": "person-worker", "member_id": "person-worker-b", "mob_id": "other"}
@@ -13837,7 +13837,7 @@ mod tests {
             fallback_targets,
             vec![
                 IdleRetireTarget {
-                    mob_id: "ob3".to_string(),
+                    mob_id: "ops".to_string(),
                     member_id: "person-worker-a".to_string(),
                 },
                 IdleRetireTarget {
@@ -13882,7 +13882,7 @@ mod tests {
         let overrides = ImplicitDelegateRetirementOverrides::default();
         let dispatcher = wrapper_with_overrides(overrides.clone());
         let fallback_targets = idle_retire_targets_from_spawn_args(&serde_json::json!({
-            "mob_id": "ob3",
+            "mob_id": "ops",
             "member_id": "review-worker-vibe-forward",
         }));
         let outcome =
@@ -13902,7 +13902,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            overrides.get("ob3", "review-worker-vibe-forward").await,
+            overrides.get("ops", "review-worker-vibe-forward").await,
             Some(DelegateIdleRetireOverride::Seconds(900))
         );
     }
@@ -14033,7 +14033,7 @@ mod tests {
         let overrides = ImplicitDelegateRetirementOverrides::default();
         let dispatcher = wrapper_with_overrides(overrides.clone());
         let fork_result = concat!(
-            r#"{"mob_id":"ob3","source_member_id":"lead","agent_identity":"lead-fork-1","#,
+            r#"{"mob_id":"ops","source_member_id":"lead","agent_identity":"lead-fork-1","#,
             r#""member_ref":"opaque","fork_session_id":"s-child","turn_session_id":"s-child","#,
             r#""cache_inheritance":{"status":"unavailable","message_count":4,"#,
             r#""reason":"target_identity_unresolved"},"bounded_result":{},"usage":{},"#,
@@ -14054,7 +14054,7 @@ mod tests {
             )
             .await;
         assert_eq!(
-            overrides.get("ob3", "lead-fork-1").await,
+            overrides.get("ops", "lead-fork-1").await,
             Some(DelegateIdleRetireOverride::RuntimeDefault)
         );
 
@@ -14067,13 +14067,13 @@ mod tests {
             )
             .await;
         assert_eq!(
-            overrides.get("ob3", "lead-fork-1").await,
+            overrides.get("ops", "lead-fork-1").await,
             Some(DelegateIdleRetireOverride::Disabled)
         );
         let failed =
             meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
                 "fork-2".to_string(),
-                r#"{"mob_id":"ob3","agent_identity":"lead-fork-2"}"#.to_string(),
+                r#"{"mob_id":"ops","agent_identity":"lead-fork-2"}"#.to_string(),
                 true,
             ));
         dispatcher
@@ -14083,7 +14083,7 @@ mod tests {
                 &[],
             )
             .await;
-        assert_eq!(overrides.get("ob3", "lead-fork-2").await, None);
+        assert_eq!(overrides.get("ops", "lead-fork-2").await, None);
     }
 
     #[test]
@@ -14306,7 +14306,7 @@ shell = true
         serde_json::from_value(value).expect("deserialize resumed session")
     }
 
-    fn homecore_security_visibility_fixture(
+    fn downstream_security_visibility_fixture(
         snapshot: &str,
     ) -> (
         meerkat_core::types::SessionId,
@@ -14315,9 +14315,8 @@ shell = true
     ) {
         use base64::Engine as _;
 
-        const BUNDLE: &[u8] = include_bytes!(
-            "../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
-        );
+        const BUNDLE: &[u8] =
+            include_bytes!("../tests/fixtures/security_idempotency/security-head-evolution.json");
         let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("fixture bundle");
         let table = &bundle[snapshot]["continuity_session_heads"];
         let columns = table["columns"].as_array().expect("fixture columns");
@@ -14404,7 +14403,7 @@ shell = true
     #[tokio::test]
     async fn native_shell_resolved_catalog_preserves_mixed_external_surfaces() {
         let external_names = [
-            "mcp__homecore__probe",
+            "mcp__example__probe",
             "list_members",
             "memory_search",
             "meerkat_schedule_list",
@@ -14595,7 +14594,7 @@ shell = true
     #[tokio::test]
     async fn pre_build_heal_reads_persisted_visibility_behind_id_only_resume_stub() {
         let (session_id, raw_visibility, state) =
-            homecore_security_visibility_fixture("post_boot1_fresh");
+            downstream_security_visibility_fixture("post_boot1_fresh");
         let active_order = raw_visibility["active_filter"]["Allow"]
             .as_array()
             .expect("active Allow array");
@@ -15006,7 +15005,7 @@ realm_profile = "worker-v2"
     /// tests rather than one, in the two files that hold the two wrappers.
     ///
     /// Covers wrapper CONSTRUCTION only. It does NOT cover the durable-resume
-    /// composition path, where ob3 measured the actual 72-identity failure: a
+    /// composition path, where production measured the actual 72-identity failure: a
     /// wrapper can forward correctly here and the resume path can still install
     /// something that does not. That is verified downstream, not by this test.
     #[test]
@@ -17802,7 +17801,7 @@ comms = true
         );
     }
 
-    /// Cold-activation authority mint (OB3 ephemeral runtime store, ruled
+    /// Cold-activation authority mint (production ephemeral runtime store, ruled
     /// in-design 2026-07-31): racers over the authority reads on a COLD
     /// store collapse to one committed seed under the single-flight fence
     /// and both observe the same store-issued authority; the seed is the
@@ -18087,7 +18086,7 @@ comms = true
         );
     }
 
-    /// Task #56 (parent-1 launch blocker): a committed WholeBlob boundary
+    /// Task #56 (launch blocker): a committed WholeBlob boundary
     /// carrying a NEW rewrite generation over an older durable row must
     /// project through the store's typed rewrite door, installing the
     /// missing commit on the durable row - not tear it into
@@ -18224,7 +18223,7 @@ comms = true
         );
     }
 
-    /// Task #56, freshness half (parent-1's ACTUAL recovery path): the tear
+    /// Task #56, freshness half (the member's ACTUAL recovery path): the tear
     /// already exists on disk - durable gen0, committed gen1 - and the next
     /// thing that happens is a plain RESUME, not a new committing verb. The
     /// freshness probe must distinguish durable-behind from fresh, run the
@@ -18516,7 +18515,7 @@ comms = true
         );
     }
 
-    /// Task #56 corpus finding (HomeCore parent-1, real bytes): the member
+    /// Task #56 corpus finding (production member, real bytes): the member
     /// is PARKED and its session explicitly UNREGISTERED from
     /// identity-runtime state while the durable row sits torn behind
     /// committed runtime authority. The tear reconciliation is a
@@ -18726,7 +18725,7 @@ comms = true
         );
     }
 
-    /// Task #56 iteration-3 field shape (HomeCore parent-1 trace): the
+    /// Task #56 iteration-3 field shape (production member trace): the
     /// wedged turn's final appends were projected DURABLY while the retire
     /// committed its compaction from the quiesced pre-append state, so the
     /// durable row EXTENDS PAST the sealed commit parent (249 vs a smaller
@@ -18946,7 +18945,7 @@ comms = true
         );
     }
 
-    /// Task #56 iteration-5 TRUE field shape (HomeCore parent-1, proof
+    /// Task #56 iteration-5 TRUE field shape (production member, proof
     /// verdict "messages_before=250 durable_messages=249 matched"): the
     /// tear is a FAILED projection - the wedged turn's final append never
     /// reached the durable row, so durable is a strict digest-PREFIX of the
@@ -19398,7 +19397,7 @@ comms = true
     /// detect the debt (persisted-encoding comparison) and complete the
     /// projection on a plain freshness pass instead of marking fresh over
     /// it.
-    /// HomeCore gen 119, in process: a head-canonical durable row whose head
+    /// Downstream app gen 119, in process: a head-canonical durable row whose head
     /// adopted the committed rewrite generation must NOT order behind on the
     /// next boot. Leg A is genuinely behind (durable is the pre-rewrite
     /// prefix) and walks once; leg B is a fresh store over the same bytes and
@@ -19960,7 +19959,7 @@ comms = true
         ))
     }
 
-    /// HomeCore cold boot (2026-09): every resumed member re-commits its
+    /// Downstream app cold boot (2026-09): every resumed member re-commits its
     /// unchanged transcript at least twice (the actor's generation-zero
     /// boundary and the compaction-outbox checkpoint), and each projection
     /// materialized and re-verified the whole durable transcript, then
@@ -20576,7 +20575,7 @@ comms = true
         );
     }
 
-    /// HomeCore field report (MobKit 0.8.42, ~11.5k WARNs, ~3.6 s per pass
+    /// Downstream app field report (MobKit 0.8.42, ~11.5k WARNs, ~3.6 s per pass
     /// across 16 identities): every boundary that appends rows after a
     /// compaction missed the at-head check, ran the rewrite-chain walk and
     /// both provers inside the boundary commit (under the runtime's driver
@@ -23098,7 +23097,7 @@ comms = true
         );
     }
 
-    /// The OB3 incident shape must be impossible: an explicit
+    /// The production incident shape must be impossible: an explicit
     /// `resume_overrides = ["model", "provider"]` with NO provider key used
     /// to apply the profile model while the durable provider survived
     /// (profile provider was None → nothing to apply), minting invalid
@@ -23252,7 +23251,7 @@ comms = true
     }
 
     /// An explicit `resume_overrides = ["provider"]` with no provider key is
-    /// the mirror of the OB3 shape: a provider-only mask over a None profile
+    /// the mirror of the production shape: a provider-only mask over a None profile
     /// provider applies NOTHING (resume falls back to durable), while the
     /// declared model stays unmasked. Auto-mark completes it to the full
     /// pair — provider derived from the catalog, model added to the mask —
@@ -23869,7 +23868,7 @@ image_generation = true
                 console_spawn_sink,
                 identity_runtime: Arc::new(std::sync::RwLock::new(None)),
                 protected_mob_id: "test-mob".to_string(),
-                spawner_comms_name: Some("ob3/orchestrator/ops-lead".to_string()),
+                spawner_comms_name: Some("ops/orchestrator/ops-lead".to_string()),
             }
         }
 
@@ -23917,7 +23916,7 @@ image_generation = true
                 &dispatcher,
                 "mob_spawn_member",
                 serde_json::json!({
-                    "mob_id": "ob3",
+                    "mob_id": "ops",
                     "profile": "person-worker",
                     "member_id": "worker-3",
                     "initial_message": "Find the person",
@@ -23931,7 +23930,7 @@ image_generation = true
             assert_eq!(kickoffs.len(), 1, "spawn must project one kickoff");
             let kickoff = &kickoffs[0];
             assert_eq!(kickoff.identity, "worker-3");
-            assert!(kickoff.event_id.starts_with("spawn-kickoff:ob3:worker-3:"));
+            assert!(kickoff.event_id.starts_with("spawn-kickoff:ops:worker-3:"));
             assert_eq!(kickoff.data["content"][0]["text"], "Find the person");
             assert_eq!(kickoff.data["via_tool"], "mob_spawn_member");
             assert_eq!(kickoff.data["parent_identity"], "ops-lead");
@@ -23956,7 +23955,7 @@ image_generation = true
                 Some(&store),
             );
             let args = serde_json::json!({
-                "mob_id": "ob3",
+                "mob_id": "ops",
                 "profile": "person-worker",
                 "member_id": "worker-3",
                 "initial_message": "Find the person"
@@ -24012,7 +24011,7 @@ image_generation = true
                 &dispatcher,
                 "mob_spawn_member",
                 serde_json::json!({
-                    "mob_id": "ob3",
+                    "mob_id": "ops",
                     "profile": "person-worker",
                     "member_id": "worker-3",
                     "initial_message": "Find the person"
@@ -24043,7 +24042,7 @@ image_generation = true
                 &dispatcher,
                 "mob_spawn_member",
                 serde_json::json!({
-                    "mob_id": "ob3",
+                    "mob_id": "ops",
                     "profile": "person-worker",
                     "member_id": "worker-3",
                     "initial_message": "Find the person"
@@ -24062,7 +24061,7 @@ image_generation = true
     /// The convergence pass that keeps a deferred identity-first activation
     /// inside its bounded explicit resume (see
     /// `MobRuntime::prewarm_persisted_runtime_authority`). Session ids here are
-    /// the real ones from the 2026-08-26 HomeCore resume trace.
+    /// the real ones from a downstream app's 2026-08-26 resume trace.
     mod persisted_runtime_authority_prewarm {
         use std::sync::{Arc, Mutex};
 

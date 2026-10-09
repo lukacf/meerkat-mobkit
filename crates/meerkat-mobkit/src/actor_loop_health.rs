@@ -6,7 +6,7 @@
 //! (`ErrorEvent::ActorLoopStalled` / `ActorLoopRecovered`). The delivery path
 //! could not see it: a send issued while a stall was open queued behind the
 //! wedged command and waited the full admission budget (600 s by default)
-//! before failing with a scope-less timeout. Production 2026-09-04 (OB3): five
+//! before failing with a scope-less timeout. Production 2026-09-04 (operator deployment): five
 //! console sends, each abandoned after exactly 600 s, while the probe had
 //! already paged the stall.
 //!

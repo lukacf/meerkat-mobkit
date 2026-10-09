@@ -18,8 +18,8 @@ from meerkat_mobkit.builder import MobKit
 from meerkat_mobkit.identity_first_models import DurableAgentSpec, IdentityBootstrapMode
 
 _GATEWAY_BIN = os.environ.get("MOBKIT_GATEWAY_BIN", "").strip()
-_IDENTITY = "domain:school"
-_TOOL = "lookup_household"
+_IDENTITY = "domain:research"
+_TOOL = "lookup_workspace"
 
 _MOB_TOML = """\
 [mob]
@@ -49,8 +49,8 @@ class _ToolCustomizer:
         self.builds += 1
         draft.register_tool(
             _TOOL,
-            lambda args: {"household": "ok", "echo": args},
-            description="Look up the household record.",
+            lambda args: {"workspace": "ok", "echo": args},
+            description="Look up the workspace record.",
             input_schema={"type": "object", "properties": {}},
         )
 

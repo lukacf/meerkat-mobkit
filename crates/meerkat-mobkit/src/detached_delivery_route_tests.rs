@@ -77,7 +77,7 @@ fn assert_detached_route_on_runtime_machine(spec: &MobBootstrapSpec, composition
     );
 }
 
-/// `rpc_gateway --persistent` (HomeCore) and `mobkit_gateway` with console
+/// `rpc_gateway --persistent` (a downstream app) and `mobkit_gateway` with console
 /// voice: a concrete persistent session service, an explicit persistent
 /// machine wired with `with_session_runtime_adapter`, then
 /// `with_agent_mob_tools`, in that order.

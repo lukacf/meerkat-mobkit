@@ -39,12 +39,12 @@ def contracts_fixture():
 def test_openai_live_gateway_registration_matches_shared_fixture(contracts_fixture):
     config = OpenAiLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
+        realm="example",
         auth_binding=LiveAuthBindingRef(
-            realm="family", binding="openai-api-key", profile="luka"
+            realm="example", binding="openai-api-key", profile="luka"
         ),
         voice="marin",
-        session_instructions="You are Reachy's voice embodiment.",
+        session_instructions="You are a test voice agent.",
     )
     assert config.to_dict() == contracts_fixture["openai_live_gateway_config"]
     assert (
@@ -53,14 +53,14 @@ def test_openai_live_gateway_registration_matches_shared_fixture(contracts_fixtu
     )
     minimal = OpenAiLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
-        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        realm="example",
+        auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
         voice="marin",
     )
     assert minimal.to_dict() == {
         "principal": "user:luka",
-        "realm": "family",
-        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+        "realm": "example",
+        "auth_binding": {"realm": "example", "binding": "openai-api-key"},
         "voice": "marin",
     }
 
@@ -69,38 +69,38 @@ def test_openai_live_gateway_registration_rejects_drift():
     with pytest.raises(ValueError, match="realm must equal"):
         OpenAiLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
+            realm="example",
             auth_binding=LiveAuthBindingRef(realm="other", binding="openai-api-key"),
             voice="marin",
         ).to_dict()
     with pytest.raises(ValueError, match="voice"):
         OpenAiLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
-            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            realm="example",
+            auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
             voice=" ",
         ).to_dict()
     with pytest.raises(ValueError, match="session_instructions"):
         OpenAiLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
-            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            realm="example",
+            auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
             voice="marin",
             session_instructions=" ",
         ).to_dict()
     with pytest.raises(TypeError):
         OpenAiLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
-            auth_binding={"realm": "family", "binding": "openai-api-key"},
+            realm="example",
+            auth_binding={"realm": "example", "binding": "openai-api-key"},
             voice="marin",
         ).to_dict()
     for field in ["model", "provider", "factory_kind", "gate0_qualification"]:
         with pytest.raises(TypeError):
             OpenAiLiveGatewayConfig(
                 principal="user:luka",
-                realm="family",
-                auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+                realm="example",
+                auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
                 voice="marin",
                 **{field: "forbidden"},
             )
@@ -111,18 +111,18 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict(
 ):
     config = ExperimentalLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
+        realm="example",
         factory_kind="openai-gpt-live",
         factory_version="v1",
         gate0_qualification="gate0-v1",
         auth_binding=LiveAuthBindingRef(
-            realm="family", binding="chatgpt-oauth", profile="luka"
+            realm="example", binding="chatgpt-oauth", profile="luka"
         ),
         voice="marin",
         execution_profiles=(
             ExperimentalLiveExecutionProfileConfig(
-                profile_id="homecore.reachy.open-room.v1",
-                session_instructions="You are Reachy's voice embodiment.",
+                profile_id="example.device.open-room.v1",
+                session_instructions="You are a test voice agent.",
             ),
         ),
     )
@@ -130,7 +130,7 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict(
     with pytest.raises(ValueError, match="realm must equal"):
         ExperimentalLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
+            realm="example",
             factory_kind="openai-gpt-live",
             factory_version="v1",
             gate0_qualification="gate0-v1",
@@ -145,12 +145,12 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
     def config_with(*profiles):
         return ExperimentalLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
+            realm="example",
             factory_kind="openai-gpt-live",
             factory_version="v1",
             gate0_qualification="gate0-v1",
             auth_binding=LiveAuthBindingRef(
-                realm="family", binding="chatgpt-oauth"
+                realm="example", binding="chatgpt-oauth"
             ),
             voice="marin",
             execution_profiles=profiles,
@@ -161,7 +161,7 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
             profile_id=" ", session_instructions="voice"
         ),
         ExperimentalLiveExecutionProfileConfig(
-            profile_id="reachy", session_instructions=" "
+            profile_id="robot", session_instructions=" "
         ),
         *[
             ExperimentalLiveExecutionProfileConfig(
@@ -179,21 +179,21 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
             config_with(profile).to_dict()
 
     duplicate = ExperimentalLiveExecutionProfileConfig(
-        profile_id="reachy", session_instructions="voice"
+        profile_id="robot", session_instructions="voice"
     )
     with pytest.raises(ValueError, match="duplicate"):
         config_with(
             duplicate,
             ExperimentalLiveExecutionProfileConfig(
-                profile_id=" reachy ", session_instructions="other"
+                profile_id=" robot ", session_instructions="other"
             ),
         ).to_dict()
     with pytest.raises(TypeError, match="entries"):
-        config_with({"profile_id": "reachy"}).to_dict()
+        config_with({"profile_id": "robot"}).to_dict()
     for field in ["mode", "model", "provider", "tools", "responses", "capabilities"]:
         with pytest.raises(TypeError):
             ExperimentalLiveExecutionProfileConfig(
-                profile_id="reachy",
+                profile_id="robot",
                 session_instructions="voice",
                 **{field: "forbidden"},
             )
@@ -201,7 +201,7 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
 
 def test_execution_identity_matches_shared_profile_fixture(contracts_fixture):
     selected = LiveExecutionIdentityV1(
-        profile_id="homecore.reachy.open-room.v1",
+        profile_id="example.device.open-room.v1",
     )
     assert selected.to_dict() == contracts_fixture["execution_identity"]
     assert LiveExecutionIdentityV1.from_dict(selected.to_dict()) == selected
@@ -217,24 +217,24 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
     for field, value in [
         ("model", "legacy"),
         ("provider", "openai"),
-        ("auth_binding", {"realm": "family", "binding": "other"}),
+        ("auth_binding", {"realm": "example", "binding": "other"}),
         ("self_hosted_server_id", "server"),
         ("provider_params", {}),
     ]:
         with pytest.raises(ValueError, match=f"legacy top-level {field}"):
             live_open_execution_identity_params(
                 LiveExecutionIdentityV1(
-                    profile_id="homecore.reachy.open-room.v1"
+                    profile_id="example.device.open-room.v1"
                 ),
                 **{field: value},
             )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
-            {"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}
+            {"version": "v2", "profile_id": "example.device.open-room.v1"}
         )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
-            {"profile_id": "homecore.reachy.open-room.v1"}
+            {"profile_id": "example.device.open-room.v1"}
         )
     for field, value in [
         ("model", "gpt-live-1-codex"),
@@ -246,7 +246,7 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
             LiveExecutionIdentityV1.from_dict(
                 {
                     "version": "v1",
-                    "profile_id": "homecore.reachy.open-room.v1",
+                    "profile_id": "example.device.open-room.v1",
                     field: value,
                 }
             )
@@ -377,12 +377,12 @@ def test_assistant_output_address_is_strict_and_opaque():
 def test_openai_live_gateway_summary_bounds_match_shared_fixture(contracts_fixture):
     config = OpenAiLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
+        realm="example",
         auth_binding=LiveAuthBindingRef(
-            realm="family", binding="openai-api-key", profile="luka"
+            realm="example", binding="openai-api-key", profile="luka"
         ),
         voice="marin",
-        session_instructions="You are Reachy's voice embodiment.",
+        session_instructions="You are a test voice agent.",
         summary=OpenAiLiveSummaryConfig(
             model="gpt-5.4-mini", max_input_bytes=32768, max_output_bytes=2048
         ),
@@ -390,16 +390,16 @@ def test_openai_live_gateway_summary_bounds_match_shared_fixture(contracts_fixtu
     assert config.to_dict() == contracts_fixture["openai_live_gateway_config_with_summary"]
     partial = OpenAiLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
-        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        realm="example",
+        auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
         voice="marin",
         summary=OpenAiLiveSummaryConfig(max_output_bytes=1024),
     )
     assert partial.to_dict()["summary"] == {"max_output_bytes": 1024}
     assert "summary" not in OpenAiLiveGatewayConfig(
         principal="user:luka",
-        realm="family",
-        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        realm="example",
+        auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
         voice="marin",
     ).to_dict()
     for invalid in [
@@ -412,16 +412,16 @@ def test_openai_live_gateway_summary_bounds_match_shared_fixture(contracts_fixtu
         with pytest.raises(ValueError):
             OpenAiLiveGatewayConfig(
                 principal="user:luka",
-                realm="family",
-                auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+                realm="example",
+                auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
                 voice="marin",
                 summary=invalid,
             ).to_dict()
     with pytest.raises(TypeError):
         OpenAiLiveGatewayConfig(
             principal="user:luka",
-            realm="family",
-            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            realm="example",
+            auth_binding=LiveAuthBindingRef(realm="example", binding="openai-api-key"),
             voice="marin",
             summary={"max_output_bytes": 1024},  # type: ignore[arg-type]
         ).to_dict()

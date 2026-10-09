@@ -849,17 +849,17 @@ class TestAgentMemoryRecord:
         r = AgentMemoryRecord.from_dict(
             {
                 "memory_id": "mem-1",
-                "title": "School pickup",
-                "body": "Pickup is before calendar planning.",
-                "tags": ["calendar", "family"],
+                "title": "Release checklist",
+                "body": "Checklist runs before release planning.",
+                "tags": ["calendar", "team"],
                 "created_at_ms": 10,
                 "updated_at_ms": 20,
             }
         )
         assert r.memory_id == "mem-1"
-        assert r.title == "School pickup"
-        assert r.body == "Pickup is before calendar planning."
-        assert r.tags == ["calendar", "family"]
+        assert r.title == "Release checklist"
+        assert r.body == "Checklist runs before release planning."
+        assert r.tags == ["calendar", "team"]
         assert r.created_at_ms == 10
         assert r.updated_at_ms == 20
 
@@ -885,9 +885,9 @@ class TestAgentMemoryRecallResult:
             {
                 "records": [{
                     "memory_id": "mem-1",
-                    "title": "School pickup",
-                    "body": "Pickup is before calendar planning.",
-                    "tags": ["calendar", "family"],
+                    "title": "Release checklist",
+                    "body": "Checklist runs before release planning.",
+                    "tags": ["calendar", "team"],
                     "created_at_ms": 10,
                     "updated_at_ms": 20,
                 }],

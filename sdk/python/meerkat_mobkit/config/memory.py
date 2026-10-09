@@ -4,7 +4,7 @@ The operational memory ledger (``mobkit/memory/*``) is persisted by the
 gateway as local JSON under ``persistent_state``, with an optional HTTP
 health-check gate. ``local_json()`` is the honest configuration for that
 backend; ``elephant()`` is a deprecated alias kept for wire compatibility
-with older gateways (it never wrote data to Elephant).
+with older gateways (it never wrote data to the external memory hub).
 """
 from __future__ import annotations
 
@@ -53,8 +53,9 @@ class ElephantMemoryConfig:
 def elephant(endpoint: str, **kwargs: Any) -> ElephantMemoryConfig:
     """Deprecated: use :func:`local_json` instead.
 
-    Despite the name, this backend never sent data to Elephant: the gateway
-    only health-checks ``endpoint`` and persists the ledger as local JSON.
+    Despite the name, this backend never sent data to the external memory
+    hub: the gateway only health-checks ``endpoint`` and persists the ledger
+    as local JSON.
     The legacy wire shape is still emitted for compatibility with older
     gateways.
     """

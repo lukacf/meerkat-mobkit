@@ -650,7 +650,7 @@ async fn build_err(builder: meerkat_mobkit::UnifiedRuntimeBuilder) -> String {
     }
 }
 
-/// The full-stack builder path (OB3 deployment shape): store + firewall +
+/// The full-stack builder path (production deployment shape): store + firewall +
 /// judgment engines assembled from `UnifiedRuntimeBuilder` alone — no
 /// gateway. Asserts the panel store registers (proving the SQLite stack, not
 /// the markdown fallback, is live) and that the recorder-facing provider

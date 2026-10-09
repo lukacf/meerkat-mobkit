@@ -34,7 +34,7 @@ use meerkat_mobkit::{JsonFileSessionStore, SessionPersistenceRow};
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
-const RAW_ALIAS_COMMS_NAME: &str = "ob3/orchestrator/ops-lead";
+const RAW_ALIAS_COMMS_NAME: &str = "ops/orchestrator/ops-lead";
 
 /// Build a current (0.7) session containing a `ServerToolContent` block and
 /// OpenAI session metadata with a raw-alias `comms_name`, then serialize it to

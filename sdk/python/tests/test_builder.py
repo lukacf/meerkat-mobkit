@@ -37,7 +37,7 @@ class TestBuilderChain:
         b = (
             MobKit.builder()
             .mob_inline("[mob]\nid = 'home'\n")
-            .persistent_state("/var/lib/homecore")
+            .persistent_state("/var/lib/example")
             .declare_spec_update(7)
         )
         b._validate()
@@ -45,7 +45,7 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["mob_config"] == "[mob]\nid = 'home'\n"
-        assert params["persistent_state"] == "/var/lib/homecore"
+        assert params["persistent_state"] == "/var/lib/example"
         assert params["runtime_options"]["mob_composition"] == {
             "authority": "authoritative"
         }
@@ -66,7 +66,7 @@ class TestBuilderChain:
     def test_definition_update_requires_replacement_definition(self):
         b = (
             MobKit.builder()
-            .persistent_state("/var/lib/homecore")
+            .persistent_state("/var/lib/example")
             .declare_spec_update(1)
         )
 
@@ -117,26 +117,26 @@ class TestBuilderChain:
         b = MobKit.builder().openai_live(
             OpenAiLiveGatewayConfig(
                 principal="user:luka",
-                realm="family",
+                realm="example",
                 auth_binding=LiveAuthBindingRef(
-                    realm="family", binding="openai-api-key", profile="luka"
+                    realm="example", binding="openai-api-key", profile="luka"
                 ),
                 voice="marin",
-                session_instructions="You are Reachy's voice embodiment.",
+                session_instructions="You are a test voice agent.",
             )
         )
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["runtime_options"]["openai_live"] == {
             "principal": "user:luka",
-            "realm": "family",
+            "realm": "example",
             "auth_binding": {
-                "realm": "family",
+                "realm": "example",
                 "binding": "openai-api-key",
                 "profile": "luka",
             },
             "voice": "marin",
-            "session_instructions": "You are Reachy's voice embodiment.",
+            "session_instructions": "You are a test voice agent.",
         }
         assert "experimental_live" not in params["runtime_options"]
         with pytest.raises(TypeError, match="OpenAiLiveGatewayConfig"):
@@ -146,18 +146,18 @@ class TestBuilderChain:
         b = MobKit.builder().experimental_live(
             ExperimentalLiveGatewayConfig(
                 principal="user:luka",
-                realm="family",
+                realm="example",
                 factory_kind="openai-gpt-live",
                 factory_version="v1",
                 gate0_qualification="gate0-v1",
                 auth_binding=LiveAuthBindingRef(
-                    realm="family", binding="chatgpt-oauth", profile="luka"
+                    realm="example", binding="chatgpt-oauth", profile="luka"
                 ),
                 voice="marin",
                 execution_profiles=(
                     ExperimentalLiveExecutionProfileConfig(
-                        profile_id="homecore.reachy.open-room.v1",
-                        session_instructions="You are Reachy's voice embodiment.",
+                        profile_id="example.device.open-room.v1",
+                        session_instructions="You are a test voice agent.",
                     ),
                 ),
             )
@@ -166,20 +166,20 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["experimental_live"] == {
             "principal": "user:luka",
-            "realm": "family",
+            "realm": "example",
             "factory_kind": "openai-gpt-live",
             "factory_version": "v1",
             "gate0_qualification": "gate0-v1",
             "auth_binding": {
-                "realm": "family",
+                "realm": "example",
                 "binding": "chatgpt-oauth",
                 "profile": "luka",
             },
             "voice": "marin",
             "execution_profiles": [
                 {
-                    "profile_id": "homecore.reachy.open-room.v1",
-                    "session_instructions": "You are Reachy's voice embodiment.",
+                    "profile_id": "example.device.open-room.v1",
+                    "session_instructions": "You are a test voice agent.",
                 }
             ],
         }
@@ -393,7 +393,7 @@ class TestBuilderChain:
 
     def test_agent_memory_options_serialize_to_gateway_wire_keys(self):
         b = MobKit.builder().agent_memory(
-            realm="family",
+            realm="example",
             selection="contextual",
             max_entries=3,
             recall_timeout_ms=1200,
@@ -403,7 +403,7 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["runtime_options"]["agent_memory"] == {
-            "realm": "family",
+            "realm": "example",
             "selection": "contextual",
             "max_entries": 3,
             "recall_timeout_ms": 1200,

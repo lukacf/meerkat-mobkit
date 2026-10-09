@@ -60,7 +60,7 @@ test("chat pane does not count spawn scaffolding as user work", () => {
       id: "spawn",
       role: "user",
       createdAt: "2026-05-20T04:58:01.000Z",
-      text: "You have been spawned as 'review:singleton' (role: review) in mob 'ob3'.",
+      text: "You have been spawned as 'review:singleton' (role: review) in mob 'ops'.",
     }),
     message({
       id: "ready",
@@ -769,11 +769,11 @@ test("transcript rows carry a typed source header, compact event rows, and day s
     variant: "meta",
     identity: { id: "system", label: "System", role: "system" },
     createdAt: "2026-05-19T21:04:24.000Z",
-    text: "Received a message from triage:main (homecore mob).",
+    text: "Received a message from triage:main (example mob).",
     runtimeEvent: {
       eventType: "peer_content_ingested",
       kind: "message",
-      peer: { id: "978419a8-69f6-5103-8d31-4482e1f76b52", displayName: "homecore/triage/mk--triage_cmain" },
+      peer: { id: "978419a8-69f6-5103-8d31-4482e1f76b52", displayName: "example/triage/mk--triage_cmain" },
       senderTaint: "tainted",
       payload: { kind: "message", sender_taint: "tainted", type: "peer_content_ingested" },
     },
@@ -805,7 +805,7 @@ test("transcript rows carry a typed source header, compact event rows, and day s
   );
   // The runtime event reads as a sentence with the roster label, a taint
   // badge, and its raw payload only inside the details disclosure.
-  assert.match(html, /Received a message from Triage \(homecore mob\)\./);
+  assert.match(html, /Received a message from Triage \(example mob\)\./);
   assert.match(html, /untrusted source/);
   assert.doesNotMatch(html, /peer_content_ingested: \{/);
   const beforeDetails = html.slice(0, html.indexOf("<details"));

@@ -443,16 +443,16 @@ class TestDispatchMethod:
     ):
         rt, transport = _make_runtime(result={"accepted": True})
         pair = (
-            {"correlation_id": "school-event-1", "idempotency_key": "school:event-1"}
+            {"correlation_id": "lab-event-1", "idempotency_key": "lab:event-1"}
             if with_pair else {}
         )
         if through_handle:
             await rt.agent("gate:main").dispatch_text(
-                "School closed.\nKeep both paragraphs.", origin="connector", **pair
+                "Lab closed.\nKeep both paragraphs.", origin="connector", **pair
             )
         else:
             await rt.dispatch_text(
-                "gate:main", "School closed.\nKeep both paragraphs.",
+                "gate:main", "Lab closed.\nKeep both paragraphs.",
                 origin="connector", **pair,
             )
         assert len(transport.calls) == 1
@@ -460,7 +460,7 @@ class TestDispatchMethod:
         assert transport.calls[0]["params"] == {
             "identity": "gate:main",
             "dispatch_input": {
-                "content": "School closed.\nKeep both paragraphs.",
+                "content": "Lab closed.\nKeep both paragraphs.",
                 "origin": "connector",
                 **pair,
             },

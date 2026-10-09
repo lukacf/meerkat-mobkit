@@ -2345,7 +2345,7 @@ impl StewardEngine {
         // not runtime-usefulness evidence - only ambient per-turn injections
         // say a record earned its context slot. Auditing hydration counts
         // manufactures dead-weight verdicts wholesale on stores that have
-        // never turn-injected (HomeCore: 53/53 noise verdicts), so with zero
+        // never turn-injected (a downstream app: 53/53 noise verdicts), so with zero
         // Turn rows there is nothing to judge: skip and queue NOTHING.
         let turn_ledger: Vec<&crate::memory::records::InjectionLogEntry> = signals
             .ledger
@@ -4210,7 +4210,7 @@ mod tests {
     use meerkat_client::types::LlmStream;
     use std::sync::Mutex as StdMutex;
 
-    const REALM: &str = "family";
+    const REALM: &str = "team";
 
     #[tokio::test]
     async fn complete_text_uses_final_assistant_output() {
@@ -4560,8 +4560,8 @@ mod tests {
     impl MobPurposeSource for SingleMobSource {
         fn mob_contexts(&self) -> Vec<MobContext> {
             vec![MobContext {
-                mob: "mob:home".to_string(),
-                purpose: Some("run the household".to_string()),
+                mob: "mob:main".to_string(),
+                purpose: Some("run the team".to_string()),
                 member_labels: vec![(
                     "identity:worker".to_string(),
                     std::collections::BTreeMap::new(),
@@ -4582,7 +4582,7 @@ mod tests {
     fn mob_scope() -> MemoryScope {
         MemoryScope::Mob {
             realm: REALM.to_string(),
-            mob: "mob:home".to_string(),
+            mob: "mob:main".to_string(),
         }
     }
 
@@ -4893,7 +4893,7 @@ mod tests {
             "open_loop_escalations": [],
             "contradictions": [
                 {"record_ids": ["mem-a", "mem-b"], "operational": true,
-                 "entity": "mob:home", "topic": "deploy window",
+                 "entity": "mob:main", "topic": "deploy window",
                  "reason": "members disagree"}
             ],
             "working_set": ["m1", "mem-c"]
@@ -5140,7 +5140,7 @@ mod tests {
         {
             let conflicts = fixture.conflicts.conflicts.lock().unwrap();
             assert_eq!(conflicts.len(), 1);
-            assert_eq!(conflicts[0].0, "mob:home");
+            assert_eq!(conflicts[0].0, "mob:main");
             assert_eq!(conflicts[0].1, "deploy window");
             assert!(conflicts[0].2.contains("mem-a"));
         }
@@ -5380,7 +5380,7 @@ mod tests {
             let record = seed_quarantined(&fixture.store, "identity:worker", title, body).await;
             verdicts.push(serde_json::json!({
                 "record_id": record, "verdict": "promote_pending_gate",
-                "rationale": "the mob needs this if true", "target_mob": "mob:home"
+                "rationale": "the mob needs this if true", "target_mob": "mob:main"
             }));
         }
         {
@@ -5663,9 +5663,9 @@ mod tests {
                 "proposal_verdicts": [],
                 "quarantine_verdicts": [
                     {"record_id": q1, "verdict": "promote_pending_gate",
-                     "rationale": "the mob needs this if true", "target_mob": "mob:home"},
+                     "rationale": "the mob needs this if true", "target_mob": "mob:main"},
                     {"record_id": q2, "verdict": "promote_pending_gate",
-                     "rationale": "maybe shareable", "target_mob": "mob:home"}
+                     "rationale": "maybe shareable", "target_mob": "mob:main"}
                 ],
                 "open_loop_escalations": [], "contradictions": [], "working_set": []
             }))
@@ -5884,7 +5884,7 @@ mod tests {
                 {"record_id": released_origin, "verdict": "release",
                  "rationale": "reviewed, benign"},
                 {"record_id": promoted_origin, "verdict": "promote_pending_gate",
-                 "rationale": "mob needs it if true", "target_mob": "mob:home"}
+                 "rationale": "mob needs it if true", "target_mob": "mob:main"}
             ],
             "open_loop_escalations": [], "contradictions": [], "working_set": []
         }));
@@ -6110,7 +6110,7 @@ mod tests {
                     stage_token: token.token.clone(),
                     record_id: origin.to_string(),
                     scope_kind: "mob".to_string(),
-                    scope_key: "mob:home".to_string(),
+                    scope_key: "mob:main".to_string(),
                     rationale: None,
                     status: "pending".to_string(),
                     created_at_ms: now_ms(),
@@ -7079,7 +7079,7 @@ mod tests {
             "ops": [],
             "proposal_verdicts": [
                 {"proposal_id": proposal_id, "verdict": "promote_pending_gate",
-                 "rationale": "let the operator decide", "target_mob": "mob:home"}
+                 "rationale": "let the operator decide", "target_mob": "mob:main"}
             ],
             "quarantine_verdicts": [], "open_loop_escalations": [],
             "contradictions": [], "working_set": []
@@ -7112,7 +7112,7 @@ mod tests {
                     {"proposal_id": proposal_id, "verdict": "accept",
                      "rationale": "second look, accept"},
                     {"proposal_id": proposal_id, "verdict": "promote_pending_gate",
-                     "rationale": "gate again", "target_mob": "mob:home"}
+                     "rationale": "gate again", "target_mob": "mob:main"}
                 ],
                 "quarantine_verdicts": [], "open_loop_escalations": [],
                 "contradictions": [], "working_set": []
@@ -7197,9 +7197,9 @@ mod tests {
             "ops": [], "proposal_verdicts": [],
             "quarantine_verdicts": [
                 {"record_id": q_id, "verdict": "promote_pending_gate",
-                 "rationale": "first", "target_mob": "mob:home"},
+                 "rationale": "first", "target_mob": "mob:main"},
                 {"record_id": q_id, "verdict": "promote_pending_gate",
-                 "rationale": "second", "target_mob": "mob:home"}
+                 "rationale": "second", "target_mob": "mob:main"}
             ],
             "open_loop_escalations": [], "contradictions": [], "working_set": []
         }));
@@ -7449,7 +7449,7 @@ mod tests {
         // Empty keys never route; identity/mob are unaffected by the flag.
         assert_eq!(scope_for_realm(REALM, "operator", "  ", true), None);
         assert!(scope_for_realm(REALM, "identity", "identity:a", false).is_some());
-        assert!(scope_for_realm(REALM, "mob", "mob:home", false).is_some());
+        assert!(scope_for_realm(REALM, "mob", "mob:main", false).is_some());
     }
 
     #[test]
@@ -7849,7 +7849,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_audit_skips_on_build_only_ledger_and_queues_nothing() {
-        // The pre-#54 HomeCore shape: a never-dreamed store whose entire
+        // The pre-#54 downstream app shape: a never-dreamed store whose entire
         // injection ledger is build-surface hydration. Hydration is not
         // runtime-usefulness evidence, so the audit must not run and the
         // durable operator review queue must stay empty. The reply script
@@ -8091,7 +8091,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_dream_records_failure_row_resolving_verdict_run_ids() {
-        // The HomeCore rehearsal evidence shape: the audit persisted its
+        // The downstream app's rehearsal evidence shape: the audit persisted its
         // dead-weight sheet, then the consolidate call died. The run id the
         // verdict rows reference must still resolve in dream_runs as a
         // failure row instead of vanishing with the Err.

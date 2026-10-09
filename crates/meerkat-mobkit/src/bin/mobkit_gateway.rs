@@ -108,7 +108,7 @@ struct InitParams {
     /// runtime.
     identity_roster: Option<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
     /// Member role migrations this activation is authorized to perform, e.g.
-    /// `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    /// `[{"identity": "domain:automation", "from_role": "domain"}]`.
     ///
     /// A durable member whose role changed refuses to resume
     /// (`MobError::MemberRoleMigrationRequired`) until the host names it here,
@@ -2906,7 +2906,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "mobkit/init",
-            "params": { "meerkat_config_path": "/etc/homecore/config.toml" }
+            "params": { "meerkat_config_path": "/etc/example/config.toml" }
         })
         .to_string();
 
@@ -2914,7 +2914,7 @@ mod tests {
 
         assert_eq!(
             params.meerkat_config_path.as_deref(),
-            Some(Path::new("/etc/homecore/config.toml"))
+            Some(Path::new("/etc/example/config.toml"))
         );
         Ok(())
     }

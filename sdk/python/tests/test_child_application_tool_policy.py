@@ -2,7 +2,7 @@
 
 Once compiled application tool policies are served, Meerkat refuses a
 member's ``mob_create`` and ``delegate`` until the host chooses the policy
-child mob members run under. HomeCore composes through this SDK only, so the
+child mob members run under. A downstream app composes through this SDK only, so the
 key must be reachable from the builder and absent unless the host chose one.
 """
 
@@ -16,16 +16,16 @@ def _init_params(builder):
     return MobKitRuntime(builder._config)._build_init_params()
 
 
-HOUSEHOLD = {
+PROVIDER_BINDING = {
     "kind": "provider",
-    "provider_id": "homecore",
-    "policy_id": "household-tools",
+    "provider_id": "example",
+    "policy_id": "team-tools",
 }
 
 
 def test_a_provider_binding_reaches_the_init_params():
-    builder = MobKit.builder().child_application_tool_policy(HOUSEHOLD)
-    assert _init_params(builder)["child_application_tool_policy"] == HOUSEHOLD
+    builder = MobKit.builder().child_application_tool_policy(PROVIDER_BINDING)
+    assert _init_params(builder)["child_application_tool_policy"] == PROVIDER_BINDING
 
 
 def test_the_explicit_unmanaged_opt_out_reaches_the_init_params():
@@ -40,12 +40,12 @@ def test_the_parameter_is_absent_unless_the_host_chose_one():
 
 
 def test_the_builder_keeps_its_own_copy():
-    binding = dict(HOUSEHOLD)
+    binding = dict(PROVIDER_BINDING)
     builder = MobKit.builder().child_application_tool_policy(binding)
     binding["policy_id"] = "guest-tools"
     assert (
         _init_params(builder)["child_application_tool_policy"]["policy_id"]
-        == "household-tools"
+        == "team-tools"
     )
 
 
@@ -54,14 +54,14 @@ def test_the_builder_keeps_its_own_copy():
     [
         ({"kind": "inherit"}, "inherit is not valid for child mobs"),
         ({}, "kind must be 'provider' or 'unmanaged'"),
-        ({"kind": "unmanaged", "provider_id": "homecore"}, "takes no other keys"),
-        ({"kind": "provider", "provider_id": "homecore"}, "needs exactly"),
+        ({"kind": "unmanaged", "provider_id": "example"}, "takes no other keys"),
+        ({"kind": "provider", "provider_id": "example"}, "needs exactly"),
         (
-            {"kind": "provider", "provider_id": "homecore", "policy_id": " "},
+            {"kind": "provider", "provider_id": "example", "policy_id": " "},
             "policy_id must be a non-empty string",
         ),
         (
-            {"kind": "provider", "provider_id": 7, "policy_id": "household-tools"},
+            {"kind": "provider", "provider_id": 7, "policy_id": "team-tools"},
             "provider_id must be a non-empty string",
         ),
     ],

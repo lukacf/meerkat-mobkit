@@ -723,7 +723,7 @@ async fn boot_non_authoritative(
     .await
 }
 
-/// HomeCore's production rollback, reproduced - and the answer it actually
+/// A downstream app's production rollback, reproduced - and the answer it actually
 /// deserves.
 ///
 /// Their deploy boots a deliberately RESTRICTED candidate first to certify it,
@@ -1075,7 +1075,7 @@ async fn a_candidate_on_a_released_synthesized_store_is_judged_in_the_released_f
 /// A store with an event log and NO manifest must be adopted by an
 /// authoritative resume, not refused.
 ///
-/// Two reachable ways in, both HomeCore's: a store created before the manifest
+/// Two reachable ways in, both the downstream app's: a store created before the manifest
 /// existed, and recovery surgery that removed the manifest deliberately.
 /// Refusing would report a conflict with a claim nobody made, and would turn
 /// their recovery into a second refusal.

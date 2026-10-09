@@ -870,20 +870,20 @@ mod tests {
     fn agent_memory_update_parses_full_shape() -> Result<(), Box<dyn Error>> {
         let parsed = parse_agent_memory_update_params(&json!({
             "identity": "identity:luka",
-            "realm": "family",
+            "realm": "team",
             "memory_id": "mem-1",
-            "title": "School pickup",
-            "body": "Corrected pickup time.",
-            "tags": ["family"]
+            "title": "Weekly standup",
+            "body": "Corrected standup time.",
+            "tags": ["team"]
         }))
         .map_err(|err| std::io::Error::other(err.message()))?;
 
         assert_eq!(parsed.identity.as_str(), "identity:luka");
-        assert_eq!(parsed.realm, "family");
+        assert_eq!(parsed.realm, "team");
         assert_eq!(parsed.memory_id, "mem-1");
-        assert_eq!(parsed.memory.title, "School pickup");
-        assert_eq!(parsed.memory.body, "Corrected pickup time.");
-        assert_eq!(parsed.memory.tags, vec!["family".to_string()]);
+        assert_eq!(parsed.memory.title, "Weekly standup");
+        assert_eq!(parsed.memory.body, "Corrected standup time.");
+        assert_eq!(parsed.memory.tags, vec!["team".to_string()]);
         Ok(())
     }
 
@@ -988,13 +988,13 @@ mod tests {
     fn agent_memory_forget_parses_identity_realm_and_memory_id() -> Result<(), Box<dyn Error>> {
         let parsed = parse_agent_memory_forget_params(&json!({
             "identity": "identity:luka",
-            "realm": "family",
+            "realm": "team",
             "memory_id": "mem-1"
         }))
         .map_err(|err| std::io::Error::other(err.message()))?;
 
         assert_eq!(parsed.identity.as_str(), "identity:luka");
-        assert_eq!(parsed.realm, "family");
+        assert_eq!(parsed.realm, "team");
         assert_eq!(parsed.memory_id, "mem-1");
         Ok(())
     }

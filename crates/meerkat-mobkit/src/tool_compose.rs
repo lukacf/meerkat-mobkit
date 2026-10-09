@@ -4,7 +4,7 @@
 //! recurring defect class: a later installer silently discards whatever an
 //! earlier one put there (the agent-memory recorder's `memory` tool has been
 //! clobbered this way twice — by an example SessionHook, fixed in f8d11e57,
-//! and by the rpc_gateway callback build path, HomeCore "Bug D"). Installers
+//! and by the rpc_gateway callback build path, a downstream app "Bug D"). Installers
 //! MUST compose over the existing slot value instead of assigning.
 //!
 //! [`ComposedExternalTools`] is the canonical way to do that: the `primary`

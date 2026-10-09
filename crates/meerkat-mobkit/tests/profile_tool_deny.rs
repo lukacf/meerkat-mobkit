@@ -1,7 +1,7 @@
-//! A household profile's deny set through MobKit's production runtime
+//! A workspace profile's deny set through MobKit's production runtime
 //! (meerkat `[profiles.*.tools] deny`).
 //!
-//! A household identity agent's profile enables the mob tools but denies the
+//! A workspace identity agent's profile enables the mob tools but denies the
 //! ones that would let it spawn or rewire broader same-mob members, keeping
 //! fork_off, council, mob_check_member and mob_retire_member. The member is
 //! built through `UnifiedRuntime` from the definition TOML and drives its own
@@ -31,9 +31,9 @@ mod llm_usage;
 
 static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-const PROBE: &str = "HOUSEHOLD-DENY-PROBE";
+const PROBE: &str = "WORKSPACE-DENY-PROBE";
 
-/// The household deny set: the agent mob tools and the mob operator tools that
+/// The workspace deny set: the agent mob tools and the mob operator tools that
 /// spawn or rewire members.
 const DENIED: &[&str] = &[
     "spawn_member",
@@ -67,21 +67,21 @@ fn definition_denying(names: &[&str]) -> MobDefinition {
     MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "household-deny-mob-{}"
+id = "workspace-deny-mob-{}"
 
-[profiles.household]
+[profiles.workspace]
 model = "gpt-5.5"
 runtime_mode = "autonomous_host"
 external_addressable = true
 
-[profiles.household.tools]
+[profiles.workspace.tools]
 comms = true
 mob = true
 deny = [{deny}]
 "#,
         NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ))
-    .expect("parse the household definition")
+    .expect("parse the workspace definition")
 }
 
 /// What the probe turn saw: the tools the member had mounted, and each probe
@@ -253,7 +253,7 @@ async fn an_unknown_deny_entry_fails_ensure_member_with_invalid_params_naming_it
         "jsonrpc": "2.0",
         "id": "unknown-deny-entry",
         "method": "mobkit/ensure_member",
-        "params": { "role": "household", "agent_identity": "kitchen" },
+        "params": { "role": "workspace", "agent_identity": "assistant" },
     })
     .to_string();
     let response: serde_json::Value = serde_json::from_str(
@@ -277,7 +277,7 @@ async fn an_unknown_deny_entry_fails_ensure_member_with_invalid_params_naming_it
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_household_deny_set_builds_and_hides_denied_mob_tools() {
+async fn a_workspace_deny_set_builds_and_hides_denied_mob_tools() {
     let store_dir = tempfile::tempdir().expect("store dir");
     let client = ProbeClient::default();
     let runtime = runtime_for(definition(), &client, store_dir.path()).await;
@@ -285,14 +285,14 @@ async fn a_household_deny_set_builds_and_hides_denied_mob_tools() {
     // The deny set names agent mob tools as well as operator tools; a known
     // name the member does not mount is inert, so the member builds.
     runtime
-        .spawn_many(vec![SpawnMemberSpec::new("household", "kitchen")])
+        .spawn_many(vec![SpawnMemberSpec::new("workspace", "assistant")])
         .await
-        .expect("a member builds with the household deny set");
+        .expect("a member builds with the workspace deny set");
 
     let done = client.done.notified();
     tokio::pin!(done);
     done.as_mut().enable();
-    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "kitchen", PROBE.to_string())
+    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "assistant", PROBE.to_string())
         .await
         .expect("send the probe turn");
     tokio::time::timeout(Duration::from_mins(1), done)

@@ -3712,7 +3712,7 @@ fn parse_optional_pubkey(params: &Value, field: &str) -> Result<Option<[u8; 32]>
     }
     // Peer descriptors emit `transport_public_key` with an `ed25519:` scheme
     // prefix; callers round-tripping that value into `wire_local` had to
-    // strip it by hand (HomeCore DX report, 2026-07-09). Accept both
+    // strip it by hand (downstream app DX report, 2026-07-09). Accept both
     // spellings.
     let s = s.strip_prefix("ed25519:").unwrap_or(s);
     crate::auth::peer_keys::decode_pubkey_b64(s)
@@ -3909,8 +3909,8 @@ mod member_declaration_delegation_tests {
             "mob/apply_member_tool_declaration",
             serde_json::json!({
                 "mob_id": "some-other-mob",
-                "agent_identity": "identity:child-2",
-                "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
+                "agent_identity": "identity:member-2",
+                "request_id": "ex-tp-apply-identity-member-2-rev109-0001",
                 "expected_intent_revision": 3,
                 "declaration": {
                     "category_overrides": {},
@@ -3918,8 +3918,8 @@ mod member_declaration_delegation_tests {
                     "execution": { "kind": "inherit" },
                     "application_policy": {
                         "kind": "provider",
-                        "provider_id": "homecore",
-                        "policy_id": "household-tools"
+                        "provider_id": "example",
+                        "policy_id": "example-tools"
                     }
                 },
                 "convergence": { "kind": "drain", "max_wait_ms": 120000 }
@@ -4097,7 +4097,7 @@ mod member_declaration_alias_tests {
     fn an_alias_round_trips_through_the_boundary() {
         for alias in [
             "rt:gate:main:0",
-            "identity:child-2",
+            "identity:member-2",
             "gate:main",
             "plainname",
         ] {
@@ -4136,9 +4136,9 @@ mod member_declaration_alias_tests {
     /// shape that catches a field nobody enumerated.
     #[test]
     fn no_field_of_a_read_result_carries_the_reserved_namespace() {
-        let roster = crate::member_comms_id::mob_member_id_str("identity:child-2").into_owned();
+        let roster = crate::member_comms_id::mob_member_id_str("identity:member-2").into_owned();
         let result = meerkat_contracts::wire::MobMemberToolDeclarationResult {
-            mob_id: "homecore".to_string(),
+            mob_id: "example".to_string(),
             agent_identity: public_member_alias(&roster),
             desired_intent_revision: 3,
             // Real declaration shape rather than a synthetic default, so the
@@ -4149,8 +4149,8 @@ mod member_declaration_alias_tests {
                 "execution": { "kind": "inherit" },
                 "application_policy": {
                     "kind": "provider",
-                    "provider_id": "homecore",
-                    "policy_id": "household-tools"
+                    "provider_id": "example",
+                    "policy_id": "example-tools"
                 }
             }))
             .expect("declaration fixture must deserialize"),
@@ -4170,7 +4170,7 @@ mod member_declaration_alias_tests {
         assert_no_reserved_namespace(&json, "read_result");
         assert_eq!(
             json["agent_identity"],
-            serde_json::json!("identity:child-2")
+            serde_json::json!("identity:member-2")
         );
     }
 }
@@ -4180,19 +4180,19 @@ mod member_declaration_alias_tests {
 mod member_declaration_wire_tests {
     //! Contract tests for the `mob/*` member-declaration surface.
     //!
-    //! These assert against the EXACT payload HomeCore's Phase B sends, supplied
-    //! over bus with real production values from their state generation 90, rather
-    //! than against a shape inferred from the struct definitions. That distinction
-    //! is the point: the two previous gaps on this surface (#337's carrier and the
-    //! role-migration carrier) were both "the type existed and the caller could not
-    //! reach it", and a payload I invented myself would reproduce the same class of
-    //! mistake one level up.
+    //! These assert against an exact caller-shaped payload (a Phase B apply as an
+    //! external caller sends it, with synthetic values), rather than against a
+    //! shape inferred from the struct definitions. That distinction is the
+    //! point: the two previous gaps on this surface (#337's carrier and the
+    //! role-migration carrier) were both "the type existed and the caller could
+    //! not reach it", and a payload inferred from the types alone would
+    //! reproduce the same class of mistake one level up.
 
-    /// The apply request HomeCore sends 17 times per rollout, verbatim.
-    const HOMECORE_APPLY_PARAMS: &str = r#"{
-      "mob_id": "homecore",
-      "agent_identity": "identity:child-2",
-      "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
+    /// The apply request an external caller sends once per member per rollout.
+    const DOWNSTREAM_APPLY_PARAMS: &str = r#"{
+      "mob_id": "example",
+      "agent_identity": "identity:member-2",
+      "request_id": "ex-tp-apply-identity-member-2-rev109-0001",
       "expected_intent_revision": 3,
       "declaration": {
         "category_overrides": {
@@ -4210,27 +4210,26 @@ mod member_declaration_wire_tests {
         "execution": { "kind": "inherit" },
         "application_policy": {
           "kind": "provider",
-          "provider_id": "homecore",
-          "policy_id": "household-tools"
+          "provider_id": "example",
+          "policy_id": "example-tools"
         }
       },
       "convergence": { "kind": "drain", "max_wait_ms": 120000 }
     }"#;
 
-    /// The adopt request, sent once per member before its first apply. Byte-what
-    /// HomeCore's runner sends (scripts/dev/tool_policy_adopt_apply.py at
-    /// acd642e); per-member variation is only agent_identity, request_id, the
-    /// session values and profile_name.
-    const HOMECORE_ADOPT_PARAMS: &str = r#"{
-      "mob_id": "homecore",
-      "agent_identity": "identity:child-2",
-      "request_id": "hc-tp-adopt-identity-child-2-0001",
+    /// The adopt request, sent once per member before its first apply, in the
+    /// shape an external adopt runner sends; per-member variation is only
+    /// agent_identity, request_id, the session values and profile_name.
+    const DOWNSTREAM_ADOPT_PARAMS: &str = r#"{
+      "mob_id": "example",
+      "agent_identity": "identity:member-2",
+      "request_id": "ex-tp-adopt-identity-member-2-0001",
       "precondition": "expected_absent",
-      "declaration_scope": "homecore-tool-policy",
+      "declaration_scope": "example-tool-policy",
       "declaration_revision": 1,
       "session": {
-        "session_id": "01a02578-6294-7512-9489-0fb1f57bd9e6",
-        "lineage_id": "session:01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "session_id": "0190a000-0000-7000-8000-000000000001",
+        "lineage_id": "session:0190a000-0000-7000-8000-000000000001",
         "lineage_generation": 0,
         "authority_policy": "require_existing"
       },
@@ -4249,7 +4248,7 @@ mod member_declaration_wire_tests {
     /// pinning its own restricted composition. That exemption would otherwise
     /// open a hole: a candidate that ADOPTED would persist a declaration under a
     /// composition no pin covers - trading a loud refusal for silent unpinned
-    /// durable state, which is worse. HomeCore's own deploy doctrine says the
+    /// durable state, which is worse. The downstream app's own deploy doctrine says the
     /// same thing: candidate mode exists to gate effects.
     ///
     /// Asserted on the refusal's CONTENT, not merely that an error occurred: the
@@ -4282,16 +4281,16 @@ mod member_declaration_wire_tests {
     }
 
     #[test]
-    fn the_adopt_payload_homecore_actually_sends_parses_and_converts() {
+    fn the_adopt_payload_downstream_actually_sends_parses_and_converts() {
         let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
-            serde_json::from_str(HOMECORE_ADOPT_PARAMS)
-                .expect("HomeCore's production adopt payload must deserialize");
-        assert_eq!(params.declaration_scope, "homecore-tool-policy");
+            serde_json::from_str(DOWNSTREAM_ADOPT_PARAMS)
+                .expect("the downstream app's production adopt payload must deserialize");
+        assert_eq!(params.declaration_scope, "example-tool-policy");
         assert_eq!(params.declaration_revision, 1);
 
         // The whole payload converts in one step, which is why adoption inherits
         // meerkat's validation exactly rather than being reassembled here. If this
-        // conversion ever tightens upstream, this fails on HomeCore's real payload
+        // conversion ever tightens upstream, this fails on the downstream app's real payload
         // instead of on their 17th member.
         let request: meerkat_mob::AdoptMemberIdentityDeclaration = params
             .try_into()
@@ -4299,47 +4298,47 @@ mod member_declaration_wire_tests {
         let _ = request;
     }
 
-    /// `wiring_custody` is absent from HomeCore's payload and must therefore
+    /// `wiring_custody` is absent from the downstream app's payload and must therefore
     /// default rather than being required: the field is `skip_serializing_if`
     /// external-managed on the wire, so a caller that omits it is saying
     /// "external managed", not "malformed".
     #[test]
     fn an_omitted_wiring_custody_defaults_instead_of_failing() {
         assert!(
-            !HOMECORE_ADOPT_PARAMS.contains("wiring_custody"),
+            !DOWNSTREAM_ADOPT_PARAMS.contains("wiring_custody"),
             "fixture must keep exercising the omitted case"
         );
         let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
-            serde_json::from_str(HOMECORE_ADOPT_PARAMS).expect("payload parses without it");
+            serde_json::from_str(DOWNSTREAM_ADOPT_PARAMS).expect("payload parses without it");
         assert!(params.wiring_custody.is_external_managed());
     }
 
     #[test]
-    fn the_apply_payload_homecore_actually_sends_parses() {
+    fn the_apply_payload_downstream_actually_sends_parses() {
         let params: meerkat_contracts::wire::MobApplyMemberToolDeclarationParams =
-            serde_json::from_str(HOMECORE_APPLY_PARAMS)
-                .expect("HomeCore's production apply payload must deserialize");
-        assert_eq!(params.mob_id, "homecore");
-        assert_eq!(params.agent_identity, "identity:child-2");
+            serde_json::from_str(DOWNSTREAM_APPLY_PARAMS)
+                .expect("the downstream app's production apply payload must deserialize");
+        assert_eq!(params.mob_id, "example");
+        assert_eq!(params.agent_identity, "identity:member-2");
         assert_eq!(params.expected_intent_revision, 3);
 
         // And it must survive the conversions the handler performs, so a payload
         // that parses but cannot become a domain request fails here rather than at
-        // HomeCore's 17th member.
+        // the downstream app's 17th member.
         let declaration: meerkat_mob::MemberToolDeclaration = params
             .declaration
             .try_into()
             .expect("the carried declaration must convert to the domain type");
         let _ = declaration;
         meerkat_mob::MemberToolMutationId::new(params.request_id)
-            .expect("HomeCore's idempotency request_id scheme must be accepted");
+            .expect("the downstream app's idempotency request_id scheme must be accepted");
     }
 
     /// `deny_unknown_fields` is what makes a typo fail loudly instead of arming
     /// nothing, which is exactly how the #337 carrier gap stayed invisible.
     #[test]
     fn an_unknown_field_is_refused_rather_than_ignored() {
-        let with_typo = HOMECORE_APPLY_PARAMS.replace(
+        let with_typo = DOWNSTREAM_APPLY_PARAMS.replace(
             "\"expected_intent_revision\"",
             "\"expected_intent_revison\"",
         );
@@ -4357,7 +4356,7 @@ mod member_declaration_wire_tests {
     #[test]
     fn every_category_override_survives_the_round_trip() {
         let params: meerkat_contracts::wire::MobApplyMemberToolDeclarationParams =
-            serde_json::from_str(HOMECORE_APPLY_PARAMS).expect("payload parses");
+            serde_json::from_str(DOWNSTREAM_APPLY_PARAMS).expect("payload parses");
         let reserialized = serde_json::to_value(&params).expect("wire params must reserialize");
         let overrides = reserialized
             .get("declaration")
@@ -4663,7 +4662,7 @@ comms = true
         Ok(())
     }
 
-    /// HomeCore DX (2026-07-09): `cross_mob/peer_info` emits
+    /// Downstream app DX (2026-07-09): `cross_mob/peer_info` emits
     /// `transport_public_key` with the `ed25519:` scheme prefix; callers
     /// round-tripping it into `wire_local` had to strip it by hand.
     #[test]
@@ -4751,7 +4750,7 @@ comms = true
 /// #343 registered these in two places and 0.8.21 shipped them DEAD on a third:
 /// `http_console.rs` owns its own dispatch and its own `-32601`, so the methods
 /// were reachable over stdin-RPC and unreachable over the console listener.
-/// HomeCore hit that within an hour of release.
+/// A downstream app hit that within an hour of release.
 ///
 /// The lesson was not "there were three tables" but that a checklist assembled
 /// from the sites one happens to find reads as exhaustive and is not. So the
@@ -5040,7 +5039,7 @@ pub(super) async fn handle_adopt_member_identity_declaration(
 ///
 /// Read the live member-tool declaration and its desired intent revision.
 ///
-/// Included at HomeCore's request and on the lead's instruction: without it the
+/// Included at the downstream app's request and on the lead's instruction: without it the
 /// apply CAS is guess-and-retry, because `expected_intent_revision` can only be
 /// learned by reading. Delegates to `identity_intent` and
 /// `identity_convergence_status` on the handle; the Missing-convergence fallback

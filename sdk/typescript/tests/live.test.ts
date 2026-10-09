@@ -39,18 +39,18 @@ describe("openai live gateway registration", () => {
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are Reachy's voice embodiment.",
+        sessionInstructions: "You are a test voice agent.",
         summary: { model: "gpt-5.4-mini", maxInputBytes: 32768, maxOutputBytes: 2048 },
       }),
       fixture.openai_live_gateway_config_with_summary,
     );
     const partial = openAiLiveGatewayConfigToWire({
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key" },
       voice: "marin",
       summary: { maxOutputBytes: 1024 },
     });
@@ -58,8 +58,8 @@ describe("openai live gateway registration", () => {
     assert.equal(
       "summary" in openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       }),
       false,
@@ -70,24 +70,24 @@ describe("openai live gateway registration", () => {
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
         voice: "marin",
-        sessionInstructions: "You are Reachy's voice embodiment.",
+        sessionInstructions: "You are a test voice agent.",
       }),
       fixture.openai_live_gateway_config,
     );
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
-        authBinding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        authBinding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       }),
       {
         principal: "user:luka",
-        realm: "family",
-        auth_binding: { realm: "family", binding: "openai-api-key" },
+        realm: "example",
+        auth_binding: { realm: "example", binding: "openai-api-key" },
         voice: "marin",
       },
     );
@@ -103,8 +103,8 @@ describe("openai live gateway registration", () => {
   it("rejects cross-realm bindings, blank fields, and authority-bearing keys", () => {
     const base = {
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key" },
       voice: "marin",
     };
     assert.throws(() =>
@@ -150,20 +150,20 @@ describe("experimental live gateway registration", () => {
     assert.deepEqual(
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
         authBinding: {
-          realm: "family",
+          realm: "example",
           binding: "chatgpt-oauth",
           profile: "luka",
         },
         voice: "marin",
         executionProfiles: [
           {
-            profileId: "homecore.reachy.open-room.v1",
-            sessionInstructions: "You are Reachy's voice embodiment.",
+            profileId: "example.device.open-room.v1",
+            sessionInstructions: "You are a test voice agent.",
           },
         ],
       }),
@@ -175,7 +175,7 @@ describe("experimental live gateway registration", () => {
     assert.throws(() =>
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
@@ -189,11 +189,11 @@ describe("experimental live gateway registration", () => {
     assert.throws(() =>
       experimentalLiveGatewayConfigToWire({
         principal: "user:luka",
-        realm: "family",
+        realm: "example",
         factoryKind: "openai-gpt-live",
         factoryVersion: "v1",
         gate0Qualification: "gate0-v1",
-        authBinding: { realm: "family", binding: "chatgpt-oauth" },
+        authBinding: { realm: "example", binding: "chatgpt-oauth" },
         voice: "marin",
         instructions: "caller-owned prompt",
       } as unknown as import("../src/live.js").ExperimentalLiveGatewayConfig),
@@ -203,16 +203,16 @@ describe("experimental live gateway registration", () => {
   it("rejects malformed, reserved, duplicate, and authority-bearing profiles", () => {
     const base = {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factoryKind: "openai-gpt-live",
       factoryVersion: "v1",
       gate0Qualification: "gate0-v1",
-      authBinding: { realm: "family", binding: "chatgpt-oauth" },
+      authBinding: { realm: "example", binding: "chatgpt-oauth" },
       voice: "marin",
     };
     for (const executionProfiles of [
       [{ profileId: " ", sessionInstructions: "voice" }],
-      [{ profileId: "reachy", sessionInstructions: " " }],
+      [{ profileId: "robot", sessionInstructions: " " }],
       [
         {
           profileId: "openai.gpt-live-1-codex.client-context.v1",
@@ -232,8 +232,8 @@ describe("experimental live gateway registration", () => {
         },
       ],
       [
-        { profileId: "reachy", sessionInstructions: "voice" },
-        { profileId: " reachy ", sessionInstructions: "other" },
+        { profileId: "robot", sessionInstructions: "voice" },
+        { profileId: " robot ", sessionInstructions: "other" },
       ],
     ]) {
       assert.throws(() =>
@@ -262,7 +262,7 @@ describe("experimental live gateway registration", () => {
           ...base,
           executionProfiles: [
             {
-              profileId: "reachy",
+              profileId: "robot",
               sessionInstructions: "voice",
               [field]: "forbidden",
             },
@@ -277,7 +277,7 @@ describe("live execution identity v1", () => {
   it("serializes the shared host-profile fixture", () => {
     assert.deepEqual(
       liveExecutionIdentityV1ToWire({
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       }),
       fixture.execution_identity,
     );
@@ -286,30 +286,30 @@ describe("live execution identity v1", () => {
   it("rejects unknown nested fields and legacy conflicts", () => {
     assert.throws(() =>
       liveExecutionIdentityV1ToWire({
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
         extra: true,
       } as never),
     );
     for (const [field, value] of [
       ["model", "legacy"],
       ["provider", "openai"],
-      ["auth_binding", { realm: "family", binding: "other" }],
+      ["auth_binding", { realm: "example", binding: "other" }],
       ["self_hosted_server_id", "server"],
       ["provider_params", {}],
     ] as const) {
       assert.throws(() =>
         liveOpenExecutionIdentityParams(
-          { profileId: "homecore.reachy.open-room.v1" },
+          { profileId: "example.device.open-room.v1" },
           { [field]: value },
         ),
       );
     }
     for (const input of [
       { profileId: "  " },
-      { profileId: "homecore.reachy.open-room.v1", model: "gpt-live-1-codex" },
-      { profileId: "homecore.reachy.open-room.v1", provider: "openai" },
-      { profileId: "homecore.reachy.open-room.v1", selfHostedServerId: "server" },
-      { profileId: "homecore.reachy.open-room.v1", authBinding: { action: "clear" } },
+      { profileId: "example.device.open-room.v1", model: "gpt-live-1-codex" },
+      { profileId: "example.device.open-room.v1", provider: "openai" },
+      { profileId: "example.device.open-room.v1", selfHostedServerId: "server" },
+      { profileId: "example.device.open-room.v1", authBinding: { action: "clear" } },
     ]) {
       assert.throws(() => liveExecutionIdentityV1ToWire(input as never));
     }
