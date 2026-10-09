@@ -15882,6 +15882,67 @@ comms = true
         const MEMBER_COUNT: usize = 32;
         let (_temp, runtime, delayed_service) =
             build_stress_runtime(MEMBER_COUNT, Duration::ZERO).await;
+        // Spawn acknowledges admission, not completion of the initial turn.
+        // A recovery correctly defers reads while durable work is draining;
+        // settle the fixture before measuring the history-read concurrency.
+        let handle = runtime.mob_handle();
+        let members = handle.list_members_observation_snapshot().await;
+        assert_eq!(members.len(), MEMBER_COUNT);
+        let mut sessions = Vec::with_capacity(MEMBER_COUNT);
+        let mut unique_sessions = BTreeSet::new();
+        for member in members {
+            let session = handle
+                .resolve_bridge_session_id_observation(&member.agent_identity)
+                .await
+                .expect("spawned member has its own bound session");
+            assert!(
+                unique_sessions.insert(session.to_string()),
+                "each stress member must own a distinct session"
+            );
+            sessions.push((member.agent_identity, session));
+        }
+        let readiness_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        tokio::time::timeout_at(readiness_deadline, async {
+            for (member, session) in &sessions {
+                let session_id = session.to_string();
+                loop {
+                    let execution = delayed_service
+                        .execution_snapshot(session)
+                        .await
+                        .expect("initial run execution is observable");
+                    let status = crate::member_status_observation::observe_member_status_until(
+                        &handle,
+                        member,
+                        readiness_deadline,
+                    )
+                    .await
+                    .expect("spawned member status is observable");
+                    if execution.as_ref().is_some_and(|snapshot| {
+                        snapshot.turn_terminal && snapshot.terminal_run_id.is_some()
+                    }) && status.current_session_id.as_ref() == Some(session)
+                        && status.progress.as_ref().is_some_and(|progress| {
+                            progress.run_state == meerkat_mob::MemberRunState::Idle
+                                && progress.in_flight_work == 0
+                        })
+                        && runtime
+                            .mob_runtime()
+                            .session_commit_pending(&session_id)
+                            .await
+                            == Some(false)
+                        && runtime
+                            .mob_runtime()
+                            .session_has_active_inputs(&session_id)
+                            .await
+                            == Some(false)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        })
+        .await
+        .expect("every initial turn settles before the concurrency measurement");
         let aggregator = MobKitConsoleAggregator::in_memory();
         let permit_limit = ConsoleAggregatorOptions::default().max_concurrent_session_backfills;
         assert!(
