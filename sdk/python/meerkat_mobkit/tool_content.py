@@ -22,15 +22,11 @@ shapes mirror the runtime's ``ContentBlock`` wire format (internally tagged by
 """
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
     "text_block",
-    "structured_block",
-    "console_widget_block",
     "image_block",
     "image_blob_block",
     "tool_content",
@@ -41,35 +37,6 @@ __all__ = [
 def text_block(text: str) -> dict[str, Any]:
     """A text content block."""
     return {"type": "text", "text": text}
-
-
-def structured_block(data: Any) -> dict[str, Any]:
-    """Canonical JSON content, preserved as structured data by the runtime."""
-    # Copy to JSON values and reject NaN/infinity before crossing the callback wire.
-    return {"type": "structured", "data": json.loads(json.dumps(data, allow_nan=False))}
-
-
-def console_widget_block(
-    widget_type: str, *, version: int = 1, data: Any, fallback: str,
-) -> dict[str, Any]:
-    """Opt in to a registered console widget without changing tool execution.
-
-    ``widget_type`` is an application-owned name such as ``acme/search-result``;
-    ``version`` selects that renderer's data contract. The plain-text fallback
-    remains readable when the renderer is unavailable. No code or module URL is
-    loaded from tool output. Combine this with other blocks using ``tool_content``.
-    """
-    if (not isinstance(widget_type, str)
-            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*", widget_type)
-            or widget_type.startswith("mobkit/")):
-        raise ValueError("Widget type must be an application-owned namespaced name")
-    if type(version) is not int or not 1 <= version <= 9007199254740991:
-        raise ValueError("Widget version must be a positive JSON-safe integer")
-    if not isinstance(fallback, str) or not fallback.strip():
-        raise ValueError("Widget fallback must be nonempty text")
-    return structured_block({"console_widget": {
-        "type": widget_type, "version": version, "data": data, "fallback": fallback,
-    }})
 
 
 def image_block(media_type: str, data: str) -> dict[str, Any]:
@@ -107,6 +74,6 @@ def tool_content(*blocks: dict[str, Any]) -> ToolResultContent:
     """Bundle content blocks into a rich tool result.
 
     Build the blocks with :func:`text_block`, :func:`image_block`, or
-    :func:`image_blob_block`, :func:`structured_block`, or :func:`console_widget_block`.
+    :func:`image_blob_block`.
     """
     return ToolResultContent(list(blocks))

@@ -1,8 +1,5 @@
-// A dependency-free ES module. A plugin may instead bundle React, Vue, or another UI.
-// Mounts own their container. Runtime data and permissions come from context.
-export default {
-  id: "example-results",
-  panels: [{
+// Developer-owned sidebar panel, independent of MCP Apps.
+export default [{
     id: "example/results",
     title: "Results",
     validateParams: params => params !== null && typeof params === "object" && typeof params.collection === "string",
@@ -21,31 +18,4 @@ export default {
       container.append(heading, description, source, status);
       return { update, dispose() { container.replaceChildren(); } };
     },
-  }],
-  widgets: [{
-    type: "example/result-count",
-    version: 1,
-    mount(container, context) {
-      const title = document.createElement("strong");
-      const summary = document.createElement("p");
-      const button = document.createElement("button");
-      title.textContent = "Search results";
-      button.textContent = "Open results panel";
-      button.style.cssText = "padding:8px 12px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer";
-      const update = next => {
-        const count = next.widget.data?.count;
-        summary.textContent = Number.isSafeInteger(count) && count >= 0
-          ? `${count} matching records` : next.widget.fallback;
-        button.onclick = () => next.openPanel("example/results", {
-          instanceKey: next.conversation?.identity ?? "application",
-          params: { collection: "Matching records" },
-          intent: "split_right",
-        });
-      };
-      update(context);
-      container.style.cssText = "padding:16px;border:1px solid currentColor;border-radius:8px";
-      container.append(title, summary, button);
-      return { update, dispose() { button.onclick = null; container.replaceChildren(); } };
-    },
-  }],
-};
+  }];

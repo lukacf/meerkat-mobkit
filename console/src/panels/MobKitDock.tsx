@@ -1,5 +1,5 @@
 import React from "react";
-import { consoleExtensionPanelTarget, type ConsolePanelDefinition } from "@console-core";
+import { consoleCustomPanelTarget, type ConsolePanelDefinition } from "@console-core";
 import type {
   ConsoleDockNode,
   ConsoleDockPanelSplitDirection,
@@ -17,7 +17,7 @@ interface MobKitDockProps {
   agents: ConsoleAgent[];
   renderPanelBody: (panel: { id: string; target?: MobKitDockTarget | null }) => React.ReactNode;
   visibleControls?: NavKind[];
-  extensionPanels?: readonly ConsolePanelDefinition[];
+  customPanels?: readonly ConsolePanelDefinition[];
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCreateTab: () => void;
@@ -45,7 +45,7 @@ export function MobKitDock({
   agents,
   renderPanelBody,
   visibleControls,
-  extensionPanels,
+  customPanels,
   onSelectTab,
   onCloseTab,
   onCreateTab,
@@ -141,7 +141,7 @@ export function MobKitDock({
             viewState={viewState}
             agents={agents}
             visibleControls={visibleControls}
-            extensionPanels={extensionPanels}
+            customPanels={customPanels}
             renderPanelBody={renderPanelBody}
             onFocusPanel={onFocusPanel}
             onSplitPanel={onSplitPanel}
@@ -157,7 +157,7 @@ export function MobKitDock({
 
 interface DockLayoutProps extends Pick<MobKitDockProps,
   "viewState" | "agents" | "renderPanelBody" |
-  "visibleControls" | "extensionPanels" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onResizeSplit" | "onOpenTargetInPanel"
+  "visibleControls" | "customPanels" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onResizeSplit" | "onOpenTargetInPanel"
 > {
   node: ConsoleDockNode;
 }
@@ -223,13 +223,13 @@ function SplitView(props: DockLayoutProps): React.JSX.Element | null {
 
 interface PaneViewProps extends Pick<MobKitDockProps,
   "viewState" | "agents" | "renderPanelBody" |
-  "visibleControls" | "extensionPanels" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onOpenTargetInPanel"
+  "visibleControls" | "customPanels" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onOpenTargetInPanel"
 > {
   panelId: string;
 }
 
 function PaneView({
-  panelId, viewState, agents, renderPanelBody, visibleControls, extensionPanels,
+  panelId, viewState, agents, renderPanelBody, visibleControls, customPanels,
   onFocusPanel, onSplitPanel, onClosePanel, onOpenTargetInPanel,
 }: PaneViewProps): React.JSX.Element | null {
   const panel = viewState.panels.find((p) => p.id === panelId);
@@ -293,7 +293,7 @@ function PaneView({
           <PaneMenu
             agents={agents}
             visibleControls={visibleControls}
-            extensionPanels={extensionPanels}
+            customPanels={customPanels}
             onClose={() => setMenuOpen(false)}
             onPick={(target) => {
               setMenuOpen(false);
@@ -312,12 +312,12 @@ function PaneView({
 interface PaneMenuProps {
   agents: ConsoleAgent[];
   visibleControls?: NavKind[];
-  extensionPanels?: readonly ConsolePanelDefinition[];
+  customPanels?: readonly ConsolePanelDefinition[];
   onClose: () => void;
   onPick: (target: MobKitDockTarget) => void;
 }
 
-function PaneMenu({ agents, visibleControls, extensionPanels = [], onClose, onPick }: PaneMenuProps): React.JSX.Element {
+function PaneMenu({ agents, visibleControls, customPanels = [], onClose, onPick }: PaneMenuProps): React.JSX.Element {
   const controls = ([
     ["topology", "Topology"],
     ["timeline", "Today"],
@@ -344,8 +344,8 @@ function PaneMenu({ agents, visibleControls, extensionPanels = [], onClose, onPi
             <span className="pane-menu__id">view</span>
           </button>
         ))}
-        {extensionPanels.map(panel => <button key={panel.id} className="pane-menu__item"
-          onClick={() => onPick(consoleExtensionPanelTarget(panel))} data-testid={`pane-menu-extension:${panel.id}`}>
+        {customPanels.map(panel => <button key={panel.id} className="pane-menu__item"
+          onClick={() => onPick(consoleCustomPanelTarget(panel))} data-testid={`pane-menu-custom-panel:${panel.id}`}>
           <span /><span>{panel.title}</span><span className="pane-menu__id">view</span>
         </button>)}
         <div className="pane-menu__sep" />

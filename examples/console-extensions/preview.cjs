@@ -9,15 +9,13 @@ const agent = "identity:example";
 const frames = [
   { id: "request", kind: "user_input", identity: agent, interaction_id: "example-turn", timestamp_ms: 1791540000000,
     payload: { content: "Find the matching records.", origin: "console:example" } },
-  { id: "result", kind: "tool_result_received", identity: agent, interaction_id: "example-turn", timestamp_ms: 1791540001000,
-    payload: require("../../crates/meerkat-mobkit/tests/fixtures/console-widget-rich-result.json").received },
   { id: "complete", kind: "run_completed", identity: agent, interaction_id: "example-turn", timestamp_ms: 1791540002000,
     payload: { result: "The matching records are ready to review." } },
 ];
 frames.forEach((frame, index) => { frame.cursor = `console:${index + 1}`; });
 const experience = {
   contract_version: "0.5.0", runtime_id: "extension-preview", storage_scope: "extension-preview-subject",
-  console_config: { title: "Extension example", extension_modules: ["/extensions/example.js"],
+  console_config: { title: "Extension example", panel_modules: ["/extensions/example.js"],
     layout: { initial_agent: agent }, environment: { label: "fixture" }, rail: { visible: false } },
   console_policy: { read_only: true },
   agent_sidebar: { live_snapshot: { agents: [{ identity: agent, member_id: agent, agent_id: agent,

@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleUiConfig {
-    /// Trusted same-origin JavaScript modules exporting console extensions.
+    /// Trusted same-origin JavaScript modules exporting custom panel arrays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extension_modules: Vec<String>,
+    pub panel_modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "ConsoleBrandingConfig::is_default")]
@@ -41,7 +41,7 @@ impl ConsoleUiConfig {
     }
 
     pub fn normalized(mut self) -> Self {
-        self.extension_modules = normalize_string_vec(self.extension_modules);
+        self.panel_modules = normalize_string_vec(self.panel_modules);
         self.title = normalize_optional_string(self.title);
         self.brand = self.brand.normalized();
         self.appearance = self.appearance.normalized();
@@ -428,7 +428,7 @@ impl std::error::Error for ConsoleConfigError {}
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ConsoleUiConfigPatch {
     #[serde(default)]
-    extension_modules: Option<Vec<String>>,
+    panel_modules: Option<Vec<String>>,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -453,8 +453,8 @@ struct ConsoleUiConfigPatch {
 
 impl ConsoleUiConfigPatch {
     fn apply_to(&self, config: &mut ConsoleUiConfig) {
-        if let Some(modules) = &self.extension_modules {
-            config.extension_modules = normalize_string_vec(modules.clone());
+        if let Some(modules) = &self.panel_modules {
+            config.panel_modules = normalize_string_vec(modules.clone());
         }
         if let Some(title) = &self.title {
             config.title = normalize_optional_string(Some(title.clone()));
@@ -821,28 +821,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extension_modules_are_projected_and_realm_overridable()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn panel_modules_are_projected_and_realm_overridable() -> Result<(), Box<dyn std::error::Error>>
+    {
         let source = r#"
-extension_modules = [" /assets/base.js ", ""]
+panel_modules = [" /assets/base.js ", ""]
 [realms.demo]
-extension_modules = ["/assets/demo.js"]
+panel_modules = ["/assets/demo.js"]
 [realms.disabled]
-extension_modules = []
+panel_modules = []
 "#;
         let base = load_console_ui_config_from_toml(source)?;
-        assert_eq!(base.extension_modules, vec!["/assets/base.js"]);
+        assert_eq!(base.panel_modules, vec!["/assets/base.js"]);
         assert_eq!(
-            serde_json::to_value(&base)?["extension_modules"],
+            serde_json::to_value(&base)?["panel_modules"],
             serde_json::json!(["/assets/base.js"])
         );
         let demo = load_console_ui_config_from_toml_for_realm(source, Some("demo"))?;
-        assert_eq!(demo.extension_modules, vec!["/assets/demo.js"]);
+        assert_eq!(demo.panel_modules, vec!["/assets/demo.js"]);
         let disabled = load_console_ui_config_from_toml_for_realm(source, Some("disabled"))?;
-        assert!(disabled.extension_modules.is_empty());
+        assert!(disabled.panel_modules.is_empty());
         assert!(
             serde_json::to_value(disabled)?
-                .get("extension_modules")
+                .get("panel_modules")
                 .is_none()
         );
         Ok(())

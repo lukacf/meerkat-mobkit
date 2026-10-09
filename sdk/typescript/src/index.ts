@@ -111,8 +111,7 @@ export type {
 // -- Data models ----------------------------------------------------------
 
 // Rich tool-result content blocks for callback tool handlers.
-export { textBlock, structuredBlock, consoleWidgetBlock, imageBlock, imageBlobBlock, toolContent, ToolResultContent } from "./tool-content.js";
-export type { ConsoleWidgetMetadata, JsonContentValue } from "./tool-content.js";
+export { textBlock, imageBlock, imageBlobBlock, toolContent, ToolResultContent } from "./tool-content.js";
 export type { ContentBlock } from "./tool-content.js";
 
 export {
