@@ -17310,9 +17310,20 @@ comms = true
         });
         let session_id = meerkat_core::SessionId::new();
         for wrapper in [pre_build, after_create] {
+            *probe
+                .retained_metadata_reply
+                .lock()
+                .expect("retained reply") = Some(Err(SessionError::NotFound {
+                id: session_id.clone(),
+            }));
             let result = wrapper.load_retained_session_metadata(&session_id).await;
             assert!(matches!(result, Err(SessionError::NotFound { id }) if id == session_id));
         }
+        assert_eq!(
+            *probe.retained_metadata_requests.lock().expect("requests"),
+            vec![session_id.clone(), session_id],
+            "both wrappers preserve the exact requested session"
+        );
         assert_eq!(
             probe.calls(),
             vec![
@@ -22480,6 +22491,7 @@ comms = true
             None,
             None,
         )
+        .expect("bootstrap spec")
         .with_child_application_tool_policy(meerkat_core::ApplicationToolPolicyBinding::Unmanaged);
         let preliminary = spec
             .agent_mob_mcp_state
@@ -22596,7 +22608,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("bootstrap spec");
         spec.agent_mob_mcp_state = None;
         spec.agent_mob_tools_install = None;
         spec.child_mcp_servers = Some(meerkat_mob_mcp::ChildMcpServers::new());
@@ -24671,6 +24684,7 @@ image_generation = true
                         ..CapabilityFlags::default()
                     },
                     Some(hook),
+                    None,
                     None,
                 )
                 .expect("image-only ephemeral spec")
