@@ -1472,6 +1472,7 @@ impl meerkat_core::agent::AgentToolDispatcher for RecorderToolDispatcher {
             tool_use_id: call.id.to_string(),
             content: vec![meerkat_core::ContentBlock::Text { text }],
             is_error,
+            settlement_failures: Vec::new(),
         }
         .into())
     }
@@ -2744,7 +2745,7 @@ memory = false
         Ok(())
     }
 
-    struct EchoDispatcher;
+    struct EchoDispatcher(meerkat_core::ops::ToolDispatchOutcome);
 
     #[async_trait]
     impl AgentToolDispatcher for EchoDispatcher {
@@ -2763,14 +2764,8 @@ memory = false
             call: meerkat_core::types::ToolCallView<'_>,
         ) -> Result<meerkat_core::ops::ToolDispatchOutcome, meerkat_core::error::ToolError>
         {
-            Ok(meerkat_core::ToolResult {
-                tool_use_id: call.id.to_string(),
-                content: vec![meerkat_core::ContentBlock::Text {
-                    text: "echoed".to_string(),
-                }],
-                is_error: false,
-            }
-            .into())
+            assert_eq!(call.id, self.0.result.tool_use_id);
+            Ok(self.0.clone())
         }
     }
 
@@ -2781,7 +2776,25 @@ memory = false
             Arc::new(SqliteAgentMemoryStore::open(dir.path())?);
         let customizer = AgentMemoryCustomizer::new(provider, AgentMemoryConfig::default());
         let mut draft = draft();
-        draft.local_external_tools = LocalExternalToolOverlay::new(Arc::new(EchoDispatcher));
+        let mut result = meerkat_core::ToolResult::new("call-echo".into(), "echoed".into(), false);
+        let first = crate::test_diagnostics::settlement_failure(false);
+        let mut second = first.clone();
+        second.admission_source = meerkat_core::ops::ToolDispatchAdmissionSource::ContextGate;
+        result.settlement_failures = vec![first, second];
+        let expected = meerkat_core::ops::ToolDispatchOutcome::new(
+            result,
+            vec![meerkat_core::ops::AsyncOpRef::detached(
+                meerkat_core::OperationId::new(),
+            )],
+            vec![meerkat_core::ops::SessionEffect::AppendAssistantBlocks {
+                blocks: vec![meerkat_core::AssistantBlock::Text {
+                    text: "committed follow-up".into(),
+                    meta: None,
+                }],
+            }],
+        );
+        draft.local_external_tools =
+            LocalExternalToolOverlay::new(Arc::new(EchoDispatcher(expected.clone())));
         customizer
             .customize_build(&build_context()?, &durable_spec()?, &mut draft)
             .await?;
@@ -2807,10 +2820,10 @@ memory = false
                 args: &raw,
             })
             .await?;
-        assert!(matches!(
-            outcome.result.content.first(),
-            Some(meerkat_core::ContentBlock::Text { text }) if text == "echoed"
-        ));
+        assert_eq!(outcome.result, expected.result);
+        assert_eq!(outcome.async_ops, expected.async_ops);
+        assert_eq!(outcome.session_effects, expected.session_effects);
+        assert_eq!(outcome.terminal_cause(), expected.terminal_cause());
         Ok(())
     }
 

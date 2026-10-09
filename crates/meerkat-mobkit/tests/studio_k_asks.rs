@@ -381,10 +381,13 @@ async fn studio_k0_identity_first_gateway_retire_respawn_succeed_on_idle_members
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the studio fixture runtime machine"),
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -408,6 +411,7 @@ comms = true
     .expect("definition");
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
         .with_session_runtime_adapter(adapter.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -654,10 +658,13 @@ async fn doctrine_member_rpcs_route_identity_owned_members_through_identity_auth
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let adapter = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the studio fixture runtime machine"),
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -681,6 +688,7 @@ comms = true
     .expect("definition");
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
         .with_session_runtime_adapter(adapter.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

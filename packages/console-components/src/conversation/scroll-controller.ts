@@ -404,7 +404,13 @@ export function useConversationScrollController(options: ConversationScrollContr
           || (session.lastGesture === "content-press" && session.mode === "following-end"
             && end - observed <= CONVERSATION_END_ROUNDING_PX));
       const movedUp = previous !== null && observed < previous - 0.5 && end - observed > 0.5 && !settle;
-      session.mode = !movedUp && conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
+      // While following, only an upward move leaves. Content can grow before
+      // a native scroll event that did not move the reader up (a disclosure
+      // opened at the end, then the browser's own scroll after the press), so
+      // the band, measured against the grown end, would misread that
+      // unchanged position as reading; the next layout pass re-pins the end.
+      session.mode = !movedUp && (session.mode === "following-end"
+        || conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight)) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
       cancelReveal(session);

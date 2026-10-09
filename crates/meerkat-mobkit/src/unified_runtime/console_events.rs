@@ -1176,7 +1176,7 @@ fn current_time_ms() -> u64 {
 /// durable identity. Real agent events from meerkat-mob 0.6 use
 /// `{identity}:{N}` (`AgentRuntimeId`'s Display form).
 ///
-/// Identities themselves often contain colons (e.g. `personal:alice@x.com`),
+/// Identities themselves often contain colons (e.g. `personal:alice@example.com`),
 /// so we only strip the LAST colon-delimited segment and only when that
 /// segment parses as a generation suffix. If the format changes, this
 /// returns `None` and the caller must fall back to explicit

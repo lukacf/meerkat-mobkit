@@ -363,6 +363,7 @@ mod tests {
                     tool_use_id: call.id.to_string(),
                     content: vec![],
                     is_error: false,
+                    settlement_failures: Vec::new(),
                 }
                 .into())
             }

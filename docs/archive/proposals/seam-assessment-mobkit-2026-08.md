@@ -1,6 +1,6 @@
 # Dual-authority seam assessment - mobkit lane
 
-**In response to** HomeCore's `dual-authority-seam-inventory.md` (their PR
+**In response to** the downstream app's `dual-authority-seam-inventory.md` (their PR
 #154), at the owner's request. The meerkat lead has answered separately; this
 is the mobkit chair. Written the same week we lived incidents 1.2, 1.3, 1.4,
 1.5, 1.6 and 1.11, so the classifications below are from the trench, not the
@@ -72,7 +72,7 @@ of its holdings are *host state* (legitimate, distinct scope) and which are
   "reconcile projections from authority" pass replacing per-incident fixes.
 - **Classification:** structural, staged; aligns with meerkat's post-0.8.18
   direction. This row and row 2 are my answer to question 5: **the two I
-  would least like OB3 to discover at scale** - both fail silently and both
+  would least like the operator deployment to discover at scale** - both fail silently and both
   scale with fleet size.
 
 ### 4. Instruction/prompt semantics
@@ -101,18 +101,18 @@ of its holdings are *host state* (legitimate, distinct scope) and which are
 ### 6. Agent memory
 - **Authority proposal:** meerkat's semantic memory is the engine; mobkit's
   `agent_memory` RPCs + recorder are the single *host surface*; nothing
-  else writes. HomeCore's shadow tool exists because mobkit's in-turn
+  else writes. The downstream app's shadow tool exists because mobkit's in-turn
   recall RPC deadlocks - that deadlock is a mobkit defect and the honest
   first move: fix it, then the shadow (and its direct sqlite reads) can be
   deleted by its owner. Bug D (host builder clobbering the recorder) argues
   for the recorder being non-clobberable rather than convention-protected.
-- **Classification:** structural-lite; needs its own pass with HomeCore as
+- **Classification:** structural-lite; needs its own pass with the downstream app as
   the consumer. I will take the deadlock as a named 0.8.15 item.
 
 ### 7. Compaction / retention
 - **Authority:** meerkat. MobKit's revision retention is storage policy
   over its own store - a distinct concern, not a copy - and the KB cap
-  living in HomeCore is evidence for meerkat's already-queued
+  living in the downstream app is evidence for meerkat's already-queued
   context-budget/limit-degradation work, not for a mobkit holding.
 - **Classification:** no mobkit change beyond observability hooks.
 
@@ -143,7 +143,7 @@ of its holdings are *host state* (legitimate, distinct scope) and which are
    recovery model - consolidating it away would remove the reset-reseed
    lane that saved the fleet twice this week. Keep it, but as a projection
    under the rule, never as truth.
-5. **OB3 ranking:** rows 2 and 3, for silence-at-scale. Row 6 third - the
+5. **Operator deployment ranking:** rows 2 and 3, for silence-at-scale. Row 6 third - the
    shadow-tool pattern will be copied by every host that hits the deadlock.
 
 ## Commitments (mobkit 0.8.15 queue unless noted)

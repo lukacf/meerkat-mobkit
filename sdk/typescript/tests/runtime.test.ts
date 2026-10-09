@@ -1858,7 +1858,7 @@ describe("MobHandle.listRoutes()", () => {
       routes: [
         {
           route_key: "rk-1",
-          recipient: "user@ex.com",
+          recipient: "user@example.org",
           channel: "email",
           sink: "smtp",
           target_module: "mailer",
@@ -1870,7 +1870,7 @@ describe("MobHandle.listRoutes()", () => {
     assert.equal(calls[0].method, "mobkit/routing/routes/list");
     assert.equal(result.length, 1);
     assert.equal(result[0].routeKey, "rk-1");
-    assert.equal(result[0].recipient, "user@ex.com");
+    assert.equal(result[0].recipient, "user@example.org");
     assert.equal(result[0].channel, "email");
     assert.equal(result[0].sink, "smtp");
     assert.equal(result[0].targetModule, "mailer");

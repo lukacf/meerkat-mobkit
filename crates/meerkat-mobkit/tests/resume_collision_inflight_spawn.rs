@@ -116,10 +116,13 @@ async fn boot(state: &std::path::Path, mob_id: &str, gate: watch::Receiver<bool>
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
+    let machine = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("acquire the resume collision fixture runtime machine"),
+    );
     let session_service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -145,6 +148,7 @@ comms = true
     let hook_parked = Arc::clone(&parked_builds);
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_session_runtime_adapter(machine.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

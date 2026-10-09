@@ -72,7 +72,7 @@ The implementation serializes the supplied typed context under the SDK-consumed 
 **`sdk/python/tests/test_identity_first_builder_dispatcher.py:527-581`**
 
 ```text
-assert context.mob_definition["id"] == "household"
+assert context.mob_definition["id"] == "team"
         assert context.mob_definition["profiles"]["assistant"]["model"] == "gpt-5.5"
         assert context.previous_identities == ["a:main", "b:main"]
 ```
@@ -84,7 +84,7 @@ The fixture checks received values, not merely model existence. A separate no-fi
 ```text
 assert.deepEqual(seen[0], {
       mobDefinition: {
-        id: "household",
+        id: "team",
         profiles: { assistant: { model: "gpt-5.5" } },
       },
       previousIdentities: ["a:main", "b:main"],
@@ -2234,7 +2234,7 @@ version = "0.8.40"
 
 The exact resolved Anthropic runtime is 0.8.40. The meerkat-client 0.8.40 lock entry at 2322-2332 depends on it. The locked crate checksum is cf5bf2e5b50fb570d70dd225d4192e762af04de8977449c5aea0110692f335cd.
 
-**`/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/runtime/mod.rs:69-91`**
+**`(operator-retained path)/meerkat-anthropic-0.8.40/src/runtime/mod.rs:69-91`**
 
 ```text
 fn default_cache_control_for_backend(backend: AnthropicBackendKind) -> AnthropicCacheControlPolicy {
@@ -2248,7 +2248,7 @@ fn default_cache_control_for_backend(backend: AnthropicBackendKind) -> Anthropic
 
 This is the authenticated pinned registry source's operative default. The adjacent exhaustive match is true only for AnthropicApi/Vertex/Foundry and false for Bedrock/Copilot. Runtime construction passes this selector and support flag into clients, including runtime/mod.rs:709-717.
 
-**`/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/client.rs:859-884`**
+**`(operator-retained path)/meerkat-anthropic-0.8.40/src/client.rs:859-884`**
 
 ```text
         let cache_control = anthropic_tag(request)

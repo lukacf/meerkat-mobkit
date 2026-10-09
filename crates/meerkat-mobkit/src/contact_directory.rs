@@ -212,7 +212,7 @@ pub(crate) fn parse_transport(s: &str) -> Option<MobTransport> {
 /// Parse `"member::mob_id"` into `(member, mob_id)`.
 ///
 /// Uses `::` as separator (not `@`) to avoid collision with email-based
-/// member IDs like `personal:luka@king.com`.
+/// member IDs like `personal:user@example.com`.
 ///
 /// Only matches if `mob_id` is a known entry in the directory —
 /// bare member names and unknown mob IDs return `None`.
@@ -358,7 +358,7 @@ mod tests {
 
         // Email-based member ID — no match (no :: separator)
         assert_eq!(
-            parse_cross_mob_address("personal:luka@king.com", &dir),
+            parse_cross_mob_address("personal:user@example.com", &dir),
             None
         );
 

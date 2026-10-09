@@ -1338,7 +1338,7 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
     // prompt. Resume authors nothing (the bridge clears the prompt
     // override), so its presence in post-mint request bytes proves the
     // imported document reached the model's working context.
-    const RELEASED_MARKER: &str = "OB3 Summary Agent";
+    const RELEASED_MARKER: &str = "Example Review Agent";
     let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
     let released_session_id =
         meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
@@ -1526,8 +1526,9 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
 ///
 /// BYTE-LOSSLESS PRINCIPLE (lead ruling): the bundle is reconstituted
 /// verbatim - every row of every table, through the bundle's own DDL - and
-/// the HARNESS adopts the bundle's identity space instead (mob `homecore`,
-/// profile `domain`, member `domain:calendar`), so the persisted
+/// the HARNESS adopts the bundle's identity space instead (the mob id read
+/// from the released head's comms name, profile `domain`, member
+/// `domain:calendar`), so the persisted
 /// `mob_member_binding` and `comms_name` match the booting mob without a
 /// single byte of document surgery. The first execution of the patched-
 /// metadata variant of this leg proved why: the identity-binding guard
@@ -1539,9 +1540,12 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
 /// ACTIVE, the fleet transcript replays, and a real turn extends the
 /// adopted (current-format) head durably.
 ///
-/// FIXTURE PROVENANCE: fixtures/homecore_ledgerv1_closure/ - HomeCore
-/// forensic bundle (2026-08-01, sha256 197c2f6e...), a gen-20 production
-/// continuity byte-copy delivered for exactly this leg.
+/// FIXTURE PROVENANCE: fixtures/homecore_ledgerv1_closure/ (sha256
+/// 128aee2d...) - the forensic closure's exact layout and rewrite topology
+/// with SYNTHETIC content: free text replaced, and every strand id, commit
+/// digest and head revision recomputed with the released 0.8.10 digest
+/// recomputation (tests/fixtures/README.md). It still goes red on the
+/// parent of the adoption fix with the class-3 refusal.
 #[tokio::test(flavor = "multi_thread")]
 async fn homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
     if proxied_to_memo_free_child(
@@ -1673,10 +1677,14 @@ async fn homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
     reconstitute_closure(&continuity_db(&state), &closure);
 
     // The bundle's identity space, adopted by the harness.
-    let fleet_definition = MobDefinition::from_toml(
+    let fleet_mob_id = head_json["metadata"]["session_metadata"]["comms_name"]
+        .as_str()
+        .and_then(|comms_name| comms_name.split('/').next())
+        .expect("the released head carries its mob-scoped comms name");
+    let fleet_definition_toml = format!(
         r#"
 [mob]
-id = "homecore"
+id = "{fleet_mob_id}"
 
 [profiles.domain]
 model = "gpt-5.5"
@@ -1685,9 +1693,10 @@ runtime_mode = "turn_driven"
 
 [profiles.domain.tools]
 comms = true
-"#,
-    )
-    .expect("parse the homecore-shaped mob definition");
+"#
+    );
+    let fleet_definition = MobDefinition::from_toml(&fleet_definition_toml)
+        .expect("parse the homecore-shaped mob definition");
     struct CalendarRoster;
     #[async_trait]
     impl RosterProvider for CalendarRoster {
@@ -1935,21 +1944,8 @@ comms = true
         let runtime = {
             let builder = UnifiedRuntimeBuilder::default()
                 .definition(
-                    MobDefinition::from_toml(
-                        r#"
-[mob]
-id = "homecore"
-
-[profiles.domain]
-model = "gpt-5.5"
-external_addressable = true
-runtime_mode = "turn_driven"
-
-[profiles.domain.tools]
-comms = true
-"#,
-                    )
-                    .expect("parse the homecore-shaped mob definition (zero-turn boot)"),
+                    MobDefinition::from_toml(&fleet_definition_toml)
+                        .expect("parse the homecore-shaped mob definition (zero-turn boot)"),
                 )
                 .persistent_state(&state)
                 .continuity_from_state_dir(&state)
@@ -1995,21 +1991,8 @@ comms = true
         let runtime = {
             let builder = UnifiedRuntimeBuilder::default()
                 .definition(
-                    MobDefinition::from_toml(
-                        r#"
-[mob]
-id = "homecore"
-
-[profiles.domain]
-model = "gpt-5.5"
-external_addressable = true
-runtime_mode = "turn_driven"
-
-[profiles.domain.tools]
-comms = true
-"#,
-                    )
-                    .expect("parse the homecore-shaped mob definition (boot 2)"),
+                    MobDefinition::from_toml(&fleet_definition_toml)
+                        .expect("parse the homecore-shaped mob definition (boot 2)"),
                 )
                 .persistent_state(&state)
                 .continuity_from_state_dir(&state)

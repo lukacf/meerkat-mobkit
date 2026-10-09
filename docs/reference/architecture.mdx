@@ -62,7 +62,7 @@ graph TD
     subgraph subsystems["Application-supplied MCP modules"]
         ROUTER["Router"]
         DELIVERY["Delivery"]
-        MEMORY["Memory backend<br/>(Elephant optional)"]
+        MEMORY["Memory backend<br/>(external memory hub optional)"]
     end
 
     APP --> SDK
@@ -173,7 +173,7 @@ module boundary.
 
 This module-facing memory path is separate from MobKit's identity-scoped agent
 memory record layer under `memory/`. The bundled hot record store is SQLite
-with deterministic recall and staged write validation. Elephant is an optional
+with deterministic recall and staged write validation. An external memory hub is an optional
 deeper backend, not the definition of all MobKit memory.
 
 ### Subprocess path (custom modules)
