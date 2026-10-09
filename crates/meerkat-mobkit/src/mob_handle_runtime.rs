@@ -5517,6 +5517,90 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    fn execution_custody(&self) -> Option<&meerkat_runtime::store::RuntimeStoreExecutionCustody> {
+        self.inner.execution_custody()
+    }
+
+    fn try_controller_mutation_custody<'a>(
+        &'a self,
+        claim: &'a meerkat_runtime::store::RuntimeStoreExecutionClaim,
+    ) -> Result<
+        Box<dyn meerkat_runtime::store::RuntimeStoreControllerCustody + 'a>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.try_controller_mutation_custody(claim)
+    }
+
+    fn hosting_capability(&self) -> meerkat_runtime::session_hosting::HostingCapability {
+        self.inner.hosting_capability()
+    }
+
+    async fn load_continuation_key_binding(
+        &self,
+        owner: &str,
+        key: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::ContinuationKeyBinding>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_continuation_key_binding(owner, key).await
+    }
+
+    async fn compare_and_swap_runtime_delivery_authority_with_key_binding(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_revision: Option<u64>,
+        replacement: meerkat_runtime::store::RuntimeDeliveryAuthorityRecord,
+        inserted_delivery: meerkat_runtime::store::RuntimeDeliveryStoreRecord,
+        binding: meerkat_runtime::store::ContinuationKeyBinding,
+    ) -> Result<
+        meerkat_runtime::store::KeyedRuntimeDeliveryCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_runtime_delivery_authority_with_key_binding(
+                runtime_id,
+                expected_revision,
+                replacement,
+                inserted_delivery,
+                binding,
+            )
+            .await
+    }
+
+    async fn load_continuation_admission(
+        &self,
+        address: &meerkat_runtime::LogicalRuntimeId,
+        delivery_id: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::ContinuationAdmission>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_continuation_admission(address, delivery_id)
+            .await
+    }
+
+    async fn transition_continuation_admission(
+        &self,
+        address: &meerkat_runtime::LogicalRuntimeId,
+        delivery_id: &str,
+        transition: meerkat_runtime::store::ContinuationAdmissionTransition,
+    ) -> Result<
+        meerkat_runtime::store::ContinuationAdmissionOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .transition_continuation_admission(address, delivery_id, transition)
+            .await
+    }
+
+    async fn load_delivery_generation(
+        &self,
+    ) -> Result<u64, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_delivery_generation().await
+    }
+
     /// The one cross-runtime delivery read. `RuntimeDeliveryInbox::
     /// pending_delivery_total` (the `runtime_inbox_backlog` health dimension)
     /// has no other way to find runtimes holding committed-but-undrained
