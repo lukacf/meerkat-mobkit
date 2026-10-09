@@ -10,7 +10,7 @@ icon: "rocket"
   <Tab title="Rust crate">
     ```toml Cargo.toml
     [dependencies]
-    meerkat-mobkit = "0.8.47"
+    meerkat-mobkit = "0.8.49"
     tokio = { version = "1", features = ["full"] }
     ```
   </Tab>
@@ -147,25 +147,25 @@ shut it down when finished, and a console host should retain that cleanup on exi
 
 The console shows the agent sidebar, conversation workspace, signals rail, topology, logs, and health overview. The bundled app seeds from REST, sends through JSON-RPC, and tails replayable timeline frames over SSE.
 
-## Identity-first (household apps)
+## Identity-first (durable identity apps)
 
-For apps with durable agent identities (like HomeCore), use the identity-first API:
+For apps with durable agent identities, use the identity-first API:
 
 ```python
 from meerkat_mobkit import MobKit
 from meerkat_mobkit.identity_first_models import DurableAgentSpec, ManagedPeerEdge
 
-# Define your household roster
+# Define your roster
 class MyRoster:
     async def roster(self, context):
         return [
-            DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
+            DurableAgentSpec(identity="identity:alice", profile="personal", addressability="addressable"),
             DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
         ]
 
 class MyTopology:
     async def compute_edges(self, target_identities, context):
-        return [ManagedPeerEdge(a="identity:luka", b="triage:main")]
+        return [ManagedPeerEdge(a="identity:alice", b="triage:main")]
 
 # Boot the runtime
 rt = await (
@@ -180,7 +180,7 @@ rt = await (
 
 # Use identity-scoped handles
 triage = rt.agent("triage:main")
-luka = rt.agent("identity:luka")
+alice = rt.agent("identity:alice")
 
 # On turn_driven members (runtime_mode = "turn_driven"), send_and_wait /
 # dispatch_and_wait wait for the turn they started, by its turn ticket, and
@@ -194,7 +194,7 @@ output = await triage.dispatch_text_and_wait(
     "New event from connector", origin="connector", timeout=60,
 )
 
-await luka.send_and_wait("What's happening today?", timeout=60)
+await alice.send_and_wait("What's happening today?", timeout=60)
 ```
 
 <Note>

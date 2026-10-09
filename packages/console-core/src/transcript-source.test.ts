@@ -221,8 +221,8 @@ describe("member comms names", () => {
   test("decodes the MobKit member id codec", () => {
     expect(decodeMemberAlias("mk--identity_cparent-1")).toBe("identity:parent-1");
     expect(decodeMemberAlias("mk--rt_creview_csingleton_c0")).toBe("rt:review:singleton:0");
-    expect(decodeMemberAlias("mk--rt_cperson_cfederico_x2e_gomez_x40_king_x2e_com_c2"))
-      .toBe("rt:person:federico.gomez@king.com:2");
+    expect(decodeMemberAlias("mk--rt_cperson_cjane_x2e_doe_x40_example_x2e_com_c2"))
+      .toBe("rt:person:jane.doe@example.com:2");
     expect(decodeMemberAlias("mk--snake__case")).toBe("snake_case");
     expect(decodeMemberAlias("plain-member")).toBe("plain-member");
     // Not an encode production: returned unchanged.

@@ -81,7 +81,7 @@ The Python callback receives a typed object, not the raw dict described in the s
 **`sdk/python/tests/test_identity_first_builder_dispatcher.py:553-560`**
 
 ```text
-assert context.mob_definition["id"] == "household"
+assert context.mob_definition["id"] == "team"
 ```
 
 The regression asserts the compiled definition is accessible through the typed context. It also checks previous_identities.

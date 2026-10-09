@@ -202,6 +202,7 @@ pub fn start_mobkit_runtime_with_options(
         delivery_idempotency: BTreeMap::new(),
         delivery_idempotency_by_delivery: BTreeMap::new(),
         delivery_rate_window_counts: BTreeMap::new(),
+        gating_epoch: new_gating_epoch(),
         gating_sequence: 0,
         gating_pending: BTreeMap::new(),
         gating_pending_order: Vec::new(),

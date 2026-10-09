@@ -556,11 +556,11 @@ the exact range and the approximation caveat comes out of `distiller.rs`.
 > Seven further asks, derived from (a) the two §10.1 security gaps the shipped
 > taint firewall documents as upstream-gated, (b) the fork-Distiller seam that
 > ask 6's landing did not fully unlock, and (c) production evidence from
-> **ob3_validator** — the most general MobKit deployment (one mob; hundreds of
+> **operator_validator** — the most general MobKit deployment (one mob; hundreds of
 > years-lived durable identities in the personal-agents + domain-agents +
 > task-agents pattern; multi-GB sessions; BigQuery-backed custom stores; heavy
-> agent-spawned worker churn). OB3's own filed docs (in
-> `ob3_validator/docs/`, commit `c36c105`) are the authoritative specs for
+> agent-spawned worker churn). The operator deployment's own filed docs (in
+> `operator_validator/docs/`, commit `c36c105`) are the authoritative specs for
 > asks 11–13 — work from them directly. None of these block MobKit; every ask
 > states the interim behavior.
 >
@@ -576,7 +576,7 @@ the exact range and the approximation caveat comes out of `distiller.rs`.
 > 5. **Ask 14 + Ask 15** — quality-of-life; no urgency.
 >
 > Evidence citations verified against meerkat 0.7.15 and mobkit `main`
-> (post-#218/#219); OB3 citations against `ob3_validator` HEAD 2026-07-04.
+> (post-#218/#219); the operator deployment citations against `operator_validator` HEAD 2026-07-04.
 
 ## Ask 9 — Dispatch-time content-taint visibility + `ToolDef` provenance
 
@@ -657,7 +657,7 @@ the live map) preserving the prompt-cache prefix.
 **Historical MobKit interim behavior.** The Distiller ran detached bounded
 extraction over a bare LLM client (zero tools — so no containment gap, only foregone
 prompt-cache economics). On landing, extraction moves to a fork sharing the
-parent's cached prefix — material at OB3-scale multi-GB transcripts.
+parent's cached prefix — material at production-scale multi-GB transcripts.
 
 ## Ask 11 — Incremental session persistence (`IncrementalSessionStore`)
 
@@ -665,7 +665,7 @@ parent's cached prefix — material at OB3-scale multi-GB transcripts.
 makes ordinary saves O(delta), and compaction commits a shrinking canonical
 head rather than growing a monolithic session blob.
 
-**Title:** Adopt OB3's incremental session persistence spec — O(delta) saves,
+**Title:** Adopt the operator deployment's incremental session persistence spec — O(delta) saves,
 compaction that shrinks the persisted head
 
 **Problem statement.** `SessionStore::save()` persists the whole session
@@ -676,18 +676,18 @@ this into HTTP 413 → **two fleet-wide wedges (2026-06-12)**. Compaction
 currently *grows* the persisted blob (revisions are retained), so the
 mechanism meant to bound context growth unbounds storage growth.
 
-**Evidence + spec.** `ob3_validator/docs/MEERKAT_SPEC_incremental_session_persistence.md`
+**Evidence + spec.** `operator_validator/docs/MEERKAT_SPEC_incremental_session_persistence.md`
 (authoritative; includes the trait sketch:
 `append_messages` / `commit_rewrite` / `save_head` / `load_head` /
-`load_messages`). OB3's chunked-persistence mitigation:
-`ob3_validator/src/meerkat/session.rs:39-73`.
+`load_messages`). The operator deployment's chunked-persistence mitigation:
+`operator_validator/src/meerkat/session.rs:39-73`.
 
-**Proposed shape.** As the OB3 spec: an additive `IncrementalSessionStore`
+**Proposed shape.** As the operator deployment's spec: an additive `IncrementalSessionStore`
 trait with append/rewrite-commit semantics; whole-blob `SessionStore` remains
 the compat surface. Compaction commits a *rewrite* (shrinking the head), not
 a superset blob.
 
-**MobKit interim behavior.** None needed in mobkit itself; OB3 carries
+**MobKit interim behavior.** None needed in mobkit itself; the operator deployment carries
 chunked plain-text persistence as a workaround. This ask also sets the
 persistence contract MobKit's memory providers will follow (memory writes
 must stay O(delta) — architecture §12 discipline).
@@ -728,10 +728,10 @@ recover the identity — only a full process restart. For fleets of years-lived
 singletons this is a standing incident class, and compaction boundaries are
 exactly where MobKit's Distiller harvest hooks live.
 
-**Evidence + spec.** `ob3_validator/docs/MEERKAT_BUG_compaction_archive_singleton.md`
+**Evidence + spec.** `operator_validator/docs/MEERKAT_BUG_compaction_archive_singleton.md`
 (authoritative repro + trace).
 
-**Proposed shape.** Per the OB3 doc: make the archive save tolerate (or
+**Proposed shape.** Per the operator deployment's doc: make the archive save tolerate (or
 sequence around) the shrink, and give the failure path a typed, recoverable
 outcome instead of a ghost entry.
 
@@ -757,14 +757,14 @@ fleet; (b) a runtime-loop commit failure cascades fleet-wide instead of
 quarantining the single failing member. At hundreds of members these are
 outages, not nuisances.
 
-**Evidence + spec.** `ob3_validator/docs/MOBKIT_EVIDENCE_forwarder_hotloop_and_commit_cascade.md`
+**Evidence + spec.** `operator_validator/docs/MOBKIT_EVIDENCE_forwarder_hotloop_and_commit_cascade.md`
 (authoritative; includes measurements and call sites).
 
 **Proposed shape.** Exponential backoff with a ceiling (and eventual typed
 terminal state) on dead event streams; per-member isolation on commit
 failure — one member degrades, the fleet continues.
 
-**MobKit interim behavior.** None mobkit-side; OB3 wraps every mob call in
+**MobKit interim behavior.** None mobkit-side; the operator deployment wraps every mob call in
 app-level timeouts and runs its own wedge sentinel.
 
 ## Ask 14 — Typed member health/progress surface
@@ -790,14 +790,14 @@ the explicit shipped status above is authoritative.
 reverse-engineering health from event streams
 
 **Problem statement.** Nothing in meerkat-mob answers "is this member alive
-and making progress?". Production hosts hand-build it: OB3 runs a
+and making progress?". Production hosts hand-build it: the operator deployment runs a
 WedgeSentinel (accepted-work vs event-flow gap > 300 s → pod restart) and a
 silence watchdog (compaction-failed-then-silent detection → auto-respawn with
 cooldown + breaker). The console "working" indicator bug is the same gap
 surfacing in UI (indicator driven by event recency, not run-open state).
 
-**Evidence.** `ob3_validator/src/wedge.rs`, `ob3_validator/src/watchdog.rs`;
-`ob3_validator/docs/MOBKIT_BUG_console_working_indicator_clears_mid_run.md`.
+**Evidence.** `operator_validator/src/wedge.rs`, `operator_validator/src/watchdog.rs`;
+`operator_validator/docs/MOBKIT_BUG_console_working_indicator_clears_mid_run.md`.
 
 **Proposed shape.** A typed per-member health projection (last-event-at,
 run-open/idle state, in-flight work count, wedge classification) queryable
@@ -844,13 +844,13 @@ over-cull edge cases; removed when the id lands.
 ---
 
 **Explicitly not asked (batch 2):** multi-embodiment / multi-bind primitives.
-The two production deployments (OB3, HomeCore) both run strictly one live
+The two production deployments (the operator deployment, the downstream app) both run strictly one live
 session per identity; MobKit ships a fail-closed single-embodiment guard and
 will file the ask when a real use case materializes.
 
 ---
 
-# Batch 3 — schedule firing pipeline (2026-07-06, HomeCore 0.7.24 field report)
+# Batch 3 — schedule firing pipeline (2026-07-06, the downstream app's 0.7.24 field report)
 
 Field context: rpc_gateway persistent mode, on-disk SQLite schedule store
 carried across upgrades since ~0.7.13-era binaries. Authoring and planning
@@ -882,7 +882,7 @@ attributed, rate-limited, and recovery is reported.
 loop as `let _ = driver.tick_once().await;` every 250 ms. When ticks fail
 persistently (see asks 17–19 for why they do), schedules silently stop firing
 forever: no ERROR, no WARN, nothing for `RUST_LOG=debug` to show — the error
-value is dropped before tracing can see it. The HomeCore operator offered a
+value is dropped before tracing can see it. The downstream app's operator offered a
 debug trace; there was literally nothing to capture.
 
 **Proposed shape.** Log `tick_once` errors — on first occurrence and on
@@ -905,7 +905,7 @@ does not match machine_state`, corrupted JSON) aborts the entire tick. One
 bad row → zero claims, for every schedule, forever — combined with ask 16,
 silently.
 
-**Evidence.** HomeCore: 31/31 occurrences pending, no lease ever taken, on a
+**Evidence.** The downstream app: 31/31 occurrences pending, no lease ever taken, on a
 store whose rows span ~5 binary generations. A fresh, valid one-shot on the
 same store never fired — starved by a neighbor row.
 
@@ -928,7 +928,7 @@ therefore every driver tick and every mobkit boot repair) fails until the
 operator hand-deletes rows in sqlite. The writer and the recovery invariant
 disagree about what a legal Deleted state looks like — one of them is wrong.
 
-**Evidence.** HomeCore boot logs (every boot until manual cleanup of 16
+**Evidence.** The downstream app's boot logs (every boot until manual cleanup of 16
 tombstones): `list schedules: serialization error: generated
 ScheduleLifecycleMachine rejected recovered machine_state: ...`.
 
@@ -946,7 +946,7 @@ to active schedules and live, due/lease-expired occurrences.
 **Problem statement.** `claim_due_occurrences_impl` SELECTs and deserializes
 every occurrence (joined with its schedule) with no SQL predicate on phase or
 due time, four times per second. Beyond the poison surface (ask 17), this is
-O(store) per tick: OB3-scale stores (multi-GB, years of terminal receipts and
+O(store) per tick: production-scale stores (multi-GB, years of terminal receipts and
 occurrences) pay full-table deserialization at 4 Hz.
 
 **Proposed shape.** Push the filter into SQL — `WHERE phase-in-pending-set
@@ -1145,7 +1145,7 @@ messages at spawn.
 machine planning cursor use one millisecond representation, with a monotonic
 planning guard preventing recurrence.
 
-**Field report (HomeCore on 0.7.25):** one one-shot with a fire time
+**Field report (the downstream app on 0.7.25):** one one-shot with a fire time
 near/just-past now produced 223 misfired occurrences + 223 receipts in ~2
 minutes (~1/sec, unbounded) on a clean store; halting required stopping the
 gateway and truncating the schedule tables.
@@ -1362,8 +1362,8 @@ recipe: tracing_subscriber init in the test body,
 Severity: P1 not P0 — fast-fail (no wedge, no strand escalation beyond the
 known retiring-retry state), identity-first DURABLE members are unaffected
 (tolerant disposal on the identity plane), and the classic chain is fixed.
-Affects mob-plane worker churn under identity-first gateways (HomeCore
-agent-tool workers, OB3 worker plane after migration).
+Affects mob-plane worker churn under identity-first gateways (the downstream app
+agent-tool workers, the operator deployment worker plane after migration).
 
 ## Ask 23 — break-glass host reassignment for stuck bindings — P3 (reframed 2026-07-08)
 
@@ -1415,7 +1415,7 @@ so the table grows monotonically with binding churn. Any host that must
 read binding state on a hot path (mobkit's one-binding-per-target
 admission guard runs under a runtime-wide gate and, on shared stores, a
 cross-process lock) pays an unbounded scan while serializing all binding
-mutations behind it; at OB3-style eternal-fleet churn this walks into
+mutations behind it; at production-style eternal-fleet churn this walks into
 lock-timeout territory.
 
 Ask: (1) push `realm_id`/`namespace`/`status`/`target` filters into the
@@ -1487,18 +1487,18 @@ Queued }` typed peer-send outcomes; Python/TS SDKs validate the canonical
 `comms/send` result variants and reject legacy/malformed shapes). Verified
 2026-07-12: no mobkit surface consumes `PeerMessageReceipt`/`acked` — peer
 sends happen agent-side inside the actor, so the typed outcome reaches the
-complaining agents (HomeCore's false-success sends) directly upstream;
+complaining agents (the downstream app's false-success sends) directly upstream;
 nothing to expose in mobkit. Originally filed 2026-07-10. Ordinary comms still collapse successful no-ACK
 handoff and some unreachable paths into `acked: false`. Supervisor rotation's
 durable operation receipts are intentionally scoped to that lifecycle
 operation and do not make general peer delivery truthful.
 
-Field (HomeCore, mobkit 0.7.30 / meerkat 0.7.25, 2026-07-09): an agent's
+Field (the downstream app, mobkit 0.7.30 / meerkat 0.7.25, 2026-07-09): an agent's
 comms `send_message` to a peer whose runtime is not booted (or whose
 transport is unreachable) returns `{"status": "sent", "receipt": {"acked":
 false}}` — indistinguishable from a successful no-ACK-kind delivery from the
 agent's seat. Agents confidently proceed ("ASKED") while nothing was
-delivered; HomeCore now relays cross-runtime asks host-side as a workaround.
+delivered; the downstream app now relays cross-runtime asks host-side as a workaround.
 
 Root: `SendOutcome.acked` is only `true` on a verified peer ACK round-trip;
 kinds that do not await an ACK (and every inproc handoff) report
@@ -1524,7 +1524,7 @@ delegated work, and the lead has no explicit conclude-objective affordance.
 Kickoff quiescence prevents premature teardown; it does not identify the final
 answer.
 
-Field (HomeCore): the kickoff send's interaction completes on the lead's
+Field (the downstream app): the kickoff send's interaction completes on the lead's
 FIRST turn — usually the delegation, often textless. The real outcome lands
 turns later under different interaction ids, so hosts reconstruct
 "objective → final answer" with session-scope matching, a crew-quiescence
@@ -1553,11 +1553,11 @@ cold restore, revival, and respawn, so tools/skills/peer posture keep
 following the definition). Mobkit 0.7.36 adopts it in `build_spawn_spec`
 (whole-profile snapshot retained only for provider-pinned profiles — upstream
 does not re-infer the provider under `model_override`); reset-reprofiled
-members frozen under the old whole-profile override (HomeCore domain:security)
+members frozen under the old whole-profile override (the downstream app's security-domain agent)
 heal on their next reset. The planned mobkit heal-on-divergence mitigation is
 superseded. Originally filed 2026-07-10 (Bug G′).
 
-Field (HomeCore Bug G′, 2026-07-10): the only reset-reprofiled member
+Field (the downstream app's Bug G′, 2026-07-10): the only reset-reprofiled member
 (domain:security, gen 8) has NO `meerkat_schedule_*` tools despite
 `[profiles.security.tools] schedule = true` — the agent improvised via its
 unrestricted shell, hand-writing schedule rows into `schedule.sqlite` that
@@ -1597,7 +1597,7 @@ sidecars, with explicit degraded-continuity reporting). Mobkit adoption
 `realtime_projection_messages_with_window`; the 0.7.32 oldest-first clamp
 stopgap is DELETED — the `seed_max_chars` wire params are unchanged.
 
-Field (HomeCore robot, 2026-07-10): the realtime provider adapter enforces a
+Field (the downstream app's device client, 2026-07-10): the realtime provider adapter enforces a
 65,536-token instruction cap, and `live/open` seeds the WHOLE projected
 session (system prompt + full transcript projection). Long-lived members
 with large durable histories cannot open a live channel at all once the
@@ -1632,7 +1632,7 @@ revival-flow acceptance was moved to ask 34 rather than counted twice.
   no longer need the manual row-copy repair on those versions.
 Mobkit keeps the destruction-detection probe as a regression tripwire.
 Originally filed 2026-07-11 (Bug I). The single most destructive defect of the
-HomeCore saga: on 0.7.33 boots, 1-2 slow-restoring eternal identities per boot
+downstream app's saga: on 0.7.33 boots, 1-2 slow-restoring eternal identities per boot
 were terminally retired by their own failed resume, and repair boots re-rolled
 the race instead of converging (14/16 when the operator stopped repairing).
 
@@ -1653,7 +1653,7 @@ Mechanism (code-verified in meerkat-mob 0.7.28):
    `missing durable session snapshot` (actor.rs:9544). The identity's entire
    transcript is unreachable forever.
 
-Forensic confirmation (HomeCore server, store
+Forensic confirmation (the downstream app's server, store
 `data/mobkit_state/5f68197796d9.damaged-bug-i/runtime.sqlite`): victims'
 `runtime_states` rows read `{"record_version":2,"runtime_state":"retired",
 "binding":{"agent_runtime_id":null,...}}` while their multi-hundred-MB
@@ -1730,7 +1730,7 @@ large snapshot commits, plus per-store `SqliteConnectionOptions.busy_timeout`).
 retained). The snapshot-size defect initially observed here is now diagnosed
 and tracked separately as ask 35; it does not reopen ask 33. Originally filed
 2026-07-11 (Bug I trigger). At filing, meerkat-store set
-`busy_timeout=5s` + WAL (sqlite_store.rs:24,113-114). A HomeCore boot restores
+`busy_timeout=5s` + WAL (sqlite_store.rs:24,113-114). A downstream app boot restores
 16 identities with sessions up to 366MB; mobkit restores up to 4 concurrently
 (#265). Multi-hundred-MB snapshot writes hold the WAL writer lock past 5s, and
 every lifecycle persist that loses the wait surfaces raw `Store write failed:
@@ -1808,7 +1808,7 @@ audited rewrite endpoints plus the live head, compacts legacy mechanical
 append-head chains on read/save, and routes typed synthetic-notice refreshes
 outside the audited undo path. No MobKit API adoption is required.
 
-Field-reported reproduction (HomeCore forensic measurement, 2026-07-12): the
+Field-reported reproduction (the downstream app's forensic measurement, 2026-07-12): the
 895-message `domain:security` member has a roughly 2MB live transcript but 764
 retained revisions. Its decoded `session_transcript_history_state_v1` is
 roughly 1,005MB and dominates a 366MB+ persisted snapshot. Each revision has

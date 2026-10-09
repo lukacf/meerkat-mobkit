@@ -5325,7 +5325,7 @@ mod tests {
     }
 
     /// Records the post-close work source a composition binds.
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[derive(Default)]
     struct RecordingPostCloseAuthority {
         bound: std::sync::Mutex<
@@ -5333,7 +5333,7 @@ mod tests {
         >,
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider
         for RecordingPostCloseAuthority
@@ -5392,7 +5392,8 @@ mod tests {
             Arc::new(meerkat::MemoryStore::new()),
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
             Arc::new(meerkat_store::MemoryBlobStore::new()),
-        );
+        )
+        .expect("post-close fixture persistence");
         let temp = tempfile::tempdir().expect("post-close fixture state");
         let factory = AgentFactory::new(temp.path()).builtins(false);
         let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
@@ -6511,7 +6512,8 @@ mod tests {
             Arc::new(meerkat::MemoryStore::new()),
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
             Arc::new(meerkat_store::MemoryBlobStore::new()),
-        );
+        )
+        .expect("owner-loss fixture persistence");
         let temp = tempfile::tempdir().expect("owner-loss fixture state");
         let factory = AgentFactory::new(temp.path()).builtins(false);
         let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());

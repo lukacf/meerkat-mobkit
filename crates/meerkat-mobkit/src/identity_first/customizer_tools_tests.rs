@@ -54,6 +54,7 @@ impl AgentToolDispatcher for Scope {
                 text: format!("{}:{}", self.scope, call.name),
             }],
             is_error: false,
+            settlement_failures: Vec::new(),
         }
         .into())
     }
@@ -242,4 +243,349 @@ fn a_restored_identity_member_is_registered_from_its_identity_label() {
     registry.publish(&id, Some(Scope::new("customize-1", vec!["lookup"])));
     assert_eq!(names(attached.as_ref()), ["lookup"]);
     assert!(registry.for_member(&member_id).is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Execution-plan resolution through the identity dispatcher
+// ---------------------------------------------------------------------------
+
+/// A hybrid tool: Fast by default, Detached when the call asks for it. Its
+/// resolver reads the arguments, so only the tool itself can choose the mode.
+struct HybridScope {
+    catalog: Arc<[meerkat_core::ToolCatalogEntry]>,
+}
+
+impl HybridScope {
+    fn new(name: &'static str) -> Arc<Self> {
+        let detached = meerkat_core::DetachedToolExecutionPolicy::new(
+            meerkat_core::RunnerIdentity::new("hybrid-runner", "v1").unwrap(),
+            meerkat_core::RestartClass::NonResumable,
+            meerkat_core::IdempotencyScope::InteractionAndArguments,
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        let contract = meerkat_core::ToolExecutionContract::new(
+            std::collections::BTreeSet::from([
+                meerkat_core::ToolExecutionMode::Fast,
+                meerkat_core::ToolExecutionMode::Detached,
+            ]),
+            meerkat_core::ToolExecutionMode::Fast,
+            None,
+            Some(detached),
+        )
+        .unwrap();
+        Arc::new(Self {
+            catalog: Arc::from([meerkat_core::ToolCatalogEntry::session_inline(
+                Arc::new(ToolDef {
+                    name: name.into(),
+                    description: "hybrid".to_string(),
+                    input_schema: json!({"type": "object"}),
+                    provenance: None,
+                }),
+                true,
+            )
+            .with_execution_contract(contract)]),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentToolDispatcher for HybridScope {
+    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        self.catalog
+            .iter()
+            .map(|entry| Arc::clone(&entry.tool))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        meerkat_core::ToolCatalogCapabilities {
+            exact_catalog: true,
+            may_require_catalog_control_plane: false,
+        }
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        Arc::clone(&self.catalog)
+    }
+
+    fn resolve_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        _dispatch_context: &meerkat_core::ToolDispatchContext,
+        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+    ) -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
+    {
+        let arguments: serde_json::Value = serde_json::from_str(call.args.get()).unwrap();
+        let mode = if arguments["run_detached"] == true {
+            meerkat_core::ToolExecutionMode::Detached
+        } else {
+            meerkat_core::ToolExecutionMode::Fast
+        };
+        self.catalog[0]
+            .execution
+            .resolve(mode, resolution_context.deadlines().clone())
+            .map_err(meerkat_core::ToolExecutionResolutionError::from)
+    }
+
+    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+        Ok(
+            meerkat_core::ToolResult::new(call.id.to_string(), "hybrid:fast".to_string(), false)
+                .into(),
+        )
+    }
+
+    async fn dispatch_resolved_with_context(
+        &self,
+        call: ToolCallView<'_>,
+        _context: &meerkat_core::ToolDispatchContext,
+        plan: &meerkat_core::ResolvedToolExecutionPlan,
+    ) -> Result<ToolDispatchOutcome, ToolError> {
+        let served = match plan.mode() {
+            meerkat_core::ToolExecutionMode::Detached => "hybrid:detached",
+            _ => "hybrid:fast",
+        };
+        Ok(meerkat_core::ToolResult::new(call.id.to_string(), served.to_string(), false).into())
+    }
+}
+
+/// The caller-owned resolution facts the agent loop supplies.
+fn resolution() -> meerkat_core::ToolExecutionResolutionContext {
+    meerkat_core::ToolExecutionResolutionContext::new(
+        meerkat_core::ToolDeadlineChain::new(vec![meerkat_core::ToolDeadlineContributor::finite(
+            meerkat_core::ToolDeadlineOwner::CoreToolDispatch,
+            std::time::Duration::from_mins(10),
+        )])
+        .unwrap(),
+    )
+}
+
+/// What a host's per-spawn overlay looks like: tools composed through a
+/// dynamic composite, which fences the owner it resolved against.
+fn composite(children: Vec<Arc<dyn AgentToolDispatcher>>) -> Arc<dyn AgentToolDispatcher> {
+    Arc::new(meerkat_core::DynamicToolComposite::new(children))
+}
+
+fn is_owner_changed(error: &ToolError) -> bool {
+    matches!(
+        error,
+        ToolError::Unavailable {
+            reason: meerkat_core::ToolUnavailableReason::ExecutionOwnerChanged,
+            ..
+        }
+    )
+}
+
+#[tokio::test]
+async fn a_composite_owned_tool_resolves_and_dispatches_through_the_identity_dispatcher() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let scope = Scope::new("customize-1", vec!["read_recipe"]);
+    let entry = registry.publish(&id, Some(composite(vec![scope.clone()])));
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+
+    // The agent loop's own path: fenced root resolution, then fenced dispatch.
+    let plan = meerkat_core::resolve_tool_execution_plan_fenced(
+        &entry,
+        call("read_recipe", &args),
+        &context,
+        &resolution(),
+    )
+    .expect("the published composite resolves its own plan");
+    let outcome = meerkat_core::dispatch_tool_execution_plan_fenced(
+        &entry,
+        call("read_recipe", &args),
+        &context,
+        &plan,
+    )
+    .await
+    .expect("the composite accepts the plan it resolved");
+    assert_eq!(served_by(&outcome), "customize-1:read_recipe");
+    assert_eq!(scope.dispatched.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_argument_sensitive_mode_and_its_deadlines_survive_the_identity_dispatcher() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let entry = registry.publish(&id, Some(composite(vec![HybridScope::new("scan")])));
+    let detached =
+        serde_json::value::RawValue::from_string(r#"{"run_detached":true}"#.to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+    let resolution = resolution();
+
+    let plan = entry
+        .resolve_execution_plan(call("scan", &detached), &context, &resolution)
+        .expect("the hybrid owner chooses the mode");
+    assert_eq!(plan.mode(), meerkat_core::ToolExecutionMode::Detached);
+    let meerkat_core::ResolvedExecutionKind::Detached(policy) = plan.kind() else {
+        panic!("the owner's non-default mode must survive the wrapper");
+    };
+    assert_eq!(policy.runner().name(), "hybrid-runner");
+    // The caller's chain, extended by the owner's own detached submission
+    // bound: exactly what the owner resolved, nothing dropped or added here.
+    resolution
+        .validate_resolved_plan(&plan)
+        .expect("the plan extends the caller's deadline chain");
+    assert_eq!(
+        plan.deadlines().contributors(),
+        [
+            resolution.deadlines().contributors()[0],
+            meerkat_core::ToolDeadlineContributor::finite(
+                meerkat_core::ToolDeadlineOwner::DetachedSubmission,
+                std::time::Duration::from_secs(10),
+            ),
+        ],
+        "the deadline chain the owner resolved"
+    );
+    entry
+        .validate_resolved_execution_plan(call("scan", &detached), &resolution, &plan)
+        .expect("the owner's advertised mode validates");
+    let outcome = entry
+        .dispatch_resolved_with_context(call("scan", &detached), &context, &plan)
+        .await
+        .expect("the same plan reaches the owner");
+    assert_eq!(served_by(&outcome), "hybrid:detached");
+
+    let fast = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let plan = entry
+        .resolve_execution_plan(call("scan", &fast), &context, &resolution)
+        .unwrap();
+    assert_eq!(plan.mode(), meerkat_core::ToolExecutionMode::Fast);
+}
+
+#[tokio::test]
+async fn a_republish_invalidates_an_older_plan_and_a_fresh_plan_succeeds() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let first = Scope::new("customize-1", vec!["lookup"]);
+    let entry = registry.publish(&id, Some(composite(vec![first.clone()])));
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+    let stale = meerkat_core::resolve_tool_execution_plan_fenced(
+        &entry,
+        call("lookup", &args),
+        &context,
+        &resolution(),
+    )
+    .unwrap();
+
+    // Same tool name, same metadata, new handler scope.
+    let second = Scope::new("customize-2", vec!["lookup"]);
+    registry.publish(&id, Some(composite(vec![second.clone()])));
+
+    let refused = meerkat_core::dispatch_tool_execution_plan_fenced(
+        &entry,
+        call("lookup", &args),
+        &context,
+        &stale,
+    )
+    .await
+    .expect_err("a plan resolved against the earlier publication");
+    assert!(is_owner_changed(&refused), "{refused:?}");
+    // The identity dispatcher fences on its own, too, not only at the root.
+    let refused = entry
+        .dispatch_resolved_with_context(call("lookup", &args), &context, &stale)
+        .await
+        .expect_err("a plan resolved against the earlier publication");
+    assert!(is_owner_changed(&refused), "{refused:?}");
+
+    let fresh = meerkat_core::resolve_tool_execution_plan_fenced(
+        &entry,
+        call("lookup", &args),
+        &context,
+        &resolution(),
+    )
+    .unwrap();
+    let outcome = meerkat_core::dispatch_tool_execution_plan_fenced(
+        &entry,
+        call("lookup", &args),
+        &context,
+        &fresh,
+    )
+    .await
+    .expect("a plan of the current publication");
+    assert_eq!(served_by(&outcome), "customize-2:lookup");
+    assert_eq!(
+        first.dispatched.load(Ordering::SeqCst),
+        0,
+        "never the stale scope"
+    );
+}
+
+#[tokio::test]
+async fn a_removed_or_unknown_tool_is_refused_at_resolution_and_dispatch() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let entry = registry.publish(
+        &id,
+        Some(composite(vec![Scope::new("customize-1", vec!["lookup"])])),
+    );
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+    let resolution = resolution();
+    let plan = entry
+        .resolve_execution_plan(call("lookup", &args), &context, &resolution)
+        .unwrap();
+
+    registry.publish(
+        &id,
+        Some(composite(vec![Scope::new("customize-2", vec!["other"])])),
+    );
+    assert!(matches!(
+        entry.resolve_execution_plan(call("lookup", &args), &context, &resolution),
+        Err(meerkat_core::ToolExecutionResolutionError::NotFound { .. })
+    ));
+    assert!(matches!(
+        entry.validate_resolved_execution_plan(call("lookup", &args), &resolution, &plan),
+        Err(meerkat_core::ToolExecutionResolutionError::NotFound { .. })
+    ));
+    assert!(matches!(
+        entry
+            .dispatch_resolved_with_context(call("lookup", &args), &context, &plan)
+            .await,
+        Err(ToolError::NotFound { .. })
+    ));
+    assert!(matches!(
+        entry.resolve_execution_plan(call("never_published", &args), &context, &resolution),
+        Err(meerkat_core::ToolExecutionResolutionError::NotFound { .. })
+    ));
+}
+
+/// Only the identity dispatcher's own witness can refuse here: the SAME
+/// non-witnessing dispatcher is republished, so the serving dispatcher (with
+/// no owner witness of its own) accepts any plan, and the plan is dispatched
+/// on this dispatcher directly, without a root fence.
+#[tokio::test]
+async fn the_identity_witness_alone_refuses_a_plan_from_an_earlier_publication() {
+    let registry = CustomizerToolRegistry::new();
+    let id = identity("domain:research");
+    let scope = Scope::new("customize-1", vec!["lookup"]);
+    let entry = registry.publish(&id, Some(scope.clone()));
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let context = meerkat_core::ToolDispatchContext::default();
+    let resolution = resolution();
+    let stale = entry
+        .resolve_execution_plan(call("lookup", &args), &context, &resolution)
+        .unwrap();
+
+    // The very same dispatcher, published again.
+    registry.publish(&id, Some(scope.clone()));
+    let refused = entry
+        .dispatch_resolved_with_context(call("lookup", &args), &context, &stale)
+        .await
+        .expect_err("a plan resolved against the earlier publication");
+    assert!(is_owner_changed(&refused), "{refused:?}");
+    assert_eq!(scope.dispatched.load(Ordering::SeqCst), 0);
+
+    let fresh = entry
+        .resolve_execution_plan(call("lookup", &args), &context, &resolution)
+        .unwrap();
+    let outcome = entry
+        .dispatch_resolved_with_context(call("lookup", &args), &context, &fresh)
+        .await
+        .expect("a plan of the current publication");
+    assert_eq!(served_by(&outcome), "customize-1:lookup");
 }

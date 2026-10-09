@@ -49,13 +49,12 @@ fn an_embedder_reaches_the_roster_row_from_any_spelling_it_holds() {
         "generation must not change which roster row is named"
     );
 
-    // OB3's exact persisted binding, verbatim from their store: a comms encoding
-    // wrapped around a runtime alias, alias innermost. Theirs is the only store
-    // known to carry the stacked shape, so an input built from this crate's own
-    // helpers cannot stand in for it.
+    // OB3's exact persisted binding shape (only the address is a placeholder): a comms encoding
+    // wrapped around a runtime alias, alias innermost. Theirs is the only store known to carry the
+    // stacked shape, so an input built from this crate's own helpers cannot stand in for it.
     assert_eq!(
-        roster_member_id_for_supplied_id("mk--rt_cperson_cfederico_x2e_gomez_x40_king_x2e_com_c2"),
-        roster_member_id_for_identity("person:federico.gomez@king.com"),
+        roster_member_id_for_supplied_id("mk--rt_cperson_cjane_x2e_doe_x40_example_x2e_com_c2"),
+        roster_member_id_for_identity("person:jane.doe@example.com"),
         "OB3's persisted stacked alias must reach the durable person row"
     );
 }

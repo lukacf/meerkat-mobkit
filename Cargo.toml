@@ -9,7 +9,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.8.47"
+version = "0.8.49"
 authors = ["Luka Crnkovic-Friis"]
 repository = "https://github.com/lukacf/meerkat-mobkit"
 homepage = "https://docs.rkat.ai/mobkit/introduction"
@@ -151,26 +151,3 @@ opt-level = 0
 
 [profile.release.package.meerkat-live]
 opt-level = 0
-
-# Unreleased native context, lineage and owned-tool APIs for MCP bindings.
-# Consuming workspaces must apply this patch until these APIs are published.
-[patch.crates-io]
-meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-comms = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-live = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-schedule = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }
-meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "e736c3b9be29244ec72c19dd5170cff3b3385f2b" }

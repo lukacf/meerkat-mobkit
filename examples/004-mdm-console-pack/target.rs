@@ -543,7 +543,7 @@ async fn build_target_runtime_surface(
         Arc::clone(&jsonl_store) as Arc<dyn SessionStore>,
         Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
         Arc::new(MemoryBlobStore::new()),
-    );
+    )?;
     let runtime_adapter = persistence.runtime_adapter();
     let (session_store, runtime_store, blob_store) = persistence.into_parts();
     let service = Arc::new(PersistentSessionService::new(
@@ -557,7 +557,7 @@ async fn build_target_runtime_surface(
         service.clone(),
         Some(runtime_adapter.clone()),
         meerkat_mob::MobControlPrincipal::Owner,
-    ));
+    )?);
     *mob_tools_slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(

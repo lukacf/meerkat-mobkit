@@ -101,37 +101,37 @@ or GB cohorts), so several layers (tengu_moth_copse index-skip, team memory, KAI
 the MEMORY.md step entirely and relies solely on prefetch recall.
 
 ## KEY FILES
-* /Users/luka/src/cc/claude-code/src/memdir/paths.ts — dir resolution (git-root slug, overrides, enable gates), KAIROS log paths, isAutoMemPath
-* /Users/luka/src/cc/claude-code/src/memdir/memdir.ts — loadMemoryPrompt dispatch, buildMemoryLines save instructions, index truncation caps, KAIROS daily-log prompt
-* /Users/luka/src/cc/claude-code/src/memdir/memoryTypes.ts — 4-type taxonomy prompt blocks, frontmatter spec, what-not-to-save, drift/recall-trust sections with eval annotations
-* /Users/luka/src/cc/claude-code/src/memdir/memoryScan.ts — frontmatter scan (200-file cap, 30-line reads) and manifest formatting shared by recall + extraction
-* /Users/luka/src/cc/claude-code/src/memdir/findRelevantMemories.ts — Sonnet sideQuery relevance selector (≤5 picks, JSON schema, tool-suppression rule)
-* /Users/luka/src/cc/claude-code/src/memdir/memoryAge.ts — mtime→age strings and staleness caveat text
-* /Users/luka/src/cc/claude-code/src/utils/attachments.ts — prefetch lifecycle, per-file/turn/session byte budgets, surfaced-memory dedup, freshness headers (lines 269-289,
+* (operator-retained path)/claude-code/src/memdir/paths.ts — dir resolution (git-root slug, overrides, enable gates), KAIROS log paths, isAutoMemPath
+* (operator-retained path)/claude-code/src/memdir/memdir.ts — loadMemoryPrompt dispatch, buildMemoryLines save instructions, index truncation caps, KAIROS daily-log prompt
+* (operator-retained path)/claude-code/src/memdir/memoryTypes.ts — 4-type taxonomy prompt blocks, frontmatter spec, what-not-to-save, drift/recall-trust sections with eval annotations
+* (operator-retained path)/claude-code/src/memdir/memoryScan.ts — frontmatter scan (200-file cap, 30-line reads) and manifest formatting shared by recall + extraction
+* (operator-retained path)/claude-code/src/memdir/findRelevantMemories.ts — Sonnet sideQuery relevance selector (≤5 picks, JSON schema, tool-suppression rule)
+* (operator-retained path)/claude-code/src/memdir/memoryAge.ts — mtime→age strings and staleness caveat text
+* (operator-retained path)/claude-code/src/utils/attachments.ts — prefetch lifecycle, per-file/turn/session byte budgets, surfaced-memory dedup, freshness headers (lines 269-289,
 2196-2541)
-* /Users/luka/src/cc/claude-code/src/services/extractMemories/extractMemories.ts — turn-end forked extraction: cursor, mutual exclusion, coalescing, tool sandbox
-* /Users/luka/src/cc/claude-code/src/services/extractMemories/prompts.ts — extraction agent prompts (turn-budget strategy, no-verification rule)
-* /Users/luka/src/cc/claude-code/src/services/autoDream/autoDream.ts — gated background consolidation (time/session/lock gates, DreamTask UI)
-* /Users/luka/src/cc/claude-code/src/services/autoDream/consolidationPrompt.ts — 4-phase dream prompt (orient/gather/consolidate/prune)
-* /Users/luka/src/cc/claude-code/src/services/autoDream/consolidationLock.ts — PID lockfile whose mtime is lastConsolidatedAt
-* /Users/luka/src/cc/claude-code/src/memdir/teamMemPaths.ts — team dir paths, symlink-safe containment validation
-* /Users/luka/src/cc/claude-code/src/memdir/teamMemPrompts.ts — combined private+team prompt with per-type scope routing
-* /Users/luka/src/cc/claude-code/src/services/teamMemorySync/index.ts — pull/push protocol: ETag, sha256 delta, 412 hash-probe conflict loop, secret-skip, byte batching
-* /Users/luka/src/cc/claude-code/src/services/teamMemorySync/watcher.ts — fs.watch debounced push, permanent-failure suppression
-* /Users/luka/src/cc/claude-code/src/services/teamMemorySync/secretScanner.ts — gitleaks-subset credential regexes
-* /Users/luka/src/cc/claude-code/src/utils/claudemd.ts — MEMORY.md context injection via getMemoryFiles/getClaudeMds, filterInjectedMemoryFiles (lines 979-1007, 1136-1195)
-* /Users/luka/src/cc/claude-code/src/utils/messages.ts — relevant_memories attachment → system-reminder rendering (line 3708)
-* /Users/luka/src/cc/claude-code/src/query.ts — prefetch start (line 301) and consume-if-settled collect point (lines 1592-1614)
-* /Users/luka/src/cc/claude-code/src/query/stopHooks.ts — turn-end trigger for extraction + autoDream (lines 136-157)
-* /Users/luka/src/cc/claude-code/src/utils/permissions/filesystem.ts — auto-memory read/write permission carve-outs (lines 1569-1581, 1713-1725)
-* /Users/luka/src/cc/claude-code/src/skills/bundled/remember.ts — /remember review-and-promote skill (proposal-only)
-* /Users/luka/src/cc/claude-code/src/commands/memory/memory.tsx — /memory editor dialog
-* /Users/luka/src/cc/claude-code/src/tools/AgentTool/agentMemory.ts — per-agent memory dirs and scopes
+* (operator-retained path)/claude-code/src/services/extractMemories/extractMemories.ts — turn-end forked extraction: cursor, mutual exclusion, coalescing, tool sandbox
+* (operator-retained path)/claude-code/src/services/extractMemories/prompts.ts — extraction agent prompts (turn-budget strategy, no-verification rule)
+* (operator-retained path)/claude-code/src/services/autoDream/autoDream.ts — gated background consolidation (time/session/lock gates, DreamTask UI)
+* (operator-retained path)/claude-code/src/services/autoDream/consolidationPrompt.ts — 4-phase dream prompt (orient/gather/consolidate/prune)
+* (operator-retained path)/claude-code/src/services/autoDream/consolidationLock.ts — PID lockfile whose mtime is lastConsolidatedAt
+* (operator-retained path)/claude-code/src/memdir/teamMemPaths.ts — team dir paths, symlink-safe containment validation
+* (operator-retained path)/claude-code/src/memdir/teamMemPrompts.ts — combined private+team prompt with per-type scope routing
+* (operator-retained path)/claude-code/src/services/teamMemorySync/index.ts — pull/push protocol: ETag, sha256 delta, 412 hash-probe conflict loop, secret-skip, byte batching
+* (operator-retained path)/claude-code/src/services/teamMemorySync/watcher.ts — fs.watch debounced push, permanent-failure suppression
+* (operator-retained path)/claude-code/src/services/teamMemorySync/secretScanner.ts — gitleaks-subset credential regexes
+* (operator-retained path)/claude-code/src/utils/claudemd.ts — MEMORY.md context injection via getMemoryFiles/getClaudeMds, filterInjectedMemoryFiles (lines 979-1007, 1136-1195)
+* (operator-retained path)/claude-code/src/utils/messages.ts — relevant_memories attachment → system-reminder rendering (line 3708)
+* (operator-retained path)/claude-code/src/query.ts — prefetch start (line 301) and consume-if-settled collect point (lines 1592-1614)
+* (operator-retained path)/claude-code/src/query/stopHooks.ts — turn-end trigger for extraction + autoDream (lines 136-157)
+* (operator-retained path)/claude-code/src/utils/permissions/filesystem.ts — auto-memory read/write permission carve-outs (lines 1569-1581, 1713-1725)
+* (operator-retained path)/claude-code/src/skills/bundled/remember.ts — /remember review-and-promote skill (proposal-only)
+* (operator-retained path)/claude-code/src/commands/memory/memory.tsx — /memory editor dialog
+* (operator-retained path)/claude-code/src/tools/AgentTool/agentMemory.ts — per-agent memory dirs and scopes
 
 
 ================ SYSTEM: Claude Code memory stack: (1) SessionMemory (background session-notes file), (2) session-memory compaction (sessionMemoryCompact), (3) AgentTool
 persistent subagent memory + snapshots + SendMessage continuation, (4) CLAUDE.md instruction hierarchy, plus the shared memdir auto-memory substrate they build on (repo:
-/Users/luka/src/cc/claude-code)
+(operator-retained path)/claude-code)
 
 ## OVERVIEW
 Claude Code layers several file-based memory systems, all markdown-on-disk with zero embeddings: an instruction hierarchy (CLAUDE.md: Managed→User→Project→Local + rules dirs +
@@ -240,40 +240,40 @@ and must skip resets when a subagent compacts (shared module state, postCompactC
 the cost of significant branch complexity
 
 ## KEY FILES
-* /Users/luka/src/cc/claude-code/src/services/SessionMemory/sessionMemory.ts — trigger thresholds, forked-agent extraction, Edit-only-this-file permission gate, /summary manual
+* (operator-retained path)/claude-code/src/services/SessionMemory/sessionMemory.ts — trigger thresholds, forked-agent extraction, Edit-only-this-file permission gate, /summary manual
 path
-* /Users/luka/src/cc/claude-code/src/services/SessionMemory/sessionMemoryUtils.ts — extraction state, lastSummarizedMessageId cursor, wait-for-extraction used by compaction
-* /Users/luka/src/cc/claude-code/src/services/SessionMemory/prompts.ts — 10-section notes template, structure-preservation update prompt, per-section/total token budgets,
+* (operator-retained path)/claude-code/src/services/SessionMemory/sessionMemoryUtils.ts — extraction state, lastSummarizedMessageId cursor, wait-for-extraction used by compaction
+* (operator-retained path)/claude-code/src/services/SessionMemory/prompts.ts — 10-section notes template, structure-preservation update prompt, per-section/total token budgets,
 truncation
-* /Users/luka/src/cc/claude-code/src/services/compact/sessionMemoryCompact.ts — SM-compact: keep-window calculation, tool-pair/thinking invariant repair, CompactionResult from
+* (operator-retained path)/claude-code/src/services/compact/sessionMemoryCompact.ts — SM-compact: keep-window calculation, tool-pair/thinking invariant repair, CompactionResult from
 notes
-* /Users/luka/src/cc/claude-code/src/services/compact/autoCompact.ts — SM-compact tried first (l.288) before LLM compactConversation
-* /Users/luka/src/cc/claude-code/src/services/compact/prompt.ts — getCompactUserSummaryMessage: post-compact continuation message wrapper (l.337-374)
-* /Users/luka/src/cc/claude-code/src/services/compact/postCompactCleanup.ts — cache invalidation that re-injects CLAUDE.md after compact
-* /Users/luka/src/cc/claude-code/src/tools/AgentTool/agentMemory.ts — user/project/local agent memory dirs, spawn-time memory prompt via buildMemoryPrompt
-* /Users/luka/src/cc/claude-code/src/tools/AgentTool/agentMemorySnapshot.ts — project snapshot seed/update of agent memory with syncedFrom timestamps
-* /Users/luka/src/cc/claude-code/src/tools/AgentTool/loadAgentsDir.ts — memory frontmatter parsing, tool injection, snapshot init (l.262-294), system-prompt append (l.481-488,
+* (operator-retained path)/claude-code/src/services/compact/autoCompact.ts — SM-compact tried first (l.288) before LLM compactConversation
+* (operator-retained path)/claude-code/src/services/compact/prompt.ts — getCompactUserSummaryMessage: post-compact continuation message wrapper (l.337-374)
+* (operator-retained path)/claude-code/src/services/compact/postCompactCleanup.ts — cache invalidation that re-injects CLAUDE.md after compact
+* (operator-retained path)/claude-code/src/tools/AgentTool/agentMemory.ts — user/project/local agent memory dirs, spawn-time memory prompt via buildMemoryPrompt
+* (operator-retained path)/claude-code/src/tools/AgentTool/agentMemorySnapshot.ts — project snapshot seed/update of agent memory with syncedFrom timestamps
+* (operator-retained path)/claude-code/src/tools/AgentTool/loadAgentsDir.ts — memory frontmatter parsing, tool injection, snapshot init (l.262-294), system-prompt append (l.481-488,
 727-729)
-* /Users/luka/src/cc/claude-code/src/tools/AgentTool/resumeAgent.ts — SendMessage continuation: transcript reload + filter + re-run
-* /Users/luka/src/cc/claude-code/src/utils/claudemd.ts — full CLAUDE.md discovery/merge: Managed→User→Project→Local, rules dirs, @-imports, conditional path-glob rules, excludes,
+* (operator-retained path)/claude-code/src/tools/AgentTool/resumeAgent.ts — SendMessage continuation: transcript reload + filter + re-run
+* (operator-retained path)/claude-code/src/utils/claudemd.ts — full CLAUDE.md discovery/merge: Managed→User→Project→Local, rules dirs, @-imports, conditional path-glob rules, excludes,
 worktree dedup
-* /Users/luka/src/cc/claude-code/src/context.ts — getUserContext/getSystemContext memoized assembly of claudeMd + gitStatus + date
-* /Users/luka/src/cc/claude-code/src/utils/api.ts — prependUserContext: <system-reminder> first-user-message injection (l.449-474)
-* /Users/luka/src/cc/claude-code/src/memdir/memdir.ts — MEMORY.md index caps/truncation, buildMemoryLines/buildMemoryPrompt shared by auto+agent memory, KAIROS daily-log variant
-* /Users/luka/src/cc/claude-code/src/memdir/paths.ts — auto-memory path resolution, canonical-git-root keying, enablement chain, security validation
-* /Users/luka/src/cc/claude-code/src/memdir/memoryTypes.ts — four-type taxonomy, what-NOT-to-save, drift/verification prompt sections with eval provenance
-* /Users/luka/src/cc/claude-code/src/memdir/findRelevantMemories.ts — Sonnet sideQuery selector (≤5) over frontmatter manifest
-* /Users/luka/src/cc/claude-code/src/memdir/memoryScan.ts — frontmatter scan (cap 200, newest-first) shared by recall + extraction
-* /Users/luka/src/cc/claude-code/src/memdir/memoryAge.ts — mtime→human-age freshness/staleness text
-* /Users/luka/src/cc/claude-code/src/services/extractMemories/extractMemories.ts — turn-end background extraction fork, cursor, coalescing, main-agent mutual exclusion, scoped
+* (operator-retained path)/claude-code/src/context.ts — getUserContext/getSystemContext memoized assembly of claudeMd + gitStatus + date
+* (operator-retained path)/claude-code/src/utils/api.ts — prependUserContext: <system-reminder> first-user-message injection (l.449-474)
+* (operator-retained path)/claude-code/src/memdir/memdir.ts — MEMORY.md index caps/truncation, buildMemoryLines/buildMemoryPrompt shared by auto+agent memory, KAIROS daily-log variant
+* (operator-retained path)/claude-code/src/memdir/paths.ts — auto-memory path resolution, canonical-git-root keying, enablement chain, security validation
+* (operator-retained path)/claude-code/src/memdir/memoryTypes.ts — four-type taxonomy, what-NOT-to-save, drift/verification prompt sections with eval provenance
+* (operator-retained path)/claude-code/src/memdir/findRelevantMemories.ts — Sonnet sideQuery selector (≤5) over frontmatter manifest
+* (operator-retained path)/claude-code/src/memdir/memoryScan.ts — frontmatter scan (cap 200, newest-first) shared by recall + extraction
+* (operator-retained path)/claude-code/src/memdir/memoryAge.ts — mtime→human-age freshness/staleness text
+* (operator-retained path)/claude-code/src/services/extractMemories/extractMemories.ts — turn-end background extraction fork, cursor, coalescing, main-agent mutual exclusion, scoped
 canUseTool
-* /Users/luka/src/cc/claude-code/src/services/autoDream/autoDream.ts — periodic /dream consolidation (24h + 5 sessions + lock)
-* /Users/luka/src/cc/claude-code/src/utils/attachments.ts — relevant_memories prefetch, dedup via message scan, nested CLAUDE.md attachments, agent-mention dir routing
-* /Users/luka/src/cc/claude-code/src/utils/memoryFileDetection.ts — path classifiers (auto/agent/session/team) for permissions + UI collapse
-* /Users/luka/src/cc/claude-code/src/utils/teamMemoryOps.ts — team-memory tool-use detection + UI summary verbs
-* /Users/luka/src/cc/claude-code/src/memdir/teamMemPaths.ts — team dir under auto-mem, path-traversal defenses, enablement
-* /Users/luka/src/cc/claude-code/src/services/teamMemorySync/index.ts — server sync: repo-keyed, hash-delta push, server-wins pull, no delete propagation
-* /Users/luka/src/cc/claude-code/src/utils/permissions/filesystem.ts — getSessionMemoryDir/Path (l.261-271)
+* (operator-retained path)/claude-code/src/services/autoDream/autoDream.ts — periodic /dream consolidation (24h + 5 sessions + lock)
+* (operator-retained path)/claude-code/src/utils/attachments.ts — relevant_memories prefetch, dedup via message scan, nested CLAUDE.md attachments, agent-mention dir routing
+* (operator-retained path)/claude-code/src/utils/memoryFileDetection.ts — path classifiers (auto/agent/session/team) for permissions + UI collapse
+* (operator-retained path)/claude-code/src/utils/teamMemoryOps.ts — team-memory tool-use detection + UI summary verbs
+* (operator-retained path)/claude-code/src/memdir/teamMemPaths.ts — team dir under auto-mem, path-traversal defenses, enablement
+* (operator-retained path)/claude-code/src/services/teamMemorySync/index.ts — server sync: repo-keyed, hash-delta push, server-wins pull, no delete propagation
+* (operator-retained path)/claude-code/src/utils/permissions/filesystem.ts — getSessionMemoryDir/Path (l.261-271)
 
 
 ================ SYSTEM: OpenAI Codex CLI memory subsystems: (1) "Memories" two-phase extraction/consolidation pipeline, (2) message-history (cross-session prompt recall), (3)
@@ -387,34 +387,34 @@ fast opinions from slow curated memory.
 pipeline explicitly filters OUT of extraction to avoid laundering instructions into memories.
 
 ## KEY FILES
-* /Users/luka/src/cc/codex/codex-rs/memories/README.md — authoritative pipeline design doc (phases, claim rules, watermarks)
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/start.rs — startup trigger + eligibility gating (ephemeral/feature/sub-agent/state-db)
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/phase1.rs — per-rollout extraction jobs: claim, filter/sanitize, structured-output call, secret redaction, DB upsert
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/phase2.rs — global consolidation: lock, workspace sync, git diff check, locked-down agent config, heartbeat loop, baseline
+* (operator-retained path)/codex/codex-rs/memories/README.md — authoritative pipeline design doc (phases, claim rules, watermarks)
+* (operator-retained path)/codex/codex-rs/memories/write/src/start.rs — startup trigger + eligibility gating (ephemeral/feature/sub-agent/state-db)
+* (operator-retained path)/codex/codex-rs/memories/write/src/phase1.rs — per-rollout extraction jobs: claim, filter/sanitize, structured-output call, secret redaction, DB upsert
+* (operator-retained path)/codex/codex-rs/memories/write/src/phase2.rs — global consolidation: lock, workspace sync, git diff check, locked-down agent config, heartbeat loop, baseline
 reset
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/lib.rs — all constants (concurrency 8, leases 1h, effort levels, artifact names, 4MiB diff cap)
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/storage.rs — raw_memories.md rebuild + rollout_summaries sync/prune + summary filename derivation
-* /Users/luka/src/cc/codex/codex-rs/memories/write/src/workspace.rs — git-baseline prepare/diff/reset for the memory folder
-* /Users/luka/src/cc/codex/codex-rs/memories/write/templates/memories/stage_one_system.md — Phase 1 extraction prompt (no-op gate, preference-signal doctrine, raw_memory schema)
-* /Users/luka/src/cc/codex/codex-rs/memories/write/templates/memories/consolidation.md — Phase 2 agent prompt (MEMORY.md/memory_summary.md/skills strict formats, forgetting
+* (operator-retained path)/codex/codex-rs/memories/write/src/lib.rs — all constants (concurrency 8, leases 1h, effort levels, artifact names, 4MiB diff cap)
+* (operator-retained path)/codex/codex-rs/memories/write/src/storage.rs — raw_memories.md rebuild + rollout_summaries sync/prune + summary filename derivation
+* (operator-retained path)/codex/codex-rs/memories/write/src/workspace.rs — git-baseline prepare/diff/reset for the memory folder
+* (operator-retained path)/codex/codex-rs/memories/write/templates/memories/stage_one_system.md — Phase 1 extraction prompt (no-op gate, preference-signal doctrine, raw_memory schema)
+* (operator-retained path)/codex/codex-rs/memories/write/templates/memories/consolidation.md — Phase 2 agent prompt (MEMORY.md/memory_summary.md/skills strict formats, forgetting
 mechanism)
-* /Users/luka/src/cc/codex/codex-rs/ext/memories/src/extension.rs — read-path injection wiring (ContextContributor -> developer_policy fragment; gating on Feature::MemoryTool &&
+* (operator-retained path)/codex/codex-rs/ext/memories/src/extension.rs — read-path injection wiring (ContextContributor -> developer_policy fragment; gating on Feature::MemoryTool &&
 use_memories)
-* /Users/luka/src/cc/codex/codex-rs/ext/memories/templates/memories/read_path.md — read-path prompt: quick memory pass, drift/verification policy, citation protocol, ad-hoc note
+* (operator-retained path)/codex/codex-rs/ext/memories/templates/memories/read_path.md — read-path prompt: quick memory pass, drift/verification policy, citation protocol, ad-hoc note
 rule
-* /Users/luka/src/cc/codex/codex-rs/ext/memories/src/tools/mod.rs — optional dedicated memories.{list,read,search,add_ad_hoc_note} tools
-* /Users/luka/src/cc/codex/codex-rs/memories/read/src/citations.rs — <oai-mem-citation> parsing
-* /Users/luka/src/cc/codex/codex-rs/core/src/stream_events_utils.rs — citation strip + usage_count recording + external-context pollution marking
-* /Users/luka/src/cc/codex/codex-rs/state/memory_migrations/0001_memories.sql — SQLite schema (stage1_outputs, jobs)
-* /Users/luka/src/cc/codex/codex-rs/state/src/runtime/memories.rs — claim/lease/selection/prune/usage SQL (memory_mode='enabled' filter, usage-ranked phase-2 selection)
-* /Users/luka/src/cc/codex/codex-rs/config/src/types.rs:316-405 — MemoriesConfig defaults and clamps
-* /Users/luka/src/cc/codex/codex-rs/features/src/lib.rs:922 — Feature::MemoryTool spec (experimental, default off, key 'memories')
-* /Users/luka/src/cc/codex/codex-rs/app-server/src/request_processors/turn_processor.rs:544 — the only pipeline trigger call site
-* /Users/luka/src/cc/codex/codex-rs/rollout/src/recorder.rs — rollout JSONL writer, path scheme, load_rollout_items/get_rollout_history resume, SessionMeta memory_mode marker
-* /Users/luka/src/cc/codex/codex-rs/rollout/src/policy.rs — persistence policies incl. should_persist_response_item_for_memories
-* /Users/luka/src/cc/codex/codex-rs/message-history/src/lib.rs — history.jsonl append/lookup/trim (TUI cross-session prompt recall)
-* /Users/luka/src/cc/codex/codex-rs/core/src/agents_md.rs — AGENTS.md discovery hierarchy (root markers, override file, byte budget)
-* /Users/luka/src/cc/codex/codex-rs/codex-home/src/instructions/mod.rs — global ~/.codex/AGENTS(.override).md loader
+* (operator-retained path)/codex/codex-rs/ext/memories/src/tools/mod.rs — optional dedicated memories.{list,read,search,add_ad_hoc_note} tools
+* (operator-retained path)/codex/codex-rs/memories/read/src/citations.rs — <oai-mem-citation> parsing
+* (operator-retained path)/codex/codex-rs/core/src/stream_events_utils.rs — citation strip + usage_count recording + external-context pollution marking
+* (operator-retained path)/codex/codex-rs/state/memory_migrations/0001_memories.sql — SQLite schema (stage1_outputs, jobs)
+* (operator-retained path)/codex/codex-rs/state/src/runtime/memories.rs — claim/lease/selection/prune/usage SQL (memory_mode='enabled' filter, usage-ranked phase-2 selection)
+* (operator-retained path)/codex/codex-rs/config/src/types.rs:316-405 — MemoriesConfig defaults and clamps
+* (operator-retained path)/codex/codex-rs/features/src/lib.rs:922 — Feature::MemoryTool spec (experimental, default off, key 'memories')
+* (operator-retained path)/codex/codex-rs/app-server/src/request_processors/turn_processor.rs:544 — the only pipeline trigger call site
+* (operator-retained path)/codex/codex-rs/rollout/src/recorder.rs — rollout JSONL writer, path scheme, load_rollout_items/get_rollout_history resume, SessionMeta memory_mode marker
+* (operator-retained path)/codex/codex-rs/rollout/src/policy.rs — persistence policies incl. should_persist_response_item_for_memories
+* (operator-retained path)/codex/codex-rs/message-history/src/lib.rs — history.jsonl append/lookup/trim (TUI cross-session prompt recall)
+* (operator-retained path)/codex/codex-rs/core/src/agents_md.rs — AGENTS.md discovery hierarchy (root markers, override file, byte budget)
+* (operator-retained path)/codex/codex-rs/codex-home/src/instructions/mod.rs — global ~/.codex/AGENTS(.override).md loader
 
 
 ================ SYSTEM: Meerkat runtime semantic memory (meerkat-memory crate + meerkat-core::memory trait layer)
@@ -506,29 +506,29 @@ LLM-extracted memories — MobKit's identity-first memory injection (mobkit comm
 (session.rs:4147) → CLI presets where only --tools full enables it and 'degrades with the build' (main.rs:626-636); ephemeral realm backends force-disable it (factory.rs:885-905).
 
 ## KEY FILES
-* /Users/luka/src/meerkat/meerkat-core/src/memory.rs — MemoryStore trait, MemoryOwner/scopes, MemoryMetadata/MemorySource/MessageRange data model,
+* (operator-retained path)/meerkat/meerkat-core/src/memory.rs — MemoryStore trait, MemoryOwner/scopes, MemoryMetadata/MemorySource/MessageRange data model,
 MemoryRankingPolicy/EmbeddingModel, typed MemoryStoreError taxonomy
-* /Users/luka/src/meerkat/meerkat-memory/src/hnsw.rs — HnswMemoryStore: per-session HNSW graphs + SQLite persistence, bag-of-words embedder, atomic batch with
+* (operator-retained path)/meerkat/meerkat-memory/src/hnsw.rs — HnswMemoryStore: per-session HNSW graphs + SQLite persistence, bag-of-words embedder, atomic batch with
 rollback/poison/self-heal
-* /Users/luka/src/meerkat/meerkat-memory/src/tool.rs — MemorySearchDispatcher: memory_search tool def, dispatch, result shaping (content/score/source_range, no session_id)
-* /Users/luka/src/meerkat/meerkat-memory/src/simple.rs — SimpleMemoryStore, test-only substring-match backend
-* /Users/luka/src/meerkat/meerkat-memory/src/lib.rs — capability (MemoryStore) + builtin skill registration via inventory
-* /Users/luka/src/meerkat/meerkat-memory/skills/memory-retrieval/SKILL.md — model-facing operating rules for memory use
-* /Users/luka/src/meerkat/meerkat-core/src/agent/state.rs — lines 1233-1431: compaction trigger → index_compaction_discards → commit-or-abort ordering
-* /Users/luka/src/meerkat/meerkat-core/src/types.rs — lines 1192-1280: MemoryIndexableContent / MemoryIndexExclusion typed indexability policy
-* /Users/luka/src/meerkat/meerkat/src/factory.rs — lines 5411-5472 memory wiring + fail-closed capability; 885-905 realm backend gating; feature memory-store-session in
+* (operator-retained path)/meerkat/meerkat-memory/src/tool.rs — MemorySearchDispatcher: memory_search tool def, dispatch, result shaping (content/score/source_range, no session_id)
+* (operator-retained path)/meerkat/meerkat-memory/src/simple.rs — SimpleMemoryStore, test-only substring-match backend
+* (operator-retained path)/meerkat/meerkat-memory/src/lib.rs — capability (MemoryStore) + builtin skill registration via inventory
+* (operator-retained path)/meerkat/meerkat-memory/skills/memory-retrieval/SKILL.md — model-facing operating rules for memory use
+* (operator-retained path)/meerkat/meerkat-core/src/agent/state.rs — lines 1233-1431: compaction trigger → index_compaction_discards → commit-or-abort ordering
+* (operator-retained path)/meerkat/meerkat-core/src/types.rs — lines 1192-1280: MemoryIndexableContent / MemoryIndexExclusion typed indexability policy
+* (operator-retained path)/meerkat/meerkat/src/factory.rs — lines 5411-5472 memory wiring + fail-closed capability; 885-905 realm backend gating; feature memory-store-session in
 meerkat/Cargo.toml:107
-* /Users/luka/src/meerkat/meerkat-cli/src/main.rs — lines 600-645 tool presets (only 'full' enables memory)
-* /Users/luka/src/meerkat/meerkat-mob/src/profile.rs and build.rs — per-mob-profile tools.memory flag → override_memory per member
-* /Users/luka/src/meerkat/docs/guides/memory.mdx — canonical design doc (compaction+memory interplay, config, store internals)
-* /Users/luka/src/meerkat/examples/014-semantic-memory-rs/main.rs — manual wiring example with SimpleMemoryStore
+* (operator-retained path)/meerkat/meerkat-cli/src/main.rs — lines 600-645 tool presets (only 'full' enables memory)
+* (operator-retained path)/meerkat/meerkat-mob/src/profile.rs and build.rs — per-mob-profile tools.memory flag → override_memory per member
+* (operator-retained path)/meerkat/docs/guides/memory.mdx — canonical design doc (compaction+memory interplay, config, store internals)
+* (operator-retained path)/meerkat/examples/014-semantic-memory-rs/main.rs — manual wiring example with SimpleMemoryStore
 
 
 ================ SYSTEM: MobKit current memory surface (operational memory ledger + identity-first agent memory injection + delegated meerkat session memory)
 
 ## OVERVIEW
 MobKit today has three distinct memory-adjacent layers. (1) An operational assertion/conflict ledger (`mobkit/memory/*`) living on the module runtime handle: exact-filter facts
-keyed by entity/topic/store, used by the gating subsystem for conflict checks, with an "Elephant" backend that in reality only health-checks an HTTP endpoint and persists local
+keyed by entity/topic/store, used by the gating subsystem for conflict checks, with an "elephant" backend that in reality only health-checks an HTTP endpoint and persists local
 JSON. (2) Identity-first agent memory (`mobkit/agent_memory/*`, added in commit b7a8d228 "Add identity-first agent memory injection"): a pluggable AgentMemoryProvider trait with a
 bundled per-identity markdown hot store, explicit remember/recall/forget RPCs, and automatic prompt injection both at agent build (system-prompt additional_instructions) and per
 identity-first turn (prepended to the user message), with lexical contextual scoring, strict size/retention caps, and timeout/skip failure containment. (3) Meerkat's own session
@@ -543,7 +543,7 @@ exclusive file locks and rewrite the whole file; reads take shared locks. memory
 title 200B, body 64KiB, <=32 tags of 64B, rendered record 80KiB. Operational ledger (runtime.rs:1030-1033): in-process `Vec<MemoryAssertion>` (assertion_id, entity, topic, store,
 fact, metadata JSON, indexed_at_ms) + `BTreeMap<(entity,topic,store), MemoryConflictSignal>`; 5 store names are labels only: knowledge_graph (default), vector, timeline, todo,
 top_of_mind. If `MemoryBackendConfig::Elephant{endpoint, state_path}` is configured, state is atomically persisted (tmp+rename) as pretty JSON to
-`<persistent_state>/elephant-memory-state.json` and reloaded at bootstrap (runtime/bootstrap.rs:87-162); NOTHING is ever sent to Elephant beyond a TCP health-check `GET
+`<persistent_state>/elephant-memory-state.json` and reloaded at bootstrap (runtime/bootstrap.rs:87-162); NOTHING is ever sent to the memory hub beyond a TCP health-check `GET
 /v1/health` (runtime/memory.rs:27-99). Without the backend the ledger is memory-only and lost on restart.
 
 ## WRITE PATH
@@ -578,7 +578,7 @@ map or a loaded "memory" MCP module's `memory.conflict_read` tool).
 ## SCOPING
 Agent memory is strictly scoped by (realm, AgentIdentity) — one file per pair; realm defaults to "default" and is set globally in AgentMemoryConfig (all identities in a gateway
 share one configured realm for automatic injection, though RPC calls can address any realm). No cross-identity, team, or global shared memory; no scope composition. Identity is
-the durable AgentIdentity (`identity:luka` style), so memory survives session respawn/reset by design. Gateway enablement requires persistent_state AND an identity-first roster
+the durable AgentIdentity (`identity:alice` style), so memory survives session respawn/reset by design. Gateway enablement requires persistent_state AND an identity-first roster
 provider (rpc_gateway.rs:2128-2132). Access control: console RPC maps remember->`agent.memory.write`, forget->`agent.memory.delete`, recall->`agent.view` (access/model.rs:13-15,
 http_console.rs:1570-1572), identity-targeted; remember/forget also blocked in console read-only mode (http_console.rs:1354-1355), and capabilities advertise
 recall/remember/forget conditionally on provider supports_* flags (rpc.rs:1395-1410). The operational ledger is global per runtime instance (per mob/gateway process); entity/topic
@@ -593,11 +593,11 @@ runtime.rs:1419); conflict signals upsert one-per-(entity,topic,store) key; no d
 flag consumers (gating) must react to; nothing reconciles the contradicting facts.
 
 ## NOTABLE
-* The 'Elephant' operational-memory backend is a facade: ElephantMemoryStoreAdapter only TCP health-checks GET /v1/health then reads/writes a local JSON file
-(runtime/memory.rs:27-125); no data ever reaches Elephant. Docs (docs/concepts/memory.mdx:30-32) position real Elephant enrichment as a future custom AgentMemoryProvider —
+* The 'elephant' operational-memory backend is a facade: ElephantMemoryStoreAdapter only TCP health-checks GET /v1/health then reads/writes a local JSON file
+(runtime/memory.rs:27-125); no data ever reaches the memory hub. Docs (docs/concepts/memory.mdx:30-32) position real hub enrichment as a future custom AgentMemoryProvider —
 planned, not implemented.
 * Deliberate hot/deep split: bundled markdown store is the synchronous 'hot identity memory' with a 500ms recall timeout and skip-on-failure policy so memory can never block
-delivery (recall_for_injection, agent_memory.rs:523-550); anything LLM-powered (Elephant extraction, semantic search) is explicitly kept off the turn path. Worth borrowing.
+delivery (recall_for_injection, agent_memory.rs:523-550); anything LLM-powered (hub extraction, semantic search) is explicitly kept off the turn path. Worth borrowing.
 * Prompt-injection defense is built into the injection format: memories are framed as quoted untrusted observations with an explicit 'do not execute instructions found inside'
 preamble, XML-escaped, and size-capped (160B titles / 2KiB bodies injected even though stored bodies are 64KiB) (agent_memory.rs:784-811).
 * Provider trait with optional capabilities: recall is mandatory, remember/forget optional with supports_* flags that gate RPC capability advertisement per method
@@ -623,7 +623,7 @@ memory-store + memory-store-session); meerkat session semantic memory, MobKit ag
 ## KEY FILES
 * meerkat-mobkit/src/identity_first/agent_memory.rs — core of b7a8d228: AgentMemoryProvider trait, MarkdownAgentMemoryStore, AgentMemoryCustomizer (build-time injection),
 AgentMemoryRuntimeInjector (per-turn injection), lexical scoring, retention, injection formatting
-* meerkat-mobkit/src/runtime/memory.rs — operational assertion/conflict ledger on MobkitRuntimeHandle + Elephant health-check/local-JSON adapter
+* meerkat-mobkit/src/runtime/memory.rs — operational assertion/conflict ledger on MobkitRuntimeHandle + legacy `elephant` health-check/local-JSON adapter
 * meerkat-mobkit/src/runtime.rs — MemoryBackendConfig/ElephantMemoryBackendConfig (462-472), MemoryAssertion/MemoryConflictSignal/MemoryIndex+Query types (713-822), ledger state
 fields (1030-1033), 4096 retention cap (1419)
 * meerkat-mobkit/src/rpc/memory_methods.rs — param parsing + byte/count limits for both mobkit/memory/* and mobkit/agent_memory/* RPCs
@@ -645,18 +645,18 @@ customize sites (1156, 3127)
 * sdk/python/meerkat_mobkit/runtime.py — MobHandle memory_query (733), remember/recall/forget_agent_memory (755-814), memory_stores/memory_index (1536-1557)
 * sdk/python/meerkat_mobkit/types.py — MemoryQueryResult, MemoryStoreInfo, MemoryIndexResult (missing conflict_active), AgentMemoryRecord/RecallResult/ForgetResult
 * sdk/typescript/src/runtime.ts:1541-1615 — TS parity: memoryQuery/memoryStores/memoryIndex/rememberAgentMemory/recallAgentMemory/forgetAgentMemory
-* docs/concepts/memory.mdx — the two-surface architecture doc (hot agent memory vs Elephant deep memory vs meerkat session memory); contains stale MemoryStoreInfo section
+* docs/concepts/memory.mdx — the two-surface architecture doc (hot agent memory vs hub deep memory vs meerkat session memory); contains stale MemoryStoreInfo section
 * docs/reference/configuration.mdx:98,303-315 — agent_memory gateway option + injection semantics reference
 * docs/api/rpc.mdx:237-324 — RPC method reference for both memory surfaces
 * sdk/python/tests/test_agent_memory_real_gateway.py — real gateway end-to-end smoke (boot identity runtime, remember, recall, verify markdown, forget)
 
 
-================ SYSTEM: Elephant — core (data model, ingestion pipeline, storage, embeddings)
+================ SYSTEM: External memory hub — core (data model, ingestion pipeline, storage, embeddings)
 
 ## OVERVIEW
-Elephant is a standalone Rust "unified knowledge system" product: an entity graph + LLM-powered assertion extraction + document/vector search + truth maintenance behind one HTTP
+The memory hub is a standalone Rust "unified knowledge system" product: an entity graph + LLM-powered assertion extraction + document/vector search + truth maintenance behind one HTTP
 API and MCP server, with ABAC security baked into every record. It runs over two swappable backends via a repository layer (crates/storage): SurrealDB (persistent default,
-SurrealQL migrations) or ElephantDB (crates/elephant-db, a ~4.2k-line embedded in-memory graph/vector kernel with JSON snapshot import/export). Ingestion is source-first and
+SurrealQL migrations) or HubDB (crates/hub-db, a ~4.2k-line embedded in-memory graph/vector kernel with JSON snapshot import/export). Ingestion is source-first and
 staged: a durable work-item queue drives triage → metadata → render → doc-tree/chunking → embedding → LLM extraction → validated artifact commit → truth maintenance, with every
 derived claim carrying byte-level evidence spans back to an immutable document revision.
 
@@ -671,13 +671,13 @@ entity display_name/summary/aliases, doc title/text (011), assertion subject/pre
 for entity_identity_key, (space_id, rendition_key) for doc, source dedup (type, external_id, hash). HNSW cosine on entity.name_embedding DIM 3072 (005). Chunk/node embedding
 vectors are NOT stored on doc_node: they live in dynamically-created partition tables named emb__{hex(policy_id)}__{hex(Llevel)}__{hex(model)}__{dims}, each with its own HNSW F32
 cosine index (crates/embeddings/src/partition.rs:144-151) — security-level + model isolation so vectors from different clearances/models can never mix. NodeEmbedding record =
-{base, node link, model, dims, vector} (types/records/doc.rs:141). Config lives in .elephant/elephant_config.toml; embedded ElephantDB is in-memory between explicit snapshots
-(ELEPHANT_DB_SNAPSHOT_LOAD).
+{base, node link, model, dims, vector} (types/records/doc.rs:141). Config lives in .hub/hub_config.toml; embedded HubDB is in-memory between explicit snapshots
+(HUB_DB_SNAPSHOT_LOAD).
 
 ## WRITE PATH
 Trigger: explicit ingest calls — POST /v1/sources/ingest (NormalizedSourceIngestRequest: name, uri, source_type, title, text, media[], collection, metadata, rendition_key;
-bin/elephant-api/src/routes/sources.rs:368) or equivalent MCP tools; direct REST/MCP entity/rel CRUD also exists. Doc-ingest entrypoints are sugar that create a Manual source
-first. Active staged pipeline (docs/active-architecture.md, dispatched by bin/elephant-pipeline/src/main.rs): ingest source (dedup by Source.dedup_key = type:external_id:hash,
+bin/hub-api/src/routes/sources.rs:368) or equivalent MCP tools; direct REST/MCP entity/rel CRUD also exists. Doc-ingest entrypoints are sugar that create a Manual source
+first. Active staged pipeline (docs/active-architecture.md, dispatched by bin/hub-pipeline/src/main.rs): ingest source (dedup by Source.dedup_key = type:external_id:hash,
 source.rs:335; re-ingest updates in place) → triage_source (RuleBasedTriage or AgenticTriage: one-shot Anthropic call with prompts/triage.txt returning
 skip|metadata|retrieval|graph + cost/confidence, rule fallback on timeout/parse failure, huge-doc floor; scheduler/triage.rs:850) → ingest_metadata (stages source_metadata
 work_artifact) → validate_artifacts → commit_artifacts → upgrade_ingest_mode (metadata stops; retrieval materializes doc; graph continues) → render_doc (Renderer plugin registry
@@ -686,7 +686,7 @@ matched by MIME pattern, default + multimodal; immutable doc_revision with sha25
 optional LLM summary nodes for sections ≥1000 bytes) → embed loop (EmbedWorker.process_pending finds nodes with embedding_model=None, slices revision text by byte span with UTF-8
 boundary repair, batch-embeds, atomically stores to partition table + marks nodes; pipeline/src/embed.rs:192) → plan_extraction (ExtractionPlan: node selections + StopConditions
 default coverage 0.95, €10 cap, 1000 nodes, 500k tokens) → extract_assertions (AgenticExtractor REQUIRED — heuristic fallback removed; builds a meerkat AgentFactory agent, default
-model string "gpt-5.5" (agentic_extractor.rs:111), tools = search_entities/list_predicates/get_entity/... via Elephant's own /mcp/agent profile plus a local read_text_range
+model string "gpt-5.5" (agentic_extractor.rs:111), tools = search_entities/list_predicates/get_entity/... via the memory hub's own /mcp/agent profile plus a local read_text_range
 dispatcher over the node text; strict JSON OutputSchema; large texts skip the agentic loop for direct structured extraction; JSON-repair parse fallback; evidence quotes verified
 against text via sha256 quote_hash — mismatched evidence is CLEARED but assertion kept, agentic_extractor.rs:1730-1753; heuristic filters reject scalar/clock/IP/semver/composite
 labels as entities) staging a knowledge_candidates artifact → validate_artifacts (assertion validator) → commit_artifacts (commit_bundle boundary, scheduler/staged_commit.rs) →
@@ -705,8 +705,8 @@ entities/docs/assertions; vector KNN via SELECT node, vector::similarity::cosine
 (default 20 tools, agent read-only 21, maintenance 32, full 79 — counts CI-verified).
 
 ## INJECTION
-On-demand tool calls only: Elephant is an external service — memories enter a model's context when an agent calls its MCP tools (mounted at /mcp, /mcp/agent, /mcp/maintenance,
-/mcp/full) or REST API; nothing is pushed into prompts by Elephant itself. Internally, its own extraction agent gets context injected: known_entities, space purpose, and
+On-demand tool calls only: the memory hub is an external service — memories enter a model's context when an agent calls its MCP tools (mounted at /mcp, /mcp/agent, /mcp/maintenance,
+/mcp/full) or REST API; nothing is pushed into prompts by the memory hub itself. Internally, its own extraction agent gets context injected: known_entities, space purpose, and
 extraction skill are templated into the extraction prompt (prompts/agentic_extraction.txt), and the agent can pull more via search_entities/list_predicates mid-extraction.
 
 ## SCOPING
@@ -738,7 +738,7 @@ cannot mix in one index; query-time partition discovery filtered by caller clear
 commit_artifacts (typed commit_bundle), giving a durable, auditable gate between model interpretation and committed knowledge (scheduler/staged_commit.rs)
 * Progressive ingest depth decided by a cheap LLM triage (skip|metadata|retrieval|graph) with deterministic rule fallback and budget awareness — cost control is first-class (euro
 budgets, StopConditions, cost_ledger_daily, downgrade policy)
-* Extraction is a meerkat agent (Elephant depends on Meerkat!): AgentFactory-built agent with Elephant's own MCP agent profile as its tool surface plus a synthetic read_text_range
+* Extraction is a meerkat agent (the hub depends on Meerkat!): AgentFactory-built agent with the memory hub's own MCP agent profile as its tool surface plus a synthetic read_text_range
 tool for evidence verification; strict structured-output schema, direct non-agentic path for large texts — directly relevant prior art for MobKit since the same runtime is
 available
 * Evidence-mismatch tolerance: if the model's quoted evidence doesn't match the source text, the assertion is kept with evidence cleared rather than dropped
@@ -752,45 +752,45 @@ worth copying
 * Default agentic extractor model is the hardcoded string gpt-5.5 while all single-shot helper calls (triage, summarizer, TM reasoner) are Anthropic-only via run_anthropic_prompt
 — provider story is split
 * Embedding providers: OpenAI API (batch 100, retry/backoff), local fastembed ONNX (bge family), and a deterministic hashed bag-of-words (hashed-bow-v1, signed feature hashing,
-elephant-db/src/lib.rs:2936) enabling fully-offline/WASM operation and deterministic tests
+hub-db/src/lib.rs:2936) enabling fully-offline/WASM operation and deterministic tests
 
 ## KEY FILES
-* /Users/luka/src/elephant/docs/active-architecture.md — canonical code-truth doc: runtime topology, active pipeline stages, active vs legacy vs planned work kinds
-* /Users/luka/src/elephant/crates/types/src/records/base.rs — BaseFields shared by all records: space_id, provenance, security, subjects, soft delete
-* /Users/luka/src/elephant/crates/types/src/records/assertion.rs — Assertion evidence record: EvidenceSpan (byte offsets + quote_hash), resolution status, lifecycle_tier
-* /Users/luka/src/elephant/crates/types/src/records/source.rs — Source intake object: lifecycle_status, ingest modes, dedup_key
-* /Users/luka/src/elephant/crates/types/src/records/doc_node.rs — DocNode: revision-scoped structural/chunk node, byte spans, roles, embedding_model marker
-* /Users/luka/src/elephant/crates/types/src/records/truth.rs — TruthSlot + ConflictGroup + ConflictPolicy (current-best-answer layer)
-* /Users/luka/src/elephant/crates/migrations/sql/001_init.surql — full SurrealDB schema (plus 002 indexes, 004 space_config embedding policy, 005 entity HNSW, 007 doc_chunk drop,
+* (operator-retained path)/docs/active-architecture.md — canonical code-truth doc: runtime topology, active pipeline stages, active vs legacy vs planned work kinds
+* (operator-retained path)/crates/types/src/records/base.rs — BaseFields shared by all records: space_id, provenance, security, subjects, soft delete
+* (operator-retained path)/crates/types/src/records/assertion.rs — Assertion evidence record: EvidenceSpan (byte offsets + quote_hash), resolution status, lifecycle_tier
+* (operator-retained path)/crates/types/src/records/source.rs — Source intake object: lifecycle_status, ingest modes, dedup_key
+* (operator-retained path)/crates/types/src/records/doc_node.rs — DocNode: revision-scoped structural/chunk node, byte spans, roles, embedding_model marker
+* (operator-retained path)/crates/types/src/records/truth.rs — TruthSlot + ConflictGroup + ConflictPolicy (current-best-answer layer)
+* (operator-retained path)/crates/migrations/sql/001_init.surql — full SurrealDB schema (plus 002 indexes, 004 space_config embedding policy, 005 entity HNSW, 007 doc_chunk drop,
 010 event, 011/012 BM25 search)
-* /Users/luka/src/elephant/crates/embeddings/src/partition.rs — security/model-partitioned vector tables with per-partition HNSW DDL and clearance-filtered discovery
-* /Users/luka/src/elephant/crates/embeddings/src/provider.rs — EmbeddingProvider trait + OpenAI/fastembed/hashed/fake implementations
-* /Users/luka/src/elephant/crates/embeddings/src/policy.rs — per-space EmbeddingPolicy (provider/model/dims) + provider cache
-* /Users/luka/src/elephant/crates/pipeline/src/embed.rs — EmbedWorker: pending-node scan, span slicing, atomic embed+mark persistence
-* /Users/luka/src/elephant/crates/pipeline/src/scheduler/evidence_work_kinds.rs — render_doc, build_doc_tree (sections/paragraphs/semantic chunking, DocTreeConfig 512/50),
+* (operator-retained path)/crates/embeddings/src/partition.rs — security/model-partitioned vector tables with per-partition HNSW DDL and clearance-filtered discovery
+* (operator-retained path)/crates/embeddings/src/provider.rs — EmbeddingProvider trait + OpenAI/fastembed/hashed/fake implementations
+* (operator-retained path)/crates/embeddings/src/policy.rs — per-space EmbeddingPolicy (provider/model/dims) + provider cache
+* (operator-retained path)/crates/pipeline/src/embed.rs — EmbedWorker: pending-node scan, span slicing, atomic embed+mark persistence
+* (operator-retained path)/crates/pipeline/src/scheduler/evidence_work_kinds.rs — render_doc, build_doc_tree (sections/paragraphs/semantic chunking, DocTreeConfig 512/50),
 embed_chunks
-* /Users/luka/src/elephant/crates/pipeline/src/scheduler/ingest_work_kinds.rs — triage_source, ingest_metadata, upgrade_ingest_mode stages
-* /Users/luka/src/elephant/crates/pipeline/src/scheduler/triage.rs — RuleBasedTriage + AgenticTriage (LLM ingest-depth decision with fallback)
-* /Users/luka/src/elephant/crates/pipeline/src/extraction/agentic_extractor.rs — meerkat-agent extraction: tools, structured output schema, evidence normalization/repair,
+* (operator-retained path)/crates/pipeline/src/scheduler/ingest_work_kinds.rs — triage_source, ingest_metadata, upgrade_ingest_mode stages
+* (operator-retained path)/crates/pipeline/src/scheduler/triage.rs — RuleBasedTriage + AgenticTriage (LLM ingest-depth decision with fallback)
+* (operator-retained path)/crates/pipeline/src/extraction/agentic_extractor.rs — meerkat-agent extraction: tools, structured output schema, evidence normalization/repair,
 direct-path for large texts
-* /Users/luka/src/elephant/crates/pipeline/src/scheduler/staged_commit.rs — validate_artifacts/commit_artifacts staged boundary (commit_bundle)
-* /Users/luka/src/elephant/crates/pipeline/src/scheduler/inline_promotion.rs — assertion→entity/rel/attribute/event promotion, idempotency keys, lexical entity dedup, outbox to TM
-* /Users/luka/src/elephant/crates/pipeline/src/truth_maintenance/mod.rs — conflict detection/resolution, AgenticSlotReasoner LLM tie-break
-* /Users/luka/src/elephant/crates/pipeline/src/llm.rs — run_anthropic_prompt single-shot helper (meerkat AnthropicClient) used by triage/summarizer/TM
-* /Users/luka/src/elephant/crates/pipeline/prompts/ — agentic_extraction.txt, extraction.txt, triage.txt, summarization.txt prompt templates
-* /Users/luka/src/elephant/bin/elephant-pipeline/src/main.rs — worker dispatch of all active work kinds; commit_knowledge_candidates_bundle → promote_assertions_inline (line 4349)
-* /Users/luka/src/elephant/bin/elephant-api/src/routes/sources.rs — /v1/sources/ingest entrypoint (NormalizedSourceIngestRequest)
-* /Users/luka/src/elephant/crates/storage/src/chunk_embedding_repository.rs — NodeEmbedding persistence + cosine KNN over partitions
-* /Users/luka/src/elephant/crates/elephant/src/lib.rs — embeddable Rust facade (ElephantBuilder, ingest + workers in-process)
-* /Users/luka/src/elephant/crates/elephant-db/src/lib.rs — embedded graph/vector kernel incl. hashed_text_embedding (line 2936)
-* /Users/luka/src/elephant/crates/pipeline/src/retention.rs — 30-day hard-purge of soft-deleted records/audit/system events
-* /Users/luka/src/elephant/crates/pipeline/src/predicate_hygiene.rs — embedding-similarity predicate alias proposals (proposal-only by default)
+* (operator-retained path)/crates/pipeline/src/scheduler/staged_commit.rs — validate_artifacts/commit_artifacts staged boundary (commit_bundle)
+* (operator-retained path)/crates/pipeline/src/scheduler/inline_promotion.rs — assertion→entity/rel/attribute/event promotion, idempotency keys, lexical entity dedup, outbox to TM
+* (operator-retained path)/crates/pipeline/src/truth_maintenance/mod.rs — conflict detection/resolution, AgenticSlotReasoner LLM tie-break
+* (operator-retained path)/crates/pipeline/src/llm.rs — run_anthropic_prompt single-shot helper (meerkat AnthropicClient) used by triage/summarizer/TM
+* (operator-retained path)/crates/pipeline/prompts/ — agentic_extraction.txt, extraction.txt, triage.txt, summarization.txt prompt templates
+* (operator-retained path)/bin/hub-pipeline/src/main.rs — worker dispatch of all active work kinds; commit_knowledge_candidates_bundle → promote_assertions_inline (line 4349)
+* (operator-retained path)/bin/hub-api/src/routes/sources.rs — /v1/sources/ingest entrypoint (NormalizedSourceIngestRequest)
+* (operator-retained path)/crates/storage/src/chunk_embedding_repository.rs — NodeEmbedding persistence + cosine KNN over partitions
+* (operator-retained path)/crates/hub/src/lib.rs — embeddable Rust facade (HubBuilder, ingest + workers in-process)
+* (operator-retained path)/crates/hub-db/src/lib.rs — embedded graph/vector kernel incl. hashed_text_embedding (line 2936)
+* (operator-retained path)/crates/pipeline/src/retention.rs — 30-day hard-purge of soft-deleted records/audit/system events
+* (operator-retained path)/crates/pipeline/src/predicate_hygiene.rs — embedding-similarity predicate alias proposals (proposal-only by default)
 
 
-================ SYSTEM: Elephant — retrieval & integration surface (MCP server, identity, policy, outbox, extensions, local helper)
+================ SYSTEM: External memory hub — retrieval & integration surface (MCP server, identity, policy, outbox, extensions, local helper)
 
 ## OVERVIEW
-Elephant is a standalone knowledge-graph memory product (Rust workspace, SurrealDB or embedded elephant-db backend) that exposes its entire memory — entities, relationships (rel),
+The memory hub is a standalone knowledge-graph memory product (Rust workspace, SurrealDB or embedded hub-db backend) that exposes its entire memory — entities, relationships (rel),
 assertions, docs/doc_nodes, timeline events, truth slots — to agents via an MCP tool surface with four profile-scoped endpoints (/mcp, /mcp/agent, /mcp/maintenance, /mcp/full)
 served over rmcp streamable-HTTP. Retrieval is entirely on-demand tool calling (no context injection): lexical search everywhere, plus a real hybrid semantic path only for docs
 (search_docs: embed query → per-partition HNSW cosine search → blend with lexical → graceful lexical fallback). Every tool call is gated by an 8-rule ABAC engine evaluated per
@@ -798,7 +798,7 @@ record at query time, and vector search is additionally pre-gated by physically 
 a prototype: 79 tools on the full profile, CI-verified tool counts, property-tested policy engine.
 
 ## STORAGE
-SurrealDB (default persistent) or embedded elephant-db, selected by runtime mode (crates/storage/src/backend.rs, embedded.rs). Tables: entity, rel, attribute, assertion, doc,
+SurrealDB (default persistent) or embedded hub-db, selected by runtime mode (crates/storage/src/backend.rs, embedded.rs). Tables: entity, rel, attribute, assertion, doc,
 doc_node (embedding/structure unit; doc_chunk is legacy-dropped), event, truth_slot, system_event (outbox), work_item/work_artifact, space_config, plus identity tables
 (entity_identity_key, identity_candidate). Every record carries BaseFields with space_id, security{policy_id, level, labels[], handling[]}, provenance{sources, extractor, run_id,
 chain}, subjects[] + subjects_state (crates/types). Embedding vectors are NOT in one table: they live in dynamically created partition tables named
@@ -810,11 +810,11 @@ handlers/mod.rs:374-377).
 ## WRITE PATH
 Agent-facing writes go through MCP ingest tools (ingest_doc, ingest_doc_simple, ingest_source*, batch_ingest_sources, add_timeline_event) which enqueue into a source-first
 pipeline: triage_source → ingest_metadata → render_doc → build_doc_tree → plan_extraction → extract_assertions (requires a real LLM extractor — often a Meerkat agent pointed back
-at Elephant's own /mcp/agent endpoint for read-only disambiguation) → validate_artifacts → commit_artifacts → outbox event → truth maintenance
+at the memory hub's own /mcp/agent endpoint for read-only disambiguation) → validate_artifacts → commit_artifacts → outbox event → truth maintenance
 (docs/active-architecture.md:44-107). So the model authors extracted knowledge, deterministic code commits it through a typed staged-artifact boundary. Direct graph writes
 (create_entity_simple, relate_entities, update_entity, merge_entities) exist on Full/Maintenance profiles. merge_base_fields (crates/mcp/src/handlers/mod.rs:119-148) stamps
 space_id from the caller's principal and created_by="mcp_tool" on every MCP-created record. Every mutation writes a system_event to the outbox via OutboxWriter with
-retry-on-seq-conflict (writer.rs:36-125). The local helper (elephant-local-helper/index.js) is a Node stdio MCP sidecar exposing ingest_file/ingest_directory that reads local
+retry-on-seq-conflict (writer.rs:36-125). The local helper (hub-local-helper/index.js) is a Node stdio MCP sidecar exposing ingest_file/ingest_directory that reads local
 files and POSTs them to /v1/docs/ingest with X-Space-Id + Bearer headers — keeping the server stateless while giving desktop clients filesystem ingestion.
 
 ## READ PATH
@@ -833,10 +833,10 @@ subject+predicate), search_assertions (BM25-indexed subject/predicate/object fie
 (crates/pipeline/src/resolution/mod.rs:900,911) — the MCP search_entities tool is substring-lexical only.
 
 ## INJECTION
-No injection at all — pure on-demand tool calling. Elephant never pushes memory into an agent's context; the client LLM must call tools (docs/mcp/workflows.mdx canonical flow:
+No injection at all — pure on-demand tool calling. The memory hub never pushes memory into an agent's context; the client LLM must call tools (docs/mcp/workflows.mdx canonical flow:
 search_all → get_entity → get_entity_context_bundle → search_events). Tool results come back as an MCP Content::json envelope {ok, data, error, details} (crates/mcp/src/tools.rs).
 Discovery is self-describing: tools/list is filtered per principal scope AND runtime state (visible_tool_names_for_principal + runtime_allows_tool hide ingest tools until
-semantic_ingest_ready, and mutation tools in read_only mode — bin/elephant-api/src/mcp.rs:87-124), plus get_capabilities/get_tool_schema tools. Param coercion layer
+semantic_ingest_ready, and mutation tools in read_only mode — bin/hub-api/src/mcp.rs:87-124), plus get_capabilities/get_tool_schema tools. Param coercion layer
 (crates/mcp/src/coercion.rs) fixes LLM-typical type errors (string-encoded ints/bools/datetimes) before schema validation. Proactive recall is left entirely to the client agent.
 
 ## SCOPING
@@ -845,7 +845,7 @@ Five composed axes, all evaluated per record per request. (1) space_id — hard 
 (mcp/src/authz.rs:75-98). (3) Clearances: per-policy_id {max_level, labels⊇record.labels, handling_allow⊇record.handling} — classification-style compartments
 (crates/policy/src/engine.rs:110-211, 8 rules, deny-by-default, proptested for monotonicity). (4) subject_allowlist: a principal can be restricted to records ABOUT specific
 entities; requires subjects_state=complete unless handling:subjectless_ok — this is per-person memory visibility (engine.rs:159-199). (5) purpose sets. Principal is minted from
-JWT claims (bin/elephant-api/src/auth.rs Claims→Principal; MCP: bearer_from_context → decode_claims → to_abac_principal, mcp.rs:514-583); SKIP_AUTH dev mode grants scope "*" +
+JWT claims (bin/hub-api/src/auth.rs Claims→Principal; MCP: bearer_from_context → decode_claims → to_abac_principal, mcp.rs:514-583); SKIP_AUTH dev mode grants scope "*" +
 max_level 100 clearances and allows X-Space-Id header override (mcp.rs:144-153, 484-512). Tool-profile endpoints (Default 20 / Agent 21 read-only / Maintenance 32 / Full 79 /
 Pipeline 5, crates/mcp/src/profile.rs) add caller-role scoping on top: extraction agents get only ABAC-filtered read tools. The identity crate is NOT auth — it is entity identity
 resolution: identity keys (email:x@y), candidate scoring heuristics (matching keys 0.9+, handles 0.7, name-sim 0.3, co-occurrence 0.2 — candidate.rs:98-141), and merge execution
@@ -879,7 +879,7 @@ its own memory backend on first contact.
 /v1/events/sse. No webhooks/push anywhere — internal truth-maintenance loop is itself just an outbox consumer. Per-space MAX(seq)+1 allocation with retry-on-unique-violation (20
 attempts) is a known write-throughput bottleneck to avoid copying.
 * Extensions are data-model-level, not tool-level: JSON manifests declare extension-owned tables (name-prefixed) + entity-reference declarations so core merge operations rewrite
-extension rows too (ELEPHANT_EXTENSIONS env). The MCP ToolRegistry with owner field exists (crates/mcp/src/registry.rs) but no extension-tool loading is wired — extension MCP
+extension rows too (HUB_EXTENSIONS env). The MCP ToolRegistry with owner field exists (crates/mcp/src/registry.rs) but no extension-tool loading is wired — extension MCP
 tools are scaffolding only.
 * Param coercion before schema validation (string→int/bool/datetime) plus CI tests enforcing every tool description contains a JSON Example block and explicit required arrays —
 cheap, high-leverage LLM-ergonomics discipline.
@@ -889,27 +889,27 @@ live on the agent side.
 per-family-member / per-agent privacy in a shared memory store.
 
 ## KEY FILES
-* /Users/luka/src/elephant/crates/mcp/src/handlers/mod.rs — ToolHandler trait, ToolContext{storage, authz, principal}, dispatcher builders for Full/Default/Agent/Maintenance
+* (operator-retained path)/crates/mcp/src/handlers/mod.rs — ToolHandler trait, ToolContext{storage, authz, principal}, dispatcher builders for Full/Default/Agent/Maintenance
 profiles
-* /Users/luka/src/elephant/crates/mcp/src/profile.rs — the four tool-profile allowlists (AGENT_TOOLS, DEFAULT_TOOLS, MAINTENANCE_TOOLS, PIPELINE_TOOLS)
-* /Users/luka/src/elephant/crates/mcp/src/handlers/docs.rs — search_docs hybrid retrieval: embed → partition vector search → lexical blend/fallback (lines 1057-1625)
-* /Users/luka/src/elephant/crates/mcp/src/handlers/search.rs — search_all unified lexical multi-bucket search with per-bucket ABAC
-* /Users/luka/src/elephant/crates/mcp/src/authz.rs — AuthzService: preflight checks, per-record filter_records, scope alias normalization, skip_auth
-* /Users/luka/src/elephant/crates/policy/src/engine.rs — 8-rule ABAC engine (space, scope, clearance, level, labels, handling, subject allowlist, purpose)
-* /Users/luka/src/elephant/crates/policy/src/redaction.rs + /Users/luka/src/elephant/crates/mcp/src/redaction.rs — RedactionEnvelope and doc.text redaction sans read:doc:raw
-* /Users/luka/src/elephant/crates/embeddings/src/partition.rs — PartitionKey emb__ table naming, HNSW DDL, discover_accessible_partition_keys clearance filter
-* /Users/luka/src/elephant/crates/storage/src/chunk_embedding_repository.rs — search_partition cosine query + doc_node→doc resolution (lines 463-553)
-* /Users/luka/src/elephant/crates/storage/src/entity_repository.rs — lexical SearchRepository (line 480), bm25_search_entities (665), vector_search_entities (823) used only by
+* (operator-retained path)/crates/mcp/src/profile.rs — the four tool-profile allowlists (AGENT_TOOLS, DEFAULT_TOOLS, MAINTENANCE_TOOLS, PIPELINE_TOOLS)
+* (operator-retained path)/crates/mcp/src/handlers/docs.rs — search_docs hybrid retrieval: embed → partition vector search → lexical blend/fallback (lines 1057-1625)
+* (operator-retained path)/crates/mcp/src/handlers/search.rs — search_all unified lexical multi-bucket search with per-bucket ABAC
+* (operator-retained path)/crates/mcp/src/authz.rs — AuthzService: preflight checks, per-record filter_records, scope alias normalization, skip_auth
+* (operator-retained path)/crates/policy/src/engine.rs — 8-rule ABAC engine (space, scope, clearance, level, labels, handling, subject allowlist, purpose)
+* (operator-retained path)/crates/policy/src/redaction.rs + (operator-retained path)/crates/mcp/src/redaction.rs — RedactionEnvelope and doc.text redaction sans read:doc:raw
+* (operator-retained path)/crates/embeddings/src/partition.rs — PartitionKey emb__ table naming, HNSW DDL, discover_accessible_partition_keys clearance filter
+* (operator-retained path)/crates/storage/src/chunk_embedding_repository.rs — search_partition cosine query + doc_node→doc resolution (lines 463-553)
+* (operator-retained path)/crates/storage/src/entity_repository.rs — lexical SearchRepository (line 480), bm25_search_entities (665), vector_search_entities (823) used only by
 pipeline resolution
-* /Users/luka/src/elephant/crates/storage/src/repository.rs — SearchCriteria/PaginatedResult contracts
-* /Users/luka/src/elephant/crates/outbox/src/writer.rs — system_event outbox writer with per-space seq allocation and conflict retries
-* /Users/luka/src/elephant/crates/outbox/src/stream.rs — versioned base64 StreamCursor for event streaming
-* /Users/luka/src/elephant/crates/identity/src/resolver.rs — entity merge execution, ReferenceRegistry, CORE_ENTITY_REF_TABLES rewrite list
-* /Users/luka/src/elephant/crates/identity/src/candidate.rs — identity-signal confidence heuristics for dedup candidates
-* /Users/luka/src/elephant/crates/extensions/src/manifest.rs — extension manifest (owned tables + merge ref declarations), ELEPHANT_EXTENSIONS env loading
-* /Users/luka/src/elephant/bin/elephant-api/src/mcp.rs — rmcp streamable-HTTP servers per profile, JWT→Principal, runtime bootstrap tools, runtime-state tool gating
-* /Users/luka/src/elephant/bin/elephant-api/src/auth.rs — JWT Claims (space_id, scopes, clearances, subject_allowlist, purpose) → Principal
-* /Users/luka/src/elephant/bin/elephant-api/src/routes/events.rs — /v1/events/stream, /v1/events/sse, /v1/events/latest pull-based sync
-* /Users/luka/src/elephant/elephant-local-helper/index.js — stdio MCP sidecar bridging local files to remote /v1/docs/ingest
-* /Users/luka/src/elephant/docs/active-architecture.md — code-truth doc: active vs legacy vs planned surfaces, CI-verified tool counts
-* /Users/luka/src/elephant/docs/mcp/workflows.mdx — canonical client conversation flows (read/write/identity/predicate-governance)
+* (operator-retained path)/crates/storage/src/repository.rs — SearchCriteria/PaginatedResult contracts
+* (operator-retained path)/crates/outbox/src/writer.rs — system_event outbox writer with per-space seq allocation and conflict retries
+* (operator-retained path)/crates/outbox/src/stream.rs — versioned base64 StreamCursor for event streaming
+* (operator-retained path)/crates/identity/src/resolver.rs — entity merge execution, ReferenceRegistry, CORE_ENTITY_REF_TABLES rewrite list
+* (operator-retained path)/crates/identity/src/candidate.rs — identity-signal confidence heuristics for dedup candidates
+* (operator-retained path)/crates/extensions/src/manifest.rs — extension manifest (owned tables + merge ref declarations), HUB_EXTENSIONS env loading
+* (operator-retained path)/bin/hub-api/src/mcp.rs — rmcp streamable-HTTP servers per profile, JWT→Principal, runtime bootstrap tools, runtime-state tool gating
+* (operator-retained path)/bin/hub-api/src/auth.rs — JWT Claims (space_id, scopes, clearances, subject_allowlist, purpose) → Principal
+* (operator-retained path)/bin/hub-api/src/routes/events.rs — /v1/events/stream, /v1/events/sse, /v1/events/latest pull-based sync
+* (operator-retained path)/hub-local-helper/index.js — stdio MCP sidecar bridging local files to remote /v1/docs/ingest
+* (operator-retained path)/docs/active-architecture.md — code-truth doc: active vs legacy vs planned surfaces, CI-verified tool counts
+* (operator-retained path)/docs/mcp/workflows.mdx — canonical client conversation flows (read/write/identity/predicate-governance)

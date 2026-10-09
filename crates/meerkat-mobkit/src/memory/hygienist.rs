@@ -1136,11 +1136,12 @@ pub fn build_replacement(
                             let stubbed = results
                                 .iter()
                                 .map(|result| {
-                                    meerkat_core::types::ToolResult::new(
-                                        result.tool_use_id.clone(),
-                                        format!("[pruned by hygienist: {}]", op.rationale),
-                                        result.is_error,
-                                    )
+                                    let mut stubbed = result.clone();
+                                    stubbed.set_text_content(format!(
+                                        "[pruned by hygienist: {}]",
+                                        op.rationale
+                                    ));
+                                    stubbed
                                 })
                                 .collect();
                             replacement.push(Message::ToolResults {
@@ -1646,6 +1647,12 @@ pub async fn complete_text(
                 }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
+            LlmEvent::OperationObservationFailed {
+                operation_id,
+                phase,
+            } => {
+                tracing::warn!(%operation_id, ?phase, "LLM operation observation failed");
+            }
             LlmEvent::ReasoningDelta { .. }
             | LlmEvent::ReasoningComplete { .. }
             | LlmEvent::ToolCallDelta { .. }
@@ -1734,6 +1741,36 @@ mod tests {
                     expected
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_failure_preserves_physical_completion_without_retry() {
+        use crate::test_diagnostics::{
+            CompletionCase, ObservationClient, PHYSICAL_TEXT, capture_warnings,
+        };
+
+        let profile = HygienistProfile::embedded_default();
+        for case in CompletionCase::ALL {
+            let client = ObservationClient::new(case);
+            let (result, log) =
+                capture_warnings(complete_text(&client, &profile, "test".into())).await;
+            match case {
+                CompletionCase::Success => {
+                    assert_eq!(result.expect("physical success"), PHYSICAL_TEXT);
+                }
+                CompletionCase::TerminalError | CompletionCase::StreamError => assert!(
+                    matches!(result, Err(HygienistError::Client(message))
+                        if message == LlmError::ConnectionReset.to_string()),
+                    "partial text must not replace the terminal provider failure",
+                ),
+                CompletionCase::Truncated => assert!(matches!(
+                    result,
+                    Err(HygienistError::Truncated { max_output_tokens })
+                        if max_output_tokens == profile.params.max_output_tokens
+                )),
+            }
+            client.assert_observed_once_without_retry(&log);
         }
     }
 
@@ -2198,34 +2235,56 @@ mod tests {
 
     #[test]
     fn replacement_preserves_pairing_and_collapses_runs() {
-        let messages = transcript();
-        let ops = vec![prune(2, 3), collapse(4, 7)];
-        let (start, end, replacement) =
-            build_replacement(&messages, &ops).expect("ops produce a hull");
-        assert_eq!((start, end), (2, 7));
-        // [2] pruned tool results, [3] untouched assistant, [4..7) → one notice.
-        assert_eq!(replacement.len(), 3);
-        match &replacement[0] {
-            Message::ToolResults { results, .. } => {
-                assert_eq!(results[0].tool_use_id, "call-1");
-                let text = meerkat_core::types::text_content(&results[0].content);
-                assert!(text.contains("[pruned by hygienist"), "{text}");
+        for is_error in [false, true] {
+            let mut messages = transcript();
+            let failures = vec![crate::test_diagnostics::settlement_failure(is_error)];
+            let original_timestamp = match &mut messages[2] {
+                Message::ToolResults {
+                    results,
+                    created_at,
+                } => {
+                    results[0].is_error = is_error;
+                    results[0].settlement_failures = failures.clone();
+                    *created_at
+                }
+                other => panic!("expected source tool results, got {other:?}"),
+            };
+            let original = messages.clone();
+            let ops = vec![prune(2, 3), collapse(4, 7)];
+            let (start, end, replacement) =
+                build_replacement(&messages, &ops).expect("ops produce a hull");
+            assert_eq!((start, end), (2, 7));
+            // [2] pruned tool results, [3] untouched assistant, [4..7) one notice.
+            assert_eq!(replacement.len(), 3);
+            match &replacement[0] {
+                Message::ToolResults {
+                    results,
+                    created_at,
+                } => {
+                    assert_eq!(results[0].tool_use_id, "call-1");
+                    assert_eq!(results[0].is_error, is_error);
+                    assert_eq!(results[0].settlement_failures, failures);
+                    assert_eq!(*created_at, original_timestamp);
+                    let text = meerkat_core::types::text_content(&results[0].content);
+                    assert!(text.contains("[pruned by hygienist"), "{text}");
+                }
+                other => panic!("expected tool results, got {other:?}"),
             }
-            other => panic!("expected tool results, got {other:?}"),
-        }
-        match &replacement[1] {
-            Message::BlockAssistant(assistant) => {
-                assert!(assistant.text_blocks().any(|text| text.contains("ship")));
+            match &replacement[1] {
+                Message::BlockAssistant(assistant) => {
+                    assert!(assistant.text_blocks().any(|text| text.contains("ship")));
+                }
+                other => panic!("expected assistant, got {other:?}"),
             }
-            other => panic!("expected assistant, got {other:?}"),
-        }
-        match &replacement[2] {
-            Message::SystemNotice(notice) => {
-                let body = notice.body.as_deref().unwrap_or_default();
-                assert!(body.contains("collapsed 3 messages"), "{body}");
-                assert!(body.contains("repeated scaffolding"), "{body}");
+            match &replacement[2] {
+                Message::SystemNotice(notice) => {
+                    let body = notice.body.as_deref().unwrap_or_default();
+                    assert!(body.contains("collapsed 3 messages"), "{body}");
+                    assert!(body.contains("repeated scaffolding"), "{body}");
+                }
+                other => panic!("expected system notice, got {other:?}"),
             }
-            other => panic!("expected system notice, got {other:?}"),
+            assert_eq!(messages, original, "source transcript is not rewritten");
         }
     }
 

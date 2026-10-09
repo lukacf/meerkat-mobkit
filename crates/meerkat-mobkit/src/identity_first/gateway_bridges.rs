@@ -495,6 +495,16 @@ impl GatewayCallbackToolDispatcher {
         scope_id: String,
         external_tools: Vec<super::types::ExternalToolDef>,
     ) -> Self {
+        // Callback provenance, as the rpc gateway's callback tools carry.
+        // Profile, minimal and inherited tooling hand a delegate helper or
+        // spawned child a ceiling over its parent's visible tools, and every
+        // tool that ceiling includes must be witnessed by its provenance: a
+        // delegate whose EFFECTIVE ceiling includes an unwitnessed SDK tool is
+        // refused. Minimal selects only the comms tools, and overlays can
+        // exclude a tool, so not every such delegate includes these. The
+        // source id is registration identity for this build, not a durable
+        // identity across builds.
+        let provenance_source_id = format!("mobkit-callback:{scope_id}");
         let tool_defs = external_tools
             .into_iter()
             .map(|tool| {
@@ -502,7 +512,10 @@ impl GatewayCallbackToolDispatcher {
                     name: tool.name.into(),
                     description: tool.description,
                     input_schema: tool.input_schema,
-                    provenance: None,
+                    provenance: Some(meerkat_core::types::ToolProvenance {
+                        kind: meerkat_core::types::ToolSourceKind::Callback,
+                        source_id: provenance_source_id.as_str().into(),
+                    }),
                 })
             })
             .collect::<Vec<_>>()
@@ -554,6 +567,7 @@ impl AgentToolDispatcher for GatewayCallbackToolDispatcher {
                 tool_use_id: call.id.to_string(),
                 content: callback_result_to_content(&result),
                 is_error: false,
+                settlement_failures: Vec::new(),
             }
             .into()),
             Err(err) => Ok(ToolResult {
@@ -562,6 +576,7 @@ impl AgentToolDispatcher for GatewayCallbackToolDispatcher {
                     text: format!("Tool execution failed: {err}"),
                 }],
                 is_error: true,
+                settlement_failures: Vec::new(),
             }
             .into()),
         }
@@ -1432,6 +1447,35 @@ model = "gpt-5.5"
             .expect("SDK external_tools should install a local callback dispatcher");
         assert_eq!(dispatcher.tools().len(), 1);
         assert_eq!(dispatcher.tools()[0].name.as_ref(), "my_tool");
+        // Each SDK tool is witnessable, so a parent tool ceiling over the
+        // member's visible tools (profile, minimal and inherited delegate
+        // tooling) can include it instead of refusing the delegate.
+        let (_, sent) = mock.last_call().await;
+        let tools = dispatcher.tools();
+        let defs: Vec<ToolDef> = tools.iter().map(|tool| tool.as_ref().clone()).collect();
+        for def in &defs {
+            assert_eq!(
+                def.provenance,
+                Some(meerkat_core::types::ToolProvenance {
+                    kind: meerkat_core::types::ToolSourceKind::Callback,
+                    source_id: format!(
+                        "mobkit-callback:{}",
+                        sent["scope_id"].as_str().expect("scope id")
+                    )
+                    .as_str()
+                    .into(),
+                }),
+                "{def:?}"
+            );
+        }
+        let ceiling = meerkat_core::tool_scope::ToolFilter::Allow(
+            defs.iter()
+                .map(|def| meerkat_core::ToolName::new(def.name.to_string()))
+                .collect(),
+        );
+        let witnesses = meerkat_core::tool_scope::filter_witnesses_for_tool_defs(&defs, &ceiling);
+        meerkat_core::tool_scope::validate_witnessed_filter_authority(&ceiling, &witnesses)
+            .expect("a ceiling over the SDK tools is fully witnessed");
 
         // Verify wire format sent to SDK
         let (method, params) = mock.last_call().await;

@@ -68,6 +68,8 @@ pub mod storage_layout;
 pub mod storage_migrate;
 pub mod storage_provider;
 #[cfg(test)]
+mod test_diagnostics;
+#[cfg(test)]
 mod test_wait;
 pub mod tool_compose;
 pub mod topology_control;
@@ -225,10 +227,10 @@ pub use runtime::{
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, DecisionRuntimeError,
     ElephantMemoryBackendConfig, ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError,
     GatingDecideRequest, GatingDecision, GatingDecisionResult, GatingEvaluateRequest,
-    GatingEvaluateResult, GatingOrigin, GatingOutcome, GatingPendingEntry, GatingRiskTier,
-    GatingStateRestoreError, GatingStateSnapshot, InMemoryMetadataStore, JsonFileSessionStore,
-    JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
-    LocalJsonMemoryBackendConfig, LocalJsonMemoryStoreError, McpBoundaryError,
+    GatingEvaluateResult, GatingIdUnavailable, GatingOrigin, GatingOutcome, GatingPendingEntry,
+    GatingRiskTier, GatingStateRestoreError, GatingStateSnapshot, InMemoryMetadataStore,
+    JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent,
+    LifecycleStage, LocalJsonMemoryBackendConfig, LocalJsonMemoryStoreError, McpBoundaryError,
     MemberIdleRetireOverrideRecord, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal,
     MemoryIndexError, MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult,
     MemoryStoreInfo, MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle,

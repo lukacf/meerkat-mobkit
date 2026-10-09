@@ -5070,6 +5070,7 @@ model = "gpt-5.5"
             None,
             None,
         )
+        .expect("bootstrap spec")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

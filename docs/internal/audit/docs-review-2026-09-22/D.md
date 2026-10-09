@@ -312,7 +312,7 @@ The false-policy branch permits anonymous access; the protected branch requires 
 # Delivery + wait for THAT turn's answer. These wait on the completion
 # cursor the gateway captured before delivery, so they stay correct when an
 # agent answers two turns identically.
-answer = await luka.send_and_wait("Hello", timeout=90)
+answer = await alice.send_and_wait("Hello", timeout=90)
 ```
 
 A host handling simultaneous conversations or connector traffic can attribute another turn's answer to this request while believing the API guarantees exact response correlation.
@@ -1451,13 +1451,13 @@ The helper is correct: its toDict conversion emits the snake_case wire field. In
 
 The Rust parser admits only backend and health_check_endpoint, returning unsupported runtime_options.memory_config fields: healthCheckEndpoint for the documented raw extension. The value, if present, must also be a non-empty string.
 
-**Required correction:** Separate the forms: the raw gateway object accepts {backend: "local_json", health_check_endpoint: url} with the health_check_endpoint key optional; the TypeScript helper is memory.localJson({healthCheckEndpoint: url}) and translates the key. Keep the legacy Elephant deprecation and helper-only selector caveats unchanged.
+**Required correction:** Separate the forms: the raw gateway object accepts {backend: "local_json", health_check_endpoint: url} with the health_check_endpoint key optional; the TypeScript helper is memory.localJson({healthCheckEndpoint: url}) and translates the key. Keep the legacy `elephant` backend deprecation and helper-only selector caveats unchanged.
 
 ### Changes and final verification
 
 **Changed:** `docs/sdks/typescript.mdx`.
 
-Separated raw gateway {backend:'local_json',health_check_endpoint:url} configuration from memory.localJson({healthCheckEndpoint:url}), stating that the endpoint is optional and the helper translates the key. Preserved Elephant deprecation, helper selector, and auth caveats.
+Separated raw gateway {backend:'local_json',health_check_endpoint:url} configuration from memory.localJson({healthCheckEndpoint:url}), stating that the endpoint is optional and the helper translates the key. Preserved `elephant` backend deprecation, helper selector, and auth caveats.
 
 **Validation:** Evaluated both exact corrected memory expressions and memory.localJson() against the real TypeScript builder/init serializer in memory. Their payloads contain accepted snake_case keys, or omit the endpoint. Read the gateway's explicit health_check_endpoint allowlist at rpc_gateway.rs:6736-6763.
 
@@ -1564,13 +1564,13 @@ Earlier review failures are retained here; the per-item dispositions above refle
             "explanation": "The exact resolved Anthropic runtime version is 0.8.40; the meerkat-client lock entry depends on it."
           },
           {
-            "path": "/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/runtime/mod.rs",
+            "path": "(operator-retained path)/meerkat-anthropic-0.8.40/src/runtime/mod.rs",
             "lines": "69-91",
             "quote": "fn default_cache_control_for_backend(backend: AnthropicBackendKind) -> AnthropicCacheControlPolicy {\n    if backend_supports_automatic_cache_control(backend) {\n        AnthropicCacheControlPolicy::Automatic\n    } else {\n        AnthropicCacheControlPolicy::Disabled\n    }\n}",
             "explanation": "This is the pinned registry source's operative default, not moving upstream documentation. Its adjacent exhaustive backend match returns true for AnthropicApi/Vertex/Foundry and false for Bedrock/Copilot."
           },
           {
-            "path": "/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/client.rs",
+            "path": "(operator-retained path)/meerkat-anthropic-0.8.40/src/client.rs",
             "lines": "859-884",
             "quote": "        let cache_control = anthropic_tag(request)\n            .and_then(|tag| tag.cache_control)\n            .unwrap_or(self.default_cache_control);",
             "explanation": "The actual request builder uses the backend default when no profile override is supplied. The adjacent branch rejects Automatic when automatic_cache_control_supported is false."
@@ -1625,13 +1625,13 @@ Earlier review failures are retained here; the per-item dispositions above refle
             "explanation": "The problematic operational claim is retained adjacent to the coordinated pin edit."
           },
           {
-            "path": "/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/runtime/mod.rs",
+            "path": "(operator-retained path)/meerkat-anthropic-0.8.40/src/runtime/mod.rs",
             "lines": "82-91",
             "quote": "        AnthropicBackendKind::AnthropicApi\n        | AnthropicBackendKind::Vertex\n        | AnthropicBackendKind::Foundry => true,",
             "explanation": "These backends support and default to Automatic; the same exhaustive match classifies Bedrock and Copilot as unsupported."
           },
           {
-            "path": "/Users/luka/Library/Caches/rust-workspaces/luka-crnkovicfriis-abk-literate-guacamole-2783c42580/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/meerkat-anthropic-0.8.40/src/client.rs",
+            "path": "(operator-retained path)/meerkat-anthropic-0.8.40/src/client.rs",
             "lines": "876-884",
             "quote": "        if matches!(cache_control, AnthropicCacheControlPolicy::Automatic)\n            && !self.automatic_cache_control_supported",
             "explanation": "An explicit automatic policy on unsupported backends fails request construction rather than enabling caching."

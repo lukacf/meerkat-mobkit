@@ -9,12 +9,12 @@ review; restructured into initiative + future work)
 
 Scope: this document specifies the system **this initiative builds**: a fully
 functional, operational memory system running on MobKit's bundled store, complete
-without any external service. The longer-term trajectory — Elephant as the central
+without any external service. The longer-term trajectory - an external memory hub as the central
 memory hub, eventually a default and possibly mandatory backend — lives in
 [`memory-hub-roadmap.md`](memory-hub-roadmap.md). That trajectory constrains schema
 and layering decisions here (§12) but gates nothing in this plan.
 
-Evidence base: five-system survey (Claude Code, Codex, Meerkat, MobKit, Elephant)
+Evidence base: five-system survey (Claude Code, Codex, Meerkat, MobKit, an external memory hub)
 with adversarially verified findings, committed at
 [`../archive/design/evidence/memory-survey-2026-07/`](../archive/design/evidence/memory-survey-2026-07/). File:line citations below
 refer to the surveyed checkouts (2026-07-01); the archive README carries the
@@ -138,7 +138,7 @@ mob or identity items at all.
    is forbidden: skipped recalls, skipped runs, quarantined writes, and failed
    dreams are events on the timeline.
 7. **Hub-compatible, hub-independent.** Everything here runs with zero external
-   services; nothing here duplicates Elephant machinery (§12's bright line), and
+   services; nothing here duplicates hub machinery (§12's bright line), and
    record/evidence schemas are hub-compatible so the roadmap is a migration, not a
    rewrite.
 
@@ -155,7 +155,7 @@ These are code-verified behaviors of the shipped system, not hypotheticals
 | D2 | **Unbounded re-injection**: a stable top-8 (~18.5 KB rendered) is re-selected deterministically and re-injected verbatim into *every* non-Steer user message, plus a build-time system-prompt copy; no per-turn aggregate cap, no session budget, no cross-turn dedup (the injector cannot even see a session id) | `agent_memory.rs:367-421`, contrast CC's 4 KB/20 KB/60 KB ladder |
 | D3 | **Lifecycle orphaning**: respawn (always mob-level retire+spawn), reset, and resume-fallback rotate the SessionId; meerkat memory has no delete API, so the old session's rows are unreachable forever — and `HnswMemoryStore::open` re-embeds *every* row (orphans included) on *every* agent build in the realm | meerkat `factory.rs:5411-5472`, `hnsw.rs:300-355`, mobkit `rpc.rs:2937-2972` |
 | D4 | **Append-only store**: no update/supersede at the `AgentMemoryProvider` trait level; identical remembers duplicate (codified in tests as correct); a correction and its stale predecessor co-inject as siblings with no preference rule even in the prompt | `agent_memory.rs:552-582, 1090-1099` |
-| D5 | **Misleading "Elephant" backend**: `MemoryBackendConfig::Elephant` health-checks `GET /v1/health` and persists local JSON; no data ever reaches Elephant — but it is a public config surface, so it is deprecated and renamed honestly, not deleted (migration path in §15 P0) | `runtime/memory.rs:27-125` |
+| D5 | **Misleading "elephant" backend**: `MemoryBackendConfig::Elephant` health-checks `GET /v1/health` and persists local JSON; no data ever reaches the memory hub — but it is a public config surface, so it is deprecated and renamed honestly, not deleted (migration path in §15 P0) | `runtime/memory.rs:27-125` |
 
 D1–D4 are production behavior today. Fixing them is Phase 0 and is worth doing
 even if nothing else in this document ships. Note the D1 fix strategy: the
@@ -217,11 +217,11 @@ message classes; fail-closed capability semantics (memory-enabled build fails
 loudly if the store can't open); tool-facing guidance shipped as capability-gated
 skills.
 
-**Adopt from Elephant** (as discipline, not dependency — §12): staged artifact
+**Adopt from the memory hub** (as discipline, not dependency — §12): staged artifact
 commit (LLM output is never written directly; it stages, validates, then commits
 atomically); provenance on every record including extractor model + prompt id;
 per-principal visibility patterns for shared stores. (Status note, 2026-07-02:
-Elephant's truth maintenance is now LLM-powered — value-partitioned detection,
+The memory hub's truth maintenance is now LLM-powered — value-partitioned detection,
 `rel_set` cross-object slots, adjudication over fact-times with ingestion
 timestamps withheld; see the roadmap §4.2. Two of its calibration lessons are
 imported here: recency judgments should prefer *fact-time over capture-time*
@@ -482,7 +482,7 @@ Python/TS `MemoryIndexResult` to be re-checked in the same pass.
 
 The operational ledger (`mobkit/memory/*`) is unchanged and stays what it is —
 runtime assertions and conflict signals for gating. Its misleadingly-named
-Elephant backend is deprecated and renamed in P0 (D5) with config compatibility.
+`elephant` backend is deprecated and renamed in P0 (D5) with config compatibility.
 The conflict-signal channel gains one new producer: the steward (§8.5).
 
 ---
@@ -614,7 +614,7 @@ index**, tiered:
    ceiling (default 4× the soft one), Full-tier manifests truncate
    oldest-least-used with a **loud** truncation event naming what was dropped,
    and the store flags the scope for steward retention pressure. Beyond the soft
-   ceiling the *supported* answer is hub candidate generation (Elephant hybrid
+   ceiling the *supported* answer is hub candidate generation (hub hybrid
    search feeding this same selector — roadmap F2); the bundled store's job is
    working memory, and a working set of ten thousand records is a curation
    failure the dream should have consolidated, not a retrieval problem MobKit
@@ -788,7 +788,7 @@ tombstone-recreation rejection, and budget invariants; `commit` applies
 atomically (single SQLite transaction) and writes one audit entry per op. A dream
 that dies mid-run leaves a stage token that is garbage-collected, never applied,
 never visible. Partial LLM output is structurally incapable of being laundered
-into the store. This is Elephant's staged-artifact boundary applied as
+into the store. This is the memory hub's staged-artifact boundary applied as
 *discipline* (§12), and it is the kind of commit-boundary rigor the meerkat dogma
 already demands of runtime state.
 
@@ -1063,7 +1063,7 @@ and the panel now carries mob-shared records, operator profiles (cross-mob
 personal facts), supersede chains, and provenance links: none of that should be
 readable via mere `agent.view` on one identity. Operator-scope reads require an
 operator-scoped grant. This operationalizes the per-principal-visibility pattern
-adopted from Elephant (§5). Migration: default policy templates grant
+adopted from the memory hub (§5). Migration: default policy templates grant
 `agent.memory.read` wherever `agent.view` was granted; the console keeps
 `agent.view` as a prerequisite. Further additions: `agent.memory.admin`,
 `mob.memory.propose`, `mob.memory.commit` (steward-only in default policy),
@@ -1105,7 +1105,7 @@ cost of "no heuristics," paid explicitly:
 - **Calibration profile** = `{stage, prompt bundle, model, params, version}`.
   Records and staged batches carry the profile that produced them.
   Supported-model onboarding = run the matrix, not hope. The profile format is
-  shared with Elephant's judgment stages (roadmap) so conflict-resolution and
+  shared with the memory hub's judgment stages (roadmap) so conflict-resolution and
   extraction prompts are one artifact family across the stack, not two.
 - **Fixture corpus** per stage: transcripts with labeled expected distillates;
   stores with known duplicates/contradictions for the steward; manifests + turns
@@ -1140,7 +1140,7 @@ cost of "no heuristics," paid explicitly:
 
 ## 12. Hub-compatibility discipline (the bright line)
 
-The roadmap makes Elephant the memory hub; this initiative makes that a
+The roadmap makes an external service the memory hub; this initiative makes that a
 migration instead of a rewrite, by restraint:
 
 - **MobKit's store never grows**: entities, relations, truth slots, embeddings,
@@ -1151,17 +1151,17 @@ migration instead of a rewrite, by restraint:
   roadmap it graduates. Enforced as a ratchet: a CI gate forbids retrieval-index
   and embedding dependencies in the memory module, in the meerkat governance-gate
   tradition.
-- **Schema compatibility**: `MemoryRecord` fields map onto Elephant's
+- **Schema compatibility**: `MemoryRecord` fields map onto the memory hub's
   `BaseFields` (realm↔space, trust/security envelope, subjects, provenance
   chain); `EvidenceRef` is shaped as a hub-compatible evidence span (session
   source id + revision + range) so Distiller provenance survives ingestion
   unchanged. This costs nothing now and is the single highest-leverage
   compatibility decision.
 - **Judgment sharing**: calibration profiles are one artifact family across
-  MobKit and Elephant (§11) — one conflict-resolution prompt lineage, not two
+  MobKit and the memory hub (§11) — one conflict-resolution prompt lineage, not two
   drifting ones.
 - **No service coupling in this initiative**: everything above runs with zero
-  external services. The wire-boundary Elephant provider, evidence ingestion,
+  external services. The wire-boundary hub provider, evidence ingestion,
   graduation, and the mandatory-hub decision gates are specified in
   [`memory-hub-roadmap.md`](memory-hub-roadmap.md).
 
@@ -1266,7 +1266,7 @@ Selector.
   `agent-memory/<realm>.sqlite3` with Markdown import (one-shot migration when
   the realm is first accessed and its SQLite connection opens; export has not
   shipped — §7.3 as-built note); content-hash write
-  guard (D4); deprecate + honestly rename the "Elephant" ledger backend with
+  guard (D4); deprecate + honestly rename the "elephant" ledger backend with
   config compat (D5); re-verify and fix the SDK/docs drift list (§7.3); file
   upstream asks 1–3; land the bright-line CI ratchet (§12).
 - **P1 — Recorder + Selector + coordinator.** `memory` tool + protocol skill;
@@ -1327,7 +1327,7 @@ no CI lane supplies) — see the §11 as-built note.
 bundled store — ever (§12 ratchet; scale-out retrieval is the hub's job). No
 synchronous LLM work on the turn path (the original plan's Selector-budget
 exception was retired with §8.3). No
-Elephant dependency of any kind. No memory-as-instructions, ever. No cross-realm
+hub dependency of any kind. No memory-as-instructions, ever. No cross-realm
 scope composition (including operator profiles — realm-keyed in v1, §7.2). No
 mechanical per-turn citation obligation on agents.
 
