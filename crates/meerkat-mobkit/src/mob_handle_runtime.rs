@@ -8615,6 +8615,12 @@ pub struct MobBootstrapSpec {
     /// What the agent mob tools were installed with, so bootstrap can
     /// reinstall them with the final child policy.
     pub(crate) agent_mob_tools_install: Option<AgentMobToolsInstall>,
+    #[cfg(feature = "extension-state")]
+    pub(crate) before_activation: Option<meerkat_mob::MobBeforeActivation>,
+    /// Public document MCP descriptors retained until bootstrap installs them
+    /// on the final agent mob-tool state, after child policy composition.
+    #[cfg(feature = "extension-state")]
+    pub(crate) child_mcp_servers: Option<meerkat_mob_mcp::ChildMcpServers>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8731,6 +8737,10 @@ impl MobBootstrapSpec {
             child_tool_bundle_availability: BTreeMap::new(),
             child_application_tool_policy: None,
             agent_mob_tools_install: None,
+            #[cfg(feature = "extension-state")]
+            before_activation: None,
+            #[cfg(feature = "extension-state")]
+            child_mcp_servers: None,
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -9312,6 +9322,7 @@ impl MobBootstrapSpec {
             CapabilityFlags::default(),
             None,
             None,
+            None,
         )
     }
 
@@ -9347,6 +9358,7 @@ impl MobBootstrapSpec {
             CapabilityFlags::default(),
             None,
             None,
+            None,
         )
     }
 
@@ -9361,6 +9373,7 @@ impl MobBootstrapSpec {
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
+        mcp_call_context_provider: Option<Arc<dyn meerkat_mcp::McpCallContextProvider>>,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -9377,6 +9390,9 @@ impl MobBootstrapSpec {
             .mob(caps.mob)
             .comms(caps.comms)
             .memory(caps.memory);
+        if let Some(provider) = mcp_call_context_provider {
+            factory = factory.mcp_call_context_provider(provider);
+        }
         if let Some(machine) = runtime_adapter.clone() {
             factory = factory.with_image_generation_machine(machine);
         }
@@ -9617,6 +9633,8 @@ impl MobBootstrapSpec {
             after_create_hook,
             agent_config,
             None,
+            None,
+            false,
         )
     }
 
@@ -9643,6 +9661,8 @@ impl MobBootstrapSpec {
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
+        mcp_call_context_provider: Option<Arc<dyn meerkat_mcp::McpCallContextProvider>>,
+        wait_for_document_mcp: bool,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         // H1 fail-closed blob slot: the slot resolves to a configured
@@ -9784,11 +9804,17 @@ impl MobBootstrapSpec {
             .mob(caps.mob)
             .comms(caps.comms)
             .memory(caps.memory);
+        if let Some(provider) = mcp_call_context_provider {
+            factory = factory.mcp_call_context_provider(provider);
+        }
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
         let config = agent_config.unwrap_or_default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
+        // Mount document MCP tools before native inherited visibility is resolved.
+        // The native wait covers every configured MCP server, using its connection timeout.
+        builder.wait_for_mcp = wait_for_document_mcp;
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let (job_store, job_store_slot): (Arc<dyn meerkat::DetachedJobStore>, StorageSlotSummary) =
@@ -10011,6 +10037,7 @@ impl MobBootstrapSpec {
         Ok(spec)
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ephemeral_runtime_backed_inner(
         definition: MobDefinition,
@@ -10042,13 +10069,14 @@ impl MobBootstrapSpec {
             after_create_hook,
             agent_config,
             None,
+            None,
+            false,
         )
     }
 
-    /// [`ephemeral_runtime_backed_inner`](Self::ephemeral_runtime_backed_inner)
-    /// with the composite storage provider's meerkat-level bundle (M4b, the
-    /// scratch/operator shape): when present, runtime and workgraph authority
-    /// ride the provider's stores instead of process-local memory.
+    /// Build an ephemeral runtime with the optional composite storage provider's
+    /// meerkat-level bundle. When present, runtime and workgraph authority ride
+    /// the provider's stores instead of process-local memory.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ephemeral_runtime_backed_with_provider_stores(
         definition: MobDefinition,
@@ -10065,6 +10093,8 @@ impl MobBootstrapSpec {
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
+        mcp_call_context_provider: Option<Arc<dyn meerkat_mcp::McpCallContextProvider>>,
+        wait_for_document_mcp: bool,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
@@ -10147,10 +10177,16 @@ impl MobBootstrapSpec {
             .mob(caps.mob)
             .comms(caps.comms)
             .memory(caps.memory);
+        if let Some(provider) = mcp_call_context_provider {
+            factory = factory.mcp_call_context_provider(provider);
+        }
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
         let mut builder = FactoryAgentBuilder::new(factory, config);
+        // Mount document MCP tools before native inherited visibility is resolved.
+        // The native wait covers every configured MCP server, using its connection timeout.
+        builder.wait_for_mcp = wait_for_document_mcp;
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let job_store: Arc<dyn meerkat::DetachedJobStore> = provider_meerkat_stores
@@ -10899,6 +10935,22 @@ impl MobRuntime {
         }
         spec.apply_agent_mob_child_policy()
             .map_err(MobRuntimeError::Delivery)?;
+        #[cfg(feature = "extension-state")]
+        if let Some(servers) = spec.child_mcp_servers.take() {
+            let state = spec.agent_mob_mcp_state.as_ref().ok_or_else(|| {
+                MobRuntimeError::InvalidConfig(
+                    "document MCP child delivery requires an agent mob-tool state".into(),
+                )
+            })?;
+            state.set_child_mcp_servers(servers);
+        }
+        #[cfg(feature = "extension-state")]
+        if let (Some(state), Some(callback)) = (&spec.agent_mob_mcp_state, &spec.before_activation)
+        {
+            state
+                .set_before_activation(Arc::clone(callback))
+                .map_err(|error| MobRuntimeError::InvalidConfig(error.to_string()))?;
+        }
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
@@ -11168,6 +11220,10 @@ impl MobRuntime {
         }
         for (name, dispatcher) in &spec.tool_bundles {
             builder = builder.register_tool_bundle(name.clone(), Arc::clone(dispatcher));
+        }
+        #[cfg(feature = "extension-state")]
+        if let Some(callback) = &spec.before_activation {
+            builder = builder.before_activation(Arc::clone(callback));
         }
 
         // Apply-time WorkGraph attention overlays: the provisioner's
@@ -17245,6 +17301,49 @@ comms = true
     }
 
     #[tokio::test]
+    async fn extension_wrappers_forward_retained_metadata_errors_and_exact_session() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            *probe
+                .retained_metadata_reply
+                .lock()
+                .expect("retained reply") = Some(Err(SessionError::NotFound {
+                id: session_id.clone(),
+            }));
+            let result = wrapper.load_retained_session_metadata(&session_id).await;
+            assert!(matches!(result, Err(SessionError::NotFound { id }) if id == session_id));
+        }
+        assert_eq!(
+            *probe.retained_metadata_requests.lock().expect("requests"),
+            vec![session_id.clone(), session_id],
+            "both wrappers preserve the exact requested session"
+        );
+        assert_eq!(
+            probe.calls(),
+            vec![
+                "load_retained_session_metadata",
+                "load_retained_session_metadata"
+            ],
+            "each wrapper forwards exactly once"
+        );
+    }
+
+    #[tokio::test]
     async fn wrappers_forward_the_member_status_view_exactly() {
         let probe = Arc::new(ForwardingProbe::default());
         let inner: Arc<dyn MobSessionService> = probe.clone();
@@ -21847,6 +21946,8 @@ comms = true
                 None,
                 None,
                 provider,
+                None,
+                false,
             )
             .expect("persistent constructor")
         } else {
@@ -21865,6 +21966,8 @@ comms = true
                 None,
                 None,
                 provider,
+                None,
+                false,
             )
             .expect("bootstrap spec")
         }
@@ -22375,6 +22478,160 @@ comms = true
         )
     }
 
+    #[cfg(feature = "extension-state")]
+    #[tokio::test]
+    async fn document_mcp_child_supply_uses_final_policy_state() {
+        let dir = tempfile::tempdir().expect("temporary store");
+        let definition = MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        ))
+        .expect("root definition");
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            4,
+            None,
+            "test session store",
+            None,
+            None,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .expect("bootstrap spec")
+        .with_child_application_tool_policy(meerkat_core::ApplicationToolPolicyBinding::Unmanaged);
+        let preliminary = spec
+            .agent_mob_mcp_state
+            .clone()
+            .expect("preliminary mob-tool state");
+        let shared = meerkat_core::McpServerConfig::stdio(
+            "shared-documents",
+            "document-fixture-mcp",
+            vec![],
+            Default::default(),
+        );
+        let private = meerkat_core::McpServerConfig::stdio(
+            "private-documents",
+            "document-fixture-mcp",
+            vec![],
+            Default::default(),
+        );
+        spec.child_mcp_servers = Some(
+            meerkat_mob_mcp::ChildMcpServers::new()
+                .register(
+                    shared.clone(),
+                    meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable,
+                )
+                .expect("shared descriptor")
+                .register(
+                    private,
+                    meerkat_mob_mcp::ChildToolBundleAvailability::HostOnly,
+                )
+                .expect("host-only descriptor"),
+        );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
+
+        let runtime = MobRuntime::bootstrap(spec).await.expect("root bootstrap");
+        let final_state = runtime
+            .agent_mob_mcp_state
+            .clone()
+            .expect("final mob-tool state");
+        assert!(
+            !Arc::ptr_eq(&preliminary, &final_state),
+            "child policy must exercise replacement of the preliminary state"
+        );
+        let owner = meerkat_mob::AgentIdentity::from("document-owner");
+        Box::pin(
+            runtime
+                .handle()
+                .spawn_spec(SpawnMemberSpec::host_root("worker", owner.clone())),
+        )
+        .await
+        .expect("owner member");
+        let owner_session = runtime
+            .handle()
+            .resolve_bridge_session_id(&owner)
+            .await
+            .expect("owner bridge session");
+        let child_definition = MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        ))
+        .expect("child definition");
+        let child_id = Box::pin(final_state.mob_create_definition_with_owner_bridge_session(
+            child_definition,
+            owner_session.clone(),
+            true,
+            false,
+        ))
+        .await
+        .expect("member-owned child creation from final state");
+        let child = final_state
+            .mob_handles_snapshot()
+            .await
+            .expect("child handles")
+            .into_iter()
+            .find_map(|(id, handle)| (id == child_id).then_some(handle))
+            .expect("created child");
+        let authority = child
+            .owner_bridge_session_lifecycle_authority()
+            .expect("persisted child authority");
+        assert_eq!(authority.bridge_session_id, owner_session);
+        assert!(authority.destroy_on_owner_archive);
+        let profile = child.definition().profiles[&ProfileName::from("worker")]
+            .as_inline()
+            .expect("inline worker");
+        assert_eq!(profile.tools.mcp_servers, vec![shared]);
+        assert!(
+            profile.tools.rust_bundles.is_empty(),
+            "MCP supply must not introduce a native tool fallback"
+        );
+        child.shutdown().await.expect("child shutdown");
+        runtime.handle().shutdown().await.expect("root shutdown");
+    }
+
+    #[cfg(feature = "extension-state")]
+    #[tokio::test]
+    async fn document_mcp_child_supply_requires_final_mob_tool_state() {
+        let dir = tempfile::tempdir().expect("temporary store");
+        let definition = MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+            unique_test_mob_id()
+        ))
+        .expect("root definition");
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            4,
+            None,
+            "test session store",
+            None,
+            None,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .expect("bootstrap spec");
+        spec.agent_mob_mcp_state = None;
+        spec.agent_mob_tools_install = None;
+        spec.child_mcp_servers = Some(meerkat_mob_mcp::ChildMcpServers::new());
+
+        assert!(matches!(
+            MobRuntime::bootstrap(spec).await,
+            Err(MobRuntimeError::InvalidConfig(message))
+                if message == "document MCP child delivery requires an agent mob-tool state"
+        ));
+    }
+
     #[tokio::test]
     async fn agent_mob_tools_expose_definition_profiles_as_realm_profiles() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -22750,6 +23007,7 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
+            None,
         )
         .expect("bootstrap spec");
         let spec_adapter = spec
@@ -23091,6 +23349,7 @@ comms = true
             None,
             None,
             CapabilityFlags::default(),
+            None,
             None,
             None,
         )
@@ -24436,6 +24695,7 @@ image_generation = true
                         ..CapabilityFlags::default()
                     },
                     Some(hook),
+                    None,
                     None,
                 )
                 .expect("image-only ephemeral spec")
