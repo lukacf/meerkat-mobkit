@@ -1773,10 +1773,10 @@ default_binding = "local"
         )
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestSideband;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcSidebandSession for PublicationTestSideband {
         async fn send_command(
@@ -1803,13 +1803,13 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestAnswerTransport;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestPendingBoundReady;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for PublicationTestPendingBoundReady {
         async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
@@ -1817,7 +1817,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for PublicationTestAnswerTransport {
         async fn answer_admitted_offer(
@@ -1869,16 +1869,16 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestBoundReadyBinder;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestBoundReadyCustody {
         authority:
             Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for PublicationTestBoundReadyCustody {
         async fn commit(mut self: Box<Self>) -> Result<(), String> {
@@ -1897,7 +1897,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyBinder for PublicationTestBoundReadyBinder {
         async fn bind_answer_ready(
