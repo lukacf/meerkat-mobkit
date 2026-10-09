@@ -5,9 +5,12 @@ import { MEMORY_TABS, __memoryTest } from "./MemoryPanel";
 import type {
   MemoryDreamRun,
   MemoryDreamRunSheet,
+  MemoryFullRecord,
   MemoryLedgerEntry,
   MemoryPanelRecord,
   MemoryPanelRecordsResult,
+  MemoryQuarantineDecideResult,
+  MemoryReviewedRecordReceipt,
   MemoryScopeOverview,
 } from "../types";
 import type { ConsoleFrame } from "../types";
@@ -62,6 +65,10 @@ const {
   formatDurationMs,
   dreamRunDuration,
   normalizeDreamRunDetail,
+  canDecideQuarantinedRecord,
+  quarantineRationaleProblem,
+  quarantineDecisionSummary,
+  quarantineDecisionErrorText,
 } = __memoryTest;
 
 function record(overrides: Partial<MemoryPanelRecord> & Pick<MemoryPanelRecord, "id" | "scope">): MemoryPanelRecord {
@@ -1248,4 +1255,168 @@ test("a non-denial query error keeps the prior page instead of clobbering it", a
   assert.deepEqual(state.paged?.records.map((r) => r.id), ["ok-1"]);
   assert.notEqual(state.paged?.denied, true);
   assert.equal(state.loading, false);
+});
+
+function quarantinedDetail(overrides: Partial<MemoryFullRecord> = {}): MemoryFullRecord {
+  return {
+    id: "mem-q",
+    scope: { scope: "identity", realm: "default", identity: "lead:main" },
+    kind: "preference",
+    title: "Reading preference",
+    body: "Prefers slow literary fantasy.",
+    trust: "agent_observed",
+    status: { status: "quarantined", reason: "session tainted by configured untrusted tool" },
+    content_hash: "c0ffee",
+    ...overrides,
+  } as MemoryFullRecord;
+}
+
+function receipt(memoryId: string, status: MemoryReviewedRecordReceipt["status"]): MemoryReviewedRecordReceipt {
+  return {
+    memory_id: memoryId,
+    scope: { scope: "identity", realm: "default", identity: "lead:main" },
+    kind: "preference",
+    status,
+    trust: "agent_observed",
+    ever_quarantined: true,
+    content_hash: "c0ffee",
+    derived_from: [],
+    created_at_ms: 1,
+    updated_at_ms: 2,
+  };
+}
+
+test("the quarantine decision is offered only for hash-bound identity quarantine", () => {
+  assert.equal(canDecideQuarantinedRecord(quarantinedDetail()), true);
+  assert.equal(
+    canDecideQuarantinedRecord(quarantinedDetail({ status: { status: "active" } })),
+    false,
+    "active records are not awaiting review",
+  );
+  assert.equal(
+    canDecideQuarantinedRecord(
+      quarantinedDetail({ scope: { scope: "mob", realm: "default", mob: "reading" } }),
+    ),
+    false,
+    "mob-scope quarantine stays with the steward and gating",
+  );
+  assert.equal(
+    canDecideQuarantinedRecord(quarantinedDetail({ content_hash: undefined })),
+    false,
+    "an older gateway without content_hash cannot bind a decision",
+  );
+});
+
+test("quarantine decision summaries name the successor and replays", () => {
+  const released: MemoryQuarantineDecideResult = {
+    outcome: "released",
+    realm: "default",
+    origin: receipt("mem-q", { status: "tombstoned" }),
+    successor: receipt("mem-q-released", { status: "active" }),
+    decision: {
+      audit_token: "review-1",
+      decided_at_ms: 3,
+      review: {
+        verdict: "release",
+        reviewer: { kind: "operator", principal: "operator@example.test" },
+        origin: "mem-q",
+        successor: "mem-q-released",
+        expected_content_hash: "c0ffee",
+        origin_quarantine_reason: "session tainted by configured untrusted tool",
+      },
+    },
+  };
+  assert.match(quarantineDecisionSummary(released), /Released as mem-q-released/);
+  assert.match(
+    quarantineDecisionSummary({ ...released, outcome: "already_released" }),
+    /Already released as mem-q-released; nothing changed/,
+  );
+  assert.match(
+    quarantineDecisionSummary({ ...released, outcome: "tombstoned", successor: null }),
+    /Tombstoned/,
+  );
+  assert.match(
+    quarantineDecisionSummary({
+      ...released,
+      outcome: "tombstoned",
+      successor: null,
+      decision: {
+        ...released.decision,
+        review: { ...released.decision.review, verdict: "tombstone", invalidated_promotions: ["gate-1"] },
+      },
+    }),
+    /Pending promotion gate-1 invalidated; it can no longer publish/,
+  );
+  assert.match(
+    quarantineDecisionSummary({ ...released, outcome: "already_tombstoned", successor: null }),
+    /Already tombstoned/,
+  );
+});
+
+test("quarantine rationale is limited in UTF-8 bytes, as the server counts it", () => {
+  assert.equal(quarantineRationaleProblem(""), null);
+  assert.equal(quarantineRationaleProblem("a".repeat(400)), null);
+  assert.match(quarantineRationaleProblem("a".repeat(401)) ?? "", /401 bytes/);
+  // Two-byte characters: 201 of them are far fewer than 400 UTF-16 units
+  // (what an input maxLength counts) but over the server's 400 bytes.
+  assert.equal(quarantineRationaleProblem("\u00e9".repeat(200)), null);
+  assert.match(quarantineRationaleProblem("\u00e9".repeat(201)) ?? "", /402 bytes/);
+  // Astral characters: four bytes, two UTF-16 units each.
+  assert.equal(quarantineRationaleProblem("\u{1f600}".repeat(100)), null);
+  assert.match(quarantineRationaleProblem("\u{1f600}".repeat(101)) ?? "", /404 bytes/);
+  // Measured as sent: surrounding whitespace is trimmed first.
+  assert.equal(quarantineRationaleProblem(`  ${"a".repeat(400)}\n`), null);
+});
+
+test("quarantine decision errors render typed refusals without echoing content", () => {
+  const refused = (data: Record<string, unknown>) =>
+    Object.assign(new Error("quarantine review refused"), {
+      rpcError: {
+        code: -32043,
+        data: { kind: "memory_quarantine_review_refused", ...data },
+      },
+    });
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "gate_pending", pending_id: "gate-1" })),
+    /gate-1 is waiting on it; decide it in the Gating inbox/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(
+      refused({ reason: "gate_pending", pending_id: "gate-1", expires_at_ms: 0 }),
+    ),
+    /or wait until it expires, 1970-01-01T00:00:00.000Z\)\. Tombstoning the record instead invalidates that promotion/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "successor_conflict", successor_id: "mem-q-released" })),
+    /already holds the release id mem-q-released; nothing was changed/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "secret_detected", class: "aws-access-key-id" })),
+    /aws-access-key-id secret pattern; tombstone is the only exit/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "content_mismatch" })),
+    /Reload it and review again/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(
+      refused({ reason: "not_quarantined", status: "tombstoned", released_as: "mem-q-released" }),
+    ),
+    /already released as mem-q-released/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "not_quarantined", status: "active" })),
+    /the record is active, not quarantined/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(refused({ reason: "stale_update", prior: "mem-p", prior_status: "tombstoned" })),
+    /\(mem-p\) is tombstoned/,
+  );
+  assert.match(
+    quarantineDecisionErrorText(
+      Object.assign(new Error("access denied: agent.memory.write"), { rpcError: { code: -32030 } }),
+    ),
+    /No grant/,
+  );
+  assert.equal(quarantineDecisionErrorText(new Error("network down")), "network down");
 });

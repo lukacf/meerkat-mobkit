@@ -74,6 +74,8 @@ Approval timeouts default to 60 seconds and are clamped to the runtime limits. E
 }
 ```
 
+Gating IDs (`gate-action-...`, `gate-pending-...` and `gate-audit-...`) are opaque strings. Each runtime mints them under its own random 128-bit epoch, so a restart or another runtime does not reissue an earlier ID (barring a random epoch collision). Do not parse or order them.
+
 ## Decisions
 
 Resolve a pending entry with:

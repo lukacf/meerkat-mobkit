@@ -1,6 +1,7 @@
 import React from "react";
 import { describeMemoryTimelineEvent, stripPeerTransportScaffold } from "../lib/adapters";
 import { describeFailure } from "../lib/failure-summary";
+import { memberKickoffNotice, memberKickoffPhaseLabel, type MemberKickoffNotice } from "@console-core";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
 import { countRender } from "../lib/render-counts";
 
@@ -160,12 +161,20 @@ function isScaffoldRequest(value: string): boolean {
   return /^You have been spawned as\b/i.test(value.trim());
 }
 
-function typedSystemNoticeSignal(data: Record<string, unknown>): { targets: string[]; detail: string; incoming: boolean } | null {
+function typedSystemNoticeSignal(data: Record<string, unknown>): {
+  targets: string[];
+  detail: string;
+  incoming: boolean;
+  kickoff?: MemberKickoffNotice;
+} | null {
   const blocks = Array.isArray(data.blocks) ? data.blocks : [];
   const comms = blocks
     .map(recordOf)
     .filter((block) => block.type === "comms");
   if (comms.length === 0) return null;
+  // A member-kickoff status is its typed phase, not a peer message.
+  const kickoff = comms.map(memberKickoffNotice).find((notice) => notice !== null);
+  if (kickoff) return { targets: [kickoff.member], detail: "", incoming: true, kickoff };
 
   const targets: string[] = [];
   const details: string[] = [];
@@ -178,7 +187,8 @@ function typedSystemNoticeSignal(data: Record<string, unknown>): { targets: stri
     // Pure-scaffold content (the canonical peer transport projection) falls
     // back to the typed summary/intent so signal previews show a parsed
     // intent summary, never the raw envelope.
-    const content = stripPeerTransportScaffold(textFromValue(block.content));
+    // A typed lifecycle notice's content is model-facing notice text.
+    const content = block.kind === "lifecycle" ? "" : stripPeerTransportScaffold(textFromValue(block.content));
     const detail = content || textFromValue(block.summary) || textFromValue(block.intent) || textFromValue(block.payload);
     if (detail) details.push(detail);
   }
@@ -255,6 +265,16 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
     case "system_notice": {
       const comms = typedSystemNoticeSignal(data);
       if (!comms) return null;
+      if (comms.kickoff) {
+        const { kickoff } = comms;
+        return {
+          ...base,
+          id: `kickoff:${frame.id || frame.interactionId || frame.timestampMs || kickoff.member}`,
+          severity: kickoff.phase === "failed" ? "warning" : base.severity,
+          label: `Kickoff ${memberKickoffPhaseLabel(kickoff.phase).toLowerCase()}`,
+          detail: truncate(kickoff.role ? `${displayName(kickoff.member)} (${kickoff.role})` : displayName(kickoff.member)),
+        };
+      }
       const peer = comms.targets.map(displayName).join(", ");
       return {
         ...base,

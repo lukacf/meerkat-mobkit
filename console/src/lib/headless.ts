@@ -124,6 +124,7 @@ export const CONSOLE_COMMAND_NAMES = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  decideMemoryQuarantine: "decideMemoryQuarantine",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphEvents: "workgraphEvents",
   workgraphGet: "workgraphGet",
@@ -284,6 +285,10 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   },
   [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.decideMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS.memoryQuarantineDecide,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
   },
   [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {

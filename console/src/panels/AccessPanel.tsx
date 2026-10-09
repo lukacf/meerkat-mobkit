@@ -1,9 +1,13 @@
 import React from "react";
 import type {
   ConsoleAccessConfig,
+  ConsoleAccessEditBase,
+  ConsoleAccessSaveFailure,
+  ConsoleAccessSaveResult,
   ConsoleAccessRule,
   ConsoleAccessStatus,
 } from "../types";
+import { accessSaveNotice } from "../lib/errors";
 
 export interface AccessPreviewResult {
   allowed?: boolean;
@@ -16,33 +20,22 @@ interface AccessPanelProps {
   status: ConsoleAccessStatus | null;
   config: ConsoleAccessConfig | null;
   error?: string | null;
+  loading?: boolean;
   readOnly?: boolean;
   agents: { identity: string; label: string }[];
-  onRefresh: () => void;
-  onSetEnabled: (enabled: boolean) => void;
-  onSaveAdmins: (admins: string[]) => void;
-  onUpsertRule: (rule: ConsoleAccessRule) => void;
-  onDeleteRule: (id: string) => void;
-  onSaveGroup: (name: string, group: { description?: string; members: string[] }) => void;
-  onDeleteGroup: (name: string) => void;
+  onRefresh: () => void | boolean | Promise<void | boolean>;
+  onSetEnabled: (enabled: boolean, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onSaveAdmins: (admins: string[], base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onUpsertRule: (rule: ConsoleAccessRule, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onDeleteRule: (id: string, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onSaveGroup: (name: string, group: { description?: string; members: string[] }, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
+  onDeleteGroup: (name: string, base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>;
   onPreview: (subject: string, action: string, identity?: string) => Promise<AccessPreviewResult | null>;
 }
 
 type Tab = "overview" | "groups" | "rules" | "preview";
+type EditKind = "admins" | "rule" | "group" | "immediate";
 
-const DEFAULT_ACTIONS = [
-  "agent.view",
-  "agent.send",
-  "agent.spawn",
-  "agent.respawn",
-  "agent.retire",
-  "agent.reset",
-  "gating.view",
-  "gating.decide",
-  "mob.observe",
-  "runtime.admin",
-  "access.admin",
-];
 
 export function parseListInput(raw: string): string[] {
   return raw
@@ -108,7 +101,7 @@ function emptyRuleDraft(): RuleDraft {
     effect: "allow",
     subjects: "",
     groups: "",
-    actions: ["agent.view"],
+    actions: [],
     agents: "",
     roles: "",
     matchLabels: "",
@@ -165,6 +158,7 @@ export function AccessPanel({
   status,
   config,
   error,
+  loading = false,
   readOnly = false,
   agents,
   onRefresh,
@@ -185,51 +179,164 @@ export function AccessPanel({
   const [previewSubject, setPreviewSubject] = React.useState("");
   const [previewAction, setPreviewAction] = React.useState("agent.view");
   const [previewIdentity, setPreviewIdentity] = React.useState("");
-  const [previewResult, setPreviewResult] = React.useState<AccessPreviewResult | null>(null);
+  const [previewFeedback, setPreviewFeedback] = React.useState<{
+    scope: string; result?: AccessPreviewResult; error?: string;
+  } | null>(null);
+  const previewSubjectInput = React.useRef<HTMLInputElement>(null);
+  const inspectFocusPending = React.useRef(false);
 
-  const actions = status?.actions?.length ? status.actions : DEFAULT_ACTIONS;
+  const actions = status?.actions ?? [];
+  const [saving, setSaving] = React.useState(false);
+  const [saveFailure, setSaveFailure] = React.useState<(ConsoleAccessSaveFailure & { edit: EditKind }) | null>(null);
+  const [adminsBase, setAdminsBase] = React.useState<ConsoleAccessEditBase | null>(null);
+  const [ruleBase, setRuleBase] = React.useState<ConsoleAccessEditBase | null>(null);
+  const [groupBase, setGroupBase] = React.useState<ConsoleAccessEditBase | null>(null);
+  const [previewPending, setPreviewPending] = React.useState(false);
+  const previewVersion = React.useRef(0);
+  const mayView = status?.available === true && status.can_administer === true;
+  const current = mayView && !loading && !error && Boolean(config);
+  const actionCatalogKey = JSON.stringify(actions);
+  const scope = JSON.stringify([status?.subject, status?.available, status?.can_administer]);
+  const mutationScope = React.useRef(scope);
+  mutationScope.current = scope;
+  // Refresh hides the observation until current state is available. An
+  // unchanged snapshot must not discard an answer racing that refresh.
+  const previewScope = JSON.stringify([scope, status?.owner_instance, status?.revision, status?.enabled, config,
+    actionCatalogKey, error, readOnly, previewSubject, previewAction, previewIdentity]);
+  const currentPreview = current && previewFeedback?.scope === previewScope ? previewFeedback : null;
+  const previewResult = currentPreview?.result;
+  const previewError = currentPreview?.error;
+  const latestPreviewScope = React.useRef(previewScope);
+  latestPreviewScope.current = previewScope;
+  React.useEffect(() => {
+    previewVersion.current += 1;
+    setPreviewFeedback(null);
+    setPreviewPending(false);
+  }, [previewScope]);
+  React.useEffect(() => {
+    setPreviewAction(value => actions.includes(value) ? value : (actions[0] ?? ""));
+  }, [actionCatalogKey]);
+  React.useEffect(() => {
+    setRuleDraft(null); setAdminsDraft(null); setGroupNameDraft("");
+    setGroupMembersDraft(""); setEditingGroup(null); setSaveFailure(null);
+    setAdminsBase(null); setRuleBase(null); setGroupBase(null);
+  }, [scope]);
+  React.useEffect(() => () => { previewVersion.current += 1; }, []);
+  React.useEffect(() => {
+    if (tab === "preview" && inspectFocusPending.current) {
+      previewSubjectInput.current?.focus();
+      inspectFocusPending.current = false;
+    }
+  }, [tab]);
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
   const enabled = config?.enabled === true;
-  const canEdit = !readOnly && Boolean(config);
+  const checked = status?.conditional_mutations === "checked_v1"
+    && typeof status.owner_instance === "string" && status.owner_instance.length > 0
+    && Number.isSafeInteger(status.revision) && status.revision! >= 0;
+  const canReview = current && checked && !readOnly && !saving;
+  // An invalid draft or an ordinary failure stays editable against its own
+  // base; owner, revision and capability failures need an explicit review.
+  const requiresReview = saveFailure !== null && saveFailure.kind !== "failed" && saveFailure.kind !== "invalid";
+  const canEdit = canReview && !requiresReview;
+  function captureBase(): ConsoleAccessEditBase | null {
+    if (!canReview || !config) return null;
+    return { owner_instance: status!.owner_instance!, revision: status!.revision!, config: structuredClone(config) };
+  }
+  async function mutate(edit: EditKind, base: ConsoleAccessEditBase | null,
+    action: (base: ConsoleAccessEditBase) => ConsoleAccessSaveResult | Promise<ConsoleAccessSaveResult>, done = () => {}) {
+    if (!canEdit || !base) return;
+    const requestedScope = scope;
+    setSaving(true); setSaveFailure(null);
+    try {
+      const result = await action(base);
+      if (requestedScope !== mutationScope.current) return;
+      if (result && typeof result === "object") setSaveFailure({ ...result, edit });
+      else if (result !== false) done();
+    } catch {
+      if (requestedScope === mutationScope.current) setSaveFailure({ kind: "failed", edit });
+    } finally { setSaving(false); }
+  }
+  function reviewAndReapply() {
+    const base = captureBase();
+    if (!base || !saveFailure || !requiresReview) return;
+    if (saveFailure.edit === "admins") setAdminsBase(base);
+    if (saveFailure.edit === "rule") setRuleBase(base);
+    if (saveFailure.edit === "group") setGroupBase(base);
+    setSaveFailure(null);
+  }
 
   function startGroupEdit(name: string, members: string[] | undefined) {
+    setGroupBase(captureBase());
     setEditingGroup(name);
     setGroupNameDraft(name);
     setGroupMembersDraft(formatListInput(members));
   }
 
+  function inspectSubject(subject: string) {
+    if (!current || saving) return;
+    previewVersion.current += 1;
+    setPreviewFeedback(null); setPreviewPending(false);
+    setPreviewSubject(subject);
+    inspectFocusPending.current = true;
+    setTab("preview");
+  }
+
   function submitGroup() {
     const name = groupNameDraft.trim();
     if (!name) return;
-    onSaveGroup(name, { members: parseListInput(groupMembersDraft) });
-    setEditingGroup(null);
-    setGroupNameDraft("");
-    setGroupMembersDraft("");
+    void mutate("group", groupBase, base => onSaveGroup(name, { ...base.config.groups?.[name], members: parseListInput(groupMembersDraft) }, base), () => {
+      setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); setGroupBase(null);
+    });
   }
 
   async function runPreview() {
     const subject = previewSubject.trim();
-    if (!subject || !previewAction) return;
-    const result = await onPreview(
-      subject,
-      previewAction,
-      previewIdentity.trim() || undefined,
-    );
-    setPreviewResult(result);
+    if (!current || !subject || !actions.includes(previewAction) || previewPending) return;
+    const version = ++previewVersion.current;
+    const requestedScope = previewScope;
+    setPreviewPending(true); setPreviewFeedback(null);
+    try {
+      const result = await onPreview(subject, previewAction, previewIdentity.trim() || undefined);
+      if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
+        if (result?.allowed === true || result?.allowed === false) setPreviewFeedback({ scope: requestedScope, result });
+        else setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. No decision was returned." });
+      }
+    } catch {
+      if (version === previewVersion.current && requestedScope === latestPreviewScope.current) {
+        setPreviewFeedback({ scope: requestedScope, error: "Access preview unavailable. Refresh and try again." });
+      }
+    } finally {
+      if (version === previewVersion.current) setPreviewPending(false);
+    }
   }
+
+  if (!mayView) return (
+    <section className="gating access-panel" data-testid="access-panel" style={{ padding: 24, gap: 12, alignItems: "flex-start" }}>
+      <h2>Console access</h2>
+      <p role="status">{loading ? "Loading Console access..." : status?.available === false
+        ? "Console access administration is not available on this runtime."
+        : "Current administrator access is required to view this configuration."}</p>
+      <button onClick={onRefresh} data-testid="access-refresh">Refresh</button>
+    </section>
+  );
 
   return (
     <div className="gating access-panel" data-testid="access-panel">
-      <div className="gating__head">
-        <h2>Access</h2>
+      <div className="gating__head" style={{ flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+        <h2>Console access</h2>
+        <p>Manage access to MobKit console and runtime surfaces. These rules do not grant native tool, source or connected-account permissions.</p>
         <p>
           · {enabled ? "enforcing" : "not enforced"} · {rules.length} rules ·{" "}
           {groups.length} groups
           {status?.subject ? <> · you are {status.subject}</> : null}
         </p>
       </div>
-      {error ? <div className="gating__empty" data-testid="access-error">{error}</div> : null}
+      {loading ? <p role="status">Refreshing owner state. Changes are temporarily unavailable.</p> : null}
+      {error || saveFailure ? <div className="gating__empty" role="alert" data-testid="access-error">{error || (saveFailure ? accessSaveNotice(saveFailure) : null)}</div> : null}
+      {requiresReview && canReview ? <button onClick={reviewAndReapply}>Review and reapply</button> : null}
+      {error ? <p style={{ padding: "0 24px" }}>Last loaded configuration may be out of date. Refresh before making changes.</p> : null}
+      {readOnly ? <p role="status">This connection is read-only.</p> : null}
       <div className="gating__tabs">
         {(["overview", "groups", "rules", "preview"] as Tab[]).map((candidate) => (
           <button
@@ -250,7 +357,7 @@ export function AccessPanel({
           Refresh
         </button>
       </div>
-      <div className="gating__list access-panel__body">
+      <fieldset className="gating__list access-panel__body" disabled={tab === "preview" ? !current : tab === "groups" ? !current || saving : !canEdit} style={{ border: 0, margin: 0, minWidth: 0 }}>
         {tab === "overview" ? (
           <div className="gating__policies">
             <div className="gpolicy" data-state={enabled ? "active" : "paused"}>
@@ -269,7 +376,7 @@ export function AccessPanel({
                 <div className="gpolicy__stats">
                   <button
                     data-testid="access-toggle-enabled"
-                    onClick={() => onSetEnabled(!enabled)}
+                    onClick={() => void mutate("immediate", captureBase(), base => onSetEnabled(!enabled, base))}
                   >
                     {enabled ? "Disable enforcement" : "Enable enforcement"}
                   </button>
@@ -298,7 +405,7 @@ export function AccessPanel({
                     <div className="gpolicy__stats">
                       <button
                         data-testid="access-edit-admins"
-                        onClick={() => setAdminsDraft(formatListInput(config?.admins))}
+                        onClick={() => { setAdminsBase(captureBase()); setAdminsDraft(formatListInput(config?.admins)); }}
                       >
                         Edit admins
                       </button>
@@ -321,13 +428,12 @@ export function AccessPanel({
                       className="approve"
                       data-testid="access-save-admins"
                       onClick={() => {
-                        onSaveAdmins(parseListInput(adminsDraft));
-                        setAdminsDraft(null);
+                        void mutate("admins", adminsBase, base => onSaveAdmins(parseListInput(adminsDraft), base), () => { setAdminsDraft(null); setAdminsBase(null); });
                       }}
                     >
                       Save
                     </button>
-                    <button onClick={() => setAdminsDraft(null)}>Cancel</button>
+                    <button onClick={() => { setAdminsDraft(null); setAdminsBase(null); }}>Cancel</button>
                   </div>
                 </div>
               )}
@@ -339,7 +445,7 @@ export function AccessPanel({
           <div className="gating__policies">
             {groups.length === 0 && editingGroup === null ? (
               <div className="gating__empty">
-                No groups yet. Groups assign people to rules — create one, then
+                No groups yet. Groups assign people to rules - create one, then
                 reference it from a rule.
               </div>
             ) : null}
@@ -357,7 +463,19 @@ export function AccessPanel({
                       <span className="chip">no members</span>
                     ) : (
                       (group.members || []).map((member) => (
-                        <span className="chip" key={member}>{member}</span>
+                        <span className="chip" key={member} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {member}
+                          {current && !saving ? (
+                            <button
+                              type="button"
+                              style={{ textDecoration: "underline" }}
+                              aria-label={`Inspect access for ${member}`}
+                              onClick={() => inspectSubject(member)}
+                            >
+                              Inspect access
+                            </button>
+                          ) : null}
+                        </span>
                       ))
                     )}
                   </div>
@@ -374,7 +492,7 @@ export function AccessPanel({
                         data-testid={`access-group-delete:${name}`}
                         onClick={() => {
                           if (window.confirm(`Delete group "${name}"?`)) {
-                            onDeleteGroup(name);
+                            void mutate("immediate", captureBase(), base => onDeleteGroup(name, base));
                           }
                         }}
                       >
@@ -385,22 +503,24 @@ export function AccessPanel({
                 </div>
               ),
             )}
-            {canEdit ? (
+            {canEdit || groupBase ? (
               <div className="gpolicy" data-state="active">
                 <div className="gpolicy__head">
                   <span className="gpolicy__action">
                     {editingGroup ? `Edit ${editingGroup}` : "New group"}
                   </span>
                 </div>
+                {/* Member inspection keeps this tab's fieldset enabled, so a
+                    retained draft is disabled here until it can be saved. */}
                 <div className="access-panel__form">
                   <label>
                     Group name
                     <input
                       data-testid="access-group-name"
                       value={groupNameDraft}
-                      onChange={(event) => setGroupNameDraft(event.target.value)}
+                      onChange={(event) => { if (!groupBase) setGroupBase(captureBase()); setGroupNameDraft(event.target.value); }}
                       placeholder="ops"
-                      disabled={editingGroup !== null}
+                      disabled={!canEdit || editingGroup !== null}
                     />
                   </label>
                   <label>
@@ -408,16 +528,17 @@ export function AccessPanel({
                     <input
                       data-testid="access-group-members"
                       value={groupMembersDraft}
-                      onChange={(event) => setGroupMembersDraft(event.target.value)}
+                      onChange={(event) => { if (!groupBase) setGroupBase(captureBase()); setGroupMembersDraft(event.target.value); }}
                       placeholder="alice@example.com, bob@example.com"
+                      disabled={!canEdit}
                     />
                   </label>
                   <div className="access-panel__form-actions">
-                    <button className="approve" data-testid="access-group-save" onClick={submitGroup}>
+                    <button className="approve" data-testid="access-group-save" onClick={submitGroup} disabled={!canEdit}>
                       {editingGroup ? "Save members" : "Create group"}
                     </button>
                     {editingGroup ? (
-                      <button onClick={() => { setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); }}>
+                      <button onClick={() => { setEditingGroup(null); setGroupNameDraft(""); setGroupMembersDraft(""); setGroupBase(null); }} disabled={!canEdit}>
                         Cancel
                       </button>
                     ) : null}
@@ -460,7 +581,7 @@ export function AccessPanel({
                     <div className="gpolicy__stats">
                       <button
                         data-testid={`access-rule-edit:${rule.id}`}
-                        onClick={() => setRuleDraft(draftFromRule(rule))}
+                        onClick={() => { setRuleBase(captureBase()); setRuleDraft(draftFromRule(rule)); }}
                       >
                         Edit
                       </button>
@@ -469,7 +590,7 @@ export function AccessPanel({
                         data-testid={`access-rule-delete:${rule.id}`}
                         onClick={() => {
                           if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
-                            onDeleteRule(rule.id);
+                            void mutate("immediate", captureBase(), base => onDeleteRule(rule.id, base));
                           }
                         }}
                       >
@@ -482,12 +603,12 @@ export function AccessPanel({
             )}
             {canEdit && !ruleDraft ? (
               <div className="gpolicy__stats">
-                <button data-testid="access-rule-new" onClick={() => setRuleDraft(emptyRuleDraft())}>
+                <button data-testid="access-rule-new" onClick={() => { setRuleBase(captureBase()); setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) }); }}>
                   New rule
                 </button>
               </div>
             ) : null}
-            {canEdit && ruleDraft ? (
+            {ruleDraft ? (
               <div className="gpolicy" data-state="active" data-testid="access-rule-editor">
                 <div className="gpolicy__head">
                   <span className="gpolicy__action">
@@ -597,15 +718,14 @@ export function AccessPanel({
                     <button
                       className="approve"
                       data-testid="access-rule-save"
-                      disabled={!ruleDraft.id.trim() || ruleDraft.actions.length === 0}
+                      disabled={!canEdit || !ruleDraft.id.trim() || ruleDraft.actions.length === 0 || ruleDraft.actions.some(action => !actions.includes(action))}
                       onClick={() => {
-                        onUpsertRule(ruleFromDraft(ruleDraft));
-                        setRuleDraft(null);
+                        void mutate("rule", ruleBase, base => onUpsertRule(ruleFromDraft(ruleDraft), base), () => { setRuleDraft(null); setRuleBase(null); });
                       }}
                     >
                       Save rule
                     </button>
-                    <button onClick={() => setRuleDraft(null)}>Cancel</button>
+                    <button onClick={() => { setRuleDraft(null); setRuleBase(null); }}>Cancel</button>
                   </div>
                 </div>
               </div>
@@ -617,13 +737,14 @@ export function AccessPanel({
           <div className="gating__policies">
             <div className="gpolicy" data-state="active">
               <div className="gpolicy__head">
-                <span className="gpolicy__action">Check access as someone else</span>
+                <span className="gpolicy__action">Check Console access as someone else</span>
               </div>
               <div className="access-panel__form">
                 <label>
                   Subject
                   <input
                     data-testid="access-preview-subject"
+                    ref={previewSubjectInput}
                     value={previewSubject}
                     onChange={(event) => setPreviewSubject(event.target.value)}
                     placeholder="alice@example.com"
@@ -648,7 +769,7 @@ export function AccessPanel({
                     value={previewIdentity}
                     onChange={(event) => setPreviewIdentity(event.target.value)}
                   >
-                    <option value="">—</option>
+                    <option value="">-</option>
                     {agents.map((agent) => (
                       <option key={agent.identity} value={agent.identity}>
                         {agent.label || agent.identity}
@@ -657,18 +778,20 @@ export function AccessPanel({
                   </select>
                 </label>
                 <div className="access-panel__form-actions">
-                  <button className="approve" data-testid="access-preview-run" onClick={() => void runPreview()}>
+                  <button className="approve" data-testid="access-preview-run" disabled={!current || !previewSubject.trim() || !actions.includes(previewAction) || previewPending} onClick={() => void runPreview()}>
                     Evaluate
                   </button>
                 </div>
+                {previewError ? <p role="status" data-testid="access-preview-error">{previewError}</p> : null}
                 {previewResult ? (
                   <div
                     className="gpolicy__rule"
                     data-testid="access-preview-result"
                     data-allowed={previewResult.allowed ? "true" : "false"}
                   >
+                    <span>Observation only, not permission for a later action. </span>
                     {previewResult.allowed ? "ALLOWED" : "DENIED"}
-                    {previewResult.reason ? ` — ${previewResult.reason}` : ""}
+                    {previewResult.reason ? ` - ${previewResult.reason}` : ""}
                     {previewResult.is_admin ? " (admin)" : ""}
                     {previewResult.groups?.length
                       ? ` · groups: ${previewResult.groups.join(", ")}`
@@ -679,7 +802,7 @@ export function AccessPanel({
             </div>
           </div>
         ) : null}
-      </div>
+      </fieldset>
     </div>
   );
 }

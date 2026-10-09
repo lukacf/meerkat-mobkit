@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "
 
 import {
   CONVERSATION_ANCHOR_OFFSET_PX,
+  CONVERSATION_END_ROUNDING_PX,
   ConversationPositionCache,
   captureConversationAnchor,
   conversationIsAtEnd,
@@ -54,7 +55,21 @@ type Session = {
   anchor: ConversationScrollAnchor | null;
   pendingSubmittedRow: string | null;
   lastSubmittedRow: string | null;
+  /// The position the controller last wrote (or observed for a pending
+  /// browser reveal), read back from the viewport so it is exactly what that
+  /// write's scroll event reports.
   expectedScrollTop: number | null;
+  /// The last position seen, written or observed, so a scroll event can tell
+  /// which way it moved.
+  lastScrollTop: number | null;
+  /// The reader's last explicit input: the direction of a vertical gesture
+  /// (wheel or key), or a mouse press on the transcript's content, which
+  /// cannot scroll it. A press that can start a scroll (on the viewport's own
+  /// scrollbar, or by touch or pen) clears it. After a downward gesture or a
+  /// content press, the browser can settle the end a pixel above the computed
+  /// end (see CONVERSATION_END_ROUNDING_PX); that settle is not the reader
+  /// moving up.
+  lastGesture: "up" | "down" | "content-press" | null;
   requestedAnchor: string | null;
   awaitingAnchor: boolean;
   missingAnchor: boolean;
@@ -148,8 +163,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     // and a restore written in between snapped to the nearest turn start.
     if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
     if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
-    session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
+    // Read back the value the browser kept (clamped or rounded): this write's
+    // scroll event reports exactly it, so the event is recognised as ours
+    // without a tolerance that would also swallow a small user scroll.
+    session.expectedScrollTop = viewport.scrollTop;
+    session.lastScrollTop = session.expectedScrollTop;
   }, []);
 
   const applyLayout = useCallback(() => {
@@ -319,6 +338,8 @@ export function useConversationScrollController(options: ConversationScrollContr
         pendingSubmittedRow: remembered?.pendingSubmittedRow ?? null,
         lastSubmittedRow: remembered?.lastSubmittedRow ?? null,
         expectedScrollTop: null,
+        lastScrollTop: null,
+        lastGesture: null,
         requestedAnchor: null,
         awaitingAnchor: false,
         missingAnchor: false,
@@ -348,6 +369,9 @@ export function useConversationScrollController(options: ConversationScrollContr
     const onScroll = () => {
       const session = sessionRef.current;
       if (!session) return;
+      const observed = viewport.scrollTop;
+      const previous = session.lastScrollTop;
+      session.lastScrollTop = observed;
       // Clearing rows while an identity's authorized history loads can clamp
       // scrollTop and emit a native scroll event. Preserve the pending anchor;
       // explicit pointer, wheel and keyboard intent cancel it via readHistory.
@@ -355,12 +379,38 @@ export function useConversationScrollController(options: ConversationScrollContr
         publish();
         return;
       }
-      if (session.expectedScrollTop !== null && Math.abs(viewport.scrollTop - session.expectedScrollTop) <= 1) {
+      if (session.expectedScrollTop !== null && Math.abs(observed - session.expectedScrollTop) <= 0.5) {
         publish();
         return;
       }
       session.expectedScrollTop = null;
-      session.mode = conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight) ? "following-end" : "reading-history";
+      // Any upward movement the controller did not write leaves the live edge
+      // at once, whatever produced it (wheel, scrollbar, touch, a gesture
+      // chained out of a nested scroller). Only a scroll that is not upward,
+      // or a clamp that lands exactly at the end, may stay or resume
+      // following within the live-edge band: the band applies on the way
+      // down. Staying in the band on the way up let the next streamed layout
+      // pass snap the reader back to the end.
+      const end = conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight);
+      // A settle is the browser snapping the end of its scroll range, which
+      // can lie up to CONVERSATION_END_ROUNDING_PX above the computed end. It
+      // follows a downward gesture, or a content press while following (a
+      // pointer action can reveal its target before the press, snapping the
+      // end differently from the controller's write). With no such input, or
+      // after a press that can drag the scroll, a move of any size is the
+      // reader's and leaves.
+      const settle = previous !== null && previous - observed <= CONVERSATION_END_ROUNDING_PX
+        && (session.lastGesture === "down"
+          || (session.lastGesture === "content-press" && session.mode === "following-end"
+            && end - observed <= CONVERSATION_END_ROUNDING_PX));
+      const movedUp = previous !== null && observed < previous - 0.5 && end - observed > 0.5 && !settle;
+      // While following, only an upward move leaves. Content can grow before
+      // a native scroll event that did not move the reader up (a disclosure
+      // opened at the end, then the browser's own scroll after the press), so
+      // the band, measured against the grown end, would misread that
+      // unchanged position as reading; the next layout pass re-pins the end.
+      session.mode = !movedUp && (session.mode === "following-end"
+        || conversationIsAtEnd(observed, viewport.scrollHeight, viewport.clientHeight)) ? "following-end" : "reading-history";
       session.pendingSubmittedRow = null;
       session.requestedAnchor = null;
       cancelReveal(session);
@@ -373,13 +423,19 @@ export function useConversationScrollController(options: ConversationScrollContr
     };
     const canLeaveLiveEdge = (delta: number) => sessionRef.current?.mode !== "following-end"
       || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
+    const noteGesture = (delta: number) => {
+      const session = sessionRef.current;
+      if (session && delta !== 0) session.lastGesture = delta < 0 ? "up" : "down";
+    };
     const onWheel = (event: WheelEvent) => {
+      noteGesture(event.deltaY);
       if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey) ? -1
         : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
+      noteGesture(delta);
       if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
@@ -389,16 +445,27 @@ export function useConversationScrollController(options: ConversationScrollContr
     // A browser reveal or focus scroll can precede its scroll event. Capture
     // the visible position before a pointer-triggered render applies layout,
     // otherwise the old anchor can move a button between mouse down and up.
-    const onPointerDown = () => {
+    const onPointerDown = (event: PointerEvent) => {
       // Clicking a tool or copy control at the live edge does not request
       // history. Actual scrolling and selection retain their own handlers.
       const session = sessionRef.current;
+      // A press is not a scroll gesture. A primary mouse press on the content
+      // cannot scroll it either (a selection drag leaves through
+      // onSelection); one on the viewport itself (its scrollbar), a middle
+      // press (autoscroll), or a touch or pen press can start a drag, so a
+      // move after it is judged on its own.
+      if (session) {
+        session.lastGesture = event.target !== viewport && event.button === 0
+          && event.pointerType !== "touch" && event.pointerType !== "pen"
+          ? "content-press" : null;
+      }
       if (session?.mode !== "following-end"
         || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
       else {
         // A nearby control can be revealed before its native scroll event.
         // Keep that observed position expected if the click grows its content.
         session.expectedScrollTop = viewport.scrollTop;
+        session.lastScrollTop = session.expectedScrollTop;
       }
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });

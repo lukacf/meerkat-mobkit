@@ -1,3 +1,4 @@
+import { operationFeedbackFromFrame } from "./operation-feedback";
 import { assistantPresentationEntries, conversationPresentationRows } from "./assistant-presentation";
 import { userMessageRenderKey } from "./user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
@@ -6,7 +7,7 @@ import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } f
 import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import { parseConsoleContextMessage } from "./context-record";
-import { settledHistoryActivity } from "./settled-history-activity";
+import { memberKickoffNotice, memberKickoffPhaseLabel } from "./member-kickoff";
 import {
   decodeMemberAlias,
   entryOriginFromFrameData,
@@ -1121,7 +1122,8 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
   const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
   const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
   const raw = record?.result ?? record?.content;
-  const result = toolResultTextFromContent(raw);
+  const feedback = operationFeedbackFromFrame(frame);
+  const result = feedback ? feedback.detail : toolResultTextFromContent(raw);
   return { ...(result !== undefined ? { result } : {}), status, completionEvidence };
 }
 
@@ -1377,7 +1379,7 @@ function terminalFrameVisibleText(frame: ConsoleFrame): string {
 
 type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId" | "data" | "id" | "event">;
 
-function ownerContextsConflict(left: AssistantFrameOwner, right: AssistantFrameOwner): boolean {
+function ownerContextsConflict(left: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">, right: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">): boolean {
   return (["runtimeKey", "identity", "sessionId"] as const).some((key) => (
     Boolean(left[key] && right[key] && left[key] !== right[key])
   ));
@@ -2270,7 +2272,8 @@ function historyToolResults(frames: ConsoleFrame[], includeLive = false): Map<st
         : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = toolResultTextFromContent(rawResult);
+    const feedback = operationFeedbackFromFrame(frame);
+    const result = feedback ? feedback.detail : toolResultTextFromContent(rawResult);
     const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
     const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
@@ -3181,6 +3184,21 @@ function typedSystemNoticeBlocksToRich(
         consumedDuplicateCommsBlock = true;
         continue;
       }
+      // A member-kickoff status (`mob.kickoff_<phase>`, typed lifecycle or
+      // the older request form) renders as its typed status, never as a peer
+      // message: its content is model-facing routing text.
+      const kickoff = memberKickoffNotice(record);
+      if (kickoff) {
+        const member = decodeMemberAlias(kickoff.member);
+        rich.push({
+          type: "member-kickoff",
+          phase: kickoff.phase,
+          member,
+          ...(kickoff.role ? { role: kickoff.role } : {}),
+          copyText: `Kickoff ${memberKickoffPhaseLabel(kickoff.phase).toLowerCase()}: ${member}`,
+        });
+        continue;
+      }
       const peer = record.peer && typeof record.peer === "object"
         ? record.peer as Record<string, unknown>
         : {};
@@ -3554,6 +3572,7 @@ export function mapFramesToTimelineEntries(
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map(frame => frame.id));
   const entries: ConversationTimelineEntry[] = [];
+  const emittedOperationFeedback = new Set<string>();
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames);
@@ -3743,6 +3762,23 @@ export function mapFramesToTimelineEntries(
     )) {
       if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
       completeOwnedStream(frame);
+    }
+
+    const operationFeedback = operationFeedbackFromFrame(frame);
+    if (operationFeedback) {
+      flushPendingReasoning(true);
+      flushPendingText();
+      const key = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId,
+        frame.runId, frame.interactionId, operationFeedback.kind,
+        operationFeedback.operationId ?? operationFeedback.toolCallId ?? parseToolCallId(frame) ?? entryId]);
+      if (!emittedOperationFeedback.has(key)) {
+        emittedOperationFeedback.add(key);
+        entries.push({ kind: "message", id: entryId, identity: SYSTEM_IDENTITY,
+          variant: "meta", createdAt: isoFromTimestampMs(frame.timestampMs),
+          runId: frame.runId, interactionId: frame.interactionId,
+          text: operationFeedback.detail, operationFeedback });
+      }
+      continue;
     }
 
     if (frame.event === "reasoning_delta") {
@@ -4226,86 +4262,283 @@ function isIntermediateHistoryAssistantStep(frame: ConsoleFrame): boolean {
   return message.role === "block_assistant" && message.stop_reason === "tool_use";
 }
 
-export function inferResponsePhaseFromFrames(
-  frames: ConsoleFrame[],
-  fallback: ResponsePhase = null,
-): ResponsePhase {
-  const coveredHistory = settledHistoryActivity(frames);
-  let phase: ResponsePhase = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    // A saved intermediate message supplies content, not current lifecycle.
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+type LifecyclePhase = { phase: ResponsePhase; order: number };
+
+type LifecycleOwner = {
+  context: Pick<ConsoleFrame, "runtimeKey" | "identity" | "sessionId">;
+  interactionId?: string;
+  runIds: Set<string>;
+  openRuns: Set<string>;
+  runStartOrder: Map<string, number>;
+  runPhases: Map<string, LifecyclePhase>;
+  interactionOpen: boolean;
+  unidentifiedRunOpen: boolean;
+  inputOpen: boolean;
+  auxiliaryOpen: boolean;
+  ownerPhase: LifecyclePhase;
+  phase: ResponsePhase;
+  order: number;
+};
+
+const HISTORICAL_AUXILIARY_EVENTS = new Set([
+  "reasoning_delta", "reasoning_complete", "tool_call_requested", "tool_call",
+  "tool_execution_started", "tool_result_received", "tool_execution_completed", "server_tool_content",
+]);
+
+// Display projection of supplied lifecycle IDs, not execution authority.
+export class ConsoleActivityProjection {
+  private interactions = new Map<string, LifecycleOwner[]>();
+  private runs = new Map<string, LifecycleOwner[]>();
+  private anonymous: LifecycleOwner[] = [];
+  private active = new Set<LifecycleOwner>();
+  private busyOwners = new Set<LifecycleOwner>();
+  private interactionsOpen = new Set<LifecycleOwner>();
+  private runsOpen = new Set<LifecycleOwner>();
+  private phaseOwner?: LifecycleOwner;
+  private order = 0;
+  phase: ResponsePhase;
+  terminal = false;
+
+  constructor(fallback: ResponsePhase = null) { this.phase = fallback; }
+  get busy(): boolean { return this.busyOwners.size > 0; }
+  get interactionOpen(): boolean { return this.interactionsOpen.size > 0; }
+  get runOpen(): boolean { return this.runsOpen.size > 0; }
+
+  private matching(owners: LifecycleOwner[] | undefined, frame: ConsoleFrame): LifecycleOwner | undefined {
+    const matches = owners?.filter(owner => !ownerContextsConflict(owner.context, frame)
+      && !(owner.interactionId && frame.interactionId && owner.interactionId !== frame.interactionId));
+    return matches?.length === 1 ? matches[0] : undefined;
+  }
+  private index(map: Map<string, LifecycleOwner[]>, key: string, owner: LifecycleOwner): void {
+    const owners = map.get(key) ?? [];
+    if (!owners.includes(owner)) map.set(key, [...owners, owner]);
+  }
+  private forget(owner: LifecycleOwner): void {
+    const remove = (map: Map<string, LifecycleOwner[]>, key: string) => {
+      const remaining = map.get(key)?.filter(value => value !== owner) ?? [];
+      if (remaining.length) map.set(key, remaining); else map.delete(key);
+    };
+    if (owner.interactionId) remove(this.interactions, owner.interactionId);
+    for (const id of owner.runIds) remove(this.runs, id);
+    this.anonymous = this.anonymous.filter(value => value !== owner);
+    this.active.delete(owner);
+    this.busyOwners.delete(owner);
+    this.interactionsOpen.delete(owner);
+    this.runsOpen.delete(owner);
+  }
+  private owner(frame: ConsoleFrame): LifecycleOwner | undefined {
+    const interaction = typeof frame.interactionId === "string" && frame.interactionId.length ? frame.interactionId : undefined;
+    const run = typeof frame.runId === "string" && frame.runId.length ? frame.runId : undefined;
+    const byInteraction = interaction ? this.matching(this.interactions.get(interaction), frame) : undefined;
+    const byRun = run ? this.matching(this.runs.get(run), frame) : undefined;
+    if (byInteraction && byRun && ownerContextsConflict(byInteraction.context, byRun.context)) return undefined;
+    let owner = byInteraction ?? byRun;
+    // A frame carrying both IDs establishes their relationship. An earlier
+    // run-only observation may then join the separately observed interaction.
+    if (byInteraction && byRun && byInteraction !== byRun && !byRun.interactionId) {
+      for (const key of ["runtimeKey", "identity", "sessionId"] as const) byInteraction.context[key] ??= byRun.context[key];
+      for (const id of byRun.runIds) { byInteraction.runIds.add(id); this.index(this.runs, id, byInteraction); }
+      for (const id of byRun.openRuns) byInteraction.openRuns.add(id);
+      for (const [id, order] of byRun.runStartOrder) {
+        if (order < (byInteraction.runStartOrder.get(id) ?? Infinity)) byInteraction.runStartOrder.set(id, order);
+      }
+      for (const [id, phase] of byRun.runPhases) {
+        if (phase.order > (byInteraction.runPhases.get(id)?.order ?? -1)) byInteraction.runPhases.set(id, phase);
+      }
+      byInteraction.interactionOpen ||= byRun.interactionOpen;
+      byInteraction.unidentifiedRunOpen ||= byRun.unidentifiedRunOpen;
+      byInteraction.inputOpen ||= byRun.inputOpen;
+      byInteraction.auxiliaryOpen ||= byRun.auxiliaryOpen;
+      if (byRun.ownerPhase.order > byInteraction.ownerPhase.order) byInteraction.ownerPhase = byRun.ownerPhase;
+      this.selectOwnerPhase(byInteraction);
+      this.forget(byRun);
+      owner = byInteraction;
+    }
+    if (!interaction && !run) owner = this.matching(this.anonymous, frame);
+    if (!owner) {
+      owner = { context: { runtimeKey: frame.runtimeKey, identity: frame.identity, sessionId: frame.sessionId },
+        runIds: new Set(), openRuns: new Set(), runStartOrder: new Map(), runPhases: new Map(), interactionOpen: false, unidentifiedRunOpen: false,
+        inputOpen: false, auxiliaryOpen: false, ownerPhase: { phase: null, order: 0 }, phase: null, order: 0 };
+      if (!interaction && !run) this.anonymous.push(owner);
+    }
+    for (const key of ["runtimeKey", "identity", "sessionId"] as const) owner.context[key] ??= frame[key];
+    if (interaction) { owner.interactionId = interaction; this.index(this.interactions, interaction, owner); }
+    if (run) { owner.runIds.add(run); this.index(this.runs, run, owner); }
+    return owner;
+  }
+  private selectOwnerPhase(owner: LifecycleOwner): void {
+    const previousOrder = owner.order;
+    let runPhase: LifecyclePhase | undefined;
+    let clearedRunOrder = 0;
+    for (const contribution of owner.runPhases.values()) {
+      if (contribution.phase === null) clearedRunOrder = Math.max(clearedRunOrder, contribution.order);
+      else if ((owner.ownerPhase.phase !== null || contribution.order > owner.ownerPhase.order)
+        && (!runPhase || contribution.order > runPhase.order)) runPhase = contribution;
+    }
+    // A run-local clear invalidates an older owner fallback, while another
+    // run's live contribution survives. An owner-wide clear covers older runs.
+    let latest = clearedRunOrder > owner.ownerPhase.order ? { phase: null, order: clearedRunOrder } : owner.ownerPhase;
+    if (runPhase && (latest.phase === null || runPhase.order > latest.order)) latest = runPhase;
+    owner.phase = latest.phase;
+    owner.order = latest.order;
+    // A settled run can reveal an older phase. Let another owner's newer
+    // contribution win rather than dating the survivor with the terminal.
+    if (this.phaseOwner === owner && owner.order < previousOrder) this.selectPhaseOwner();
+  }
+  private selectPhaseOwner(): void {
+    this.phaseOwner = undefined;
+    for (const active of this.active) {
+      if (active.phase !== null && (!this.phaseOwner || active.order > this.phaseOwner.order)) this.phaseOwner = active;
+    }
+  }
+  private refreshOwner(owner: LifecycleOwner, retainAssociation = false): void {
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    const open = owner.interactionOpen || hasRun || owner.inputOpen || owner.auxiliaryOpen;
+    if (retainAssociation && !open && owner.phase === null) return;
+    if (owner.interactionOpen) this.interactionsOpen.add(owner); else this.interactionsOpen.delete(owner);
+    if (hasRun) this.runsOpen.add(owner); else this.runsOpen.delete(owner);
+    if (open) this.busyOwners.add(owner); else this.busyOwners.delete(owner);
+    if (open || owner.phase !== null) {
+      this.active.add(owner);
+      if (owner.phase !== null && (!this.phaseOwner || owner.order > this.phaseOwner.order)) this.phaseOwner = owner;
+    } else this.forget(owner);
+    // Visual text completion need not settle queue-busy ownership. Only a
+    // settled displayed phase scans other active contributions, never tokens.
+    if (!this.phaseOwner || !this.active.has(this.phaseOwner) || this.phaseOwner.phase === null) {
+      this.selectPhaseOwner();
+    }
+    this.phase = this.phaseOwner?.phase ?? null;
+  }
+  fold(frame: ConsoleFrame): boolean {
+    // Saved tool and reasoning rows describe transcript content. Their append
+    // cursors, message IDs and arrival order do not reserve current work.
+    // Retain exact ID associations in the existing indexes, even before live
+    // activity arrives. An inactive association opens no lifecycle or phase.
+    if (frame.sourceKind === "session_history" && HISTORICAL_AUXILIARY_EVENTS.has(frame.event)) {
+      if (typeof frame.runId !== "string" || !frame.runId
+        || typeof frame.interactionId !== "string" || !frame.interactionId) return false;
+      if (this.runs.get(frame.runId)?.some(owner => !ownerContextsConflict(owner.context, frame)
+        && owner.interactionId && owner.interactionId !== frame.interactionId)) return false;
+      const owner = this.owner(frame);
+      if (!owner) return false;
+      this.refreshOwner(owner, true);
+      this.terminal &&= this.phase === null;
+      return true;
+    }
+    if (isIntermediateHistoryAssistantStep(frame)) return false;
+    const terminalUser = frame.event === "user_input" && isTerminalUserInputStatus(frame.status);
+    let phase: ResponsePhase | undefined;
+    let terminal = false;
     switch (frame.event) {
-      case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase = null;
-        else phase = "waiting";
-        break;
-      case "interaction_started":
-        interactionOpen = true;
-        phase = "waiting";
-        break;
-      case "run_started":
-        runOpen = true;
-        phase = "waiting";
-        break;
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-        phase = "tool-executing";
-        break;
+      case "user_input": phase = terminalUser ? null : "waiting"; terminal = terminalUser; break;
+      case "interaction_started": case "run_started": phase = "waiting"; break;
+      case "tool_call_requested": case "tool_call": case "tool_execution_started": phase = "tool-executing"; break;
       case "server_tool_content":
         if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
         else if (isTerminalServerToolContentFrame(frame)) phase = "waiting";
+        else return false;
         break;
-      case "tool_result_received":
-      case "tool_execution_completed":
-        // A completed tool is not the same as a completed turn. In spawned
-        // worker histories the runtime may not project run_started/
-        // interaction_started, so keep the pane busy until text/run terminal
-        // evidence arrives; otherwise operator sends bypass the local queue.
-        phase = "waiting";
-        break;
-      case "reasoning_delta":
-        phase = "generating";
-        break;
-      case "reasoning_complete":
-        phase = "waiting";
-        break;
-      case "text_delta":
-        phase = "generating";
-        break;
-      case "text_complete":
-        phase = interactionOpen || runOpen ? "waiting" : null;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase = null;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        phase = interactionOpen ? "waiting" : null;
-        break;
+      case "tool_result_received": case "tool_execution_completed": case "reasoning_complete": phase = "waiting"; break;
+      case "reasoning_delta": case "text_delta": phase = "generating"; break;
+      case "text_complete": case "interaction_complete": case "interaction_failed":
+      case "run_completed": case "run_failed": case "message_delivery_failed": phase = null; terminal = true; break;
       case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) phase = null;
-        break;
+        if (!systemNoticeClearsBusyState(frame)) { this.terminal = false; return false; }
+        phase = null; terminal = true; break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase = interactionOpen || runOpen ? "waiting" : null;
-        }
-        break;
+        const reason = data.stop_reason ?? data.stopReason;
+        if (reason === "tool_use") { this.terminal = false; return false; }
+        phase = null; terminal = true; break;
       }
-      default:
-        break;
+      default: return false;
     }
+    const owner = this.owner(frame);
+    if (!owner) return false;
+    // Replayed starts do not become current again after their run settles.
+    // History associations never populate these explicit start observations.
+    if (frame.event === "run_started" && frame.runId && owner.runStartOrder.has(frame.runId)) {
+      this.refreshOwner(owner, true);
+      return true;
+    }
+    const order = ++this.order;
+    let ownerPhaseEvent = !frame.runId;
+    switch (frame.event) {
+      case "user_input":
+        ownerPhaseEvent = true;
+        owner.inputOpen = !terminalUser;
+        if (terminalUser) owner.auxiliaryOpen = false;
+        break;
+      case "interaction_started": ownerPhaseEvent = true; owner.interactionOpen = true; break;
+      case "run_started":
+        if (frame.runId) {
+          owner.runStartOrder.set(frame.runId, order);
+          owner.openRuns.add(frame.runId);
+        } else owner.unidentifiedRunOpen = true;
+        break;
+      case "interaction_complete": case "interaction_failed":
+        if (frame.runId) {
+          const started = owner.runStartOrder.get(frame.runId);
+          const closesCurrent = started !== undefined
+            && [...owner.runStartOrder.values()].every(value => value <= started)
+            && ![...owner.runPhases].some(([id, value]) => id !== frame.runId
+              && !owner.runStartOrder.has(id) && value.phase !== null && value.order > started);
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
+          // Native run terminals are emitted as interaction terminals with
+          // both IDs. The latest explicit start identifies the current run;
+          // its terminal closes the interaction, an older terminal does not.
+          // A partial history may omit a newer run's start: retain its observed
+          // phase without manufacturing an open-run reservation for it.
+          if (!closesCurrent && (owner.openRuns.size || owner.unidentifiedRunOpen
+            || [...owner.runPhases.values()].some(value => value.phase !== null))) break;
+        }
+        // A run-less terminal settles the interaction, as does its last run.
+        // falls through
+      case "message_delivery_failed": case "system_notice":
+        ownerPhaseEvent = true;
+        owner.interactionOpen = owner.unidentifiedRunOpen = owner.inputOpen = owner.auxiliaryOpen = false;
+        owner.openRuns.clear(); owner.runPhases.clear(); break;
+      case "run_completed": case "run_failed":
+        if (frame.runId) {
+          owner.openRuns.delete(frame.runId);
+          if (owner.runPhases.get(frame.runId)?.phase !== null) owner.runPhases.delete(frame.runId);
+        }
+        else owner.unidentifiedRunOpen = false;
+        break;
+      case "text_complete": case "text_delta": break;
+      case "turn_completed": owner.inputOpen = owner.auxiliaryOpen = false; break;
+      default: owner.auxiliaryOpen = true; break;
+    }
+    const hasRun = owner.unidentifiedRunOpen || owner.openRuns.size > 0;
+    if (frame.event === "text_complete" || frame.event === "turn_completed") phase = owner.interactionOpen || hasRun ? "waiting" : null;
+    if (frame.event === "run_completed" || frame.event === "run_failed"
+      || ((frame.event === "interaction_complete" || frame.event === "interaction_failed") && !ownerPhaseEvent)) {
+      // Observed run phases and explicit run starts are different facts. A
+      // sibling's live text survives even when its start was not retained.
+      if ((!owner.openRuns.size && ![...owner.runPhases.values()].some(value => value.phase !== null)
+        && !owner.unidentifiedRunOpen) || !frame.runId) {
+        owner.ownerPhase = { phase: owner.interactionOpen ? "waiting" : null, order };
+      }
+      this.selectOwnerPhase(owner);
+    } else {
+      const contribution = { phase: phase ?? null, order };
+      if (frame.runId && !ownerPhaseEvent) {
+        owner.runPhases.set(frame.runId, contribution);
+      } else owner.ownerPhase = contribution;
+      if (contribution.phase === null) this.selectOwnerPhase(owner);
+      else { owner.phase = contribution.phase; owner.order = contribution.order; }
+    }
+    this.refreshOwner(owner);
+    this.terminal = terminal && this.phase === null;
+    return true;
   }
-  return phase;
+}
+
+export function inferResponsePhaseFromFrames(frames: ConsoleFrame[], fallback: ResponsePhase = null): ResponsePhase {
+  const projection = new ConsoleActivityProjection(fallback);
+  for (const frame of frames) projection.fold(frame);
+  return projection.phase;
 }
 
 function isTerminalUserInputStatus(status?: string): boolean {
@@ -4332,78 +4565,9 @@ export function resolvePanelResponsePhase(args: {
 }
 
 function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
-  const coveredHistory = settledHistoryActivity(frames);
-  for (let index = frames.length - 1; index >= 0; index -= 1) {
-    const frame = frames[index];
-    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  // A history observation only covers its historical prefix. It cannot
-  // override a server phase that may describe newer work not yet received.
-  return false;
-}
-
-function hasOpenLifecycleBefore(frames: ConsoleFrame[], beforeIndex: number): boolean {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index = 0; index < beforeIndex; index += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index])) continue;
-    switch (frames[index].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
+  const projection = new ConsoleActivityProjection();
+  for (const frame of frames) projection.fold(frame);
+  return projection.terminal;
 }
 
 export function buildConversationViewState(args: {

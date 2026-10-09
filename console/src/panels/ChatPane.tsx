@@ -1,5 +1,6 @@
 import { ConsoleMcpAppView } from "@console-components";
 import type { ConversationMessageEntry } from "@console-core";
+import { OperationFeedbackView } from "../../../packages/console-components/src/conversation/conversation-message-view";
 import { QuoteSelectionAction } from "../../../packages/console-components/src/conversation/quote-selection-action";
 import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
 import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
@@ -168,6 +169,7 @@ interface Msg {
   dayKey?: string | null;
   /** Typed runtime event behind an `event` row (raw payload for details). */
   runtimeEvent?: ConversationRuntimeEvent;
+  operationFeedback?: Extract<ConversationTimelineEntry, { kind: "message" }>["operationFeedback"];
   who?: string;
   text?: string;
   copyText?: string;
@@ -597,6 +599,7 @@ function flattenEntryRows(entry: ConversationTimelineEntry): Msg[] {
       createdAt: entry.createdAt,
       text: entry.text || "",
       ...(entry.runtimeEvent ? { runtimeEvent: entry.runtimeEvent } : {}),
+      ...(entry.kind === "message" && entry.operationFeedback ? { operationFeedback: entry.operationFeedback } : {}),
     }];
   }
 
@@ -1122,6 +1125,7 @@ function msgSignature(message: Msg): string {
     message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? undefined)}` : "",
     textMark(message.text),
     textMark(message.copyText),
+    message.operationFeedback ? JSON.stringify(message.operationFeedback) : "",
     message.contextMessage ? JSON.stringify(message.contextMessage) : "",
     message.mcpAppEntry ? JSON.stringify([message.mcpAppEntry.identity.id, message.mcpAppEntry.mcpApp]) : "",
     message.workedFor ?? "",
@@ -1202,6 +1206,11 @@ function runtimeEventJson(payload: unknown): string {
 /// the time, a taint badge, and (for runtime events) the raw payload behind a
 /// disclosure.
 function EventRow({ message: m }: { message: Msg }) {
+  if (m.operationFeedback) {
+    return <div data-conversation-row-id={m.scrollRowId ?? m.id}>
+      <OperationFeedbackView feedback={m.operationFeedback} createdAt={m.createdAt} />
+    </div>;
+  }
   const sentence = m.source?.sentence || m.text || "";
   const payloadJson = m.runtimeEvent ? runtimeEventJson(m.runtimeEvent.payload) : "";
   return (

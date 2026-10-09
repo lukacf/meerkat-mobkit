@@ -1,5 +1,6 @@
 import React from "react";
 import { ApprovalCard } from "../../../packages/console-components/src/conversation/approval-card";
+import { normalizeGatingAuditEntry } from "../../../packages/console-core/src/control-plane";
 import type { PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 
 interface GatingInboxPanelProps {
@@ -13,13 +14,6 @@ interface GatingInboxPanelProps {
 }
 
 type Tab = "pending" | "auto" | "audit" | "policies";
-
-function getRisk(entry: Record<string, unknown>): "low" | "medium" | "high" {
-  const tier = String(entry.risk_tier || entry.risk || "").toLowerCase();
-  if (tier === "high" || tier === "crit" || tier === "critical") return "high";
-  if (tier === "medium" || tier === "med" || tier === "warn") return "medium";
-  return "low";
-}
 
 function formatWaited(entry: Record<string, unknown>): string {
   const waited = entry.waited_ms || entry.waited || entry.age_ms;
@@ -71,22 +65,18 @@ export function GatingInboxPanel({
     selected?.focus({ preventScroll: true });
   }, [selectedPendingId, selectedRequestAvailable, tab]);
 
-  const autoApproved = audit.filter((e) => {
-    const r = e as Record<string, unknown>;
-    return String(r.decision || "").toLowerCase() === "auto_approve" ||
-           String(r.event_type || "").includes("auto");
-  });
+  const auditEntries = audit.map(normalizeGatingAuditEntry);
+  const automaticallyAllowed = auditEntries.filter((entry) => entry.automaticAllowance);
 
-  const currentList: unknown[] =
-    tab === "pending" ? pending :
-    tab === "auto" ? autoApproved :
-    audit;
+  const currentList = tab === "pending"
+    ? pending.map((raw) => ({ raw, record: normalizeGatingAuditEntry(raw) }))
+    : (tab === "auto" ? automaticallyAllowed : auditEntries).map((record) => ({ raw: undefined, record }));
 
   return (
     <div className="gating" data-testid="gating-panel">
       <div className="gating__head">
         <h2>Approvals</h2>
-        <p>· {pendingLabel} pending · {autoApproved.length} auto-approved</p>
+        <p>· {pendingLabel} pending · {automaticallyAllowed.length} automatically allowed</p>
       </div>
       <div className="gating__tabs">
         <button
@@ -101,7 +91,7 @@ export function GatingInboxPanel({
           onClick={() => setTab("auto")}
           data-testid="gating-tab:auto"
         >
-          Auto <span className="n">{autoApproved.length}</span>
+          Auto <span className="n">{automaticallyAllowed.length}</span>
         </button>
         <button
           className={`gating__tab ${tab === "audit" ? "is-active" : ""}`}
@@ -132,17 +122,19 @@ export function GatingInboxPanel({
           <div className="gating__empty" role="status">Policy details are not available in this console.</div>
         ) : (
           <>
+          {tab !== "pending" && <p className="gating__audit-note">Approval records do not confirm execution.</p>}
           {currentList.length === 0 && (
           <div className="gating__empty">No {tab} items.</div>
           )}
-          {currentList.map((entry, index) => {
-          const r = entry as Record<string, unknown>;
-          const pid = String(r.pending_id || r.audit_id || `item-${index}`);
-          const action = String(r.action_id || r.event_type || "unknown action");
-          const agent = String(r.agent || r.identity || r.actor || "");
+          {currentList.map(({ raw, record }, index) => {
+          const r = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+          const pid = (tab === "pending" ? record.pendingId : record.auditId) || `item-${index}`;
+          const action = record.actionId || record.eventType || "Unknown action";
+          const agent = record.actorId || (tab === "pending" ? String(r.agent || r.identity || r.actor || "") : "");
           const waited = formatWaited(r);
-          const risk = getRisk(r);
-          const payload = payloadSummary(r);
+          const risk = record.riskTier;
+          const tierLabel = risk === "unknown" ? `Unknown${record.recordedRiskTier ? ` (${record.recordedRiskTier})` : ""}` : risk.toUpperCase();
+          const payload = tab === "pending" ? payloadSummary(r) : "";
 
           const selected = selectedId === pid;
           const showActions = tab === "pending" && !readOnly;
@@ -151,16 +143,23 @@ export function GatingInboxPanel({
             <div
               className={`gitem ${selected ? "is-selected" : ""}`}
               data-risk={risk}
-              data-testid={`gating-pending:${pid}`}
+              data-testid={`gating-${tab === "pending" ? "pending" : "audit"}:${pid}`}
               key={pid}
               onClick={() => setSelectedId(pid)}
             >
-              <span className="gitem__risk" />
+              <span className="gitem__risk" aria-hidden="true" />
               <span className="gitem__id">{pid.slice(0, 8)}</span>
               <span>
                 <div className="gitem__action">{action}</div>
                 {payload && <div className="gitem__payload">{payload}</div>}
-                {agent && <div className="gitem__agent">{agent}</div>}
+                <div className="gitem__agent">Tier: {tierLabel}</div>
+                <div className="gitem__agent">Actor: {agent || "Not recorded"}</div>
+                {tab !== "pending" && <>
+                  <div className="gitem__agent">Event: {record.eventType || "Not recorded"}</div>
+                  <div className="gitem__agent">Decision: {record.decision || "Not recorded"}</div>
+                  {record.approverId && <div className="gitem__agent">Approver: {record.approverId}</div>}
+                  <div className="gitem__agent">Outcome: {record.outcome || "Not recorded"}</div>
+                </>}
               </span>
               {showActions ? (
                 <span className="gitem__actions">
@@ -182,7 +181,7 @@ export function GatingInboxPanel({
               ) : (
                 <span className="gitem__actions" />
               )}
-              <span className="gitem__waited">waited<br />{waited}</span>
+              {tab === "pending" && <span className="gitem__waited">waited<br />{waited}</span>}
             </div>
           );
           })}

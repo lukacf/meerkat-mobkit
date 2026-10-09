@@ -66,7 +66,7 @@ env:
 jobs:
   resolve_release:
     name: Resolve protocol and immutable source
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}
       sha: ${{ steps.resolve.outputs.sha }}
@@ -106,7 +106,7 @@ jobs:
   require_ci_green:
     name: Require green exact-main CI
     needs: [resolve_release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       run_id: ${{ steps.ci_run.outputs.run_id }}
       run_attempt: ${{ steps.ci_run.outputs.run_attempt }}
@@ -192,7 +192,7 @@ jobs:
     needs: [resolve_release, require_ci_green]
     if: >-
       needs.resolve_release.outputs.mode != 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -254,7 +254,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: ubuntu-latest
+          - runs-on: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
           - runs-on: ubuntu-24.04-arm
@@ -488,7 +488,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       needs.resolve_release.outputs.mode == 'candidate'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -554,7 +554,7 @@ jobs:
        (needs.resolve_release.outputs.mode == 'existing' &&
         needs.resolve_release.outputs.publish_packages == 'true' &&
         needs.resolve_release.outputs.dry_run == 'false'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_MODE: ${{ needs.resolve_release.outputs.mode }}
@@ -593,7 +593,7 @@ jobs:
         needs.verify_release_assets.result == 'success') ||
        (needs.resolve_release.outputs.mode == 'assets' &&
         needs.resolve_release.outputs.publish_packages == 'false'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
@@ -644,7 +644,7 @@ jobs:
         (needs.resolve_release.outputs.dry_run == 'true' ||
          needs.publish_github_release.result == 'success')))
     needs: [resolve_release, release_validate, verify_release_assets, publish_github_release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -732,7 +732,7 @@ jobs:
          needs.publish_github_release.result == 'success'))) &&
       needs.publish_sdk_packages.result == 'success'
     needs: [resolve_release, release_validate, verify_release_assets, publish_github_release, publish_sdk_packages]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4

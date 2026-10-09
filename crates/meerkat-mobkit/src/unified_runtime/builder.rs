@@ -93,8 +93,17 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
-    /// Named Rust tool bundles added to the resolved or supplied mob spec.
-    tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
+    /// Named Rust tool bundles added to the resolved or supplied mob spec,
+    /// each with its availability to child mobs.
+    tool_bundles: BTreeMap<
+        String,
+        (
+            Arc<dyn meerkat_core::AgentToolDispatcher>,
+            meerkat_mob_mcp::ChildToolBundleAvailability,
+        ),
+    >,
+    /// Child mob application tool policy added to the mob spec.
+    child_application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -125,7 +134,12 @@ pub struct UnifiedRuntimeBuilder {
     event_log_config: Option<EventLogConfig>,
     drain_timeout: Option<Duration>,
     discovery: Option<Box<dyn Discovery>>,
-    pre_spawn_hook: Option<PreSpawnHook>,
+    /// Behind a mutex only so the builder is `Sync`: the public
+    /// [`PreSpawnHook`] is `Send` but not `Sync`, and `build` holds `&self`
+    /// across awaits, so a plain field made `build()`'s future `!Send`. The
+    /// hook is only ever moved in and out by value; the lock is never
+    /// contended.
+    pre_spawn_hook: std::sync::Mutex<Option<PreSpawnHook>>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     control_listen: Option<String>,
@@ -372,17 +386,47 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Register a named Rust tool bundle for profiles' `tools.rust_bundles`.
-    /// It is added to the mob spec this builder resolves or is given; see
-    /// [`MobBootstrapSpec::register_tool_bundle`]. A name that the supplied
-    /// spec already registers is refused at build.
+    /// Register a named host-only Rust tool bundle for profiles'
+    /// `tools.rust_bundles`. It is added to the mob spec this builder resolves
+    /// or is given; see [`MobBootstrapSpec::register_tool_bundle`]. A name that
+    /// the supplied spec already registers is refused at build.
     #[must_use]
     pub fn register_tool_bundle(
-        mut self,
+        self,
         name: impl Into<String>,
         dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
     ) -> Self {
-        self.tool_bundles.insert(name.into(), dispatcher);
+        self.register_tool_bundle_with_availability(
+            name,
+            dispatcher,
+            meerkat_mob_mcp::ChildToolBundleAvailability::HostOnly,
+        )
+    }
+
+    /// Register a named Rust tool bundle with its availability to child
+    /// mobs; see [`MobBootstrapSpec::register_tool_bundle_with_availability`].
+    /// A name that the supplied spec already registers is refused at build.
+    #[must_use]
+    pub fn register_tool_bundle_with_availability(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        availability: meerkat_mob_mcp::ChildToolBundleAvailability,
+    ) -> Self {
+        self.tool_bundles
+            .insert(name.into(), (dispatcher, availability));
+        self
+    }
+
+    /// The application tool policy child mob members are built with; see
+    /// [`MobBootstrapSpec::with_child_application_tool_policy`]. A supplied
+    /// spec that already sets one is refused at build.
+    #[must_use]
+    pub fn child_application_tool_policy(
+        mut self,
+        binding: meerkat_core::ApplicationToolPolicyBinding,
+    ) -> Self {
+        self.child_application_tool_policy = Some(binding);
         self
     }
 
@@ -794,7 +838,10 @@ impl UnifiedRuntimeBuilder {
     }
 
     pub fn pre_spawn_hook(mut self, hook: PreSpawnHook) -> Self {
-        self.pre_spawn_hook = Some(hook);
+        *self
+            .pre_spawn_hook
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
         self
     }
 
@@ -1076,7 +1123,7 @@ impl UnifiedRuntimeBuilder {
             summary.slots.extend(provider_census);
         }
 
-        for (name, dispatcher) in std::mem::take(&mut self.tool_bundles) {
+        for (name, (dispatcher, availability)) in std::mem::take(&mut self.tool_bundles) {
             if mob_spec.tool_bundles.contains_key(&name) {
                 return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                     format!(
@@ -1085,7 +1132,20 @@ impl UnifiedRuntimeBuilder {
                     ),
                 ));
             }
-            mob_spec.tool_bundles.insert(name, dispatcher);
+            mob_spec.tool_bundles.insert(name.clone(), dispatcher);
+            mob_spec
+                .child_tool_bundle_availability
+                .insert(name, availability);
+        }
+        if let Some(binding) = self.child_application_tool_policy.take() {
+            if mob_spec.child_application_tool_policy.is_some() {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    "a child application tool policy is set on both the builder and the \
+                     supplied MobBootstrapSpec"
+                        .to_string(),
+                ));
+            }
+            mob_spec.child_application_tool_policy = Some(binding);
         }
 
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
@@ -1275,6 +1335,13 @@ impl UnifiedRuntimeBuilder {
             }
             _ => BTreeMap::new(),
         };
+        // A restored member without its tools must not start a run before its
+        // materialization publishes them: meerkat holds its run starts from
+        // registration until the identity runtime releases the hold.
+        mob_spec.restored_members_awaiting_tools = early_customizer_tools_pending
+            .keys()
+            .map(|identity| crate::member_comms_id::mob_member_id(identity.as_str()))
+            .collect();
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -1520,7 +1587,11 @@ impl UnifiedRuntimeBuilder {
         // ordinary-drop return would leave the name occupied and block any
         // same-process rebuild of this mob id. Failure must follow the same
         // cooperative shutdown path as the later bootstrap errors.
-        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
+        let pre_spawn_hook = self
+            .pre_spawn_hook
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pre_spawn_context = if let Some(hook) = pre_spawn_hook {
             match hook().await {
                 Ok(context) => context,
                 Err(err) => {

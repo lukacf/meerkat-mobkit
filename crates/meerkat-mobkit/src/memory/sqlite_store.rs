@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::identity_first::AgentIdentity;
 use crate::identity_first::agent_memory::{
@@ -43,6 +43,11 @@ use super::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor, MemoryId, MemoryKind,
     MemoryProvenance, MemoryScope, NewMemoryRecord, ProposalId, RecordMeta, RecordStatus,
     TrustTier, UsageEvent, UsageStats, age_days, content_hash, validate_record_fields,
+};
+use super::review::{
+    QuarantineDecision, QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRefusal,
+    QuarantineReviewRequest, QuarantineReviewer, ReviewAudit, ReviewDecision,
+    ReviewedRecordReceipt, quarantine_release_ops, release_successor_id,
 };
 use super::staged::{
     CommitReceipt, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StageToken, StagedBatchKind,
@@ -192,7 +197,7 @@ CREATE INDEX IF NOT EXISTS dream_audit_verdicts_open
 const RECORD_COLUMNS: &str = "memory_id, scope_kind, scope_key, kind, title, description, body, \
      tags, provenance, trust, status_kind, status_detail, supersedes, derived_from, \
      working_set_rank, rank_set_at_ms, content_hash, created_at_ms, updated_at_ms, \
-     usage_stats, tombstoned_at_ms";
+     usage_stats, tombstoned_at_ms, ever_quarantined";
 
 /// The agent-memory store's schema domain in the per-realm-file migration
 /// ledger (`meerkat_schema`, one row per domain).
@@ -1423,6 +1428,61 @@ impl SqliteAgentMemoryStore {
         })
     }
 
+    /// [`StewardStore::review_quarantined`]: one `IMMEDIATE` transaction
+    /// covers the read, every check, and the apply, so nothing can change
+    /// between what was checked and what is written (also across processes
+    /// sharing the realm file). Timeline events go out after the realm lock
+    /// is released.
+    fn review_quarantined_blocking(
+        &self,
+        request: QuarantineReviewRequest,
+    ) -> Result<Result<QuarantineReviewOutcome, QuarantineReviewRefusal>, AgentMemoryError> {
+        let realm = request.scope.realm().to_string();
+        let gate = self.gate();
+        let events = self.events();
+        let decided = self.with_realm_conn(&realm, |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(sql_err)?;
+            let decided =
+                review_in_tx(&tx, &request, gate.as_deref(), events.as_deref(), now_ms())?;
+            // Only an applied decision commits; refusals and replays roll
+            // back whatever they read (including an expiry they computed).
+            if matches!(&decided, Ok(outcome) if outcome.applied()) {
+                tx.commit().map_err(sql_err)?;
+            }
+            Ok(decided)
+        })?;
+        if let Some(events) = events.as_deref() {
+            match &decided {
+                // The applied verdict, from the committed receipt. Reviewer
+                // and rationale stay in the audit and the receipt: this
+                // timeline frame is system-wide.
+                Ok(outcome) if outcome.applied() => events.emit(
+                    crate::memory::events::MemoryTimelineEvent::QuarantineVerdict {
+                        realm,
+                        record_id: outcome.origin().memory_id.clone(),
+                        verdict: outcome.decision().review.verdict.as_str().to_string(),
+                        rationale: None,
+                        successor_id: outcome
+                            .successor()
+                            .map(|successor| successor.memory_id.clone()),
+                    },
+                ),
+                Err(QuarantineReviewRefusal::SecretDetected { class }) => events.emit(
+                    crate::memory::events::MemoryTimelineEvent::QuarantineReleaseBlocked {
+                        realm,
+                        record_id: request.memory_id.clone(),
+                        verdict: request.decision.as_str().to_string(),
+                        class: (*class).to_string(),
+                    },
+                ),
+                _ => {}
+            }
+        }
+        Ok(decided)
+    }
+
     /// Force one realm's database through the normal ledgered open path
     /// (`realm_connection`: profile open, `meerkat_schema` migrations, stage
     /// GC, markdown import) without issuing any query. The M6 offline ledger
@@ -1882,6 +1942,18 @@ impl StewardStore for SqliteAgentMemoryStore {
         .await
     }
 
+    async fn review_quarantined(
+        &self,
+        request: QuarantineReviewRequest,
+    ) -> Result<QuarantineReviewOutcome, QuarantineReviewError> {
+        let store = self.clone();
+        match run_blocking(move || store.review_quarantined_blocking(request)).await {
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(refusal)) => Err(QuarantineReviewError::Refused(refusal)),
+            Err(err) => Err(QuarantineReviewError::Store(err)),
+        }
+    }
+
     async fn records_by_ids(
         &self,
         realm: &str,
@@ -2139,7 +2211,7 @@ impl StewardStore for SqliteAgentMemoryStore {
         realm: &str,
         pending_id: &str,
         status: &str,
-    ) -> Result<(), AgentMemoryError> {
+    ) -> Result<bool, AgentMemoryError> {
         if !matches!(status, "committed" | "denied" | "expired") {
             return Err(AgentMemoryError::InvalidRecord(format!(
                 "unknown promotion resolution '{status}'"
@@ -2151,13 +2223,14 @@ impl StewardStore for SqliteAgentMemoryStore {
         let status = status.to_string();
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
-                conn.execute(
-                    "UPDATE pending_promotions SET status = ?1, resolved_at_ms = ?2 \
-                     WHERE pending_id = ?3",
-                    params![status, now_ms() as i64, pending_id],
-                )
-                .map_err(sql_err)?;
-                Ok(())
+                let resolved = conn
+                    .execute(
+                        "UPDATE pending_promotions SET status = ?1, resolved_at_ms = ?2 \
+                         WHERE pending_id = ?3 AND status = 'pending'",
+                        params![status, now_ms() as i64, pending_id],
+                    )
+                    .map_err(sql_err)?;
+                Ok(resolved > 0)
             })
         })
         .await
@@ -2168,19 +2241,21 @@ impl StewardStore for SqliteAgentMemoryStore {
         realm: &str,
         old_pending_id: &str,
         new_pending_id: &str,
-    ) -> Result<(), AgentMemoryError> {
+    ) -> Result<bool, AgentMemoryError> {
         let store = self.clone();
         let realm = realm.to_string();
         let old_pending_id = old_pending_id.to_string();
         let new_pending_id = new_pending_id.to_string();
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
-                conn.execute(
-                    "UPDATE pending_promotions SET pending_id = ?1 WHERE pending_id = ?2",
-                    params![new_pending_id, old_pending_id],
-                )
-                .map_err(sql_err)?;
-                Ok(())
+                let rekeyed = conn
+                    .execute(
+                        "UPDATE pending_promotions SET pending_id = ?1 \
+                         WHERE pending_id = ?2 AND status = 'pending'",
+                        params![new_pending_id, old_pending_id],
+                    )
+                    .map_err(sql_err)?;
+                Ok(rekeyed > 0)
             })
         })
         .await
@@ -2911,6 +2986,20 @@ fn apply_batch_tx(
     token: &str,
     now: u64,
 ) -> Result<CommitReceipt, AgentMemoryError> {
+    let quarantine = batch_quarantine_reason(batch, gate, events);
+    let tx = conn.transaction().map_err(sql_err)?;
+    let receipt = apply_batch_in_tx(&tx, batch, quarantine.as_deref(), token, now, None)?;
+    tx.commit().map_err(sql_err)?;
+    Ok(receipt)
+}
+
+/// The §10.1 gate's verdict for one whole batch (see [`apply_batch_tx`]),
+/// with the quarantined-write warn and timeline event when it fires.
+fn batch_quarantine_reason(
+    batch: &StagedMutationBatch,
+    gate: Option<&dyn LlmWriteGate>,
+    events: Option<&dyn crate::memory::events::MemoryEventSink>,
+) -> Option<String> {
     let evidence: Vec<crate::memory::records::EvidenceRef> = batch
         .ops
         .iter()
@@ -2940,25 +3029,46 @@ fn apply_batch_tx(
             );
         }
     }
-    let tx = conn.transaction().map_err(sql_err)?;
+    quarantine
+}
+
+/// The in-transaction half of [`apply_batch_tx`]: validate against the
+/// caller's transaction, apply every op, write one audit row per op, and
+/// burn the stage token. The caller commits. `review` annotates every
+/// audit row of a quarantine review (`detail.review`).
+fn apply_batch_in_tx(
+    conn: &Connection,
+    batch: &StagedMutationBatch,
+    quarantine: Option<&str>,
+    token: &str,
+    now: u64,
+    review: Option<&ReviewAudit>,
+) -> Result<CommitReceipt, AgentMemoryError> {
     {
         let view = ConnBatchView {
-            conn: &tx,
+            conn,
             realm: &batch.realm,
         };
         validate_batch(batch, &view, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, now)
             .map_err(|err| AgentMemoryError::InvalidRecord(err.to_string()))?;
     }
+    let review = review
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
     let mut memory_ids = Vec::with_capacity(batch.ops.len());
     for (op_index, op) in batch.ops.iter().enumerate() {
-        let memory_id = apply_op(&tx, batch, op, quarantine.as_deref(), now)?;
-        let detail = serde_json::json!({
+        let memory_id = apply_op(conn, batch, op, quarantine, now)?;
+        let mut detail = serde_json::json!({
             "op": op.kind_str(),
             "author": batch.author,
             "rationale": op_rationale(op),
             "quarantined": quarantine,
         });
-        tx.execute(
+        if let (Some(review), Some(object)) = (&review, detail.as_object_mut()) {
+            object.insert("review".to_string(), review.clone());
+        }
+        conn.execute(
             "INSERT INTO audit (stage_token, op_index, op_kind, memory_id, detail, \
              applied_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -2973,13 +3083,392 @@ fn apply_batch_tx(
         .map_err(sql_err)?;
         memory_ids.push(memory_id);
     }
-    tx.execute("DELETE FROM stage WHERE token = ?1", params![token])
+    conn.execute("DELETE FROM stage WHERE token = ?1", params![token])
         .map_err(sql_err)?;
-    tx.commit().map_err(sql_err)?;
     Ok(CommitReceipt {
         token: token.to_string(),
         applied_ops: batch.ops.len(),
         memory_ids,
+    })
+}
+
+/// One quarantine review inside the caller's transaction
+/// ([`StewardStore::review_quarantined`]). `Ok(Err(refusal))` and the
+/// `Already*` replays write nothing; the caller commits only an applied
+/// decision.
+fn review_in_tx(
+    conn: &Connection,
+    request: &QuarantineReviewRequest,
+    gate: Option<&dyn LlmWriteGate>,
+    events: Option<&dyn crate::memory::events::MemoryEventSink>,
+    now: u64,
+) -> Result<Result<QuarantineReviewOutcome, QuarantineReviewRefusal>, AgentMemoryError> {
+    let realm = request.scope.realm();
+    // Missing and out-of-scope read the same: the review never confirms that
+    // an id exists in a scope the caller was not authorized for.
+    let Some(origin) = load_record(conn, realm, &request.memory_id)?
+        .filter(|record| record.scope == request.scope)
+    else {
+        return Ok(Err(QuarantineReviewRefusal::NotFound));
+    };
+    if content_hash(&origin.title, &origin.body) != request.expected_content_hash {
+        return Ok(Err(QuarantineReviewRefusal::ContentMismatch));
+    }
+    let quarantine_reason = match &origin.status {
+        RecordStatus::Quarantined { reason } => reason.clone(),
+        RecordStatus::Tombstoned => return review_replay(conn, realm, &origin, request.decision),
+        other => {
+            return Ok(Err(QuarantineReviewRefusal::NotQuarantined {
+                status: other.kind_str(),
+                released_as: None,
+            }));
+        }
+    };
+    // A gated promotion of this record is decided through gating (its
+    // staged batch tombstones the same origin) until it expires. An expired
+    // one is expired here, by the same rule the steward's dream applies, so
+    // a promotion orphaned by a restart blocks review only until its expiry,
+    // with or without a steward. A live one keeps its publication path, so a
+    // release (and any steward verdict) is refused; an operator's tombstone
+    // invalidates it instead, in this transaction: the mapping expires and
+    // the staged batch is discarded, and a resolver that already holds the
+    // batch fails the validator against the tombstoned origin.
+    let operator_tombstone = request.decision == QuarantineDecision::Tombstone
+        && matches!(request.reviewer, QuarantineReviewer::Operator { .. });
+    let mut expired_promotions = Vec::new();
+    let mut invalidated_promotions = Vec::new();
+    for promotion in pending_promotions_for(conn, &origin.id)? {
+        let expires_at_ms = promotion
+            .created_at_ms
+            .saturating_add(super::capabilities::GATED_PROMOTION_EXPIRY_MS);
+        if now >= expires_at_ms {
+            expire_promotion_in_tx(conn, &promotion, now)?;
+            expired_promotions.push(promotion.pending_id);
+        } else if operator_tombstone {
+            expire_promotion_in_tx(conn, &promotion, now)?;
+            invalidated_promotions.push(promotion.pending_id);
+        } else {
+            return Ok(Err(QuarantineReviewRefusal::GatePending {
+                pending_id: promotion.pending_id,
+                expires_at_ms,
+            }));
+        }
+    }
+    let rationale = request
+        .rationale
+        .as_deref()
+        .map(|rationale| format!(": {rationale}"))
+        .unwrap_or_default();
+    // The steward's op rationales keep their established wording; an
+    // operator's say so.
+    let who = match request.reviewer {
+        QuarantineReviewer::Operator { .. } => "operator ",
+        QuarantineReviewer::Steward { .. } => "",
+    };
+    let successor_id = release_successor_id(&origin.id);
+    let ops = match request.decision {
+        QuarantineDecision::Release => {
+            // §10.4: the release re-stages the origin's content, which the
+            // staged chokepoint would refuse wholesale; refuse typed, naming
+            // the class, before anything is staged.
+            if let Some(class) = crate::memory::secrets::detect_record_secret(
+                &origin.title,
+                &origin.description,
+                &origin.body,
+                &origin.tags,
+            ) {
+                return Ok(Err(QuarantineReviewRefusal::SecretDetected { class }));
+            }
+            if let Some(refusal) = stale_update_refusal(conn, realm, &origin)? {
+                return Ok(Err(refusal));
+            }
+            // The successor id belongs to this origin's release alone; a row
+            // already holding it was not created by a review of this origin
+            // (that review would have tombstoned the origin) and is never
+            // adopted.
+            if load_record(conn, realm, &successor_id)?.is_some() {
+                return Ok(Err(QuarantineReviewRefusal::SuccessorConflict {
+                    successor_id,
+                }));
+            }
+            quarantine_release_ops(
+                &origin,
+                format!("{who}quarantine release{rationale}"),
+                format!("superseded by {who}quarantine release"),
+            )
+        }
+        QuarantineDecision::Tombstone => vec![StagedOp::Tombstone {
+            id: origin.id.clone(),
+            rationale: Some(format!("{who}quarantine tombstone{rationale}")),
+        }],
+    };
+    let batch = StagedMutationBatch {
+        // The review IS the review the §10.1 posture defers to.
+        kind: StagedBatchKind::ReviewVerdict,
+        realm: realm.to_string(),
+        author: request.reviewer.author(),
+        ops,
+    };
+    let quarantine = batch_quarantine_reason(&batch, gate, events);
+    let token = mint_token("review");
+    let review = ReviewAudit {
+        verdict: request.decision,
+        reviewer: request.reviewer.clone(),
+        origin: origin.id.clone(),
+        successor: (request.decision == QuarantineDecision::Release).then(|| successor_id.clone()),
+        expected_content_hash: request.expected_content_hash.clone(),
+        origin_quarantine_reason: quarantine_reason,
+        expired_promotions,
+        invalidated_promotions,
+        rationale: request.rationale.clone(),
+    };
+    apply_batch_in_tx(
+        conn,
+        &batch,
+        quarantine.as_deref(),
+        &token,
+        now,
+        Some(&review),
+    )?;
+    let decision = ReviewDecision {
+        audit_token: token,
+        decided_at_ms: now,
+        review,
+    };
+    let origin_receipt = review_receipt(conn, realm, &origin.id)?;
+    Ok(Ok(match request.decision {
+        QuarantineDecision::Release => QuarantineReviewOutcome::Released {
+            origin: origin_receipt,
+            successor: review_receipt(conn, realm, &successor_id)?,
+            superseded_prior: origin.supersedes,
+            decision,
+        },
+        QuarantineDecision::Tombstone => QuarantineReviewOutcome::Tombstoned {
+            origin: origin_receipt,
+            decision,
+        },
+    }))
+}
+
+/// A review of an already-tombstoned origin. Only the committed review that
+/// tombstoned it (its audit evidence, [`recorded_review`]) can make this a
+/// replay; a forget, a pre-review dream group or a gated promotion leaves a
+/// plain tombstone that is refused, whatever rows exist around it.
+fn review_replay(
+    conn: &Connection,
+    realm: &str,
+    origin: &super::records::MemoryRecord,
+    decision: QuarantineDecision,
+) -> Result<Result<QuarantineReviewOutcome, QuarantineReviewRefusal>, AgentMemoryError> {
+    let tombstoned = RecordStatus::Tombstoned.kind_str();
+    let Some(recorded) = recorded_review(conn, realm, origin)? else {
+        return Ok(Err(QuarantineReviewRefusal::NotQuarantined {
+            status: tombstoned,
+            released_as: None,
+        }));
+    };
+    let released_as = recorded.review.successor.clone();
+    Ok(match (decision, recorded.review.verdict, released_as) {
+        (QuarantineDecision::Release, QuarantineDecision::Release, Some(successor)) => {
+            Ok(QuarantineReviewOutcome::AlreadyReleased {
+                origin: review_receipt(conn, realm, &origin.id)?,
+                successor: review_receipt(conn, realm, &successor)?,
+                decision: recorded,
+            })
+        }
+        (QuarantineDecision::Tombstone, QuarantineDecision::Tombstone, _) => {
+            Ok(QuarantineReviewOutcome::AlreadyTombstoned {
+                origin: review_receipt(conn, realm, &origin.id)?,
+                decision: recorded,
+            })
+        }
+        (_, _, released_as) => Err(QuarantineReviewRefusal::NotQuarantined {
+            status: tombstoned,
+            released_as,
+        }),
+    })
+}
+
+/// The committed review that tombstoned `origin`, read from its own audit
+/// rows: the origin's tombstone row carries `detail.review` for this origin,
+/// and a release's successor row was written at op 0 under the same token.
+/// The successor must still be exactly that release (same scope, derived
+/// from the origin alone, same content); anything else is inconsistent
+/// evidence and fails loudly rather than being reported as a replay.
+fn recorded_review(
+    conn: &Connection,
+    realm: &str,
+    origin: &super::records::MemoryRecord,
+) -> Result<Option<ReviewDecision>, AgentMemoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT stage_token, detail, applied_at_ms FROM audit \
+             WHERE memory_id = ?1 AND op_kind = 'tombstone' ORDER BY audit_id DESC",
+        )
+        .map_err(sql_err)?;
+    let rows = stmt
+        .query_map(params![origin.id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(sql_err)?;
+    for row in rows {
+        let (token, detail, applied_at_ms) = row.map_err(sql_err)?;
+        let detail: serde_json::Value = serde_json::from_str(&detail)
+            .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
+        let Some(review) = detail.get("review") else {
+            continue;
+        };
+        let review: ReviewAudit = serde_json::from_value(review.clone())
+            .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
+        if review.origin != origin.id {
+            continue;
+        }
+        if review.verdict == QuarantineDecision::Release {
+            let inconsistent = |what: &str| {
+                AgentMemoryError::Io(format!(
+                    "quarantine review evidence for '{}' is inconsistent: {what}",
+                    origin.id
+                ))
+            };
+            let successor_id = review
+                .successor
+                .clone()
+                .ok_or_else(|| inconsistent("a release without a successor"))?;
+            let created: Option<(Option<String>, String)> = conn
+                .query_row(
+                    "SELECT memory_id, op_kind FROM audit WHERE stage_token = ?1 AND op_index = 0",
+                    params![token],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(sql_err)?;
+            if !matches!(
+                &created,
+                Some((Some(id), kind)) if *id == successor_id
+                    && matches!(kind.as_str(), "create" | "supersede")
+            ) {
+                return Err(inconsistent("the successor was not written by the review"));
+            }
+            let successor = load_record(conn, realm, &successor_id)?
+                .ok_or_else(|| inconsistent("the successor row is missing"))?;
+            if successor.scope != origin.scope
+                || successor.derived_from != [origin.id.clone()]
+                || content_hash(&successor.title, &successor.body)
+                    != content_hash(&origin.title, &origin.body)
+            {
+                return Err(inconsistent("the successor is not the origin's release"));
+            }
+        }
+        return Ok(Some(ReviewDecision {
+            audit_token: token,
+            decided_at_ms: applied_at_ms as u64,
+            review,
+        }));
+    }
+    Ok(None)
+}
+
+/// The still-pending gated promotions of `record_id` (§10.2).
+fn pending_promotions_for(
+    conn: &Connection,
+    record_id: &str,
+) -> Result<Vec<PendingPromotion>, AgentMemoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT pending_id, stage_token, record_id, scope_kind, scope_key, rationale, \
+             status, created_at_ms FROM pending_promotions \
+             WHERE record_id = ?1 AND status = 'pending' ORDER BY created_at_ms ASC",
+        )
+        .map_err(sql_err)?;
+    let rows = stmt
+        .query_map(params![record_id], |row| {
+            Ok(PendingPromotion {
+                pending_id: row.get(0)?,
+                stage_token: row.get(1)?,
+                record_id: row.get(2)?,
+                scope_kind: row.get(3)?,
+                scope_key: row.get(4)?,
+                rationale: row.get(5)?,
+                status: row.get(6)?,
+                created_at_ms: row.get::<_, i64>(7)? as u64,
+            })
+        })
+        .map_err(sql_err)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
+}
+
+/// Expire one gated promotion inside the caller's transaction: discard its
+/// staged batch so no late approval can commit it, and resolve the mapping
+/// `expired`. A review applies it to a promotion past the steward's dream
+/// expiry, and to a live one an operator's tombstone invalidates; the
+/// mapping row stays as evidence.
+fn expire_promotion_in_tx(
+    conn: &Connection,
+    promotion: &PendingPromotion,
+    now: u64,
+) -> Result<(), AgentMemoryError> {
+    conn.execute(
+        "DELETE FROM stage WHERE token = ?1",
+        params![promotion.stage_token],
+    )
+    .map_err(sql_err)?;
+    conn.execute(
+        "UPDATE pending_promotions SET status = 'expired', resolved_at_ms = ?1 \
+         WHERE pending_id = ?2 AND status = 'pending'",
+        params![now as i64, promotion.pending_id],
+    )
+    .map_err(sql_err)?;
+    Ok(())
+}
+
+/// A quarantined update releases as a supersede of its prior, which must
+/// still be active ([`QuarantineReviewRefusal::StaleUpdate`]). The
+/// validator's `NotActive` stays the backstop; this names the reason.
+fn stale_update_refusal(
+    conn: &Connection,
+    realm: &str,
+    origin: &super::records::MemoryRecord,
+) -> Result<Option<QuarantineReviewRefusal>, AgentMemoryError> {
+    let Some(prior) = origin.supersedes.as_deref() else {
+        return Ok(None);
+    };
+    let prior_status = match load_record(conn, realm, prior)? {
+        Some(record) if record.status == RecordStatus::Active => return Ok(None),
+        Some(record) => record.status.kind_str(),
+        None => "missing",
+    };
+    Ok(Some(QuarantineReviewRefusal::StaleUpdate {
+        prior: prior.to_string(),
+        prior_status,
+    }))
+}
+
+/// A reviewed record as stored now. The content hash is computed the same
+/// way the review binds it.
+fn review_receipt(
+    conn: &Connection,
+    realm: &str,
+    memory_id: &str,
+) -> Result<ReviewedRecordReceipt, AgentMemoryError> {
+    let record = load_record(conn, realm, memory_id)?.ok_or_else(|| {
+        AgentMemoryError::Io(format!("reviewed record '{memory_id}' vanished mid-review"))
+    })?;
+    Ok(ReviewedRecordReceipt {
+        content_hash: content_hash(&record.title, &record.body),
+        memory_id: record.id,
+        scope: record.scope,
+        kind: record.kind,
+        status: record.status,
+        trust: record.trust,
+        ever_quarantined: record.ever_quarantined,
+        supersedes: record.supersedes,
+        derived_from: record.derived_from,
+        created_at_ms: record.created_at_ms,
+        updated_at_ms: record.updated_at_ms,
     })
 }
 
@@ -3335,6 +3824,7 @@ struct MemoryRecordRow {
     created_at_ms: i64,
     updated_at_ms: i64,
     usage_stats: String,
+    ever_quarantined: bool,
 }
 
 fn row_to_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecordRow> {
@@ -3357,6 +3847,7 @@ fn row_to_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecordRo
         created_at_ms: row.get(17)?,
         updated_at_ms: row.get(18)?,
         usage_stats: row.get(19)?,
+        ever_quarantined: row.get(21)?,
     })
 }
 
@@ -3386,6 +3877,7 @@ impl MemoryRecordRow {
             created_at_ms: self.created_at_ms as u64,
             updated_at_ms: self.updated_at_ms as u64,
             usage: serde_json::from_str(&self.usage_stats).unwrap_or_default(),
+            ever_quarantined: self.ever_quarantined,
         })
     }
 }
@@ -4702,9 +5194,11 @@ mod tests {
                 },
             )
             .await?;
-        store
-            .resolve_pending_promotion("family", "gate-resolved", "denied")
-            .await?;
+        assert!(
+            store
+                .resolve_pending_promotion("family", "gate-resolved", "denied")
+                .await?
+        );
         // Age every stage row past the 24h GC horizon, then reopen.
         {
             let conn = store.realm_connection("family")?;
@@ -5901,6 +6395,1273 @@ mod tests {
         // Bounded.
         let bounded = store.supersede_chain("family", &root.memory_id, 2).await?;
         assert_eq!(bounded.len(), 2);
+        Ok(())
+    }
+
+    // ---- operator quarantine review (§10.1 "until steward/operator review") ----
+
+    use crate::memory::review::{QuarantineDecision, QuarantineReviewer, release_successor_id};
+
+    const REVIEW_REALM: &str = "default";
+    const REVIEW_IDENTITY: &str = "lead:main";
+    const REVIEWER: &str = "operator@example.test";
+
+    fn lead_scope() -> MemoryScope {
+        MemoryScope::Identity {
+            realm: REVIEW_REALM.to_string(),
+            identity: REVIEW_IDENTITY.to_string(),
+        }
+    }
+
+    fn lead_identity() -> Result<AgentIdentity, Box<dyn Error>> {
+        AgentIdentity::parse(REVIEW_IDENTITY)
+            .map_err(|err| std::io::Error::other(format!("lead identity: {err}")).into())
+    }
+
+    fn lead_author() -> MemoryAuthor {
+        MemoryAuthor::Agent {
+            identity: REVIEW_IDENTITY.to_string(),
+        }
+    }
+
+    /// The installed case: the continuing `lead:main` session ingested a
+    /// configured untrusted tool result, so every recorder write from it
+    /// lands quarantined through the real §10.1 write gate.
+    fn tainted_lead_store(
+        root: &Path,
+    ) -> Result<
+        (
+            SqliteAgentMemoryStore,
+            Arc<crate::memory::events::CollectingEventSink>,
+        ),
+        Box<dyn Error>,
+    > {
+        use crate::identity_first::agent_memory::AgentMemoryLlmWrites;
+        use crate::memory::taint::{ContentTrustConfig, SessionTaintTracker, TaintLlmWriteGate};
+
+        let store = SqliteAgentMemoryStore::open(root)?;
+        let tracker = SessionTaintTracker::new(ContentTrustConfig {
+            untrusted_tools: vec!["collection_snapshot".to_string()],
+            ..ContentTrustConfig::default()
+        });
+        tracker.note_current_session(REVIEW_IDENTITY, "sess-continuing");
+        tracker.observe_agent_event(
+            REVIEW_IDENTITY,
+            &meerkat_core::event::AgentEvent::ToolResultReceived {
+                id: "tool-1".to_string(),
+                name: "collection_snapshot".to_string(),
+                content: vec![],
+                is_error: false,
+            },
+        );
+        store.set_llm_write_gate(Arc::new(TaintLlmWriteGate::new(
+            Some(tracker),
+            AgentMemoryLlmWrites::Observed,
+        )));
+        let sink = Arc::new(crate::memory::events::CollectingEventSink::new());
+        store.set_event_sink(sink.clone());
+        Ok((store, sink))
+    }
+
+    fn preference(title: &str, body: &str) -> NewMemoryRecord {
+        NewMemoryRecord {
+            kind: MemoryKind::Preference,
+            description: "When recommending what to read next".to_string(),
+            tags: vec!["epistemic:operator_said".to_string()],
+            evidence: vec![crate::memory::records::EvidenceRef {
+                session_id: "sess-continuing".to_string(),
+                generation: 1,
+                revision: None,
+                range: Some((4, 7)),
+            }],
+            ..payload(title, body)
+        }
+    }
+
+    /// A recorder write from the tainted session; returns its id.
+    async fn quarantined_preference(
+        store: &SqliteAgentMemoryStore,
+        title: &str,
+        body: &str,
+    ) -> Result<MemoryId, Box<dyn Error>> {
+        let receipt = store
+            .remember_authored(&lead_scope(), preference(title, body), lead_author())
+            .await?;
+        let RecordStatus::Quarantined { reason } = &receipt.status else {
+            return Err(format!("expected quarantine, got {:?}", receipt.status).into());
+        };
+        assert!(reason.contains("collection_snapshot"), "{reason}");
+        Ok(receipt.memory_id)
+    }
+
+    fn review(
+        memory_id: &str,
+        title: &str,
+        body: &str,
+        decision: QuarantineDecision,
+    ) -> QuarantineReviewRequest {
+        QuarantineReviewRequest {
+            scope: lead_scope(),
+            memory_id: memory_id.to_string(),
+            decision,
+            expected_content_hash: content_hash(title, body),
+            reviewer: QuarantineReviewer::Operator {
+                principal: Some(REVIEWER.to_string()),
+            },
+            rationale: Some("operator confirmed the preference".to_string()),
+        }
+    }
+
+    fn refusal(
+        result: Result<QuarantineReviewOutcome, QuarantineReviewError>,
+    ) -> Result<QuarantineReviewRefusal, Box<dyn Error>> {
+        match result {
+            Err(QuarantineReviewError::Refused(refusal)) => Ok(refusal),
+            other => Err(format!("expected a typed refusal, got {other:?}").into()),
+        }
+    }
+
+    struct AuditRow {
+        token: String,
+        op_kind: String,
+        memory_id: Option<String>,
+        detail: serde_json::Value,
+    }
+
+    fn audit_rows(store: &SqliteAgentMemoryStore) -> Result<Vec<AuditRow>, Box<dyn Error>> {
+        let conn = store.realm_connection(REVIEW_REALM)?;
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stmt = guard.prepare(
+            "SELECT stage_token, op_kind, memory_id, detail FROM audit ORDER BY audit_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AuditRow {
+                    token: row.get(0)?,
+                    op_kind: row.get(1)?,
+                    memory_id: row.get(2)?,
+                    detail: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn ever_quarantined(
+        store: &SqliteAgentMemoryStore,
+        memory_id: &str,
+    ) -> Result<bool, Box<dyn Error>> {
+        let conn = store.realm_connection(REVIEW_REALM)?;
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(guard.query_row(
+            "SELECT ever_quarantined FROM records WHERE memory_id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn verdict_events(sink: &crate::memory::events::CollectingEventSink) -> Vec<serde_json::Value> {
+        sink.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|event| event.event_type() == "memory.quarantine.verdict")
+            .map(crate::memory::events::MemoryTimelineEvent::data)
+            .collect()
+    }
+
+    /// Stage a gated promotion of `origin` into mob scope the way the steward
+    /// does (a copy derived from the origin plus the origin's tombstone) and
+    /// map it, created at `created_at_ms`. Returns the stage token.
+    async fn pending_promotion(
+        store: &SqliteAgentMemoryStore,
+        origin: &str,
+        pending_id: &str,
+        created_at_ms: u64,
+    ) -> Result<String, Box<dyn Error>> {
+        let record = store
+            .record_by_id(REVIEW_REALM, origin)
+            .await?
+            .ok_or("origin exists")?;
+        let token = store
+            .stage(StagedMutationBatch {
+                kind: StagedBatchKind::ReviewVerdict,
+                realm: REVIEW_REALM.to_string(),
+                author: MemoryAuthor::Steward {
+                    run_id: "dream-gate".to_string(),
+                },
+                ops: vec![
+                    StagedOp::Create {
+                        id: None,
+                        scope: MemoryScope::Mob {
+                            realm: REVIEW_REALM.to_string(),
+                            mob: "reading".to_string(),
+                        },
+                        record: crate::memory::review::release_copy(&record),
+                        trust: TrustTier::AgentObserved,
+                        derived_from: vec![origin.to_string()],
+                        rationale: Some("gated quarantine promotion".to_string()),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                    },
+                    StagedOp::Tombstone {
+                        id: origin.to_string(),
+                        rationale: Some("promoted to mob scope (gated)".to_string()),
+                    },
+                ],
+            })
+            .await?;
+        store
+            .record_pending_promotion(
+                REVIEW_REALM,
+                PendingPromotion {
+                    pending_id: pending_id.to_string(),
+                    stage_token: token.token.clone(),
+                    record_id: origin.to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "reading".to_string(),
+                    rationale: Some("steward: mob-wide preference".to_string()),
+                    status: "pending".to_string(),
+                    created_at_ms,
+                },
+            )
+            .await?;
+        Ok(token.token)
+    }
+
+    /// A gated promotion's mapping status, resolved or not.
+    fn promotion_status(
+        store: &SqliteAgentMemoryStore,
+        pending_id: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let conn = store.realm_connection(REVIEW_REALM)?;
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(guard.query_row(
+            "SELECT status FROM pending_promotions WHERE pending_id = ?1",
+            params![pending_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    #[tokio::test]
+    async fn operator_release_activates_a_ceilinged_successor_and_keeps_the_origin()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let title = "Reading preference";
+        let body = "Prefers slow, character-driven literary fantasy.";
+        let origin_id = quarantined_preference(&store, title, body).await?;
+        let origin_before = store
+            .record_by_id(REVIEW_REALM, &origin_id)
+            .await?
+            .ok_or("origin exists")?;
+        assert!(origin_before.ever_quarantined);
+        assert!(
+            store
+                .recall(recall_all(lead_identity()?, REVIEW_REALM))
+                .await?
+                .is_empty(),
+            "a quarantined record never reaches recall"
+        );
+        let audit_before = audit_rows(&store)?.len();
+
+        let outcome = store
+            .review_quarantined(review(&origin_id, title, body, QuarantineDecision::Release))
+            .await?;
+        let QuarantineReviewOutcome::Released {
+            origin,
+            successor,
+            superseded_prior,
+            decision,
+        } = &outcome
+        else {
+            return Err(format!("expected a release, got {outcome:?}").into());
+        };
+
+        // The successor: same scope and content, agent_observed, ceilinged,
+        // derived from the origin, authored by the operator.
+        assert_eq!(successor.memory_id, release_successor_id(&origin_id));
+        assert_eq!(successor.scope, lead_scope());
+        assert_eq!(successor.status, RecordStatus::Active);
+        assert_eq!(successor.trust, TrustTier::AgentObserved);
+        assert!(successor.ever_quarantined);
+        assert_eq!(successor.derived_from, vec![origin_id.clone()]);
+        assert_eq!(successor.content_hash, content_hash(title, body));
+        assert_eq!(superseded_prior, &None);
+        let successor_record = store
+            .record_by_id(REVIEW_REALM, &successor.memory_id)
+            .await?
+            .ok_or("successor exists")?;
+        assert_eq!(successor_record.provenance.author, MemoryAuthor::Operator);
+        assert_eq!(successor_record.kind, MemoryKind::Preference);
+        assert_eq!(successor_record.tags, origin_before.tags);
+
+        // The origin: retained with its evidence, author and body; only the
+        // status moved to tombstoned. The decision keeps the quarantine
+        // reason, the reviewer and the rationale.
+        assert_eq!(origin.status, RecordStatus::Tombstoned);
+        assert!(origin.ever_quarantined);
+        assert_eq!(decision.review.verdict, QuarantineDecision::Release);
+        assert_eq!(
+            decision.review.reviewer,
+            QuarantineReviewer::Operator {
+                principal: Some(REVIEWER.to_string())
+            }
+        );
+        assert_eq!(
+            decision.review.successor.as_ref(),
+            Some(&successor.memory_id)
+        );
+        assert!(
+            decision
+                .review
+                .origin_quarantine_reason
+                .contains("collection_snapshot")
+        );
+        let origin_after = store
+            .record_by_id(REVIEW_REALM, &origin_id)
+            .await?
+            .ok_or("origin retained")?;
+        assert_eq!(origin_after.status, RecordStatus::Tombstoned);
+        assert_eq!(origin_after.provenance, origin_before.provenance);
+        assert_eq!(origin_after.body, origin_before.body);
+        assert_eq!(origin_after.created_at_ms, origin_before.created_at_ms);
+
+        // Recall now serves the successor, and only it.
+        let recalled = store
+            .recall(recall_all(lead_identity()?, REVIEW_REALM))
+            .await?;
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].memory_id, successor.memory_id);
+
+        // Exactly one audit row per op, both carrying the review evidence.
+        let audit = audit_rows(&store)?;
+        assert_eq!(audit.len(), audit_before + 2);
+        for row in &audit[audit_before..] {
+            assert_eq!(row.token, decision.audit_token);
+            assert_eq!(row.detail["author"]["author"], "operator");
+            assert_eq!(
+                row.detail["review"],
+                serde_json::to_value(&decision.review)?,
+                "the audit holds exactly the returned decision"
+            );
+        }
+        assert_eq!(audit[audit_before].op_kind, "create");
+        assert_eq!(
+            audit[audit_before].memory_id.as_deref(),
+            Some(successor.memory_id.as_str())
+        );
+        assert_eq!(audit[audit_before + 1].op_kind, "tombstone");
+        assert_eq!(
+            audit[audit_before + 1].memory_id.as_deref(),
+            Some(origin_id.as_str())
+        );
+
+        // One verdict event, from the committed receipt, carrying neither
+        // the reviewer nor the rationale (the timeline is system-wide).
+        let verdicts = verdict_events(&sink);
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0]["verdict"], "release");
+        assert_eq!(verdicts[0]["record_id"], origin_id.as_str());
+        assert_eq!(verdicts[0]["successor_id"], successor.memory_id.as_str());
+        assert_eq!(verdicts[0]["rationale"], serde_json::Value::Null);
+        let projected = verdicts[0].to_string();
+        assert!(!projected.contains(REVIEWER), "{projected}");
+        assert!(!projected.contains("operator confirmed"), "{projected}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_release_replays_from_its_audit_evidence_across_reopen()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let (title, body) = (
+            "Reading preference",
+            "Prefers essays to novels on weekdays.",
+        );
+        let origin_id = quarantined_preference(&store, title, body).await?;
+        let request = review(&origin_id, title, body, QuarantineDecision::Release);
+
+        let first = store.review_quarantined(request.clone()).await?;
+        let QuarantineReviewOutcome::Released {
+            origin,
+            successor,
+            decision,
+            ..
+        } = &first
+        else {
+            return Err(format!("expected a release, got {first:?}").into());
+        };
+        let audit_after_first = audit_rows(&store)?.len();
+
+        // A replay returns the committed decision itself and writes nothing.
+        let replay = store.review_quarantined(request.clone()).await?;
+        assert_eq!(
+            replay,
+            QuarantineReviewOutcome::AlreadyReleased {
+                origin: origin.clone(),
+                successor: successor.clone(),
+                decision: decision.clone(),
+            }
+        );
+        assert_eq!(audit_rows(&store)?.len(), audit_after_first);
+        assert_eq!(verdict_events(&sink).len(), 1, "a replay emits nothing");
+
+        // A restart: a fresh store over the same files answers the same.
+        drop(store);
+        let reopened = SqliteAgentMemoryStore::open(dir.path())?;
+        let replay = reopened.review_quarantined(request.clone()).await?;
+        assert_eq!(
+            replay,
+            QuarantineReviewOutcome::AlreadyReleased {
+                origin: origin.clone(),
+                successor: successor.clone(),
+                decision: decision.clone(),
+            }
+        );
+        assert_eq!(audit_rows(&reopened)?.len(), audit_after_first);
+
+        // A later forget of the successor stays a forget: the replay reports
+        // the decision with the successor's current status and revives
+        // nothing.
+        reopened
+            .forget(REVIEW_REALM, &lead_identity()?, &successor.memory_id)
+            .await?;
+        let audit_after_forget = audit_rows(&reopened)?.len();
+        let replay = reopened.review_quarantined(request).await?;
+        let QuarantineReviewOutcome::AlreadyReleased {
+            successor: forgotten,
+            decision: replayed,
+            ..
+        } = &replay
+        else {
+            return Err(format!("expected a replay, got {replay:?}").into());
+        };
+        assert_eq!(forgotten.status, RecordStatus::Tombstoned);
+        assert_eq!(replayed, decision);
+        assert_eq!(audit_rows(&reopened)?.len(), audit_after_forget);
+        assert!(
+            reopened
+                .recall(recall_all(lead_identity()?, REVIEW_REALM))
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    /// Replay identity comes from the review's own committed evidence. A
+    /// row that merely looks like a successor (deterministic id, derived
+    /// from the origin) is refused while the origin is quarantined, and a
+    /// plain tombstone around such a row is never reported as a release.
+    #[tokio::test]
+    async fn successor_shaped_rows_are_never_taken_for_a_review() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let (title, body) = ("Reading preference", "Prefers short story collections.");
+        let origin_id = quarantined_preference(&store, title, body).await?;
+        let successor_id = release_successor_id(&origin_id);
+
+        // Occupy the successor id with different content, in the right
+        // scope, derived from the origin.
+        let forged = store
+            .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
+                realm: REVIEW_REALM.to_string(),
+                author: MemoryAuthor::Application,
+                ops: vec![StagedOp::Create {
+                    id: Some(successor_id.clone()),
+                    scope: lead_scope(),
+                    record: payload("Reading preference", "Prefers thrillers."),
+                    trust: TrustTier::AgentObserved,
+                    derived_from: vec![origin_id.clone()],
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            })
+            .await?;
+        store.commit(forged).await?;
+        let audit_before = audit_rows(&store)?.len();
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &origin_id,
+                        title,
+                        body,
+                        QuarantineDecision::Release
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::SuccessorConflict {
+                successor_id: successor_id.clone()
+            }
+        );
+        assert_eq!(audit_rows(&store)?.len(), audit_before, "nothing written");
+        assert!(matches!(
+            store
+                .record_by_id(REVIEW_REALM, &origin_id)
+                .await?
+                .ok_or("origin")?
+                .status,
+            RecordStatus::Quarantined { .. }
+        ));
+        assert_eq!(
+            store
+                .record_by_id(REVIEW_REALM, &successor_id)
+                .await?
+                .ok_or("forged row")?
+                .body,
+            "Prefers thrillers."
+        );
+
+        // An ordinary forget then tombstones the origin without any review:
+        // neither verdict is reported as a replay.
+        store
+            .forget(REVIEW_REALM, &lead_identity()?, &origin_id)
+            .await?;
+        for decision in [QuarantineDecision::Release, QuarantineDecision::Tombstone] {
+            assert_eq!(
+                refusal(
+                    store
+                        .review_quarantined(review(&origin_id, title, body, decision))
+                        .await
+                )?,
+                QuarantineReviewRefusal::NotQuarantined {
+                    status: "tombstoned",
+                    released_as: None,
+                }
+            );
+        }
+
+        // The same holds for an id taken in another identity's scope.
+        let (title, body) = ("Reading preference", "Prefers reading on paper.");
+        let other_origin = quarantined_preference(&store, title, body).await?;
+        let foreign = store
+            .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
+                realm: REVIEW_REALM.to_string(),
+                author: MemoryAuthor::Application,
+                ops: vec![StagedOp::Create {
+                    id: Some(release_successor_id(&other_origin)),
+                    scope: MemoryScope::Identity {
+                        realm: REVIEW_REALM.to_string(),
+                        identity: "reader:other".to_string(),
+                    },
+                    record: payload(title, body),
+                    trust: TrustTier::AgentObserved,
+                    derived_from: Vec::new(),
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            })
+            .await?;
+        store.commit(foreign).await?;
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &other_origin,
+                        title,
+                        body,
+                        QuarantineDecision::Release
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::SuccessorConflict {
+                successor_id: release_successor_id(&other_origin)
+            }
+        );
+        assert!(verdict_events(&sink).is_empty(), "refusals emit no verdict");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_operator_releases_commit_exactly_once() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let (title, body) = ("Reading preference", "Reads one poetry collection a month.");
+        let origin_id = quarantined_preference(&store, title, body).await?;
+        let request = review(&origin_id, title, body, QuarantineDecision::Release);
+
+        let (left, right) = tokio::join!(
+            store.review_quarantined(request.clone()),
+            store.review_quarantined(request.clone())
+        );
+        let (left, right) = (left?, right?);
+        let mut kinds = vec![left.outcome_str(), right.outcome_str()];
+        kinds.sort_unstable();
+        assert_eq!(kinds, ["already_released", "released"]);
+        assert_eq!(left.decision(), right.decision(), "one committed decision");
+        let created = audit_rows(&store)?
+            .into_iter()
+            .filter(|row| row.op_kind == "create")
+            .count();
+        // One recorder write before the review, one release successor.
+        assert_eq!(created, 2);
+        assert_eq!(
+            verdict_events(&sink).len(),
+            1,
+            "only the applied review emits"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_tombstone_and_cross_verdict_replays_are_typed() -> Result<(), Box<dyn Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let (store, _sink) = tainted_lead_store(dir.path())?;
+
+        // Tombstone, replay, then a release of the same origin.
+        let (title, body) = ("Reading preference", "Dislikes cliffhanger endings.");
+        let discarded = quarantined_preference(&store, title, body).await?;
+        let outcome = store
+            .review_quarantined(review(
+                &discarded,
+                title,
+                body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await?;
+        let QuarantineReviewOutcome::Tombstoned { origin, decision } = &outcome else {
+            return Err(format!("expected a tombstone, got {outcome:?}").into());
+        };
+        assert_eq!(origin.status, RecordStatus::Tombstoned);
+        assert_eq!(decision.review.successor, None);
+        assert!(
+            store
+                .record_by_id(REVIEW_REALM, &release_successor_id(&discarded))
+                .await?
+                .is_none(),
+            "a tombstone verdict creates nothing"
+        );
+        assert_eq!(
+            store
+                .review_quarantined(review(
+                    &discarded,
+                    title,
+                    body,
+                    QuarantineDecision::Tombstone
+                ))
+                .await?,
+            QuarantineReviewOutcome::AlreadyTombstoned {
+                origin: origin.clone(),
+                decision: decision.clone(),
+            }
+        );
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &discarded,
+                        title,
+                        body,
+                        QuarantineDecision::Release
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::NotQuarantined {
+                status: "tombstoned",
+                released_as: None,
+            }
+        );
+
+        // A release, then a tombstone verdict on the released origin.
+        let (title, body) = ("Reading preference", "Prefers paper books to e-readers.");
+        let released = quarantined_preference(&store, title, body).await?;
+        store
+            .review_quarantined(review(&released, title, body, QuarantineDecision::Release))
+            .await?;
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &released,
+                        title,
+                        body,
+                        QuarantineDecision::Tombstone
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::NotQuarantined {
+                status: "tombstoned",
+                released_as: Some(release_successor_id(&released)),
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_review_refuses_wrong_content_scope_and_live_records()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, _sink) = tainted_lead_store(dir.path())?;
+        let (title, body) = ("Reading preference", "Prefers audiobooks while commuting.");
+        let origin_id = quarantined_preference(&store, title, body).await?;
+        let audit_before = audit_rows(&store)?.len();
+
+        // Content binding: a hash of other content is refused, and the
+        // refusal never reveals the stored hash.
+        let mut mismatched = review(
+            &origin_id,
+            title,
+            "edited body",
+            QuarantineDecision::Release,
+        );
+        let mismatch = refusal(store.review_quarantined(mismatched.clone()).await)?;
+        assert_eq!(mismatch, QuarantineReviewRefusal::ContentMismatch);
+        assert!(!mismatch.to_string().contains(&content_hash(title, body)));
+
+        // Scope binding: another identity's scope cannot see the record, and
+        // reads exactly like a missing id.
+        mismatched.expected_content_hash = content_hash(title, body);
+        mismatched.scope = MemoryScope::Identity {
+            realm: REVIEW_REALM.to_string(),
+            identity: "reader:other".to_string(),
+        };
+        assert_eq!(
+            refusal(store.review_quarantined(mismatched).await)?,
+            QuarantineReviewRefusal::NotFound
+        );
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        "mem-missing",
+                        title,
+                        body,
+                        QuarantineDecision::Release
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::NotFound
+        );
+
+        // A live record is not awaiting review.
+        let active = store
+            .remember(
+                REVIEW_REALM,
+                &lead_identity()?,
+                new_memory("Operator note", "Set by the application."),
+            )
+            .await?;
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &active.memory_id,
+                        "Operator note",
+                        "Set by the application.",
+                        QuarantineDecision::Release,
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::NotQuarantined {
+                status: "active",
+                released_as: None,
+            }
+        );
+        // None of the refusals wrote anything beyond the application write.
+        assert_eq!(audit_rows(&store)?.len(), audit_before + 1);
+        assert_eq!(
+            store
+                .record_by_id(REVIEW_REALM, &origin_id)
+                .await?
+                .ok_or("origin")?
+                .status
+                .kind_str(),
+            "quarantined"
+        );
+        Ok(())
+    }
+
+    /// A gated promotion owns its source's publication until gating decides
+    /// it or it expires. The review applies the same expiry the steward's
+    /// dream does, so an orphan persisted across a restart with no steward
+    /// running stops blocking review once expired, while an unexpired one
+    /// keeps blocking a release (and any steward verdict). An operator's
+    /// tombstone is the exception: it invalidates the live gate in its own
+    /// transaction. Either way the gate's staged batch is discarded, so a
+    /// late approval can never publish it, and a late resolution leaves the
+    /// gate as the review left it.
+    #[tokio::test]
+    async fn pending_promotions_block_review_until_they_expire_without_a_steward()
+    -> Result<(), Box<dyn Error>> {
+        use crate::memory::capabilities::GATED_PROMOTION_EXPIRY_MS;
+
+        let dir = tempfile::tempdir()?;
+        let (store, _sink) = tainted_lead_store(dir.path())?;
+        let (live_title, live_body) = ("Reading preference", "Prefers series over standalones.");
+        let live = quarantined_preference(&store, live_title, live_body).await?;
+        let (old_title, old_body) = ("Reading preference", "Prefers standalones over series.");
+        let orphan = quarantined_preference(&store, old_title, old_body).await?;
+        let now = now_ms();
+        let live_token = pending_promotion(&store, &live, "gate-live", now).await?;
+        let orphan_token = pending_promotion(
+            &store,
+            &orphan,
+            "gate-orphan",
+            now.saturating_sub(GATED_PROMOTION_EXPIRY_MS + 60_000),
+        )
+        .await?;
+
+        // Restart with no steward: a fresh store over the same files.
+        drop(store);
+        let reopened = SqliteAgentMemoryStore::open(dir.path())?;
+        let audit_before = audit_rows(&reopened)?.len();
+        let steward_tombstone = QuarantineReviewRequest {
+            reviewer: QuarantineReviewer::Steward {
+                run_id: "dream-after-restart".to_string(),
+            },
+            ..review(&live, live_title, live_body, QuarantineDecision::Tombstone)
+        };
+        for request in [
+            review(&live, live_title, live_body, QuarantineDecision::Release),
+            steward_tombstone,
+        ] {
+            let refused = refusal(reopened.review_quarantined(request).await)?;
+            let QuarantineReviewRefusal::GatePending {
+                pending_id,
+                expires_at_ms,
+            } = refused
+            else {
+                return Err(format!("expected gate_pending, got {refused:?}").into());
+            };
+            assert_eq!(pending_id, "gate-live");
+            assert!(expires_at_ms >= now + GATED_PROMOTION_EXPIRY_MS);
+        }
+        assert_eq!(
+            audit_rows(&reopened)?.len(),
+            audit_before,
+            "nothing written"
+        );
+
+        // The expired orphan no longer blocks: the review expires it in the
+        // same transaction and records that it did.
+        let outcome = reopened
+            .review_quarantined(review(
+                &orphan,
+                old_title,
+                old_body,
+                QuarantineDecision::Release,
+            ))
+            .await?;
+        assert_eq!(outcome.outcome_str(), "released");
+        assert_eq!(
+            outcome.decision().review.expired_promotions,
+            vec!["gate-orphan".to_string()]
+        );
+        let pending: Vec<String> = reopened
+            .pending_promotions(REVIEW_REALM)
+            .await?
+            .into_iter()
+            .map(|promotion| promotion.pending_id)
+            .collect();
+        assert_eq!(
+            pending,
+            vec!["gate-live".to_string()],
+            "the live gate keeps ownership"
+        );
+        let late_approval = reopened
+            .commit(StageToken {
+                realm: REVIEW_REALM.to_string(),
+                token: orphan_token,
+            })
+            .await
+            .expect_err("an expired promotion's batch is gone");
+        assert!(
+            late_approval
+                .to_string()
+                .contains("unknown or expired stage token")
+        );
+
+        // An operator's tombstone invalidates the live gate in the same
+        // transaction and records that it did.
+        let discarded = reopened
+            .review_quarantined(review(
+                &live,
+                live_title,
+                live_body,
+                QuarantineDecision::Tombstone,
+            ))
+            .await?;
+        assert_eq!(discarded.outcome_str(), "tombstoned");
+        assert_eq!(
+            discarded.decision().review.invalidated_promotions,
+            vec!["gate-live".to_string()]
+        );
+        assert!(discarded.decision().review.expired_promotions.is_empty());
+        assert!(reopened.pending_promotions(REVIEW_REALM).await?.is_empty());
+        let late_approval = reopened
+            .commit(StageToken {
+                realm: REVIEW_REALM.to_string(),
+                token: live_token,
+            })
+            .await
+            .expect_err("an invalidated gate's batch is gone");
+        assert!(
+            late_approval
+                .to_string()
+                .contains("unknown or expired stage token")
+        );
+        // Late resolutions lose: a denial does not overwrite the gate, and an
+        // escalation does not revive it under a new id.
+        assert!(
+            !reopened
+                .resolve_pending_promotion(REVIEW_REALM, "gate-live", "denied")
+                .await?
+        );
+        assert!(
+            !reopened
+                .rekey_pending_promotion(REVIEW_REALM, "gate-live", "gate-escalated")
+                .await?
+        );
+        assert_eq!(promotion_status(&reopened, "gate-live")?, "expired");
+        assert!(
+            reopened
+                .pending_promotion_by_id(REVIEW_REALM, "gate-escalated")
+                .await?
+                .is_none()
+        );
+        assert!(
+            reopened
+                .manifest(
+                    &[MemoryScope::Mob {
+                        realm: REVIEW_REALM.to_string(),
+                        mob: "reading".to_string(),
+                    }],
+                    ManifestTier::Full,
+                )
+                .await?
+                .is_empty(),
+            "nothing reached mob scope"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_release_of_secret_shaped_content_is_refused_and_tombstone_stays_the_exit()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let title = "Account note";
+        let origin_id = quarantined_preference(&store, title, "placeholder body").await?;
+        // Mimic a row written before the secret scanner existed: every
+        // staged write path refuses such bodies now.
+        let body = "the docs example key AKIAIOSFODNN7EXAMPLE, quoted in a note";
+        {
+            let conn = store.realm_connection(REVIEW_REALM)?;
+            let guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(
+                guard.execute(
+                    "UPDATE records SET body = ?1 WHERE memory_id = ?2",
+                    params![body, origin_id],
+                )?,
+                1
+            );
+        }
+        let audit_before = audit_rows(&store)?.len();
+        assert_eq!(
+            refusal(
+                store
+                    .review_quarantined(review(
+                        &origin_id,
+                        title,
+                        body,
+                        QuarantineDecision::Release
+                    ))
+                    .await
+            )?,
+            QuarantineReviewRefusal::SecretDetected {
+                class: "aws-access-key-id",
+            }
+        );
+        assert_eq!(audit_rows(&store)?.len(), audit_before);
+        let blocked = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|event| event.event_type() == "memory.quarantine.release_blocked")
+            .map(crate::memory::events::MemoryTimelineEvent::data)
+            .collect::<Vec<_>>();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0]["class"], "aws-access-key-id");
+        assert!(!blocked[0].to_string().contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(
+            verdict_events(&sink).is_empty(),
+            "a refused release is no verdict"
+        );
+
+        // Tombstone remains the exit.
+        assert_eq!(
+            store
+                .review_quarantined(review(
+                    &origin_id,
+                    title,
+                    body,
+                    QuarantineDecision::Tombstone
+                ))
+                .await?
+                .outcome_str(),
+            "tombstoned"
+        );
+        assert_eq!(verdict_events(&sink).len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn released_successor_keeps_the_transitive_ceiling() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, _sink) = tainted_lead_store(dir.path())?;
+        let (title, body) = ("Reading preference", "Re-reads one classic every winter.");
+        // A verification claim travels with the release copy, so only the
+        // ceiling can stop the retier below.
+        let mut record = preference(title, body);
+        record.verification = Some(crate::memory::records::VerificationClaim {
+            checked: "the operator said so in the session".to_string(),
+            evidence: Vec::new(),
+        });
+        let origin_id = store
+            .remember_authored(&lead_scope(), record, lead_author())
+            .await?
+            .memory_id;
+        let outcome = store
+            .review_quarantined(review(&origin_id, title, body, QuarantineDecision::Release))
+            .await?;
+        let successor = outcome.successor().ok_or("released")?.memory_id.clone();
+
+        let retier = StagedMutationBatch {
+            kind: StagedBatchKind::ReviewVerdict,
+            realm: REVIEW_REALM.to_string(),
+            author: MemoryAuthor::Steward {
+                run_id: "dream-1".to_string(),
+            },
+            ops: vec![StagedOp::Retier {
+                id: successor.clone(),
+                trust: TrustTier::AgentVerified,
+                rationale: Some("post-review launder attempt".to_string()),
+            }],
+        };
+        let err = store.stage(retier).await.expect_err("ceiling must hold");
+        assert!(
+            err.to_string().contains("provenance chain reaches"),
+            "{err}"
+        );
+
+        let launder = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
+            realm: REVIEW_REALM.to_string(),
+            author: MemoryAuthor::Application,
+            ops: vec![StagedOp::Supersede {
+                id: None,
+                prior: successor.clone(),
+                record: payload(title, "Re-reads one classic every winter, verified."),
+                trust: TrustTier::AgentVerified,
+                derived_from: Vec::new(),
+                rationale: None,
+            }],
+        };
+        let err = store.stage(launder).await.expect_err("ceiling must hold");
+        assert!(
+            err.to_string().contains("provenance chain reaches"),
+            "{err}"
+        );
+
+        // An ordinary update of the successor keeps the marker in its lineage.
+        let update = store
+            .supersede(
+                &lead_scope(),
+                &successor,
+                payload(title, "Re-reads two classics."),
+            )
+            .await?;
+        assert!(ever_quarantined(&store, &update)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_release_of_a_quarantined_update_supersedes_its_active_prior()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, _sink) = tainted_lead_store(dir.path())?;
+        let prior = store
+            .remember(
+                REVIEW_REALM,
+                &lead_identity()?,
+                new_memory("Reading pace", "One book a month."),
+            )
+            .await?;
+        let (title, body) = ("Reading pace", "Two books a month since the move.");
+        let update = store
+            .supersede_authored(
+                &lead_scope(),
+                &prior.memory_id,
+                payload(title, body),
+                lead_author(),
+            )
+            .await?;
+        assert!(matches!(update.status, RecordStatus::Quarantined { .. }));
+
+        let outcome = store
+            .review_quarantined(review(
+                &update.memory_id,
+                title,
+                body,
+                QuarantineDecision::Release,
+            ))
+            .await?;
+        let QuarantineReviewOutcome::Released {
+            successor,
+            superseded_prior,
+            ..
+        } = &outcome
+        else {
+            return Err(format!("expected a release, got {outcome:?}").into());
+        };
+        assert_eq!(superseded_prior.as_deref(), Some(prior.memory_id.as_str()));
+        assert_eq!(
+            successor.supersedes.as_deref(),
+            Some(prior.memory_id.as_str())
+        );
+        assert_eq!(successor.derived_from, vec![update.memory_id.clone()]);
+        let prior_after = store
+            .record_by_id(REVIEW_REALM, &prior.memory_id)
+            .await?
+            .ok_or("prior")?;
+        assert_eq!(
+            prior_after.status,
+            RecordStatus::Superseded {
+                by: successor.memory_id.clone()
+            }
+        );
+        // No fork: exactly one active version.
+        let recalled = store
+            .recall(recall_all(lead_identity()?, REVIEW_REALM))
+            .await?;
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].memory_id, successor.memory_id);
+        Ok(())
+    }
+
+    /// A quarantined update whose prior is gone (absent, tombstoned or
+    /// superseded) is refused as stale: nothing resurrects or forks, no
+    /// verdict is emitted, and tombstone remains the exit.
+    #[tokio::test]
+    async fn operator_release_of_a_stale_update_is_refused() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, sink) = tainted_lead_store(dir.path())?;
+        let quarantined_update = |prior: String, body: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .supersede_authored(
+                        &lead_scope(),
+                        &prior,
+                        payload("Reading pace", body),
+                        lead_author(),
+                    )
+                    .await
+                    .map(|receipt| receipt.memory_id)
+            }
+        };
+        let new_prior = |body: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .remember(
+                        REVIEW_REALM,
+                        &AgentIdentity::parse(REVIEW_IDENTITY)
+                            .map_err(|err| AgentMemoryError::InvalidRecord(err.to_string()))?,
+                        new_memory("Reading pace", body),
+                    )
+                    .await
+                    .map(|record| record.memory_id)
+            }
+        };
+
+        // Prior tombstoned.
+        let forgotten = new_prior("One book a month.").await?;
+        let update_a = quarantined_update(forgotten.clone(), "Three books a month.").await?;
+        store
+            .forget(REVIEW_REALM, &lead_identity()?, &forgotten)
+            .await?;
+        // Prior superseded by another update first.
+        let replaced = new_prior("One book a week.").await?;
+        let update_b = quarantined_update(replaced.clone(), "Two books a week.").await?;
+        store
+            .supersede(
+                &lead_scope(),
+                &replaced,
+                payload("Reading pace", "A book a day."),
+            )
+            .await?;
+        // Prior absent altogether.
+        let vanished = new_prior("One book a year.").await?;
+        let update_c = quarantined_update(vanished.clone(), "Two books a year.").await?;
+        {
+            let conn = store.realm_connection(REVIEW_REALM)?;
+            let guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.execute(
+                "DELETE FROM records WHERE memory_id = ?1",
+                params![vanished],
+            )?;
+        }
+
+        let audit_before = audit_rows(&store)?.len();
+        for (update, body, prior, prior_status) in [
+            (&update_a, "Three books a month.", &forgotten, "tombstoned"),
+            (&update_b, "Two books a week.", &replaced, "superseded"),
+            (&update_c, "Two books a year.", &vanished, "missing"),
+        ] {
+            assert_eq!(
+                refusal(
+                    store
+                        .review_quarantined(review(
+                            update,
+                            "Reading pace",
+                            body,
+                            QuarantineDecision::Release
+                        ))
+                        .await
+                )?,
+                QuarantineReviewRefusal::StaleUpdate {
+                    prior: prior.clone(),
+                    prior_status,
+                }
+            );
+        }
+        assert_eq!(audit_rows(&store)?.len(), audit_before);
+        assert!(
+            verdict_events(&sink).is_empty(),
+            "a refused release is no verdict"
+        );
+        // The reviewer can still discard it.
+        assert_eq!(
+            store
+                .review_quarantined(review(
+                    &update_a,
+                    "Reading pace",
+                    "Three books a month.",
+                    QuarantineDecision::Tombstone
+                ))
+                .await?
+                .outcome_str(),
+            "tombstoned"
+        );
         Ok(())
     }
 }

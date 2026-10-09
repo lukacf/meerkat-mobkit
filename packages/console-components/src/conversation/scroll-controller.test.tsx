@@ -572,8 +572,251 @@ describe("conversation scroll intent", () => {
     render(<Harness />);
     const viewport = screen.getByTestId("viewport");
     rowReads.clear();
+    // The content shrinks by 20 px and the browser clamps scrollTop to the
+    // new end: the scroll lands exactly at the live edge.
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 980 });
     userScroll(viewport, 780);
     expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
     expect(rowReads.size).toBe(0);
+  });
+});
+
+describe("leaving the live edge upward", () => {
+  // Following the end, a reader scrolls up by a few pixels while a reply
+  // streams in. Any upward movement the controller did not write leaves the
+  // live edge at once: the 32 px live-edge band applies only on the way down,
+  // and the growth must not snap the reader back to the end.
+  const grown = [...baseRows, { id: "streamed", height: 160 }];
+  test.each([1, 2, 5, 10])("a %i px wheel scroll up during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: -distance });
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test.each([1, 2, 5, 10])("a %i px scroll-event-only move up (scrollbar or touch) during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test.each([1, 2, 5, 10])("a %i px move up that chains out of a nested scroller during content growth is not snapped back", (distance) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    // A code block that can still scroll up owns the wheel, so the wheel path
+    // does not leave the live edge; the viewport scroll that follows when the
+    // gesture chains out of it must.
+    const nested = document.createElement("pre");
+    nested.style.overflowY = "auto";
+    Object.defineProperties(nested, { scrollHeight: { configurable: true, value: 400 }, clientHeight: { configurable: true, value: 100 } });
+    viewport.querySelector('[data-conversation-row-id="row-9"]')!.append(nested);
+    nested.scrollTop = 30;
+    fireEvent.wheel(nested, { deltaY: -distance });
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    userScroll(viewport, 800 - distance);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(800 - distance);
+  });
+  test("our own write to the end is not mistaken for a user scroll", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    view.rerender(<Harness rows={grown} />);
+    expect(viewport.scrollTop).toBe(960);
+    // The native scroll event for the controller's own write arrives later.
+    fireEvent.scroll(viewport);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={[...grown, { id: "more", height: 40 }]} />);
+    expect(viewport.scrollTop).toBe(1000);
+  });
+});
+
+describe("a downward gesture's sub-pixel settle at the live edge", () => {
+  // A downward wheel or End at the end of the transcript can leave scrollTop a
+  // pixel above the computed end: scrollHeight and clientHeight are rounded,
+  // the scroll range is not. That settle is not the reader moving up, and must
+  // not leave the live edge (browser-e2e "opening the actual tool at live edge
+  // remains following" read top 2225 -> 2224 after a down-wheel).
+  const grown = [...baseRows, { id: "streamed", height: 160 }];
+  test.each(["wheel", "End"])("a 1 px upward settle after a downward %s keeps following content growth", (gesture) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    if (gesture === "wheel") fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    else fireEvent.keyDown(viewport, { key: "End" });
+    userScroll(viewport, 799);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={grown} />);
+    expect(viewport.scrollTop).toBe(960);
+  });
+  test("a larger upward move after a downward wheel still leaves the live edge", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    userScroll(viewport, 798);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(798);
+  });
+  test("a pointer press clears the downward gesture: a 1 px move up after it leaves", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport.querySelector('[data-conversation-row-id="row-9"]')!, { deltaY: 350 });
+    // A scrollbar drag starts with a press on the viewport.
+    fireEvent.pointerDown(viewport);
+    userScroll(viewport, 799);
+    view.rerender(<Harness rows={grown} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(799);
+  });
+});
+
+describe("a native settle of the end after a content press", () => {
+  // browser-e2e "opening the actual tool at live edge remains following" on
+  // the shared host, recorded geometry: the controller wrote the computed end
+  // 2225 after a copy click, then the browser settled it to 2224 before the
+  // tool header's press (a pointer action reveals its target first), and the
+  // opened tool was held by an anchor instead of followed. Rows total 2425 px
+  // in a 200 px viewport, so the computed end is 2225.
+  const rows: Row[] = [...Array.from({ length: 24 }, (_, i) => ({ id: `row-${i}`, height: 100 })), { id: "tool", height: 25 }];
+  const opened: Row[] = [...rows.slice(0, -1), { id: "tool", height: 136 }];
+  const row = (viewport: HTMLElement, id: string) => viewport.querySelector(`[data-conversation-row-id="${id}"]`)!;
+  /** A pointer press carrying its pointer type, which jsdom's events lack. */
+  const press = (target: Element, pointerType: string) => {
+    const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "pointerType", { value: pointerType });
+    fireEvent(target, event);
+  };
+
+  test("the recorded 2225 -> 2224 trace keeps following when the tool opens", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    fireEvent.wheel(row(viewport, "tool"), { deltaY: 350 });
+    userScroll(viewport, 2224);
+    fireEvent.keyDown(viewport, { key: "End" });
+    // The copy control's press, then a commit that rewrites the computed end.
+    press(row(viewport, "tool"), "mouse");
+    view.rerender(<Harness rows={[...rows]} />);
+    expect(viewport.scrollTop).toBe(2225);
+    // The browser snaps the end a pixel up before the next press.
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    press(row(viewport, "tool"), "mouse");
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    expect(viewport.scrollTop).toBe(2336);
+  });
+
+  test("a native scroll down after a tool opens at the end keeps following", () => {
+    // browser-e2e "opening the actual tool at live edge remains following",
+    // locally reproduced trace (shared host, tall layout): following at the
+    // computed end 2225, the tool header press, the disclosure grows the
+    // content by 111 px, and only then the browser's own scroll event reports
+    // 2226 (a pixel down). Judged against the grown end 2336 that position
+    // was outside the live-edge band, so the pane left following.
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    press(row(viewport, "tool"), "mouse");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2536 });
+    userScroll(viewport, 2226);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    expect(viewport.scrollTop).toBe(2336);
+  });
+
+  test("a native scroll down after content growth does not resume following while reading", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 2200);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2536 });
+    userScroll(viewport, 2201);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2201);
+  });
+
+  test.each([2, 5, 40])("a %i px upward drag after a content press still leaves the live edge", (distance) => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2225 - distance);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2225 - distance);
+  });
+
+  test.each(["touch", "pen"])("a 1 px move after a %s press on the content leaves the live edge", (pointerType) => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), pointerType);
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2224);
+  });
+
+  test("a 1 px move after a middle press (autoscroll) on the content leaves the live edge", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 1 });
+    Object.defineProperty(event, "pointerType", { value: "mouse" });
+    fireEvent(row(viewport, "tool"), event);
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a 1 px move after a primary mouse press on the viewport (its scrollbar) leaves the live edge", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(2225);
+    press(viewport, "mouse");
+    userScroll(viewport, 2224);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2224);
+  });
+
+  test("a 1 px move after a content press that does not land at the grown end leaves the live edge", () => {
+    // Content grows by 10 px before the controller's write: the move is a
+    // pixel, but it lands inside the live-edge band, not at the end.
+    render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    press(row(viewport, "tool"), "mouse");
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2435 });
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a content press does not turn a 1 px move at the end into following while reading", () => {
+    render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    // An upward wheel at the end leaves the live edge before it scrolls.
+    fireEvent.wheel(row(viewport, "tool"), { deltaY: -1 });
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(2225);
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("a content press does not resume following from a reading position near the end", () => {
+    const view = render(<Harness rows={rows} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 2224);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    press(row(viewport, "tool"), "mouse");
+    userScroll(viewport, 2223);
+    view.rerender(<Harness rows={opened} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
   });
 });

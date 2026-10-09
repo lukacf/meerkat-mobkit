@@ -358,6 +358,8 @@ export interface ConsoleAccessSection {
 }
 
 export interface ConsoleAccessStatus extends ConsoleAccessSection {
+  conditional_mutations?: string;
+  owner_instance?: string;
   revision?: number;
   is_admin?: boolean;
   actions?: string[];
@@ -386,6 +388,19 @@ export interface ConsoleAccessConfig {
   groups?: Record<string, ConsoleAccessGroup>;
   rules?: ConsoleAccessRule[];
 }
+
+/** Captured with the protected config read, never rebased by a display refresh. */
+export interface ConsoleAccessEditBase {
+  owner_instance: string;
+  revision: number;
+  config: ConsoleAccessConfig;
+}
+
+export interface ConsoleAccessSaveFailure {
+  kind: "revision_conflict" | "owner_changed" | "unavailable" | "invalid" | "failed";
+}
+
+export type ConsoleAccessSaveResult = void | boolean | ConsoleAccessSaveFailure;
 
 // ── Memory panel (read-only) ──────────────────────────────────────────────
 // Shapes mirror the server contract for the `mobkit/memory/panel/*`
@@ -469,10 +484,15 @@ export interface MemoryPanelRecord {
   updated_at_ms?: number;
   usage?: MemoryUsage;
   body_bytes?: number;
+  /// The durable taint marker: the record landed quarantined or descends
+  /// from one that did.
+  ever_quarantined?: boolean;
 }
 
 export interface MemoryFullRecord extends Omit<MemoryPanelRecord, "body_bytes"> {
   body: string;
+  /// Detail-only: the content hash a quarantine decision binds to.
+  content_hash?: string;
 }
 
 export interface MemoryInjectionEntry {
@@ -517,6 +537,55 @@ export interface MemoryPanelRecordResult {
   record: MemoryFullRecord;
   chain: MemoryPanelRecord[];
   injections: MemoryInjectionEntry[];
+}
+
+export type MemoryQuarantineVerdict = "release" | "tombstone";
+
+/// One record as it stands after a quarantine decision, read back from the
+/// store (mobkit/memory/quarantine/decide).
+export interface MemoryReviewedRecordReceipt {
+  memory_id: string;
+  scope: MemoryRecordScope;
+  kind: MemoryRecordKind;
+  status: MemoryRecordStatus;
+  trust: MemoryTrust;
+  ever_quarantined: boolean;
+  content_hash: string;
+  supersedes?: string;
+  derived_from: string[];
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export type MemoryQuarantineReviewer =
+  | { kind: "operator"; principal: string | null }
+  | { kind: "steward"; run_id: string };
+
+/// The committed review a decision result reports; a replay returns the
+/// original one.
+export interface MemoryQuarantineDecision {
+  audit_token: string;
+  decided_at_ms: number;
+  review: {
+    verdict: MemoryQuarantineVerdict;
+    reviewer: MemoryQuarantineReviewer;
+    origin: string;
+    successor?: string;
+    expected_content_hash: string;
+    origin_quarantine_reason: string;
+    expired_promotions?: string[];
+    invalidated_promotions?: string[];
+    rationale?: string;
+  };
+}
+
+export interface MemoryQuarantineDecideResult {
+  outcome: "released" | "already_released" | "tombstoned" | "already_tombstoned";
+  realm: string;
+  origin: MemoryReviewedRecordReceipt;
+  successor: MemoryReviewedRecordReceipt | null;
+  decision: MemoryQuarantineDecision;
+  superseded_prior?: string | null;
 }
 
 export interface MemoryPanelQuarantineResult {

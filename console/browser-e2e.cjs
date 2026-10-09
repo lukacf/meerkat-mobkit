@@ -1055,8 +1055,18 @@ async function runCanonicalSendBrowserProof() {
 
     await openSidebarAgentChat(page, /Legacy Router/i);
     await fillComposer(page, "legacy proof message");
-    await clickSend(page);
-    await page.waitForTimeout(100);
+    // Sending first awaits persistence and a fresh capability response.
+    // Observe this target's actual RPC response before reading the server log.
+    const memberSendResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      if (response.url() !== `${server.baseUrl}/console/rpc` || request.method() !== "POST") return false;
+      const payload = request.postDataJSON();
+      return payload?.method === "mobkit/console/send"
+        && payload.params?.identity === "legacy-router"
+        && payload.params?.content === "legacy proof message";
+    }, { timeout: 30_000 });
+    await page.getByTestId("chat-send:legacy-router").click();
+    await memberSendResponse;
 
     const sawIdentityLane = server.requests.some(
       (request) =>
@@ -3207,7 +3217,261 @@ async function runTopologyAmbiguousCommitBrowserProof() {
   }
 }
 
+// UI contract test only: local HTTP fixtures do not install native authorization.
+async function runAuthorizationFeedbackProof() {
+  const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || "/tmp/adr-001-console-browser-r2";
+  fs.mkdirSync(evidence, { recursive: true });
+  const base = { identity: "identity:luka", session_id: "session-auth", run_id: "run-auth", interaction_id: "work-auth" };
+  const frame = (id, kind, payload, index) => ({ ...base, id, kind, payload, cursor: `console:${index}`, timestamp_ms: Date.now() - 10000 + index });
+  const frames = [
+    frame("start", "run_started", {}, 1),
+    frame("refusal", "system_notice", { message: { role: "system_notice", kind: "generic", body: "PRIVATE_NOTICE_CANARY", blocks: [{ type: "runtime_notice", category: "operation_refused", payload: { code: "operation_refused" } }] } }, 2),
+    frame("read", "tool_call_requested", { id: "read-call", name: "read_calendar", args: {} }, 3),
+    frame("read-result", "tool_result_received", { id: "read-call", name: "read_calendar", is_error: false, content: [{ type: "text", text: "Permitted calendar read completed" }] }, 4),
+    frame("audit", "operation_observation_failed", { operation_id: "op-read", phase: "outcome", private: "PRIVATE_AUDIT_CANARY" }, 5),
+    frame("answer", "text_complete", { text: "I continued with the permitted calendar read." }, 6),
+    frame("done", "run_completed", { result: "I continued with the permitted calendar read." }, 7),
+    frame("interaction-done", "interaction_complete", { result: "I continued with the permitted calendar read." }, 8),
+  ];
+  const server = await startMockConsoleServer({ timelineFramesByIdentity: { "identity:luka": frames } });
+  let browser;
+  let finishPreview;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(String(error)));
+    let admin = true;
+    let revision = 1;
+    let mutations = 0;
+    let previewStarted;
+    const previewRequest = new Promise(resolve => { previewStarted = resolve; });
+    const metadata = () => ({ owner_instance: "opaque-owner:authorization-feedback", revision, conditional_mutations: "checked_v1" });
+    const status = () => ({ available: true, enabled: true, can_administer: admin, subject: "admin@example.test", ...metadata(), actions: ["agent.view", "agent.send"] });
+    await page.route("**/console/experience", async route => {
+      const response = await route.fetch();
+      const value = await response.json();
+      await route.fulfill({ response, json: { ...value, access: status() } });
+    });
+    await page.route("**/console/rpc", async route => {
+      const request = route.request().postDataJSON();
+      const reply = result => route.fulfill({ json: { jsonrpc: "2.0", id: request.id, result } });
+      if (request.method === "mobkit/capabilities") {
+        const response = await route.fetch(); const value = await response.json();
+        value.result.methods.push(...["status", "get", "set", "enable", "rules/upsert", "rules/delete", "groups/set", "groups/delete", "preview"].map(name => `mobkit/access/${name}`));
+        return route.fulfill({ response, json: value });
+      }
+      if (request.method === "mobkit/access/status") return reply(status());
+      if (request.method === "mobkit/access/get") return reply({ ...metadata(), config: { enabled: true, admins: ["admin@example.test"], rules: [], groups: {} } });
+      if (request.method === "mobkit/access/preview") {
+        previewStarted();
+        await new Promise(resolve => { finishPreview = resolve; });
+        return reply({ allowed: true, reason: "STALE_PREVIEW_CANARY" });
+      }
+      if (request.method === "mobkit/access/rules/upsert") {
+        mutations += 1;
+        return route.fulfill({ json: { jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "Fixture owner rejected this rule" } } });
+      }
+      return route.continue();
+    });
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await openSidebarAgentChat(page, "Identity Luka");
+    const pane = page.getByTestId("chat-pane:identity:luka");
+    await pane.getByText("Permission denied", { exact: true }).waitFor();
+    await pane.getByText("Audit update unavailable", { exact: true }).waitFor();
+    await pane.getByText("I continued with the permitted calendar read.", { exact: true }).first().waitFor();
+    assert.doesNotMatch(await page.locator("body").innerText(), /PRIVATE_NOTICE_CANARY|PRIVATE_AUDIT_CANARY/);
+    await page.screenshot({ path: path.join(evidence, "operation-feedback.png"), fullPage: true });
+    const composer = page.getByTestId("chat-composer:identity:luka");
+    await composer.fill("A permitted follow-up request");
+    await composer.press("Enter");
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-composer:identity:luka"]')?.value === "", null, { timeout: 10_000 });
+    await waitForRpcMethod(server, "mobkit/console/send");
+    assert(server.requests.some(row => row.body.includes("A permitted follow-up request")), "follow-up must reach the existing send owner");
+    await page.getByText("Access", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Console access", exact: true }).waitFor();
+    await page.getByTestId("access-toggle-enabled").waitFor();
+    await page.getByTestId("access-tab:preview").click();
+    await page.getByTestId("access-preview-subject").fill("first@example.test");
+    await page.getByTestId("access-preview-run").click();
+    await previewRequest;
+    await page.getByTestId("access-preview-subject").fill("second@example.test");
+    finishPreview();
+    await page.getByTestId("access-tab:rules").click();
+    await page.getByTestId("access-rule-new").click();
+    await page.getByTestId("access-rule-id").fill("draft-survives");
+    await page.getByTestId("access-rule-save").click();
+    await page.getByTestId("access-error").waitFor();
+    assert.equal(await page.getByTestId("access-rule-id").inputValue(), "draft-survives");
+    assert.equal(mutations, 1);
+    assert(await page.getByTestId("access-rule-save").isDisabled());
+    assert.doesNotMatch(await page.locator("body").innerText(), /STALE_PREVIEW_CANARY/);
+    await page.screenshot({ path: path.join(evidence, "console-access-failed-draft.png"), fullPage: true });
+    admin = false; revision += 1;
+    await page.getByTestId("access-refresh").click();
+    await page.getByText("Current administrator access is required to view this configuration.").waitFor();
+    assert.doesNotMatch(await page.locator("body").innerText(), /admin@example.test|draft-survives/);
+    assert.equal(errors.length, 0, errors.join("\n"));
+    await page.screenshot({ path: path.join(evidence, "console-access-revoked.png"), fullPage: true });
+    fs.writeFileSync(path.join(evidence, "result.json"), JSON.stringify({ backend: "local mock HTTP", nativeAuthorizationInstalled: false, cases: ["typed local refusal", "separate audit outcome", "permitted follow-up", "stale preview discarded", "failed draft retained", "revoked data hidden"], mutations, errors }, null, 2));
+    process.stdout.write("authorization feedback browser contract passed (mock backend)\n");
+  } finally {
+    finishPreview?.();
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
+// Real Chromium UI over the existing local HTTP host and mocked access RPC.
+// This does not install or execute the Rust access owner.
+async function runCheckedSaveBrowserProof(mode) {
+  const evidence = path.join(process.env.MOBKIT_BROWSER_EVIDENCE || path.join(repoRoot, "output/playwright/console-acceptance"), mode);
+  fs.mkdirSync(evidence, { recursive: true });
+  const initialGroup = { description: "Original group description", members: ["alice@example.test"] };
+  const newerGroup = { ...initialGroup, description: "Another admin's updated description" };
+  const original = { enabled: true, admins: ["root@example.test", "alice@example.test"], rules: [], groups: mode === "group" ? { ops: initialGroup } : {} };
+  const newerRule = { id: "b-newer-rule", effect: "allow", subjects: ["reader@example.test"], actions: ["agent.view"], agents: ["worker"] };
+  const state = { owner: "opaque-owner:one", revision: 10, config: structuredClone(original), applied: 0 };
+  const writes = [], reads = [], errors = [], checkpoints = [];
+  const mutationMethods = new Set(["set", "enable", "rules/upsert", "rules/delete", "groups/set", "groups/delete"].map(name => `mobkit/access/${name}`));
+  const metadata = () => ({ revision: state.revision, owner_instance: state.owner, conditional_mutations: "checked_v1" });
+  const status = () => ({ available: true, enabled: true, can_administer: true, subject: "root@example.test", actions: ["agent.view"], ...metadata() });
+  const server = await startMockConsoleServer();
+  let browser, page, failure;
+  try {
+    browser = await launchBrowser();
+    page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
+    page.setDefaultTimeout(10000);
+    page.on("pageerror", error => errors.push(String(error)));
+    await page.route("**/console/experience", async route => {
+      const response = await route.fetch(); const value = await response.json();
+      await route.fulfill({ response, json: { ...value, access: status() } });
+    });
+    await page.route("**/console/rpc", async route => {
+      const request = route.request().postDataJSON();
+      const reply = payload => route.fulfill({ json: { jsonrpc: "2.0", id: request.id, ...payload } });
+      if (request.method === "mobkit/capabilities") {
+        const response = await route.fetch(); const value = await response.json();
+        value.result.methods.push("mobkit/access/status", "mobkit/access/get", ...mutationMethods);
+        return route.fulfill({ response, json: value });
+      }
+      if (request.method === "mobkit/access/status") {
+        reads.push({ method: request.method, ...metadata() });
+        return reply({ result: status() });
+      }
+      if (request.method === "mobkit/access/get") {
+        reads.push({ method: request.method, ...metadata() });
+        return reply({ result: { config: state.config, ...metadata() } });
+      }
+      if (mutationMethods.has(request.method)) {
+        writes.push(structuredClone({ method: request.method, params: request.params }));
+        if (mode === "unavailable") {
+          // Keep valid read metadata to isolate the finite error projection.
+          return reply({ error: { code: -32004, message: "PRIVATE_UNAVAILABLE_CANARY", data: { kind: "access_mutation_unavailable" } } });
+        }
+        const checked = request.params.checked_v1;
+        if (Object.keys(request.params).length !== 1 || checked?.owner_instance !== state.owner) {
+          return reply({ error: { code: -32602, message: "PRIVATE_PAYLOAD_CANARY" } });
+        }
+        if (checked.expected_revision !== state.revision) {
+          return reply({ error: { code: -32009, message: "PRIVATE_CONFLICT_CANARY", data: { kind: "access_revision_conflict", expected_revision: checked.expected_revision, actual_revision: state.revision } } });
+        }
+        if (request.method === "mobkit/access/set") state.config = checked.config;
+        else if (request.method === "mobkit/access/groups/set" && checked.name === "ops") state.config = { ...state.config, groups: { ...state.config.groups, ops: checked.group } };
+        else throw new Error(`unexpected checked mutation ${request.method}`);
+        state.applied += 1; state.revision += 1;
+        return reply({ result: { config: state.config, ...metadata() } });
+      }
+      return route.continue();
+    });
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.getByText("Access", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Console access", exact: true }).waitFor();
+    await page.getByTestId("access-edit-admins").waitFor();
+    let draft, save;
+    if (mode === "group") {
+      await page.getByTestId("access-tab:groups").click();
+      await page.getByTestId("access-group-edit:ops").click();
+      draft = page.getByTestId("access-group-members"); save = page.getByTestId("access-group-save");
+      await draft.fill("carol@example.test");
+      state.config = { ...state.config, groups: { ops: newerGroup } }; state.revision = 11;
+      const refreshed = page.waitForResponse(response => response.url().endsWith("/console/rpc") && response.request().postDataJSON()?.method === "mobkit/access/get");
+      await page.getByTestId("access-refresh").click();
+      await refreshed;
+      await save.click({ trial: true });
+    } else {
+      await page.getByTestId("access-edit-admins").click();
+      draft = page.getByTestId("access-admins-input"); save = page.getByTestId("access-save-admins");
+      await draft.fill("root@example.test, alice@example.test, carol@example.test");
+      if (mode === "conflict") {
+        state.config = { ...state.config, rules: [newerRule] }; state.revision = 11;
+        await page.getByTestId("access-refresh").click();
+        await page.getByTestId("access-tab:rules").click();
+        await page.getByTestId("access-rule:b-newer-rule").waitFor();
+        await page.getByTestId("access-tab:overview").click();
+      }
+    }
+    const draftText = await draft.inputValue();
+    assert.match(draftText, /carol@example.test/);
+    assert.equal(writes.length, 0, "refresh must not save a retained draft");
+    await save.click();
+    await page.getByTestId("access-error").waitFor();
+    const notice = await page.getByTestId("access-error").innerText();
+    const disabled = await save.isDisabled();
+    checkpoints.push({ step: "first-response", notice, saveDisabled: disabled, draft: await draft.inputValue(), writes: writes.length, readMetadata: metadata() });
+    await page.screenshot({ path: path.join(evidence, "first-response.png"), fullPage: true });
+    assert.equal(writes.length, 1);
+    assert.equal(state.applied, 0);
+    assert.equal(await draft.inputValue(), draftText);
+    assert.doesNotMatch(await page.locator("body").innerText(), /PRIVATE_.*CANARY/);
+    if (mode === "unavailable") {
+      assert.equal(notice, "Changes were not saved. Checked access saves are unavailable; your draft is retained.", "typed mutation unavailable must have finite unavailable feedback");
+      assert(disabled, "typed mutation unavailable must block repeated Save despite valid read metadata");
+      await page.getByTestId("access-refresh").click();
+      await page.getByTestId("access-error").waitFor();
+      assert.equal(await draft.inputValue(), draftText);
+      assert(await save.isDisabled(), "ordinary refresh must not silently reapply the draft");
+      assert.equal(writes.length, 1);
+      assert.equal(state.applied, 0);
+    } else {
+      assert.equal(notice, "Access configuration changed. Review the latest settings before saving again.");
+      assert(disabled);
+      const firstPayload = mode === "group" ? { name: "ops", group: { ...initialGroup, members: ["carol@example.test"] } } : { config: { ...original, admins: draftText.split(", ") } };
+      assert.deepEqual(writes[0].params, { checked_v1: { owner_instance: state.owner, expected_revision: 10, ...firstPayload } });
+      await page.getByRole("button", { name: "Review and reapply", exact: true }).click();
+      assert.equal(writes.length, 1, "review and reapply must not submit a mutation");
+      assert.equal(await draft.inputValue(), draftText);
+      await save.click({ trial: true });
+      assert(await save.isEnabled());
+      checkpoints.push({ step: "reviewed-without-save", writes: writes.length, draft: await draft.inputValue() });
+      await save.click();
+      // A member chip also carries its Inspect access control, so match the member text within it.
+      if (mode === "group") await page.getByTestId("access-group:ops").getByText("carol@example.test").waitFor();
+      else await page.getByTestId("access-admins-input").waitFor({ state: "detached" });
+      assert.equal(writes.length, 2);
+      const lastPayload = mode === "group" ? { name: "ops", group: { ...newerGroup, members: ["carol@example.test"] } } : { config: { ...original, admins: draftText.split(", "), rules: [newerRule] } };
+      assert.deepEqual(writes[1].params, { checked_v1: { owner_instance: state.owner, expected_revision: 11, ...lastPayload } });
+      assert.equal(state.applied, 1); assert.equal(state.revision, 12);
+      if (mode === "group") assert.deepEqual(state.config.groups.ops, lastPayload.group);
+      else assert.deepEqual(state.config, lastPayload.config);
+      await page.screenshot({ path: path.join(evidence, "explicit-second-save.png"), fullPage: true });
+    }
+    assert.deepEqual(errors, []);
+    checkpoints.push({ step: "complete", writes: writes.length, applied: state.applied, revision: state.revision });
+  } catch (error) {
+    failure = String(error.stack || error);
+    if (page) fs.writeFileSync(path.join(evidence, "failure-body.txt"), await page.locator("body").innerText().catch(() => "unavailable"));
+    throw error;
+  } finally {
+    fs.writeFileSync(path.join(evidence, "result.json"), JSON.stringify({ mode, backend: "mock HTTP access RPC", nativeAuthorizationInstalled: false, state, writes, reads, checkpoints, errors, failure: failure || null }, null, 2));
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
 const scenarios = [
+  ...["conflict", "group", "unavailable"].map(mode => ({ id: `checked-save-${mode}`, family: "console", backend: "mock", run: () => runCheckedSaveBrowserProof(mode) })),
+  { id: "authorization-feedback", family: "console", backend: "mock", run: runAuthorizationFeedbackProof },
   { id: "reference", family: "runtime", backend: "real", run: runReferenceBrowserProof },
   { id: "topology-unavailable", family: "topology", backend: "mock", run: runTopologyUnavailableBrowserProof },
   { id: "topology-denied-pair", family: "topology", backend: "mock", run: runTopologyDeniedPairBrowserProof },
@@ -3247,6 +3511,7 @@ const allScenarios = [
     ...require("./scenarios/real-startup-lineage.cjs").scenarios,
     ...require("./scenarios/real-routine-tools.cjs").browserScenarios,
     ...require("./scenarios/approval-lifecycle.cjs").browserScenarios,
+    ...require("./scenarios/real-checked-save.cjs").scenarios,
     ...require("./scenarios/real-workgraph.cjs").browserScenarios,
     ...require("./scenarios/real-images.cjs").browserScenarios,
     ...require("./scenarios/real-send-context.cjs").scenarios,

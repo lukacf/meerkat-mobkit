@@ -1216,6 +1216,15 @@ impl LiveCapabilityProvider {
                 Arc::clone(mob_mcp_state),
                 execution_policy,
             );
+        // Delegated work that outlived its voice channel: a reopened channel's
+        // startup instructions say that earlier work is still finishing, so
+        // the model does not claim it is done before its result arrives
+        // (meerkat #1652). Meerkat's RPC router binds its coordinator the
+        // same way; the first binding wins.
+        configured
+            .open_authority
+            .bind_post_close_work_source(Arc::clone(&downstream)
+                as Arc<dyn meerkat::experimental_gpt_live::LivePostCloseWorkSource>);
         let activator = meerkat::surface::ExperimentalGptLiveContextMirrorHost::new(
             machine,
             shared_live_host,
@@ -3097,7 +3106,13 @@ mod ordinary_open_helpers {
         session_id: &SessionId,
         channel_id: &LiveChannelId,
     ) {
-        match host.reserve_channel_close_observation(channel_id).await {
+        match host
+            .reserve_channel_close_observation(
+                channel_id,
+                meerkat_core::LiveChannelCloseReason::OpenAbandoned,
+            )
+            .await
+        {
             Ok(observation) => {
                 // Reference order: the host commit requires the adapter
                 // physically closed and detached first (otherwise it fails
@@ -4137,7 +4152,7 @@ fn wire_live_status_from_machine_authority(
         LiveChannelPublicStatus::Opening => Ok(WireLiveAdapterStatus::Opening),
         LiveChannelPublicStatus::Ready => Ok(WireLiveAdapterStatus::Ready),
         LiveChannelPublicStatus::Closing => Ok(WireLiveAdapterStatus::Closing),
-        LiveChannelPublicStatus::Closed => Ok(WireLiveAdapterStatus::Closed),
+        LiveChannelPublicStatus::Closed => Ok(WireLiveAdapterStatus::closed()),
         LiveChannelPublicStatus::Degraded => {
             let reason = authority.degradation_reason.ok_or_else(|| {
                 "LiveChannelStatusResolved emitted degraded status without reason".to_string()
@@ -4399,7 +4414,7 @@ async fn handle_live_status(
                 rpc_id,
                 serde_json::json!({
                     "channel_id": parsed.channel_id,
-                    "status": WireLiveAdapterStatus::Closed,
+                    "status": WireLiveAdapterStatus::closed(),
                     "close_reason": reason.as_str(),
                 }),
             );
@@ -4487,7 +4502,10 @@ async fn handle_live_close(
 
     match ctx
         .host
-        .reserve_channel_close_observation(&channel_id)
+        .reserve_channel_close_observation(
+            &channel_id,
+            meerkat_core::LiveChannelCloseReason::ClientRequested,
+        )
         .await
     {
         Ok(observation) => {
@@ -5301,6 +5319,124 @@ mod tests {
         > {
             Ok(meerkat::experimental_gpt_live::ExperimentalLivePhysicalClose::NotBound)
         }
+    }
+
+    /// Records the post-close work source a composition binds.
+    #[cfg(feature = "openai-live")]
+    #[derive(Default)]
+    struct RecordingPostCloseAuthority {
+        bound: std::sync::Mutex<
+            Option<Arc<dyn meerkat::experimental_gpt_live::LivePostCloseWorkSource>>,
+        >,
+    }
+
+    #[cfg(feature = "openai-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider
+        for RecordingPostCloseAuthority
+    {
+        async fn prepare_open(
+            &self,
+            _canonical_session_id: &SessionId,
+            _execution_identity: &meerkat_contracts::WireLiveExecutionIdentityOverrideV1,
+        ) -> Result<
+            Box<dyn meerkat::experimental_gpt_live::ExperimentalLivePendingOpen>,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        > {
+            Err(meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::Unavailable)
+        }
+
+        fn bind_post_close_work_source(
+            &self,
+            source: Arc<dyn meerkat::experimental_gpt_live::LivePostCloseWorkSource>,
+        ) {
+            let mut bound = self
+                .bound
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if bound.is_none() {
+                *bound = Some(source);
+            }
+        }
+
+        async fn unbind_channel(
+            &self,
+            _channel_id: &LiveChannelId,
+            _canonical_session_id: &SessionId,
+        ) {
+        }
+
+        async fn close_physical_if_bound(
+            &self,
+            _channel_id: &LiveChannelId,
+            _canonical_session_id: &SessionId,
+        ) -> Result<
+            meerkat::experimental_gpt_live::ExperimentalLivePhysicalClose,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        > {
+            Ok(meerkat::experimental_gpt_live::ExperimentalLivePhysicalClose::NotBound)
+        }
+    }
+
+    /// meerkat #1652: composing a live door binds its delegation coordinator
+    /// as the open authority's post-close work source, so a reopened channel
+    /// can say that earlier work is still finishing. Without it only
+    /// meerkat's RPC router bound one, and MobKit's doors never did.
+    #[cfg(feature = "openai-live-test")]
+    #[tokio::test]
+    async fn composing_a_live_door_binds_the_post_close_work_source() {
+        let persistence = meerkat::PersistenceBundle::new(
+            Arc::new(meerkat::MemoryStore::new()),
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            Arc::new(meerkat_store::MemoryBlobStore::new()),
+        );
+        let temp = tempfile::tempdir().expect("post-close fixture state");
+        let factory = AgentFactory::new(temp.path()).builtins(false);
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
+        builder.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let (service, machine) =
+            meerkat::surface::build_runtime_backed_service(builder, 4, persistence);
+        let service = Arc::new(service);
+        let ctx = attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            Config::default(),
+            "ws://127.0.0.1/post-close".to_string(),
+            None,
+        );
+        let authority = Arc::new(RecordingPostCloseAuthority::default());
+        let provider = LiveCapabilityProvider {
+            configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
+                factory: Arc::new(AgentFactory::minimal()),
+                realm: RealmId::parse("mob.homecore").expect("realm"),
+                experimental_factory: None,
+                open_authority: Arc::clone(&authority) as _,
+                answer_transport: Arc::new(UnusedAnswerTransport),
+                public_observation_publisher: Arc::new(UnusedPublicObservationPublisher),
+                activator: ExperimentalLiveActivatorRegistration::Uncomposed(
+                    meerkat_mob_mcp::MobMcpState::new_in_memory(),
+                ),
+                live_adapter_host: None,
+                phase_authority_composed: false,
+            })),
+        };
+        let _composed = provider.compose_for_host(
+            Arc::clone(&machine),
+            Arc::new(shared_live_host(&ctx, &service, &machine)),
+            Arc::clone(&ctx.host),
+            meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy::default(),
+        );
+        let source = authority
+            .bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("the composition binds its coordinator as the post-close work source");
+        assert!(
+            !source.has_undelivered_post_close_result(&SessionId::new()),
+            "a fresh coordinator reports no work outliving a channel"
+        );
     }
 
     #[cfg(feature = "openai-live")]

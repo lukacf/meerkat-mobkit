@@ -1,29 +1,17 @@
-/*!
- * Adapted from T3 Code (MIT).
- * Copyright (c) 2026 T3 Tools Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-// Geometry and nested-scroll targeting adapted from T3 Code, MIT licensed.
-// See THIRD_PARTY_NOTICES.md and third-party-reuse.json for source provenance.
 export const CONVERSATION_LIVE_EDGE_PX = 32;
 export const CONVERSATION_ANCHOR_OFFSET_PX = 24;
+/**
+ * How far the browser's own end of the scroll range can sit above the
+ * computed end, `scrollHeight - clientHeight`. Both heights are whole numbers
+ * rounded from fractional layout sizes (fractional device pixel ratios, zoom,
+ * sub-pixel line heights), so each is off by at most half a pixel and their
+ * difference by less than one. The browser clamps to the true, unrounded end
+ * and snaps scrollTop to a whole pixel, and different paths (a wheel, a key, a
+ * reveal before a click) can snap that same end differently. A position within
+ * this distance of the computed end is therefore the end itself, as far as
+ * integer geometry can tell.
+ */
+export const CONVERSATION_END_ROUNDING_PX = 1;
 export const CONVERSATION_POSITION_LIMIT = 100;
 
 export type ConversationScrollMode = "following-end" | "anchoring-submitted-turn" | "reading-history";

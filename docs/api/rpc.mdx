@@ -34,7 +34,7 @@ enforce contract compatibility compare `result.contract_version` before
 sending later requests. After init, `mobkit/capabilities` returns the methods
 available on that runtime.
 
-#### Accepted, then settled (opt-in)
+#### Accepted then settled (opt-in)
 
 Startup runs provider callbacks (roster, leases, continuity, agent builds),
 each bounded at 130 seconds by the gateway, and native work such as
@@ -68,7 +68,7 @@ not opt in never receives `accepted`.
        "init_id": "init-6f1c...",
        "provider_callback_timeout_ms": 130000,
        "stdio_shutdown_handshake": true,
-       "stdio_shutdown_horizon_ms": 347000
+       "stdio_shutdown_horizon_ms": 352000
      }
    }
    ```
@@ -176,6 +176,12 @@ with `MobError::MemberRoleMigrationRejected` on mismatch, and ignores the
 declaration once the roles already agree, so a leftover declaration is inert
 rather than a repeat restamp.
 
+A declared migration is applied on the restart path even though the mob first
+restores the member under its stored role, or it is refused: the identity is
+then Broken and `identity_bootstrap` in the `mobkit/init` result reports it with
+restore kind `role_migration_not_applied` and `ready: false`. See
+[Roster](/concepts/roster) for when MobKit applies and when it refuses.
+
 A malformed payload fails `mobkit/init` with `-32602` rather than arming
 nothing, on both gateway binaries and whether or not an identity plane is
 configured. One identity declared twice with conflicting `from_role` values is
@@ -239,10 +245,11 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32012` | `memory/index` backend persistence failed | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 | `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response (or, for an accepted init, the `failed` settlement) and exits. | none |
-| `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
+| `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry. Also `mobkit/member_activate_instruction` refused at its safe boundary (runtime work still queued at the turn boundary, open live channel, no materialized session, fenced-store backoff); retry at your own next boundary | `mobkit/member_activate_instruction`: `{class: "admission", instruction_activation_code}` |
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 | `-32017` | a covered unified/stdin read arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the wrapped arms (`identity/resolved_tools`, `identity/routing_status`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). The independent HTTP console dispatcher does not apply this wrapper. | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
 | `-32018` | stdio gateway: an ordinary request arrived before `mobkit/init` settled. It was refused at once, not queued. Startup provider callbacks must not issue ordinary RPCs on the runtime that is starting. `mobkit/shutdown` is still admitted. | `{kind: "init_in_progress", method}` |
+| `-32019` | `mobkit/init` mob composition provenance refusal: the persistent mob storage's recorded composition cannot be proven to match the launch. Raised before the mob actuates, for a supplied definition that differs from the recorded one, a candidate launch whose definition differs from the stored one it would boot, a store created by a rehearsal launch, a composition manifest that is unreadable, malformed, of an unsupported version or could not be written, or undeclared non-empty storage. (`missing` is part of the kind vocabulary but the gateway does not raise it today: an authoritative launch adopts and records the definition when the manifest is absent.) The message keeps the `Runtime bootstrap failed: ` prefix and names the remedy. The gateway writes the error response (or, for an accepted init, the `failed` settlement) and exits. | `{kind, fields, manifest?, storage?, found_version?, supported_version?}`; `kind` is `divergent`, `candidate_divergent`, `created_by_rehearsal`, `missing`, `unreadable`, `malformed`, `unsupported_version`, `not_recorded` or `unproven_storage`; `fields` is always present and lists the diverged definition fields as dotted paths (empty for other kinds) |
 | `-32030` | HTTP console ABAC gate refused the operation | `{kind: "access_denied", ...}` |
 
 The `-32010` constant is exported from both SDKs as
@@ -256,6 +263,11 @@ Read-only errors apply to classified mutations; ABAC may deny an applicable
 action gate with `-32030`, or filter a read's results rather than reject it.
 Console timeline replay failures use `CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE`
 so they are not mistaken for mob-events ledger cursor errors.
+The `-32019` constant is exported as `COMPOSITION_PROVENANCE_CODE` and
+reified as `CompositionProvenanceError`, which exposes the refusal's `kind`
+and `fields` (for example the `profiles.lead.tools.deny` path a candidate
+launch diverged on), so a deliberate composition refusal is reported without
+parsing the message. Before this code existed these refusals were `-32603`.
 The `-32014` constant is exported as `STORAGE_RESOLUTION_CODE` and reified
 as `StorageResolutionError`, so a deliberate durability refusal at startup
 is a typed init failure, not a transport error. Storage refusals raised by
@@ -722,7 +734,7 @@ Submit an identity-addressed console interaction through the console aggregator.
 
 ```json
 {
-  "identity": "identity:luka",
+  "identity": "identity:alice",
   "content": "What is on my calendar tomorrow?",
   "origin": "console:panel-1",
   "origin_kind": "operator",
@@ -755,7 +767,7 @@ turn, in the same shape as meerkat `turn/start`:
 
 ```json
 {
-  "identity": "identity:luka",
+  "identity": "identity:alice",
   "content": "Draft the weekly update.",
   "origin": "console:panel-1",
   "idempotency_key": "panel-1:turn-2",
@@ -985,7 +997,7 @@ explicit memory policies are applied literally.
 
 ### `mobkit/agent_memory/remember`
 
-Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional Elephant enrichment or extraction, when supplied by a custom provider, is out of band.
+Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional external memory hub enrichment or extraction, when supplied by a custom provider, is out of band.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |
@@ -1481,7 +1493,7 @@ not.
 ### `mobkit/init_progress` and `mobkit/init_settled`
 
 Sent only to an SDK that opted in to the accepted-then-settled init. See
-[Accepted, then settled](#accepted-then-settled-opt-in).
+[Accepted then settled](#accepted-then-settled-opt-in).
 
 ### `mobkit/on_error`
 
@@ -1581,6 +1593,69 @@ audit note recorded on the rewrite reason).
 Result: `bounded`, `removed`, `kept`, `message_count`, `parent_revision`,
 `revision` (or `bounded: false` with `removed: 0` when the transcript is
 already within `keep_last`).
+
+### `mobkit/member_activate_instruction`
+
+Host-only: present on the gateway's JSON-RPC surface and the SDKs, never in an
+agent tool catalog. It changes a member's standing instructions after its
+session was minted (resume authors nothing, so a restored member otherwise keeps
+the prompt it was created with).
+
+Params: `identity` (resolved through the same identity-control gate as
+`mobkit/respawn` and `mobkit/compact_member`) and `activation`, Meerkat's
+`InstructionActivationRequest` verbatim: `revision` (`namespace`, `key`,
+`revision_id`, `content_sha256` = `sha256:<hex of body>`), `activation_id`,
+`expectation` (`{"kind": "absent"}` for the first activation of a key, then
+`{"kind": "effective", "activation_id": ...}`), optional `supersedes`, and
+`body`.
+
+The activation is appended forward to the member's CURRENT session through
+Meerkat's `MobHandle::activate_member_instruction`: it holds the session's
+turn-finalization boundary, applies the runtime admission, and adds one keyed
+transcript row that the member's next turn sees. History is never rewritten,
+and the activation survives resume.
+
+**A call made while the member is mid-turn blocks until that turn finalizes**,
+so it can wait for a whole turn. It then applies at that boundary, never inside
+the turn, or is refused as `session_busy` if more runtime work is already
+queued there. The gateway applies no read deadline to this verb. Give the
+client side a reply timeout that covers the member's longest turn (the SDKs'
+`transport_timeout` / `transportTimeoutMs`). If the client gives up first, the
+activation may still apply at the boundary: re-send the identical activation,
+which answers `applied`, `duplicate` or the typed refusal. The result is `{identity, receipt}`;
+`receipt.disposition` is `applied`, or `duplicate` when the exact activation is
+already effective.
+
+Errors keep Meerkat's classes distinct in `data.class`:
+
+- `admission`, with `data.instruction_activation_code`: `session_busy`,
+  `live_channel_open`, `target_not_materialized`, `external_write_fence_conflict`
+  and `external_write_fence_backoff` answer `-32015` (nothing was appended; retry
+  at your own next boundary); `unsupported_current_lowering` answers `-32602`;
+  `durability_unavailable` answers `-32603`.
+- `session`, with `data.session_error_code` (Meerkat's stable session error
+  code). When the session owner refused the request itself,
+  `data.instruction_activation_error_code` carries Meerkat's typed code and the
+  error is `-32602`: `invalid_request`, `digest_mismatch`,
+  `effective_activation_conflict` (a stale `expectation`; re-read `key_state`),
+  `activation_identity_conflict`, `immutable_revision_conflict`,
+  `recorded_but_not_effective`, or
+  `inherited_activation_requires_explicit_activation`.
+  `malformed_activation_history` answers `-32603`. A busy session answers
+  `-32015`; any other session error answers `-32603`.
+- `runtime` and `owner_task`: the runtime authority or the owning task failed.
+
+Nothing retries inside the gateway. An identity with no member session is
+refused as `admission` / `target_not_materialized`, with nothing appended.
+
+### `mobkit/member_instruction_activations`
+
+Host-only. Reads the durable instruction activation records of the member's
+current session. Params: `identity`, and optionally `namespace`, `key`,
+`offset` and `limit` (default 100). The result is `{identity, page}` with
+Meerkat's `InstructionActivationReadPage`; naming one exact `namespace` and
+`key` also returns its `key_state`, including the `next_expectation` for the
+next activation.
 
 ## Scheduling migration
 

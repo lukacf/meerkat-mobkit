@@ -66,6 +66,7 @@ pub use console_ingress::{
     handle_console_rest_json_route_with_snapshot_and_access, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
+pub(crate) use gating::is_legacy_sequential_pending_id;
 pub use metadata::{
     InMemoryMetadataStore, LabelRpcResult, MemberIdleRetireOverrideRecord, MetadataScope,
     MetadataStoreError, PersistentMetadataStore, RuntimeMetadataTable, SqliteMetadataStore,
@@ -1026,10 +1027,21 @@ pub struct GatingAuditEntry {
 /// Versioned owner state for a trusted host's scoped persistence adapter.
 /// Exporting this value does not enable persistence by itself. Hosts must save
 /// atomically after mutations and restore before exposing their runtime.
+///
+/// Version 1 snapshots hold sequential legacy IDs (`gate-<kind>-<sequence>`).
+/// Version 2 snapshots also hold epoch IDs (`gate-<kind>-v2-<epoch>-<sequence>`).
+/// A restoring owner keeps every restored ID as it is and mints new IDs under
+/// its own fresh epoch, so they do not alias restored IDs (barring a random
+/// epoch collision) and never alias legacy IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingStateSnapshot {
     pub version: u32,
-    /// The next owner sequence, including IDs no longer retained in the log.
+    /// The exporting owner's epoch (version 2). Absent in version 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_epoch: Option<String>,
+    /// The exporting owner's next sequence, including IDs no longer retained
+    /// in the log. Version 1: the legacy sequence. Version 2: the sequence
+    /// under `owner_epoch`.
     pub next_sequence: u64,
     /// In the owner's insertion order, including unattributed legacy records.
     pub pending: Vec<GatingPendingEntry>,
@@ -1101,11 +1113,47 @@ impl GatingResolutionObservers {
     }
 }
 
+/// Why the gating owner cannot mint another gate identity. Minting fails
+/// closed instead of reusing, wrapping or saturating an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatingIdUnavailable {
+    /// No owner epoch: the platform's entropy source failed at boot.
+    EpochUnavailable,
+    /// The owner's sequence cannot cover the operation.
+    SequenceExhausted,
+}
+
+impl GatingIdUnavailable {
+    /// The `fallback_reason` an evaluation refused for this reason reports.
+    pub fn fallback_reason(self) -> &'static str {
+        match self {
+            Self::EpochUnavailable => "gating_identity_unavailable",
+            Self::SequenceExhausted => "gating_sequence_exhausted",
+        }
+    }
+}
+
+impl std::fmt::Display for GatingIdUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EpochUnavailable => write!(f, "gating owner has no identity epoch"),
+            Self::SequenceExhausted => write!(f, "gating owner identity sequence is exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for GatingIdUnavailable {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatingDecideError {
     UnknownPendingId(String),
     SelfApprovalForbidden,
-    ApproverMismatch { expected: String, provided: String },
+    ApproverMismatch {
+        expected: String,
+        provided: String,
+    },
+    /// The owner cannot mint the identities the decision records.
+    IdsUnavailable(GatingIdUnavailable),
 }
 
 impl std::fmt::Display for GatingDecideError {
@@ -1116,6 +1164,7 @@ impl std::fmt::Display for GatingDecideError {
             Self::ApproverMismatch { expected, provided } => {
                 write!(f, "approver mismatch: expected {expected}, got {provided}")
             }
+            Self::IdsUnavailable(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -1181,6 +1230,10 @@ pub struct MobkitRuntimeHandle {
     delivery_idempotency: BTreeMap<String, DeliveryIdempotencyEntry>,
     delivery_idempotency_by_delivery: BTreeMap<String, Vec<String>>,
     delivery_rate_window_counts: BTreeMap<DeliveryRateWindowKey, u32>,
+    /// This owner's random epoch, carried by every gate identity it mints.
+    /// `None` when entropy was unavailable at boot: minting then fails.
+    gating_epoch: Option<String>,
+    /// Next sequence under `gating_epoch`; starts at 0 for every owner.
     gating_sequence: u64,
     gating_pending: BTreeMap<String, GatingPendingEntry>,
     gating_pending_order: Vec<String>,
@@ -1529,6 +1582,12 @@ const GATING_APPROVAL_TIMEOUT_MIN_MS: u64 = 1_000;
 /// any real human-approval window.
 const GATING_APPROVAL_TIMEOUT_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const GATING_AUDIT_MAX_RETAINED: usize = 512;
+/// Format tag of newly minted gate identities, `gate-<kind>-v2-<epoch>-<sequence>`.
+const GATING_ID_FORMAT: &str = "v2";
+/// Identities one evaluation can mint: action, pending entry and audit record.
+const GATING_IDS_PER_EVALUATION: u64 = 3;
+/// Identities one decision can mint: an escalation successor and two audit records.
+const GATING_IDS_PER_DECISION: u64 = 3;
 const GATING_PENDING_MAX_RETAINED: usize = 512;
 const MEMORY_ASSERTIONS_MAX_RETAINED: usize = 4_096;
 const MEMORY_SUPPORTED_STORES: [&str; 5] = [
@@ -1643,6 +1702,18 @@ fn current_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// A fresh random 128-bit epoch for one gating owner. Every gate identity the
+/// owner mints carries it, so a later process or another owner does not
+/// reissue the same identity, barring a random epoch collision. Legacy
+/// sequential IDs have a different form and never match. Failed entropy
+/// leaves the owner unable to mint, with no fallback.
+fn new_gating_epoch() -> Option<String> {
+    use rand_core::RngCore;
+    let mut bytes = [0_u8; 16];
+    rand_core::OsRng.try_fill_bytes(&mut bytes).ok()?;
+    Some(format!("{:032x}", u128::from_be_bytes(bytes)))
 }
 
 #[cfg(test)]

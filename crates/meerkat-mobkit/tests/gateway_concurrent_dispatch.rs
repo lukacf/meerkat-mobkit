@@ -241,7 +241,7 @@ fn initialize_for_shutdown(gateway: &mut Gateway, state_dir: &tempfile::TempDir)
         "init failed: {init}"
     );
     assert_eq!(init["result"]["stdio_shutdown_handshake"], true);
-    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 347_000);
+    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 352_000);
 }
 
 fn answer_identity_provider_callback(
@@ -380,7 +380,7 @@ fn explicit_shutdown_keeps_callbacks_open_until_external_leases_are_released() {
         "identity-first init failed: {init}"
     );
     assert_eq!(init["result"]["stdio_shutdown_handshake"], true);
-    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 347_000);
+    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 352_000);
     assert!(
         !release_seen.get(),
         "bootstrap must retain its acquired lease"
@@ -2632,4 +2632,284 @@ fn reset_all_resets_every_registered_identity_and_keeps_the_gateway_alive() {
     );
     gateway.close_stdin();
     gateway.wait_for_exit(WEDGE_BACKSTOP);
+}
+
+/// The agent-memory recorder follows memory being enabled, not whether the
+/// host has its own `AgentCustomizer`. With memory enabled, a SessionBuilder
+/// and NO host customizer, the member's resolved tools carry the recorder
+/// (`memory`) on a fresh create and again after a normal stop and restart of
+/// the same identity and session. A profile with memory disabled never
+/// carries it.
+fn memory_recorder_catalogs_across_restart(
+    profile_memory: bool,
+    persistent_mob_storage: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mob_config = format!(
+        r#"
+[mob]
+id = "gateway-memory-recorder-test"
+
+[profiles.default]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.default.tools]
+comms = true
+memory = {profile_memory}
+"#
+    );
+    let init_params = |state_dir: &tempfile::TempDir, scratch_dir: &tempfile::TempDir| {
+        let mut params = json!({
+            "persistent_state": state_dir.path(),
+            "mob_config": mob_config,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "has_session_builder": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                "agent_memory": true,
+                "mob_storage": { "storage": "memory" },
+                "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+            }
+        });
+        // Persistent mob storage (the default) restores the member natively
+        // at mob start, BEFORE any identity customization runs; the later
+        // customized resume finds the member occupied and attaches it. Only
+        // the stable per-identity tool dispatcher reaches that occupant.
+        if persistent_mob_storage && let Some(options) = params["runtime_options"].as_object_mut() {
+            options.remove("mob_storage");
+        }
+        params
+    };
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let continuity = HostContinuityState::default();
+
+    // Boot 1: fresh create.
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init1",
+        "method": "mobkit/init",
+        "params": init_params(&state_dir, &scratch_dir)
+    }));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "init1"),
+        )
+        .expect("boot-1 init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "boot-1 init failed: {init}"
+    );
+    let dispatch = dispatch_alpha_through_build(&mut gateway, &continuity, 101, "dispatch1");
+    assert!(
+        dispatch.get("result").is_some(),
+        "boot-1 dispatch failed: {dispatch}"
+    );
+    let fresh = resolved_tools_for_alpha(&mut gateway, &continuity, 101, "tools1");
+    if !continuity.has_snapshot() {
+        let save = gateway
+            .wait_for(
+                WEDGE_BACKSTOP,
+                |gateway, message| {
+                    answer_stateful_provider_callback_holding_builds(
+                        gateway,
+                        message,
+                        &continuity,
+                        101,
+                    );
+                },
+                |m| is_callback_request(m, "callback/continuity_store/save_session_snapshot"),
+            )
+            .expect("boot-1 session snapshot save callback");
+        answer_stateful_provider_callback_holding_builds(&mut gateway, &save, &continuity, 101);
+    }
+    gateway.send(
+        json!({ "jsonrpc": "2.0", "id": "shutdown1", "method": "mobkit/shutdown", "params": {} }),
+    );
+    let shutdown = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "shutdown1"),
+        )
+        .expect("boot-1 shutdown response");
+    assert_eq!(
+        shutdown["result"]["shutdown"], true,
+        "boot-1 shutdown failed: {shutdown}"
+    );
+    gateway.close_stdin();
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
+    drop(gateway);
+    let session_id = continuity
+        .record("agent:alpha")
+        .expect("boot 1 upserted agent:alpha's continuity record")["session_id"]
+        .as_str()
+        .expect("continuity record session_id")
+        .to_string();
+
+    // Boot 2: normal restart of the same identity and session.
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init2",
+        "method": "mobkit/init",
+        "params": init_params(&state_dir, &scratch_dir)
+    }));
+    // A native restore (persistent mob storage) rebuilds the member through
+    // the host SessionBuilder during init: answer its build callback.
+    let mut seen_callbacks = Vec::new();
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                if let Some(method) = message["method"].as_str() {
+                    seen_callbacks.push(method.to_string());
+                }
+                if is_callback_request(message, "callback/build_agent") {
+                    gateway.send(json!({
+                        "jsonrpc": "2.0",
+                        "id": message["id"].clone(),
+                        "result": {}
+                    }));
+                } else {
+                    answer_stateful_provider_callback_holding_builds(
+                        gateway,
+                        message,
+                        &continuity,
+                        102,
+                    );
+                }
+            },
+            |m| is_response_with_id(m, "init2"),
+        )
+        .unwrap_or_else(|| panic!("boot-2 init response; callbacks seen: {seen_callbacks:?}"));
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "boot-2 init failed: {init}"
+    );
+    // The member may already be live (a native restore built it during init),
+    // so this dispatch answers a build callback if one comes, without
+    // requiring one.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "dispatch2",
+        "method": "mobkit/dispatch",
+        "params": {
+            "identity": "agent:alpha",
+            "dispatch_input": { "content": "hello", "origin": "connector" }
+        }
+    }));
+    let dispatch = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                if is_callback_request(message, "callback/build_agent") {
+                    gateway.send(json!({
+                        "jsonrpc": "2.0",
+                        "id": message["id"].clone(),
+                        "result": {}
+                    }));
+                } else {
+                    answer_stateful_provider_callback_holding_builds(
+                        gateway,
+                        message,
+                        &continuity,
+                        102,
+                    );
+                }
+            },
+            |m| is_response_with_id(m, "dispatch2"),
+        )
+        .expect("boot-2 dispatch response");
+    assert!(
+        dispatch.get("result").is_some(),
+        "boot-2 dispatch failed: {dispatch}"
+    );
+    let restored = resolved_tools_for_alpha(&mut gateway, &continuity, 102, "tools2");
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "status2",
+        "method": "mobkit/status_identity",
+        "params": { "identity": "agent:alpha" }
+    }));
+    let status = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    102,
+                );
+            },
+            |m| is_response_with_id(m, "status2"),
+        )
+        .expect("boot-2 status_identity response");
+    assert_eq!(
+        status["result"]["session_id"].as_str(),
+        Some(session_id.as_str()),
+        "the restarted member keeps its session: {status}"
+    );
+    (fresh, restored)
+}
+
+#[test]
+fn memory_recorder_follows_memory_without_a_host_customizer_across_restart() {
+    let (fresh, restored) = memory_recorder_catalogs_across_restart(true, false);
+    assert!(
+        fresh.iter().any(|name| name == "memory"),
+        "memory enabled with no host customizer: the fresh member carries the recorder: {fresh:?}"
+    );
+    assert!(
+        restored.iter().any(|name| name == "memory"),
+        "memory enabled with no host customizer: the restarted member keeps the recorder: \
+         {restored:?}"
+    );
+}
+
+#[test]
+fn memory_disabled_profile_never_carries_the_recorder() {
+    let (fresh, restored) = memory_recorder_catalogs_across_restart(false, false);
+    assert!(
+        !fresh.iter().any(|name| name == "memory") && !restored.iter().any(|name| name == "memory"),
+        "a memory-disabled profile never carries the recorder: fresh={fresh:?} \
+         restored={restored:?}"
+    );
+}
+
+/// The cold-restore shape: persistent mob storage restores the member natively
+/// before customization, and the customized resume attaches that occupant.
+/// The recorder must still be on it after the restart.
+#[test]
+fn memory_recorder_survives_a_native_restore_without_a_host_customizer() {
+    let (fresh, restored) = memory_recorder_catalogs_across_restart(true, true);
+    assert!(
+        fresh.iter().any(|name| name == "memory"),
+        "the fresh member carries the recorder: {fresh:?}"
+    );
+    assert!(
+        restored.iter().any(|name| name == "memory"),
+        "the natively restored occupant keeps the recorder: {restored:?}"
+    );
 }

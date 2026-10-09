@@ -57,7 +57,7 @@ use crate::mob_handle_runtime::{
 use crate::rpc::memory_methods::{
     parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
     parse_agent_memory_recall_params, parse_agent_memory_remember_params,
-    parse_agent_memory_update_params,
+    parse_agent_memory_update_params, parse_memory_quarantine_decide_params,
 };
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
@@ -97,8 +97,10 @@ pub struct ConsoleJsonState {
     /// console surface byte-for-byte compatible with the pre-access world.
     pub(crate) access: Option<AccessController>,
     /// Optional panel-capable store handle for the console Memory panel's
-    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (recall-only
-    /// provider, no memory configured) leaves those methods unadvertised.
+    /// read-only `mobkit/memory/panel/*` RPCs (§9.3) and the operator
+    /// quarantine decision (`mobkit/memory/quarantine/decide`). `None`
+    /// (recall-only provider, no memory configured) leaves those methods
+    /// unadvertised.
     pub(crate) memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     /// §16 Q1 provisional operator keying: the console send path notes
     /// "authenticated principal P addressed identity I" through this
@@ -2082,6 +2084,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/agent_memory/remember"
             | "mobkit/agent_memory/update"
             | "mobkit/agent_memory/forget"
+            | "mobkit/memory/quarantine/decide"
             | "mobkit/gating/decide"
             | "mobkit/mob_labels/set"
             | "mobkit/mob_labels/delete"
@@ -2479,6 +2482,9 @@ fn console_rpc_access_requirements(
         "mobkit/memory/panel/injections" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/harvests" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/quarantine" => one(ACTION_MEMORY_QUARANTINE_REVIEW, None),
+        "mobkit/memory/quarantine/decide" => {
+            Some(memory_quarantine_decide_requirements(params, identity))
+        }
         // `mob.memory.propose` gates future propose surfaces and
         // `mob.memory.commit` is reserved for a future direct-commit RPC —
         // steward promotions ride the existing gating flow (gating.decide),
@@ -2642,18 +2648,6 @@ fn access_unavailable_rpc_error(response_id: Value) -> Value {
     )
 }
 
-fn access_config_rpc_error(response_id: Value, err: crate::access::AccessConfigError) -> Value {
-    response_value(
-        response_id,
-        None,
-        Some(JsonRpcError {
-            code: -32602,
-            message: err.to_string(),
-            data: Some(json!({ "kind": "invalid_access_config" })),
-        }),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Console Memory panel (§9.3): read-only `mobkit/memory/panel/*` RPCs
 // ---------------------------------------------------------------------------
@@ -2725,9 +2719,9 @@ fn memory_panel_scope_action(scope: &crate::memory::records::MemoryScope) -> &'s
 /// `mob.memory.read`; operator rows require the explicit
 /// `operator.memory.read` grant (cross-mob personal facts — an unscoped
 /// `agent.memory.read` deliberately does NOT cover them); realm rows
-/// require the unscoped read grant. Quarantined rows are additionally
-/// reviewer-only — their bodies are exactly the content the quarantine
-/// gate exists for.
+/// require the unscoped read grant. Quarantine evidence is additionally
+/// reviewer-only (its bodies are exactly the content the quarantine gate
+/// exists for), including after a review or forget tombstones it.
 fn memory_panel_record_visible(
     view: Option<&AccessView>,
     record: &crate::memory::records::MemoryRecord,
@@ -2749,13 +2743,25 @@ fn memory_panel_record_visible(
     if !scope_allowed {
         return false;
     }
-    if matches!(
-        record.status,
-        crate::memory::records::RecordStatus::Quarantined { .. }
-    ) {
+    if memory_panel_record_is_quarantine_evidence(record) {
         return view.allows(ACTION_MEMORY_QUARANTINE_REVIEW);
     }
     true
+}
+
+/// Quarantined content is reviewer-only, and stays so across the status
+/// transitions that retire it: a quarantined record, and a tombstoned one
+/// that was ever quarantined (a released or discarded origin, a forgotten
+/// quarantined write, or anything forgotten that descends from one). An
+/// active released successor is ordinary memory again and is not covered.
+fn memory_panel_record_is_quarantine_evidence(
+    record: &crate::memory::records::MemoryRecord,
+) -> bool {
+    match record.status {
+        crate::memory::records::RecordStatus::Quarantined { .. } => true,
+        crate::memory::records::RecordStatus::Tombstoned => record.ever_quarantined,
+        _ => false,
+    }
 }
 
 /// Per-row visibility for pending-promotion queue rows, mirroring
@@ -2785,15 +2791,26 @@ fn memory_panel_promotion_visible(
 }
 
 /// Serialize a record for the panel. List rows are body-free (`body_bytes`
-/// stands in); only the record-detail surface carries the body.
+/// stands in); only the record-detail surface carries the body, together
+/// with the `content_hash` a quarantine decision binds to.
 fn memory_panel_record_json(
     record: &crate::memory::records::MemoryRecord,
     include_body: bool,
 ) -> Value {
     let mut value = serde_json::to_value(record).unwrap_or(Value::Null);
-    if !include_body && let Some(object) = value.as_object_mut() {
-        object.remove("body");
-        object.insert("body_bytes".to_string(), json!(record.body.len()));
+    if let Some(object) = value.as_object_mut() {
+        if include_body {
+            object.insert(
+                "content_hash".to_string(),
+                json!(crate::memory::records::content_hash(
+                    &record.title,
+                    &record.body
+                )),
+            );
+        } else {
+            object.remove("body");
+            object.insert("body_bytes".to_string(), json!(record.body.len()));
+        }
     }
     value
 }
@@ -2956,12 +2973,10 @@ async fn handle_memory_panel_record(
     // Scope is only known post-load, so the entry gate lives here rather
     // than in the requirements table.
     if !memory_panel_record_visible(view, &record) {
-        let action = if matches!(
-            record.status,
-            crate::memory::records::RecordStatus::Quarantined { .. }
-        ) && view
-            .is_some_and(|view| view.enforced() && !view.allows(ACTION_MEMORY_QUARANTINE_REVIEW))
-        {
+        let action = if memory_panel_record_is_quarantine_evidence(&record)
+            && view.is_some_and(|view| {
+                view.enforced() && !view.allows(ACTION_MEMORY_QUARANTINE_REVIEW)
+            }) {
             ACTION_MEMORY_QUARANTINE_REVIEW
         } else {
             memory_panel_scope_action(&record.scope)
@@ -3081,6 +3096,181 @@ async fn handle_memory_panel_quarantine(
         })),
         None,
     )
+}
+
+/// `mobkit/memory/quarantine/decide` authority (§10.3): the reviewer grant
+/// (whoever decides must be allowed to read quarantined bodies), the panel's
+/// per-row read grants on the identity, and the identity's existing grant
+/// for the verdict's effect - `agent.memory.write` to release (it writes the
+/// successor), `agent.memory.delete` to tombstone. Any other verdict needs
+/// both, then fails parameter validation.
+fn memory_quarantine_decide_requirements(
+    params: &Value,
+    identity: Option<String>,
+) -> Vec<(&'static str, Option<String>)> {
+    let effect: &[&'static str] =
+        match normalized_console_rpc_string_param(params, "verdict").as_deref() {
+            Some("release") => &[ACTION_AGENT_MEMORY_WRITE],
+            Some("tombstone") => &[ACTION_AGENT_MEMORY_DELETE],
+            _ => &[ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+        };
+    let mut requirements = vec![
+        (ACTION_MEMORY_QUARANTINE_REVIEW, None),
+        (ACTION_AGENT_VIEW, identity.clone()),
+        (ACTION_AGENT_MEMORY_READ, identity.clone()),
+    ];
+    requirements.extend(effect.iter().map(|action| (*action, identity.clone())));
+    requirements
+}
+
+/// The reviewer recorded on a quarantine decision: the authenticated console
+/// principal only, never a name the caller asserts. This is attribution, not
+/// authorization: grants were already enforced for whoever called, an
+/// anonymous caller included, whenever access control is on. Only a host
+/// that runs without app auth reaches here with no principal, and the
+/// decision then records that none was known.
+fn memory_quarantine_reviewer(
+    authenticated_principal: Option<&str>,
+) -> crate::memory::review::QuarantineReviewer {
+    crate::memory::review::QuarantineReviewer::Operator {
+        principal: authenticated_principal
+            .map(str::trim)
+            .filter(|principal| !principal.is_empty())
+            .map(str::to_string),
+    }
+}
+
+/// The operator half of quarantine review (§10.1 "until steward/operator
+/// review"): one decision over a quarantined record in the identity's scope.
+/// Access was enforced up front; the store binds the decision to that scope
+/// and to the reviewed content, and refuses anything it cannot decide.
+async fn handle_memory_quarantine_decide(
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
+    authenticated_principal: Option<&str>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let request = match parse_memory_quarantine_decide_params(params) {
+        Ok(request) => request,
+        Err(err) => {
+            return invalid_params(response_id, format!("Invalid params: {}", err.message()));
+        }
+    };
+    let realm = request.realm.clone();
+    let reviewer = memory_quarantine_reviewer(authenticated_principal);
+    let outcome = store
+        .review_quarantined(crate::memory::review::QuarantineReviewRequest {
+            scope: crate::memory::records::MemoryScope::Identity {
+                realm: request.realm,
+                identity: request.identity.as_str().to_string(),
+            },
+            memory_id: request.memory_id,
+            decision: request.decision,
+            expected_content_hash: request.expected_content_hash,
+            reviewer,
+            rationale: request.rationale,
+        })
+        .await;
+    match outcome {
+        Ok(outcome) => response_value(
+            response_id,
+            Some(memory_quarantine_outcome_json(&realm, &outcome)),
+            None,
+        ),
+        Err(crate::memory::review::QuarantineReviewError::Refused(refusal)) => response_value(
+            response_id,
+            None,
+            Some(memory_quarantine_refusal_error(&refusal)),
+        ),
+        Err(crate::memory::review::QuarantineReviewError::Store(err)) => response_value(
+            response_id,
+            None,
+            Some(crate::rpc::agent_memory_rpc_error("quarantine review", err)),
+        ),
+    }
+}
+
+/// Receipts for both records as they stand now, plus the committed
+/// decision (verdict, reviewer, rationale, quarantine reason, audit token).
+/// A replay returns the original decision; this caller already holds the
+/// reviewer and read grants the decision's details are protected by.
+fn memory_quarantine_outcome_json(
+    realm: &str,
+    outcome: &crate::memory::review::QuarantineReviewOutcome,
+) -> Value {
+    let mut result = json!({
+        "outcome": outcome.outcome_str(),
+        "realm": realm,
+        "origin": serde_json::to_value(outcome.origin()).unwrap_or(Value::Null),
+        "successor": outcome
+            .successor()
+            .and_then(|successor| serde_json::to_value(successor).ok()),
+        "decision": serde_json::to_value(outcome.decision()).unwrap_or(Value::Null),
+    });
+    if let (
+        crate::memory::review::QuarantineReviewOutcome::Released {
+            superseded_prior, ..
+        },
+        Some(object),
+    ) = (outcome, result.as_object_mut())
+    {
+        object.insert("superseded_prior".to_string(), json!(superseded_prior));
+    }
+    result
+}
+
+/// A typed refusal: `data.reason` plus the refusal's own fields. The secret
+/// class is named; matched text never appears. A content mismatch carries no
+/// hash: echoing the stored one would let a caller decide without reading
+/// the record.
+fn memory_quarantine_refusal_error(
+    refusal: &crate::memory::review::QuarantineReviewRefusal,
+) -> JsonRpcError {
+    use crate::memory::review::QuarantineReviewRefusal;
+    let mut data = json!({
+        "kind": "memory_quarantine_review_refused",
+        "reason": refusal.reason_str(),
+    });
+    if let Some(object) = data.as_object_mut() {
+        match refusal {
+            QuarantineReviewRefusal::NotFound | QuarantineReviewRefusal::ContentMismatch => {}
+            QuarantineReviewRefusal::NotQuarantined {
+                status,
+                released_as,
+            } => {
+                object.insert("status".to_string(), json!(status));
+                object.insert("released_as".to_string(), json!(released_as));
+            }
+            QuarantineReviewRefusal::GatePending {
+                pending_id,
+                expires_at_ms,
+            } => {
+                object.insert("pending_id".to_string(), json!(pending_id));
+                object.insert("expires_at_ms".to_string(), json!(expires_at_ms));
+            }
+            QuarantineReviewRefusal::SuccessorConflict { successor_id } => {
+                object.insert("successor_id".to_string(), json!(successor_id));
+            }
+            QuarantineReviewRefusal::SecretDetected { class } => {
+                object.insert("class".to_string(), json!(class));
+            }
+            QuarantineReviewRefusal::StaleUpdate {
+                prior,
+                prior_status,
+            } => {
+                object.insert("prior".to_string(), json!(prior));
+                object.insert("prior_status".to_string(), json!(prior_status));
+            }
+        }
+    }
+    JsonRpcError {
+        code: crate::rpc::MEMORY_QUARANTINE_REVIEW_REFUSED_CODE,
+        message: format!("quarantine review refused: {refusal}"),
+        data: Some(data),
+    }
 }
 
 async fn handle_memory_panel_dreams(
@@ -3394,11 +3584,144 @@ async fn handle_memory_panel_harvests(
     )
 }
 
+fn access_edit_rpc_error(response_id: Value, error: crate::access::AccessEditError) -> Value {
+    use crate::access::AccessEditError;
+    let (code, message, data) = match error {
+        AccessEditError::Denied => {
+            return access_denied_rpc_error(response_id, "access denied: access.admin");
+        }
+        AccessEditError::Unavailable
+        | AccessEditError::Config(crate::access::AccessConfigError::RevisionExhausted) => (
+            -32004,
+            "Access changes are temporarily unavailable.",
+            json!({"kind":"access_mutation_unavailable"}),
+        ),
+        AccessEditError::OwnerChanged => (
+            -32009,
+            "The access configuration owner changed.",
+            json!({"kind":"access_owner_changed"}),
+        ),
+        AccessEditError::RevisionConflict { expected, actual } => (
+            -32009,
+            "Access configuration changed.",
+            json!({"kind":"access_revision_conflict", "expected_revision":expected, "actual_revision":actual}),
+        ),
+        AccessEditError::Config(crate::access::AccessConfigError::Io(_)) => (
+            -32000,
+            "Access configuration could not be saved.",
+            json!({"kind":"access_persistence_failed"}),
+        ),
+        AccessEditError::Config(_) => (
+            -32602,
+            "Invalid access configuration.",
+            json!({"kind":"invalid_access_config"}),
+        ),
+    };
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code,
+            message: message.to_string(),
+            data: Some(data),
+        }),
+    )
+}
+
+/// Returns None only for a legacy payload with no checked-version key. Any
+/// malformed, mixed or unknown checked envelope is terminal invalid params.
+fn checked_access_mutation(
+    method: &str,
+    params: &Value,
+) -> Result<
+    Option<(
+        crate::access::AccessEditPrecondition,
+        crate::access::AccessMutation,
+    )>,
+    (),
+> {
+    use crate::access::{AccessEditPrecondition, AccessMutation};
+    let keys: &[&str] = match method {
+        "mobkit/access/set" => &["config"],
+        "mobkit/access/rules/upsert" => &["rule"],
+        "mobkit/access/rules/delete" => &["id"],
+        "mobkit/access/groups/set" => &["name", "group"],
+        "mobkit/access/groups/delete" => &["name"],
+        "mobkit/access/enable" => &["enabled"],
+        _ => return Ok(None),
+    };
+    let Some(outer) = params.as_object() else {
+        return Ok(None);
+    };
+    if !outer.keys().any(|key| key.starts_with("checked_")) {
+        return Ok(None);
+    }
+    if outer.len() != 1 {
+        return Err(());
+    }
+    let inner = outer
+        .get("checked_v1")
+        .and_then(Value::as_object)
+        .ok_or(())?;
+    if inner.len() != keys.len() + 2 || !keys.iter().all(|key| inner.contains_key(*key)) {
+        return Err(());
+    }
+    let owner = inner
+        .get("owner_instance")
+        .and_then(Value::as_str)
+        .filter(|owner| !owner.is_empty())
+        .ok_or(())?;
+    let expected_revision = inner
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or(())?;
+    let required = |key: &str| inner.get(key).cloned().ok_or(());
+    let text = |key: &str| {
+        inner
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or(())
+    };
+    let mutation = match method {
+        "mobkit/access/set" => {
+            AccessMutation::Replace(serde_json::from_value(required("config")?).map_err(|_| ())?)
+        }
+        "mobkit/access/rules/upsert" => {
+            AccessMutation::UpsertRule(serde_json::from_value(required("rule")?).map_err(|_| ())?)
+        }
+        "mobkit/access/rules/delete" => AccessMutation::DeleteRule(text("id")?),
+        "mobkit/access/groups/set" => AccessMutation::SetGroup(
+            text("name")?,
+            serde_json::from_value(required("group")?).map_err(|_| ())?,
+        ),
+        "mobkit/access/groups/delete" => AccessMutation::DeleteGroup(text("name")?),
+        "mobkit/access/enable" => {
+            AccessMutation::SetEnabled(inner.get("enabled").and_then(Value::as_bool).ok_or(())?)
+        }
+        _ => return Err(()),
+    };
+    Ok(Some((
+        AccessEditPrecondition {
+            owner_instance: owner.to_string(),
+            expected_revision,
+        },
+        mutation,
+    )))
+}
+
+fn add_access_edit_metadata(controller: &AccessController, value: &mut Value) {
+    if let Some(instance) = controller.edit_identity() {
+        value["owner_instance"] = json!(instance);
+        value["conditional_mutations"] = json!("checked_v1");
+    }
+}
+
 fn access_status_result(access: Option<&AccessController>, view: Option<&AccessView>) -> Value {
     match (access, view) {
         (Some(controller), Some(view)) => {
-            let (_, revision) = controller.snapshot();
-            json!({
+            let (view, revision) = controller.view_and_revision(view.subject());
+            let mut result = json!({
                 "available": true,
                 "enabled": view.enforced(),
                 "revision": revision,
@@ -3407,7 +3730,11 @@ fn access_status_result(access: Option<&AccessController>, view: Option<&AccessV
                 "is_admin": view.is_admin(),
                 "can_administer": view.can_administer(),
                 "actions": ACCESS_ACTIONS,
-            })
+            });
+            if view.can_administer() {
+                add_access_edit_metadata(controller, &mut result);
+            }
+            result
         }
         _ => json!({
             "available": false,
@@ -3449,22 +3776,53 @@ fn handle_access_admin_rpc(
             controller
         }
     };
+    // Only the authenticated view's subject is forwarded. Its captured admin
+    // decision is not the final authority at either serialized write boundary.
+    match checked_access_mutation(&request.method, &request.params) {
+        Ok(Some((expected, mutation))) => {
+            return Some(
+                match controller.mutate_admin(
+                    view.and_then(AccessView::subject),
+                    Some(expected),
+                    mutation,
+                ) {
+                    Ok(revision) => {
+                        response_value(response_id, Some(json!({"revision":revision})), None)
+                    }
+                    Err(error) => access_edit_rpc_error(response_id, error),
+                },
+            );
+        }
+        Err(()) => {
+            return Some(invalid_params(
+                response_id,
+                "Invalid checked access request.",
+            ));
+        }
+        Ok(None) => {}
+    }
+    let legacy_write = |mutation| {
+        controller
+            .mutate_admin(view.and_then(AccessView::subject), None, mutation)
+            .map(|revision| json!({ "revision": revision }))
+    };
     let result = match request.method.as_str() {
         "mobkit/access/get" => {
-            let (config, revision) = controller.snapshot();
-            Ok(json!({ "config": &*config, "revision": revision }))
+            let (config, revision) =
+                match controller.admin_config(view.and_then(AccessView::subject)) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return Some(access_edit_rpc_error(response_id, error)),
+                };
+            let mut result = json!({ "config": &*config, "revision": revision });
+            add_access_edit_metadata(controller, &mut result);
+            Ok(result)
         }
         "mobkit/access/set" => {
             match serde_json::from_value(request.params.get("config").cloned().unwrap_or_default())
             {
-                Ok(config) => controller
-                    .replace_config(config)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access config: {err}"),
-                    ));
+                Ok(config) => legacy_write(crate::access::AccessMutation::Replace(config)),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access config."));
                 }
             }
         }
@@ -3472,14 +3830,9 @@ fn handle_access_admin_rpc(
             match serde_json::from_value::<AccessRule>(
                 request.params.get("rule").cloned().unwrap_or_default(),
             ) {
-                Ok(rule) => controller
-                    .upsert_rule(rule)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access rule: {err}"),
-                    ));
+                Ok(rule) => legacy_write(crate::access::AccessMutation::UpsertRule(rule)),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access rule."));
                 }
             }
         }
@@ -3487,9 +3840,9 @@ fn handle_access_admin_rpc(
             let Some(rule_id) = request.params.get("id").and_then(Value::as_str) else {
                 return Some(invalid_params(response_id, "id required"));
             };
-            controller
-                .delete_rule(rule_id)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::DeleteRule(
+                rule_id.to_string(),
+            ))
         }
         "mobkit/access/groups/set" => {
             let Some(name) = request.params.get("name").and_then(Value::as_str) else {
@@ -3498,14 +3851,12 @@ fn handle_access_admin_rpc(
             match serde_json::from_value::<AccessGroup>(
                 request.params.get("group").cloned().unwrap_or_default(),
             ) {
-                Ok(group) => controller
-                    .set_group(name, group)
-                    .map(|revision| json!({ "revision": revision })),
-                Err(err) => {
-                    return Some(invalid_params(
-                        response_id,
-                        format!("invalid access group: {err}"),
-                    ));
+                Ok(group) => legacy_write(crate::access::AccessMutation::SetGroup(
+                    name.to_string(),
+                    group,
+                )),
+                Err(_) => {
+                    return Some(invalid_params(response_id, "Invalid access group."));
                 }
             }
         }
@@ -3513,17 +3864,13 @@ fn handle_access_admin_rpc(
             let Some(name) = request.params.get("name").and_then(Value::as_str) else {
                 return Some(invalid_params(response_id, "name required"));
             };
-            controller
-                .delete_group(name)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::DeleteGroup(name.to_string()))
         }
         "mobkit/access/enable" => {
             let Some(enabled) = request.params.get("enabled").and_then(Value::as_bool) else {
                 return Some(invalid_params(response_id, "enabled (bool) required"));
             };
-            controller
-                .set_enabled(enabled)
-                .map(|revision| json!({ "revision": revision }))
+            legacy_write(crate::access::AccessMutation::SetEnabled(enabled))
         }
         "mobkit/access/preview" => {
             let subject = request.params.get("subject").and_then(Value::as_str);
@@ -3531,7 +3878,11 @@ fn handle_access_admin_rpc(
                 return Some(invalid_params(response_id, "action required"));
             };
             let identity = request.params.get("identity").and_then(Value::as_str);
-            let preview_view = controller.view_for_subject(subject);
+            let preview_view =
+                match controller.admin_preview(view.and_then(AccessView::subject), subject) {
+                    Ok(preview) => preview,
+                    Err(error) => return Some(access_edit_rpc_error(response_id, error)),
+                };
             let decision = match identity {
                 Some(identity) => preview_view.decide_agent(action, identity),
                 None => preview_view.decide(action, &AccessResource::none()),
@@ -3560,7 +3911,7 @@ fn handle_access_admin_rpc(
     };
     Some(match result {
         Ok(value) => response_value(response_id, Some(value), None),
-        Err(err) => access_config_rpc_error(response_id, err),
+        Err(err) => access_edit_rpc_error(response_id, err),
     })
 }
 
@@ -4344,6 +4695,20 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
             data: None,
         }),
     )
+}
+
+/// A decision the owner could not record for lack of gate identities is an
+/// infrastructure failure with a typed reason; other refusals keep the
+/// redacted invalid-params response.
+fn gating_decide_error_response(id: Value, err: crate::runtime::GatingDecideError) -> Value {
+    match err {
+        crate::runtime::GatingDecideError::IdsUnavailable(reason) => response_value(
+            id,
+            None,
+            Some(crate::rpc::gating_ids_unavailable_rpc_error(reason)),
+        ),
+        err => gating_decision_failed_error(id, err),
+    }
 }
 
 fn gating_decision_failed_error(id: Value, err: impl std::fmt::Display) -> Value {
@@ -5610,6 +5975,13 @@ async fn handle_console_aggregator_rpc(
     {
         return response_value(response_id, None, Some(error));
     }
+    // Each awaiting arm runs as its own boxed future, built in
+    // `box_in_own_frame`'s frame. At opt-level 0 LLVM gives every local of
+    // every arm its own stack slot, so with the arms inline this poll frame
+    // reserved the SUM of all arms' futures (about 1.17 MB, more than half a
+    // 2 MiB worker stack) though only one arm runs. Wrapped, each arm leaves
+    // a closure of references and one pointer here.
+    let request = &request;
     match request.method.as_str() {
         "mobkit/capabilities" => {
             let mut methods = vec![
@@ -5934,7 +6306,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     }
 
     match request.method.as_str() {
-        "mobkit/capabilities" => {
+        "mobkit/capabilities" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let mut methods = vec![
                 "mobkit/status",
                 "mobkit/capabilities",
@@ -6071,6 +6443,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/memory/panel/harvests",
                     "mobkit/memory/panel/quarantine",
                 ]);
+                if can_mutate {
+                    // The operator half of quarantine review; the probe below
+                    // strips it for callers without the reviewer grant.
+                    methods.push("mobkit/memory/quarantine/decide");
+                }
             }
             if workgraph.is_some() {
                 methods.extend_from_slice(crate::rpc::workgraph_methods::WORKGRAPH_READ_METHODS);
@@ -6162,8 +6539,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })),
                 None,
             )
-        }
-        crate::rpc::topology_methods::TOPOLOGY_QUERY_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_QUERY_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6185,8 +6563,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_PLAN_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_PLAN_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6208,8 +6587,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_APPLY_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_APPLY_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6232,8 +6612,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_OPERATION_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_OPERATION_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6255,8 +6636,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        crate::rpc::topology_methods::TOPOLOGY_AUDIT_METHOD => {
+        })
+        .await,
+        crate::rpc::topology_methods::TOPOLOGY_AUDIT_METHOD => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(topology) = topology else {
                 return response_value(
                     response_id,
@@ -6278,8 +6660,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await,
             )
             .unwrap_or(Value::Null)
-        }
-        "mobkit/agent_memory/remember" => {
+        })
+        .await,
+        "mobkit/agent_memory/remember" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6315,8 +6698,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/forget" => {
+        })
+        .await,
+        "mobkit/agent_memory/forget" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6352,8 +6736,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/recall" => {
+        })
+        .await,
+        "mobkit/agent_memory/recall" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6383,8 +6768,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/update" => {
+        })
+        .await,
+        "mobkit/agent_memory/update" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6424,8 +6810,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
-        "mobkit/agent_memory/manifest" => {
+        })
+        .await,
+        "mobkit/agent_memory/manifest" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity_runtime) = &identity_runtime else {
                 return response_value(
                     response_id,
@@ -6459,48 +6846,71 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
-        }
+        })
+        .await,
         // §9.3 Memory panel reads. Read-only mode allows all of these (they
         // are reads); the ACL mapping lives in
         // `console_rpc_access_requirements` plus per-row scope filtering in
         // the handlers.
-        "mobkit/memory/panel/records" => {
+        "mobkit/memory/panel/records" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_records(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/record" => {
+        })
+        .await,
+        "mobkit/memory/panel/record" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_record(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/quarantine" => {
+        })
+        .await,
+        "mobkit/memory/panel/quarantine" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_quarantine(memory_panel, access_view, &request.params, response_id)
                 .await
-        }
-        "mobkit/memory/panel/dreams" => {
+        })
+        .await,
+        "mobkit/memory/panel/dreams" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_dreams(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/dream_runs" => {
+        })
+        .await,
+        "mobkit/memory/panel/dream_runs" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_dream_runs(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/audit_verdicts" => {
+        })
+        .await,
+        "mobkit/memory/panel/audit_verdicts" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_audit_verdicts(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/overview" => {
+        })
+        .await,
+        "mobkit/memory/panel/overview" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_overview(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/proposals" => {
+        })
+        .await,
+        "mobkit/memory/panel/proposals" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_proposals(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/injections" => {
+        })
+        .await,
+        "mobkit/memory/panel/injections" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_injections(memory_panel, &request.params, response_id).await
-        }
-        "mobkit/memory/panel/harvests" => {
+        })
+        .await,
+        "mobkit/memory/panel/harvests" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_memory_panel_harvests(memory_panel, &request.params, response_id).await
-        }
+        })
+        .await,
+        // The operator half of quarantine review: a mutation, so a read-only
+        // console refused it before dispatch.
+        "mobkit/memory/quarantine/decide" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
+            handle_memory_quarantine_decide(
+                memory_panel,
+                authenticated_principal,
+                &request.params,
+                response_id,
+            )
+            .await
+        })
+        .await,
         // Read-only state-directory diagnosis (registered as a read method:
         // allowed in read-only mode, admin-gated in
         // `console_rpc_access_requirements`).
-        "mobkit/storage/doctor" => {
+        "mobkit/storage/doctor" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             match crate::rpc::storage_methods::parse_storage_doctor_params(&request.params) {
                 Ok(Some(params)) => {
                     let result = crate::rpc::storage_methods::run_storage_doctor(
@@ -6517,7 +6927,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(reason) => invalid_params(response_id, reason),
             }
-        }
+        })
+        .await,
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
             let mut result = serde_json::json!({
@@ -6538,7 +6949,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             result["storage"]["doctor_available"] = serde_json::json!(true);
             response_value(response_id, Some(result), None)
         }
-        "mobkit/console/list_identities" => {
+        "mobkit/console/list_identities" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(aggregator) = &console_aggregator else {
                 return response_value(
                     response_id,
@@ -6557,8 +6968,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
             }
-        }
-        "mobkit/console/inspect_identity" => {
+        })
+        .await,
+        "mobkit/console/inspect_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -6590,8 +7002,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("inspect_identity failed: {err}")),
             }
-        }
-        "mobkit/console/query_timeline" => {
+        })
+        .await,
+        "mobkit/console/query_timeline" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let query: ConsoleTimelineWindowQuery =
                 match serde_json::from_value(request.params.clone()) {
                     Ok(query) => query,
@@ -6621,8 +7034,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_timeline_query_rpc_error(response_id, err),
             }
-        }
-        "mobkit/console/send" => {
+        })
+        .await,
+        "mobkit/console/send" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let send_request: ConsoleSendRequest =
                 match serde_json::from_value(request.params.clone()) {
                     Ok(request) => request,
@@ -6670,8 +7084,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     response_value(response_id, None, Some(console_send_json_rpc_error(err)))
                 }
             }
-        }
-        "mobkit/blob/get" => {
+        })
+        .await,
+        "mobkit/blob/get" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(blob_id) = request
                 .params
                 .get("blob_id")
@@ -6708,8 +7123,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("blob get failed: {err}")),
             }
-        }
-        "mobkit/list_members" => {
+        })
+        .await,
+        "mobkit/list_members" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let handle = runtime.handle();
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
@@ -6730,8 +7146,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             retain_visible_member_rows(&mut members, access_view);
             response_value(response_id, Some(Value::Array(members)), None)
-        }
-        "mobkit/get_member" => {
+        })
+        .await,
+        "mobkit/get_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -6755,8 +7172,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
             }
-        }
-        "mobkit/find_members" => {
+        })
+        .await,
+        "mobkit/find_members" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(label_key) = request.params.get("label_key").and_then(Value::as_str) else {
                 return invalid_params(response_id, "label_key required");
             };
@@ -6797,8 +7215,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             retain_visible_member_rows(&mut matches, access_view);
             response_value(response_id, Some(Value::Array(matches)), None)
-        }
-        "mobkit/status_identity" => {
+        })
+        .await,
+        "mobkit/status_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -6931,8 +7350,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 )),
                 None,
             )
-        }
-        "mobkit/inspect_identity" => {
+        })
+        .await,
+        "mobkit/inspect_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7067,8 +7487,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 )),
                 None,
             )
-        }
-        "mobkit/retire" => {
+        })
+        .await,
+        "mobkit/retire" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7288,8 +7709,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("retire failed: {err}")),
             }
-        }
-        "mobkit/respawn" => {
+        })
+        .await,
+        "mobkit/respawn" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7423,8 +7845,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 response_id,
             ))
             .await
-        }
-        "mobkit/reset" => {
+        })
+        .await,
+        "mobkit/reset" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7577,8 +8000,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "reset", err),
             }
-        }
-        "mobkit/delete_identity" => {
+        })
+        .await,
+        "mobkit/delete_identity" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
@@ -7715,8 +8139,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "delete_identity", err),
             }
-        }
-        "mobkit/reset_all" => {
+        })
+        .await,
+        "mobkit/reset_all" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             match Box::pin(reset_all_live_console_agents(
                 runtime,
                 console_events.as_ref(),
@@ -7747,8 +8172,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("reset_all failed: {err}")),
             }
-        }
-        "mobkit/routing/routes/list" => {
+        })
+        .await,
+        "mobkit/routing/routes/list" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7762,8 +8188,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let routes = module_runtime.lock().await.list_runtime_routes();
             response_value(response_id, Some(json!({ "routes": routes })), None)
-        }
-        "mobkit/delivery/history" => {
+        })
+        .await,
+        "mobkit/delivery/history" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7793,8 +8220,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::to_value(history).unwrap_or(Value::Null)),
                 None,
             )
-        }
-        "mobkit/gating/pending" => {
+        })
+        .await,
+        "mobkit/gating/pending" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7818,8 +8246,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })
                 .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "pending": pending })), None)
-        }
-        "mobkit/gating/audit" => {
+        })
+        .await,
+        "mobkit/gating/audit" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7853,8 +8282,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })
                 .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "entries": entries })), None)
-        }
-        "mobkit/gating/decide" => {
+        })
+        .await,
+        "mobkit/gating/decide" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(module_runtime) = &module_runtime else {
                 return response_value(
                     response_id,
@@ -7924,10 +8354,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => gating_decision_failed_error(response_id, err),
+                Err(err) => gating_decide_error_response(response_id, err),
             }
-        }
-        "mobkit/ensure_member" => {
+        })
+        .await,
+        "mobkit/ensure_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(role) = request.params.get("role").and_then(Value::as_str) else {
                 return invalid_params(response_id, "role required");
             };
@@ -8162,8 +8593,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("ensure_member failed: {err}")),
             }
-        }
-        "mobkit/retire_member" => {
+        })
+        .await,
+        "mobkit/retire_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8283,8 +8715,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("retire_member failed: {err}")),
             }
-        }
-        "mobkit/respawn_member" => {
+        })
+        .await,
+        "mobkit/respawn_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8387,8 +8820,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
             }
-        }
-        "mobkit/reload_member" => {
+        })
+        .await,
+        "mobkit/reload_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8454,8 +8888,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => console_identity_error_response(response_id, "reload_member", err),
             }
-        }
-        "mobkit/member_health" => {
+        })
+        .await,
+        "mobkit/member_health" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request
                 .params
                 .get("member_id")
@@ -8519,8 +8954,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("member_health failed: {err}")),
             }
-        }
-        "mobkit/reconcile_edges" => {
+        })
+        .await,
+        "mobkit/reconcile_edges" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Previously a hardcoded noop ("console runtime routes directly
             // to MobRuntime") — which left declared definition wiring
             // unreconcilable from the console surface while the stdin
@@ -8531,8 +8967,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
                 None,
             )
-        }
-        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
+        })
+        .await,
+        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let query: EventQuery = if request.params.is_null() {
                 EventQuery::default()
             } else {
@@ -8626,9 +9063,10 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }) => stale_event_cursor_response(response_id, after_cursor, latest_cursor),
                 Err(err) => internal_error(response_id, format!("mob_events query failed: {err}")),
             }
-        }
+        })
+        .await,
         // 0.5 API methods
-        "mobkit/member_status" => {
+        "mobkit/member_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8660,8 +9098,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("member_status failed: {err}")),
             }
-        }
-        "mobkit/identity/resolved_tools" => {
+        })
+        .await,
+        "mobkit/identity/resolved_tools" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(identity) = request
                 .params
                 .get("identity")
@@ -8713,11 +9152,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("resolved_tools failed: {err}")),
             }
-        }
+        })
+        .await,
         // The console plane carries its own dispatch; a method wired only in
         // `rpc.rs` is unreachable from the browser console, which is where
         // this status is actually read.
-        "mobkit/identity/routing_status" => {
+        "mobkit/identity/routing_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let identity =
                 match crate::rpc::mob_methods::routing_status_identity_param(&request.params) {
                     Ok(identity) => identity,
@@ -8768,8 +9208,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => routing_status_error_value(response_id, &identity, &err),
             }
-        }
-        "mobkit/force_cancel_member" => {
+        })
+        .await,
+        "mobkit/force_cancel_member" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
@@ -8826,8 +9267,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     internal_error(response_id, format!("force_cancel_member failed: {err}"))
                 }
             }
-        }
-        "mobkit/stop_member_run" => {
+        })
+        .await,
+        "mobkit/stop_member_run" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Run-fenced Stop of one exact member run: the member's runtime
             // stops `run_id` and terminalizes every input already bound to it.
             // A stale `run_id` is meerkat's typed `not_current` receipt.
@@ -8926,8 +9368,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }),
                 Err(err) => internal_error(response_id, format!("stop_member_run failed: {err}")),
             }
-        }
-        "mobkit/wait_ready" => {
+        })
+        .await,
+        "mobkit/wait_ready" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // Omit `timeout_ms` => mobkit's generous default ceiling (the SDK
             // contract is "wait until ready"), not meerkat-mob 0.7.9's lowered
             // 60s internal default that `None` would otherwise inherit.
@@ -8984,8 +9427,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
             }
-        }
-        "mobkit/collect_completed" => {
+        })
+        .await,
+        "mobkit/collect_completed" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let completed = runtime.handle().collect_completed().await;
             let entries: Vec<Value> = completed
                 .into_iter()
@@ -9009,8 +9453,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::json!({ "completed": entries })),
                 None,
             )
-        }
-        "mobkit/cancel_flow" => {
+        })
+        .await,
+        "mobkit/cancel_flow" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
@@ -9026,8 +9471,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("cancel_flow failed: {err}")),
             }
-        }
-        "mobkit/flow_status" => {
+        })
+        .await,
+        "mobkit/flow_status" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
@@ -9044,7 +9490,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(None) => response_value(response_id, Some(Value::Null), None),
                 Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
             }
-        }
+        })
+        .await,
         "mobkit/list_flows" => {
             let flows: Vec<String> = runtime
                 .handle()
@@ -9058,7 +9505,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 None,
             )
         }
-        "mobkit/list_runs" => {
+        "mobkit/list_runs" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let flow_id = request
                 .params
                 .get("flow_id")
@@ -9075,8 +9522,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => internal_error(response_id, format!("list_runs failed: {err}")),
             }
-        }
-        "mobkit/run_flow" => {
+        })
+        .await,
+        "mobkit/run_flow" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "flow_id required");
             };
@@ -9101,8 +9549,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ),
                 Err(err) => invalid_params(response_id, format!("run_flow failed: {err}")),
             }
-        }
-        "mobkit/spawn_helper" => {
+        })
+        .await,
+        "mobkit/spawn_helper" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
             else {
                 return invalid_params(response_id, "agent_identity required");
@@ -9163,8 +9612,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("spawn_helper failed: {err}")),
             }
-        }
-        "mobkit/fork_helper" => {
+        })
+        .await,
+        "mobkit/fork_helper" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(source) = request
                 .params
                 .get("source_member_id")
@@ -9317,8 +9767,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => internal_error(response_id, format!("fork_helper failed: {err}")),
             }
-        }
-        "mobkit/attach_existing_session" => {
+        })
+        .await,
+        "mobkit/attach_existing_session" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let Some(role) = request.params.get("role").and_then(Value::as_str) else {
                 return invalid_params(response_id, "role required");
             };
@@ -9371,8 +9822,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     format!("attach_existing_session failed: {err}"),
                 ),
             }
-        }
-        "mobkit/cross_mob/wire_local" => {
+        })
+        .await,
+        "mobkit/cross_mob/wire_local" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_console_wire_local(
                 runtime,
                 identity_runtime.as_ref(),
@@ -9381,8 +9833,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 true,
             )
             .await
-        }
-        "mobkit/cross_mob/unwire_local" => {
+        })
+        .await,
+        "mobkit/cross_mob/unwire_local" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             handle_console_wire_local(
                 runtime,
                 identity_runtime.as_ref(),
@@ -9391,7 +9844,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 false,
             )
             .await
-        }
+        })
+        .await,
         "mobkit/peer_pubkey" => match gateway_peer_keys {
             Some(keys) => response_value(
                 response_id,
@@ -9408,7 +9862,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }),
             ),
         },
-        "mobkit/cross_mob/peer_info" => {
+        "mobkit/cross_mob/peer_info" => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             let member_id = request.params.get("member_id").and_then(Value::as_str);
             match member_id {
                 Some(mid) if !mid.is_empty() => {
@@ -9456,7 +9910,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 _ => invalid_params(response_id, "member_id required".to_string()),
             }
-        }
+        })
+        .await,
         "mobkit/cross_mob/directory" => {
             let entries: Vec<Value> = contact_directory
                 .map(|dir| {
@@ -9482,7 +9937,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     | "mobkit/run_labels/get"
                     | "mobkit/run_labels/delete",
             ) =>
-        {
+        meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             dispatch_console_label_method(
                 method,
                 metadata_table.as_deref(),
@@ -9491,8 +9946,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 &request.params,
             )
             .await
-        }
-        method if crate::rpc::workgraph_methods::is_workgraph_method(method) => {
+        })
+        .await,
+        method if crate::rpc::workgraph_methods::is_workgraph_method(method) => meerkat_runtime::stack_relief::box_in_own_frame(move || async move {
             // The read-only gate and the workgraph.view/manage ABAC checks
             // already ran above; the surface carries the authenticated
             // console principal, which goal/confirm promotes into the
@@ -9516,7 +9972,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(result) => response_value(response_id, Some(result), None),
                 Err(error) => response_value(response_id, None, Some(error)),
             }
-        }
+        })
+        .await,
         _ => response_value(
             response_id,
             None,
@@ -12264,6 +12721,64 @@ comms = true
     }
 
     #[test]
+    fn memory_quarantine_decide_composes_existing_grants() {
+        use crate::access::{
+            ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
+            ACTION_AGENT_VIEW, ACTION_MEMORY_QUARANTINE_REVIEW,
+        };
+        let identity = Some("lead:main".to_string());
+        let base = [
+            (ACTION_MEMORY_QUARANTINE_REVIEW, None),
+            (ACTION_AGENT_VIEW, identity.clone()),
+            (ACTION_AGENT_MEMORY_READ, identity.clone()),
+        ];
+        for (verdict, effect) in [
+            (json!("release"), vec![ACTION_AGENT_MEMORY_WRITE]),
+            (json!("tombstone"), vec![ACTION_AGENT_MEMORY_DELETE]),
+            // Anything else fails closed on both effects.
+            (
+                json!("hold"),
+                vec![ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+            ),
+            (
+                Value::Null,
+                vec![ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_MEMORY_DELETE],
+            ),
+        ] {
+            let params = json!({ "identity": "lead:main", "verdict": verdict });
+            let mut expected = base.to_vec();
+            expected.extend(effect.into_iter().map(|action| (action, identity.clone())));
+            assert_eq!(
+                super::console_rpc_access_requirements("mobkit/memory/quarantine/decide", &params),
+                Some(expected),
+                "verdict {verdict}"
+            );
+        }
+        assert!(super::is_console_mutating_rpc_method(
+            "mobkit/memory/quarantine/decide"
+        ));
+    }
+
+    #[test]
+    fn memory_quarantine_reviewer_is_only_the_authenticated_principal() {
+        use crate::memory::review::QuarantineReviewer;
+        assert_eq!(
+            super::memory_quarantine_reviewer(Some(" alice@example.test ")),
+            QuarantineReviewer::Operator {
+                principal: Some("alice@example.test".to_string())
+            }
+        );
+        assert_eq!(
+            super::memory_quarantine_reviewer(Some("  ")),
+            QuarantineReviewer::Operator { principal: None }
+        );
+        assert_eq!(
+            super::memory_quarantine_reviewer(None),
+            QuarantineReviewer::Operator { principal: None }
+        );
+    }
+
+    #[test]
     fn read_only_mutating_methods_include_state_draining_collect_completed() {
         assert!(super::is_console_mutating_rpc_method(
             "mobkit/collect_completed"
@@ -12654,6 +13169,30 @@ comms = true
             json!("timeline replay unavailable")
         );
         assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn gating_ids_unavailable_is_a_typed_internal_error() {
+        use crate::runtime::{GatingDecideError, GatingIdUnavailable};
+        let response = super::gating_decide_error_response(
+            json!(7),
+            GatingDecideError::IdsUnavailable(GatingIdUnavailable::SequenceExhausted),
+        );
+        assert_eq!(response["error"]["code"], json!(-32603));
+        assert_eq!(
+            response["error"]["data"]["error"],
+            json!("gating_ids_unavailable")
+        );
+        assert_eq!(
+            response["error"]["data"]["reason"],
+            json!("gating_sequence_exhausted")
+        );
+        let refused = super::gating_decide_error_response(
+            json!(8),
+            GatingDecideError::UnknownPendingId("gate-x".to_string()),
+        );
+        assert_eq!(refused["error"]["code"], json!(-32602));
+        assert_eq!(refused["error"]["message"], json!("gating decision failed"));
     }
 
     #[test]
@@ -14146,6 +14685,52 @@ comms = true
         );
 
         let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// The console RPC handler's future stays small: each awaiting method arm
+    /// is its own boxed future (`box_in_own_frame`), so the handler embeds
+    /// one pointer per arm rather than every arm's future. With the arms
+    /// inline the handler's state machine and its debug poll frame carried
+    /// every arm at once (a 1.17 MB poll frame on the console send path,
+    /// more than half a 2 MiB worker stack).
+    #[tokio::test]
+    async fn the_console_rpc_handler_future_stays_small()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-rpc-handler-future-size").await?;
+        let handler = handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &HideMemberPolicy("nobody:hidden"),
+            rpc_request("mobkit/status"),
+            true,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // 52,248 bytes with the arms inline (MobKit 0.8.46, debug), 6,256
+        // boxed. The bound fails if arms are inlined again, with headroom
+        // for ordinary growth.
+        let size = std::mem::size_of_val(&handler);
+        drop(handler);
+        assert!(
+            size <= 16 * 1024,
+            "the console RPC handler future grew to {size} bytes; box the new \
+             method arm in its own frame (box_in_own_frame)"
+        );
         Ok(())
     }
 
@@ -19024,5 +19609,160 @@ comms = true
                 "health": "unknown",
             })
         );
+    }
+
+    mod current_admin_preview {
+        use super::*;
+        use crate::access::{
+            AccessControlConfig, AccessGroup, AccessRule, AccessView, AgentResourceAttributes,
+        };
+
+        const REVOKED: &str = "former-admin@example.test";
+        const ADMIN: &str = "current-admin@example.test";
+        const TARGET: &str = "preview-target@example.test";
+        const PRIVATE_GROUP: &str = "PRIVATE_CURRENT_PREVIEW_GROUP";
+        const PRIVATE_RULE: &str = "PRIVATE_CURRENT_PREVIEW_RULE";
+
+        fn fixture() -> (AccessController, AccessView, AccessView) {
+            let owner = AccessController::new(AccessControlConfig {
+                enabled: true,
+                admins: vec![REVOKED.to_string(), ADMIN.to_string()],
+                groups: BTreeMap::from([(
+                    "old-group".to_string(),
+                    AccessGroup {
+                        members: vec![TARGET.to_string()],
+                        ..AccessGroup::default()
+                    },
+                )]),
+                ..AccessControlConfig::default()
+            })
+            .expect("initial actual owner");
+            let cached_revoked = owner.view_for_subject(Some(REVOKED));
+            let cached_admin = owner.view_for_subject(Some(ADMIN));
+            assert!(cached_revoked.can_administer());
+            assert!(cached_admin.can_administer());
+            owner
+                .replace_config(AccessControlConfig {
+                    enabled: true,
+                    admins: vec![ADMIN.to_string()],
+                    groups: BTreeMap::from([(
+                        PRIVATE_GROUP.to_string(),
+                        AccessGroup {
+                            members: vec![TARGET.to_string()],
+                            ..AccessGroup::default()
+                        },
+                    )]),
+                    rules: vec![AccessRule {
+                        id: PRIVATE_RULE.to_string(),
+                        actions: vec!["agent.send".to_string()],
+                        groups: vec![PRIVATE_GROUP.to_string()],
+                        match_labels: BTreeMap::from([(
+                            "zone".to_string(),
+                            "private-zone".to_string(),
+                        )]),
+                        ..AccessRule::default()
+                    }],
+                })
+                .expect("actual revocation and newer target policy");
+            owner.record_agent_attributes(AgentResourceAttributes {
+                identity: "preview-agent".to_string(),
+                labels: BTreeMap::from([("zone".to_string(), "private-zone".to_string())]),
+                ..AgentResourceAttributes::default()
+            });
+            assert!(!owner.view_for_subject(Some(REVOKED)).can_administer());
+            assert!(owner.view_for_subject(Some(ADMIN)).can_administer());
+            assert!(
+                owner
+                    .view_for_subject(Some(TARGET))
+                    .decide_agent("agent.send", "preview-agent")
+                    .is_allow()
+            );
+            (owner, cached_revoked, cached_admin)
+        }
+
+        fn request(subject: &str, identity: &str) -> JsonRpcRequest {
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0", "id": "preview-read", "method": "mobkit/access/preview",
+                "params": {"subject": subject, "identity": identity, "action": "agent.send"},
+            }))
+            .expect("actual request type")
+        }
+
+        #[test]
+        fn revoked_cached_administrator_cannot_preview_current_policy() {
+            let (owner, cached_revoked, _) = fixture();
+            let before = owner.snapshot();
+            let response = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_revoked),
+                &request(TARGET, "preview-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(response["id"], json!("preview-read"));
+            assert_eq!(response["error"]["code"], json!(-32030), "{response:#?}");
+            assert_eq!(response["error"]["data"], json!({"kind": "access_denied"}));
+            assert_eq!(response["result"], Value::Null);
+            for private in [
+                REVOKED,
+                ADMIN,
+                TARGET,
+                PRIVATE_GROUP,
+                PRIVATE_RULE,
+                "private-zone",
+            ] {
+                assert!(
+                    !response.to_string().contains(private),
+                    "private preview output: {response:#?}"
+                );
+            }
+            assert_eq!(
+                owner.snapshot(),
+                before,
+                "refused read does not mutate the owner"
+            );
+        }
+
+        #[test]
+        fn current_administrator_preview_uses_actual_target_policy_and_attribute_owner() {
+            let (owner, _, cached_admin) = fixture();
+            let before = owner.snapshot();
+            let allowed = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(TARGET, "preview-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(allowed["error"], Value::Null, "{allowed:#?}");
+            assert_eq!(allowed["result"]["subject"], json!(TARGET));
+            assert_eq!(allowed["result"]["identity"], json!("preview-agent"));
+            assert_eq!(allowed["result"]["action"], json!("agent.send"));
+            assert_eq!(allowed["result"]["groups"], json!([PRIVATE_GROUP]));
+            assert_eq!(allowed["result"]["is_admin"], json!(false));
+            assert_eq!(allowed["result"]["allowed"], json!(true));
+            let denied = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(TARGET, "unknown-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(denied["error"], Value::Null, "{denied:#?}");
+            assert_eq!(denied["result"]["allowed"], json!(false));
+            assert_eq!(denied["result"]["groups"], json!([PRIVATE_GROUP]));
+            let admin = crate::http_console::handle_access_admin_rpc(
+                Some(&owner),
+                Some(&cached_admin),
+                &request(ADMIN, "unknown-agent"),
+            )
+            .expect("actual access handler");
+            assert_eq!(admin["error"], Value::Null, "{admin:#?}");
+            assert_eq!(admin["result"]["is_admin"], json!(true));
+            assert_eq!(admin["result"]["allowed"], json!(true));
+            assert_eq!(admin["result"]["groups"], json!([]));
+            assert_eq!(
+                owner.snapshot(),
+                before,
+                "preview reads do not mutate the owner"
+            );
+        }
     }
 }

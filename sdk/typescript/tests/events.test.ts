@@ -5,6 +5,7 @@ import {
   parseAgentEvent,
   parseMobEventFromSse,
   parseAgentEventFromSse,
+  EventStream,
   isTextDelta,
   isTextComplete,
   isRunCompleted,
@@ -253,6 +254,105 @@ describe("parseAgentEvent", () => {
     const event = parseAgentEvent(raw);
     assert.equal(event.type, "");
     assert.deepEqual((event as any).data, raw);
+  });
+});
+
+describe("local refusal SSE compatibility", () => {
+  it("keeps unfamiliar hook reasons opaque and tool status unchanged", async () => {
+    // This SDK has no receiving-refusal carrier. These are open-payload
+    // compatibility probes, not a proposed receiver event or permission fact.
+    const reasons = [
+      { reason_code: "future_hook_cause", version: 99, details: { kind: "denied" } },
+      { reason_code: 17, refusal: "denied" },
+      ["denied", null],
+      null,
+    ];
+    const hooks = reasons.map((reason) => ({
+      type: "hook_launch_refused", hook_id: "host-hook", point: "pre_tool_execution",
+      tool_use_id: "  opaque-call  ", reason, future_detail: { version: 99, values: [null, 1] },
+    }));
+    const result = '{"version":99,"cause":{"kind":"denied","future":[null,true]}}';
+    const payloads = [
+      ...hooks,
+      { type: "tool_execution_completed", id: "  opaque-call  ", name: "read_file",
+        content: [{ type: "text", text: result }], result, is_error: true, duration_ms: 1 },
+      { type: "tool_result_received", id: "  opaque-call  ", name: "read_file", is_error: true,
+        future_detail: { kind: "denied" } },
+      { type: "run_completed", session_id: "session-opaque", result: "done" },
+    ];
+    async function* wire() {
+      for (const [index, payload] of payloads.entries()) {
+        yield { id: String(index), event: payload.type,
+          data: JSON.stringify({ member_id: "agent-1", payload }) };
+      }
+    }
+    const events = [];
+    for await (const event of new EventStream(wire(), parseMobEventFromSse)) events.push(event.event);
+    for (const [index, hook] of hooks.entries()) {
+      const event = events[index];
+      assert.equal(event.type, "hook_launch_refused");
+      assert.ok("data" in event);
+      assert.deepEqual(event.data, hook);
+    }
+    const [tool, feedback, completed] = events.slice(hooks.length);
+    assert.equal(tool.type, "tool_execution_completed");
+    assert.ok("id" in tool && "result" in tool && "isError" in tool);
+    assert.deepEqual([tool.id, tool.result, tool.isError], ["  opaque-call  ", result, true]);
+    assert.equal(feedback.type, "tool_result_received");
+    assert.ok("id" in feedback && "isError" in feedback);
+    assert.deepEqual([feedback.id, feedback.isError], ["  opaque-call  ", true]);
+    assert.ok(isRunCompleted(completed));
+    assert.deepEqual([completed.sessionId, completed.result], ["session-opaque", "done"]);
+    assert.equal(events.some(isRunFailed), false);
+  });
+
+  it("keeps call feedback and continues through subsequent packets", async () => {
+    const refusal = '{"error":"operation_refused","message":"operation unavailable under current authorization"}';
+    const hook = {
+      type: "hook_launch_refused", hook_id: "host-hook", point: "pre_tool_execution",
+      tool_use_id: "  mechanical-call  ",
+      reason: { reason_code: "confinement_refused", refusal: "unsupported_platform" },
+      future_detail: { owner: ["opaque", 1] },
+    };
+    // The host projector derives result from native content; this SDK's
+    // ToolResultReceived contract exposes only call metadata.
+    const payloads = [
+      hook,
+      { type: "tool_execution_completed", id: "  blocked-call  ",
+        tool_call_id: "  blocked-call  ", name: "delete_file",
+        content: [{ type: "text", text: refusal }], result: refusal, is_error: true, duration_ms: 0 },
+      { type: "tool_result_received", id: "  blocked-call  ", name: "delete_file",
+        content: [{ type: "text", text: refusal }], is_error: true },
+      { type: "tool_execution_completed", id: "permitted-call", tool_call_id: "permitted-call",
+        name: "read_file", content: [{ type: "text", text: "permitted result" }],
+        result: "permitted result", is_error: false, duration_ms: 1 },
+      { type: "tool_result_received", id: "permitted-call", name: "read_file", is_error: false },
+      { type: "run_completed", session_id: "session-1", result: "done" },
+    ];
+    async function* wire() {
+      for (const [index, payload] of payloads.entries()) {
+        yield { id: String(index), event: payload.type,
+          data: JSON.stringify({ member_id: "agent-1", source: "agent-1", payload }) };
+      }
+    }
+    const events = [];
+    for await (const event of new EventStream(wire(), parseMobEventFromSse)) events.push(event);
+    assert.deepEqual(events.map(({ event }) => event.type), payloads.map(({ type }) => type));
+    assert.ok(events.every(({ memberId }) => memberId === "agent-1"));
+    const [unknown, blocked, blockedFeedback, permitted, permittedFeedback, completed] = events.map(({ event }) => event);
+    assert.ok("data" in unknown);
+    assert.deepEqual(unknown.data, hook);
+    assert.equal(blocked.type, "tool_execution_completed");
+    assert.ok("result" in blocked && "isError" in blocked && "id" in blocked);
+    assert.deepEqual([blocked.id, blocked.result, blocked.isError], ["  blocked-call  ", refusal, true]);
+    assert.ok("id" in blockedFeedback && "isError" in blockedFeedback);
+    assert.deepEqual([blockedFeedback.id, blockedFeedback.isError], ["  blocked-call  ", true]);
+    assert.ok("result" in permitted && "isError" in permitted && "id" in permitted);
+    assert.deepEqual([permitted.id, permitted.result, permitted.isError], ["permitted-call", "permitted result", false]);
+    assert.ok("id" in permittedFeedback && "isError" in permittedFeedback);
+    assert.deepEqual([permittedFeedback.id, permittedFeedback.isError], ["permitted-call", false]);
+    assert.ok(isRunCompleted(completed));
+    assert.deepEqual([completed.sessionId, completed.result], ["session-1", "done"]);
   });
 });
 

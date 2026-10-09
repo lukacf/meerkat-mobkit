@@ -23,10 +23,17 @@ from pathlib import Path
 import pytest
 
 import meerkat_mobkit.runtime as runtime_module
-from meerkat_mobkit import InitOutcomeUnknownError, RpcError, StorageResolutionError
+import meerkat_mobkit
+from meerkat_mobkit import (
+    COMPOSITION_PROVENANCE_CODE,
+    CompositionProvenanceError,
+    InitOutcomeUnknownError,
+    RpcError,
+    StorageResolutionError,
+)
 from meerkat_mobkit._transport import PersistentTransport
 from meerkat_mobkit.builder import MobKit
-from meerkat_mobkit.runtime import MobKitRuntime
+from meerkat_mobkit.runtime import MobKitRuntime, _rpc_error_from_payload
 
 # Every stand-in shares this prelude: it reads the init request, records it,
 # and gives the scenario helpers to answer.
@@ -150,6 +157,74 @@ async def test_failed_settlement_raises_typed_error_with_durable_effects(
     assert raised.value.code == code
     assert raised.value.data["durable_effects"] == durable_effects
     assert not runtime.is_running
+
+
+@pytest.mark.asyncio
+async def test_failed_settlement_for_a_composition_refusal_carries_its_kind_and_fields(tmp_path):
+    script = _gateway(tmp_path, "composition_refused", """
+        accepted()
+        progress("storage")
+        settled(outcome="failed", code=-32019,
+                message="Runtime bootstrap failed: the candidate definition differs",
+                durable_effects="none",
+                data={"kind": "candidate_divergent",
+                      "fields": ["profiles.lead.tools.deny"]})
+    """)
+    runtime = _runtime(script)
+    with pytest.raises(CompositionProvenanceError) as raised:
+        await runtime.connect()
+    error = raised.value
+    assert error.code == COMPOSITION_PROVENANCE_CODE == -32019
+    assert error.kind == "candidate_divergent"
+    assert error.fields == ["profiles.lead.tools.deny"]
+    assert error.data["durable_effects"] == "none"
+    assert not runtime.is_running
+
+
+class TestCompositionProvenanceError:
+    def test_is_a_typed_rpc_error_exported_at_top_level(self):
+        assert issubclass(CompositionProvenanceError, RpcError)
+        assert meerkat_mobkit.CompositionProvenanceError is CompositionProvenanceError
+        assert meerkat_mobkit.COMPOSITION_PROVENANCE_CODE == -32019
+
+    def test_an_error_response_reifies_with_the_refusal(self):
+        error = _rpc_error_from_payload(
+            {
+                "code": -32019,
+                "message": "Runtime bootstrap failed: the composition diverged",
+                "data": {
+                    "kind": "divergent",
+                    "fields": ["profiles.default.model", "profiles.worker"],
+                    "manifest": "/state/mob.sqlite3.composition.json",
+                },
+            },
+            request_id="init:1",
+            method="mobkit/init",
+        )
+        assert isinstance(error, CompositionProvenanceError)
+        assert error.kind == "divergent"
+        assert error.fields == ["profiles.default.model", "profiles.worker"]
+        assert error.data["manifest"] == "/state/mob.sqlite3.composition.json"
+        assert error.method == "mobkit/init"
+
+    def test_a_refusal_without_data_still_reifies(self):
+        error = _rpc_error_from_payload(
+            {"code": -32019, "message": "Runtime bootstrap failed"},
+            request_id="init:1",
+            method="mobkit/init",
+        )
+        assert isinstance(error, CompositionProvenanceError)
+        assert error.kind is None
+        assert error.fields == []
+
+    def test_other_init_failures_do_not_reify_as_composition_refusals(self):
+        for code in (-32603, -32014):
+            error = _rpc_error_from_payload(
+                {"code": code, "message": "refused", "data": {"kind": "divergent"}},
+                request_id="init:1",
+                method="mobkit/init",
+            )
+            assert not isinstance(error, CompositionProvenanceError)
 
 
 @pytest.mark.asyncio

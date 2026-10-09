@@ -1007,7 +1007,11 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
 
   async function makeRuntime() {
     const { MobKitRuntime } = await import("../src/runtime.js");
-    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    const calls: {
+      method: string;
+      params: Record<string, unknown>;
+      options?: { transportTimeoutMs?: number };
+    }[] = [];
     const rt = new MobKitRuntime({
       mobConfigPath: null,
       sessionBuilder: null,
@@ -1038,8 +1042,9 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
     (rt as unknown as Record<string, unknown>)._rpc = async (
       method: string,
       params?: Record<string, unknown>,
+      options?: { transportTimeoutMs?: number },
     ) => {
-      calls.push({ method, params: params ?? {} });
+      calls.push({ method, params: params ?? {}, options });
       // Return type-appropriate stubs
       if (method === "mobkit/status_identity") {
         return {
@@ -1140,6 +1145,42 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
     await rt.retire("worker:1");
     assert.equal(calls[0].method, "mobkit/retire");
     assert.equal(calls[0].params.identity, "worker:1");
+  });
+
+  it("activateMemberInstruction(identity, activation)", async () => {
+    const { rt, calls } = await makeRuntime();
+    const activation = {
+      revision: {
+        namespace: "host",
+        key: "persona",
+        revision_id: "r2",
+        content_sha256: "0".repeat(64),
+      },
+      activation_id: "a2",
+      expectation: { kind: "absent" },
+      body: "Use your granted tools.",
+    };
+    await rt.activateMemberInstruction("worker:1", activation);
+    assert.equal(calls[0].method, "mobkit/member_activate_instruction");
+    assert.deepEqual(calls[0].params, { identity: "worker:1", activation });
+    assert.equal(calls[0].options?.transportTimeoutMs, undefined);
+    // A mid-turn call can block for a whole turn; the caller can widen this
+    // call's reply timeout.
+    await rt.activateMemberInstruction("worker:1", activation, {
+      transportTimeoutMs: 600_000,
+    });
+    assert.equal(calls[1].options?.transportTimeoutMs, 600_000);
+  });
+
+  it("memberInstructionActivations(identity, query)", async () => {
+    const { rt, calls } = await makeRuntime();
+    await rt.memberInstructionActivations("worker:1", { namespace: "host", key: "persona" });
+    assert.equal(calls[0].method, "mobkit/member_instruction_activations");
+    assert.deepEqual(calls[0].params, {
+      identity: "worker:1",
+      namespace: "host",
+      key: "persona",
+    });
   });
 
   it("reset(identity)", async () => {

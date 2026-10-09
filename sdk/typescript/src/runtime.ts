@@ -31,9 +31,11 @@ import {
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   STORAGE_RESOLUTION_CODE,
   INIT_IN_PROGRESS_CODE,
+  COMPOSITION_PROVENANCE_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
+  CompositionProvenanceError,
   ConsoleTimelineReplayUnavailableError,
   LeaseLostError,
   MemoryBackendUnavailableError,
@@ -710,6 +712,9 @@ function rpcErrorFromPayload(
   }
   if (code === INIT_IN_PROGRESS_CODE) {
     return new InitInProgressError(message, rid, method, err.data);
+  }
+  if (code === COMPOSITION_PROVENANCE_CODE) {
+    return new CompositionProvenanceError(message, rid, method, err.data);
   }
   if (code === WORKGRAPH_UNAVAILABLE_CODE) {
     return new WorkGraphUnavailableError(message, rid, method, err.data);
@@ -1895,6 +1900,63 @@ export class MobKitRuntime {
   /** Reset an identity (destructive continuity reset). */
   async reset(identity: string): Promise<unknown> {
     return this._rpc("mobkit/reset", { identity });
+  }
+
+  /**
+   * Append one keyed instruction activation to a member's current session.
+   *
+   * Host-only. `activation` is Meerkat's `InstructionActivationRequest`
+   * (`revision`, `activation_id`, `expectation`, optional `supersedes`,
+   * `body`). The activation is a new transcript row that the member's next
+   * turn sees; history is never rewritten. Resolves to `{ identity, receipt }`,
+   * where `receipt.disposition` is `"applied"` or `"duplicate"`.
+   *
+   * A refusal rejects with an RPC error whose `data.class` is `"admission"`
+   * (plus `data.instruction_activation_code`, for example `"session_busy"` or
+   * `"live_channel_open"`), `"session"` (plus `data.session_error_code` and,
+   * when the request itself was refused, `data.instruction_activation_error_code`
+   * such as `"digest_mismatch"` or `"effective_activation_conflict"`),
+   * `"runtime"` or `"owner_task"`. Nothing is retried: on `session_busy` or
+   * `live_channel_open`, retry at your own next boundary.
+   *
+   * A call made while the member is mid-turn BLOCKS until that turn
+   * finalizes, so it can wait for a whole turn. It then applies at the
+   * boundary, never inside the turn, or rejects with `session_busy` if more
+   * runtime work is already queued there. `options.transportTimeoutMs` sets
+   * how long this call waits for the reply; it defaults to the transport's
+   * request timeout, so raise it for members with long turns. If the wait
+   * times out, the activation may still apply at the boundary: re-send the
+   * identical activation, which answers `"applied"`, `"duplicate"` or the
+   * typed refusal.
+   */
+  async activateMemberInstruction(
+    identity: string,
+    activation: Record<string, unknown>,
+    options: { transportTimeoutMs?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._rpc(
+      "mobkit/member_activate_instruction",
+      { identity, activation },
+      { transportTimeoutMs: options.transportTimeoutMs },
+    );
+    return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  }
+
+  /**
+   * Read the durable instruction activations of a member's current session.
+   * Host-only. Resolves to `{ identity, page }` with Meerkat's
+   * `InstructionActivationReadPage`.
+   */
+  async memberInstructionActivations(
+    identity: string,
+    query: { namespace?: string; key?: string; offset?: number; limit?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const params: Record<string, unknown> = { identity };
+    for (const [name, value] of Object.entries(query)) {
+      if (value !== undefined) params[name] = value;
+    }
+    const raw = await this._rpc("mobkit/member_instruction_activations", params);
+    return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   }
 
   /** Delete an identity permanently. */

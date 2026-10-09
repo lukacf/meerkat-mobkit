@@ -2,7 +2,7 @@
 
 This plan tracks the independent MobKit-based MDM implementation in
 `examples/004-mdm-console-pack`. The pack does not depend on
-`/Users/luka/src/meerkat/examples/035-mdm-tux-rs`; it uses that work only as
+`(operator-retained path)/meerkat/examples/035-mdm-tux-rs`; it uses that work only as
 background for the MDM scenario.
 
 ## Architecture

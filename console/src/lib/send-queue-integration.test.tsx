@@ -2,7 +2,8 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleApp } from "../ConsoleApp";
-import type { MobKitConsoleTransport } from "./headless";
+import { createHttpConsoleTransport, type MobKitConsoleTransport } from "./headless";
+import type { ConsoleAccessConfig, ConsoleFrame } from "../types";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
@@ -94,6 +95,95 @@ describe("owner activity refresh", () => {
 });
 
 describe("stock durable queue integration", () => {
+  it.each(["interaction_complete", "interaction_failed"])("holds a queued send through an older run's %s and releases on the current run", async event => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session", interactionId: "input", sourceKind: "console_event" as const };
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-start", event: "run_started", runId: "old-run", timestampMs: 1, data: {} },
+      { ...scope, id: "current-start", event: "run_started", runId: "current-run", timestampMs: 2, data: {} },
+      { ...scope, id: "current-tool", event: "tool_execution_started", runId: "current-run", timestampMs: 3, data: { id: "tool", name: "working" } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("wait for current run");
+    await screen.findByTestId("pending-stack");
+    await act(async () => {
+      receive?.({ ...scope, id: "old-terminal", event, runId: "old-run", timestampMs: 4, data: {} } as never);
+      await new Promise(resolve => window.setTimeout(resolve, 20));
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(within(screen.getByTestId("pending-stack")).getByText("Agent busy")).toBeVisible();
+    await act(async () => {
+      receive?.({ ...scope, id: "current-terminal", event, runId: "current-run", timestampMs: 5, data: {} } as never);
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("wait for current run");
+  });
+
+  it.each([
+    ["live run", false], ["live run", true],
+    ["server phase", false], ["server phase", true],
+  ] as const)("keeps a send queued after history reload with %s and typed history IDs=%s", async (evidence, historyIds) => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const experience = await fake.loadExperience();
+    if (evidence === "server phase") experience.agent_sidebar!.live_snapshot!.agents![0].response_phase = "waiting";
+    fake.loadExperience = async () => experience;
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-terminal", event: "interaction_complete", sourceKind: "console_event",
+        interactionId: "old-input", runId: "old-run", timestampMs: 1, data: { text: "Saved work finished" } },
+      ...(evidence === "live run" ? [{ ...scope, id: "current-run", event: "run_started", sourceKind: "console_event" as const,
+        runId: "current-run", timestampMs: 2, data: {} }] : []),
+      { ...scope, id: "saved-tool-result", event: "tool_execution_completed", sourceKind: "session_history",
+        ...(historyIds ? { runId: evidence === "live run" ? "current-run" : "old-run",
+          interactionId: evidence === "live run" ? "current-input" : "old-input" } : {}),
+        timestampMs: 3, data: { id: "old-tool", result: "Saved tool output" } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Saved work finished", { selector: "p" });
+    await compose("queued work waits for the current owner");
+    const stack = await screen.findByTestId("pending-stack");
+    // Let render effects and the asynchronous storage lock queue attempt to drain.
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 20)); });
+    expect(within(stack).getByText("queued work waits for the current owner")).toBeVisible();
+    if (evidence === "live run") expect(within(stack).getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    if (evidence === "live run") {
+      await act(async () => {
+        receive?.({ ...scope, id: "current-complete", event: "interaction_complete", sourceKind: "console_event",
+          ...(historyIds ? { interactionId: "current-input" } : { runId: "current-run" }),
+          timestampMs: 4, data: { text: "Current work finished" } } as never);
+      });
+      await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    }
+  });
+
+  it("sends new work after loading saved tool results beyond the snapshot observation", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "new-work", identity: input.identity }));
+    const fake = transport(send);
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { ...scope, id: "old-terminal", cursor: "console:39", event: "interaction_complete", sourceKind: "console_event",
+        interactionId: "old-input", runId: "old-run", timestampMs: 1, data: { text: "Saved work finished" } },
+      { ...scope, id: "saved-tool-result", cursor: "console:40", event: "tool_execution_completed", sourceKind: "session_history",
+        timestampMs: 2, data: { id: "old-tool", result: "Saved tool output" } },
+      { ...scope, id: "history-snapshot", cursor: "console:43", event: "assistant_history_snapshot", sourceKind: "session_history",
+        timestampMs: 3, data: { session_id: scope.sessionId, complete: true, observed_through: "console:39", assistant_message_ids: ["saved-answer"] } },
+    ] });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Saved work finished", { selector: "p" });
+    await compose("new work after history reload");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("new work after history reload");
+    expect(screen.queryByText("Agent busy")).toBeNull();
+  });
+
   it("persists default embedded drafts and legacy queues in the server-owned scope", async () => {
     const send = vi.fn(async (input) => ({ interaction_id: "accepted", identity: input.identity }));
     const fake = transport(send);
@@ -542,6 +632,135 @@ describe("stock durable queue integration", () => {
     const saved = savedAttempts();
     expect(saved[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated" });
     expect(JSON.parse(saved[0].envelopeJson).handling_mode).toBe("steer");
+  });
+
+  it.each([
+    ["message_delivery_failed", "delivery_failed", { reason: "host-human input refused", data: { kind: "host_human_input_unsupported" } }],
+    ["interaction_complete", "completed", { reason: "steer_delivered", handling_mode: "steer" }],
+  ] as const)("keeps owner A busy after input B emits %s", async (event, status, data) => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", timestampMs: startedAt, data: { content: "Active owner work A" } },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 1, data: {} },
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("queued input C waits for owner A");
+    const stack = await screen.findByTestId("pending-stack");
+    expect(within(stack).getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const inputB: ConsoleFrame = { ...scope, id: "input-B", event: "user_input", sourceKind: "send",
+      interactionId: "interaction-B", timestampMs: startedAt + 2, status: "queued", data: { content: "Steer B", handling_mode: "steer" } };
+    const terminalB: ConsoleFrame = { ...scope, id: "input-B-terminal", event, sourceKind: "synthetic",
+      interactionId: "interaction-B", timestampMs: startedAt + 3, status, data };
+    history.push(inputB, terminalB);
+    await act(async () => { receive?.(inputB); receive?.(terminalB); });
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminalA: ConsoleFrame = { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 4, data: { text: "Owner A completed" } };
+    history.push(terminalA);
+    await act(async () => { receive?.(terminalA); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("queued input C waits for owner A");
+  });
+
+  it("replays owner IDs corrected on the same terminal record before draining", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    const terminal: ConsoleFrame = { ...scope, id: "corrected-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", timestampMs: startedAt + 2, frameVersion: 1, data: { text: "Initial A terminal" } };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", timestampMs: startedAt, data: {} },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", timestampMs: startedAt + 1, data: {} },
+      terminal,
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await screen.findByText("Initial A terminal", { selector: "p" });
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    const corrected = { ...terminal, interactionId: "interaction-B", frameVersion: 2 };
+    history[2] = corrected;
+    await act(async () => { receive?.({ ...scope, id: "terminal-update", event: "frame_updated", data: { frame: corrected } }); });
+    await compose("queued input C waits for corrected owner A");
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminalA: ConsoleFrame = { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", timestampMs: startedAt + 3, data: { text: "Owner A completed" } };
+    history.push(terminalA);
+    await act(async () => { receive?.(terminalA); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].content).toBe("queued input C waits for corrected owner A");
+  });
+
+  it("keeps tool-only owner work queued through text completion until a terminal turn", async () => {
+    const send = vi.fn(async input => ({ interaction_id: "queued-turn-C", identity: input.identity }));
+    const fake = transport(send);
+    const startedAt = Date.now();
+    const scope = { identity, runtimeKey: "owner-runtime", sessionId: "owner-session", interactionId: "interaction-A", runId: "run-A" };
+    const history: ConsoleFrame[] = [
+      { ...scope, id: "tool-A-result", event: "tool_execution_completed", timestampMs: startedAt, data: {} },
+    ];
+    fake.queryTimeline = async () => ({ available: true, frames: [...history] });
+    let receive: ((frame: ConsoleFrame) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("queued input C waits for a terminal turn");
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    const text: ConsoleFrame = { ...scope, id: "text-A-complete", event: "text_complete", timestampMs: startedAt + 1, data: { content: "Tool work text finished" } };
+    history.push(text);
+    await act(async () => { receive?.(text); });
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(send).not.toHaveBeenCalled();
+    const terminal: ConsoleFrame = { ...scope, id: "turn-A-complete", event: "turn_completed", timestampMs: startedAt + 2, data: { stop_reason: "end_turn" } };
+    history.push(terminal);
+    await act(async () => { receive?.(terminal); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the active owner run busy after a refused steer", async () => {
+    const refused = Object.assign(new Error("send access denied"), {
+      httpStatus: 403,
+      responseRpcError: { code: -32030, message: "send access denied", data: { kind: "access_denied" } },
+    });
+    const send = vi.fn(async input => ({ interaction_id: "next-owner-turn", identity: input.identity }))
+      .mockRejectedValueOnce(refused);
+    const fake = transport(send);
+    const startedAt = Date.now();
+    fake.queryTimeline = async () => ({ available: true, frames: [
+      { id: "owner-interaction", event: "interaction_started", identity, interactionId: "active-owner-turn", timestampMs: startedAt, data: { content: "Owner work is still running" } },
+      { id: "owner-run", event: "run_started", identity, interactionId: "active-owner-turn", runId: "active-owner-run", timestampMs: startedAt + 1, data: {} },
+    ] });
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, onFrame) => { receive = onFrame; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    await compose("refused steer");
+    expect(await screen.findByText("Agent busy")).toBeVisible();
+    fireEvent.click(screen.getByTestId(/^pending-steer:/));
+    const row = await screen.findByTestId(/^pending-item:/);
+    await waitFor(() => expect(within(row).getByText("Not sent")).toBeVisible());
+    expect(screen.getByText("Agent busy")).toBeVisible();
+    expect(screen.queryByText("Agent idle")).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Discard", exact: true }));
+    await compose("wait for the active owner turn");
+    expect(await screen.findByTestId("pending-stack")).toHaveTextContent("wait for the active owner turn");
+    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => { receive?.({ id: "owner-terminal", event: "interaction_complete", identity,
+      interactionId: "active-owner-turn", runId: "active-owner-run", timestampMs: startedAt + 2, data: { text: "Owner work completed" } } as never); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls[1][0].content).toBe("wait for the active owner turn");
   });
 
   it("shows a connection failure (e.g. a lost acknowledgement) as acceptance unknown, never as not sent", async () => {
@@ -1137,5 +1356,526 @@ describe("durable queued quote editing", () => {
     expect(fixture.read().envelopeJson).toBe(attempted.envelopeJson);
     expect(fixture.read().contexts[0].quote).toBe("original");
     expect(fixture.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("dock layout hydration", () => {
+  // The saved layout, or with none the configured initial target, used to be
+  // applied in a passive effect, after the commit that first drew the
+  // experience-gated nav. A click in that gap was overwritten when it landed.
+  // Click the nav entry the moment it appears (a MutationObserver callback
+  // runs before any later task) and require the click to win.
+  it("keeps a nav click made as soon as the experience renders", async () => {
+    // The restore race needs a saved layout; the file's beforeEach seeds it.
+    expect(window.localStorage.getItem("mobkit-console-dock-state:queue-test")).not.toBeNull();
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...initial, access: { available: true, enabled: true, can_administer: true, subject: "first-admin" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      if (input.command === "accessStatus") return { command: input.command, accepted: true, result: { available: true, enabled: true, can_administer: true, subject: "first-admin", revision: 1, actions: [] } } as never;
+      if (input.command === "getAccessConfig") return { command: input.command, accepted: true, result: { config: { enabled: true, admins: ["first-admin"], rules: [], groups: {} }, revision: 1 } } as never;
+      throw new Error(`unexpected ${input.command}`);
+    });
+    let clicked = false;
+    const observer = new MutationObserver(() => {
+      const nav = document.querySelector("[data-testid='nav:access']");
+      if (nav && !clicked) {
+        clicked = true;
+        fireEvent.click(nav);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<ConsoleApp baseUrl="" transport={fake} />);
+      await waitFor(() => expect(clicked).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
+    await screen.findByTestId("access-panel");
+    await screen.findByText("first-admin", { exact: true });
+  });
+
+  it("keeps a nav click made as soon as the experience renders when no layout is saved", async () => {
+    window.localStorage.clear();
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...initial, console_config: { layout: { initial_control: "logs" } }, access: { available: true, enabled: true, can_administer: true, subject: "first-admin" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      if (input.command === "accessStatus") return { command: input.command, accepted: true, result: { available: true, enabled: true, can_administer: true, subject: "first-admin", revision: 1, actions: [] } } as never;
+      if (input.command === "getAccessConfig") return { command: input.command, accepted: true, result: { config: { enabled: true, admins: ["first-admin"], rules: [], groups: {} }, revision: 1 } } as never;
+      throw new Error(`unexpected ${input.command}`);
+    });
+    let clicked = false;
+    const observer = new MutationObserver(() => {
+      const nav = document.querySelector("[data-testid='nav:access']");
+      if (nav && !clicked) {
+        clicked = true;
+        fireEvent.click(nav);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<ConsoleApp baseUrl="" transport={fake} />);
+      await waitFor(() => expect(clicked).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
+    await screen.findByTestId("access-panel");
+    await screen.findByText("first-admin", { exact: true });
+    expect(screen.queryByTestId("logs-panel")).toBeNull();
+  });
+});
+
+describe("access async scope isolation", () => {
+  it.each(["preview", "mutation"])("does not let a delayed old-scope %s overwrite refreshed owner data", async (operation) => {
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    let subject = "first-admin";
+    let receive: ((frame: never) => void) | undefined;
+    let finish!: () => void;
+    const started = vi.fn();
+    fake.loadExperience = async () => ({ ...initial, access: { available: true, enabled: true, can_administer: true, subject } }) as never;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get", "mobkit/access/preview", "mobkit/access/enable"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      let result: unknown;
+      if (input.command === "accessStatus") result = { available: true, enabled: true, can_administer: true, subject, revision: 1, owner_instance: "scope-owner", conditional_mutations: "checked_v1", actions: ["agent.view"] };
+      else if (input.command === "getAccessConfig") result = { config: { enabled: true, admins: [subject], rules: [], groups: {} }, revision: 1, owner_instance: "scope-owner", conditional_mutations: "checked_v1" };
+      else if (input.command === "previewAccess" || input.command === "enableAccess") {
+        started();
+        return new Promise((resolve, reject) => { finish = () => operation === "preview" ? reject(new Error("OLD_SCOPE_PRIVATE_ERROR")) : resolve({ command: input.command, accepted: true, result: {} } as never); });
+      } else throw new Error(`unexpected ${input.command}`);
+      return { command: input.command, accepted: true, result } as never;
+    });
+    render(<ConsoleApp baseUrl="" transport={fake} />);
+    fireEvent.click(await screen.findByText("Access", { exact: true }));
+    await screen.findByText("first-admin", { exact: true });
+    if (operation === "preview") {
+      fireEvent.click(screen.getByTestId("access-tab:preview"));
+      fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "reader" } });
+      fireEvent.click(screen.getByTestId("access-preview-run"));
+    } else fireEvent.click(screen.getByTestId("access-toggle-enabled"));
+    await waitFor(() => expect(started).toHaveBeenCalledOnce());
+    subject = "second-admin";
+    await act(async () => { receive?.({ id: "scope-update", event: "interaction_started", identity, interactionId: "scope-update", timestampMs: 2, data: {} } as never); });
+    await screen.findByText("second-admin", { exact: true });
+    await act(async () => { finish(); });
+    expect(screen.getByText("second-admin", { exact: true })).toBeVisible();
+    expect(screen.queryByTestId("access-error")).toBeNull();
+    expect(document.body).not.toHaveTextContent("OLD_SCOPE_PRIVATE_ERROR");
+    expect(screen.getByTestId("access-toggle-enabled")).toBeEnabled();
+  });
+});
+
+// These are actual ConsoleApp/HTTP-adapter tests with mocked RPC responses.
+// They do not substitute for the real AccessController mutex/TOML tests.
+describe("checked access saves", () => {
+  const originalConfig: ConsoleAccessConfig = {
+    enabled: true, admins: ["root@example.test", "alice@example.test"], rules: [], groups: {},
+  };
+  const editedAdmins = ["root@example.test", "alice@example.test", "carol@example.test"];
+  const draftText = editedAdmins.join(", ");
+  const newerRule = { id: "b-newer-rule", effect: "allow" as const, subjects: ["reader@example.test"], actions: ["agent.view"], agents: ["worker"] };
+  const mutationMethods = new Set([
+    "mobkit/access/set", "mobkit/access/enable", "mobkit/access/rules/upsert",
+    "mobkit/access/rules/delete", "mobkit/access/groups/set", "mobkit/access/groups/delete",
+  ]);
+
+  async function fixture(capability: string | undefined) {
+    const fake = transport(vi.fn());
+    const experience = await fake.loadExperience();
+    const state = {
+      capability, ownerInstance: "opaque-owner:one", revision: 10,
+      config: { ...originalConfig }, legacy: false, applied: 0,
+    };
+    const writes: Array<{ url: string; method: string; params: Record<string, unknown> }> = [];
+    const reads: string[] = [];
+    fake.loadExperience = async () => ({ ...experience, access: { available: true, enabled: true, can_administer: true, subject: "root@example.test" } }) as never;
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get", ...mutationMethods] }) as never;
+    fake.executeCommand = createHttpConsoleTransport({ baseUrl: "http://console.test" }).executeCommand;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const metadata = {
+        revision: state.revision,
+        ...(!state.legacy ? { owner_instance: state.ownerInstance, conditional_mutations: state.capability } : {}),
+      };
+      if (body.method === "mobkit/access/status") {
+        reads.push(body.method);
+        return reply({ result: { available: true, enabled: state.config.enabled, can_administer: true, subject: "root@example.test", actions: ["agent.view"], ...metadata } });
+      }
+      if (body.method === "mobkit/access/get") {
+        reads.push(body.method);
+        return reply({ result: { config: state.config, ...metadata } });
+      }
+      if (mutationMethods.has(body.method)) {
+        writes.push({ url: String(url), method: body.method, params: body.params });
+        // A legacy handler accepts its required top-level payload. This makes
+        // an unsafe fallback observable rather than making every write fail.
+        if (state.legacy && body.method === "mobkit/access/set" && body.params.config) {
+          state.config = body.params.config as ConsoleAccessConfig;
+          state.applied += 1; state.revision += 1;
+          return reply({ result: { config: state.config, revision: state.revision } });
+        }
+        const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; config?: ConsoleAccessConfig } | undefined;
+        if (state.legacy || body.method !== "mobkit/access/set" || !checked?.config || Object.keys(body.params).length !== 1) {
+          return reply({ error: { code: -32602, message: "PRIVATE_CHECKED_PAYLOAD_ERROR" } });
+        }
+        if (checked.owner_instance !== state.ownerInstance) {
+          return reply({ error: { code: -32009, message: "PRIVATE_OWNER_MESSAGE", data: { kind: "access_owner_changed" } } });
+        }
+        if (checked.expected_revision !== state.revision) {
+          return reply({ error: { code: -32009, message: "PRIVATE_CONFLICT_MESSAGE", data: { kind: "access_revision_conflict", expected_revision: checked.expected_revision, actual_revision: state.revision } } });
+        }
+        state.config = checked.config;
+        state.applied += 1; state.revision += 1;
+        return reply({ result: { config: state.config, ...metadata, revision: state.revision } });
+      }
+      throw new Error(`unexpected mock HTTP method ${body.method}`);
+    }));
+    return { fake, state, writes, reads };
+  }
+
+  // Restore a saved layout with Access already open, so no nav click can race
+  // the dock layout hydration.
+  async function openAccess(fake: MobKitConsoleTransport) {
+    window.localStorage.setItem("mobkit-console-dock-state:queue-test", JSON.stringify({
+      tabs: [{ id: "tab-1", presetId: "single", layout: { kind: "panel", panelId: "panel-1" } }],
+      panels: [{ id: "panel-1", mode: "console", target: { id: "access", kind: "access", title: "Access" } }],
+      activeTabId: "tab-1", focusedPanelId: "panel-1",
+    }));
+    const view = render(<ConsoleApp baseUrl="" transport={fake} />);
+    await screen.findByText("alice@example.test", { exact: true });
+    return view;
+  }
+
+  function unavailableWrite(testId: string) {
+    const button = screen.queryByTestId(testId);
+    if (button) {
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+  }
+
+  it("keeps the original edit token through refresh and requires explicit conflict review before reapply", async () => {
+    const { fake, state, writes, reads } = await fixture("checked_v1");
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+
+    state.revision = 11;
+    state.config = { ...originalConfig, rules: [newerRule] };
+    const beforeRefresh = reads.length;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(beforeRefresh));
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    expect(await screen.findByTestId("access-rule:b-newer-rule")).toBeVisible();
+    fireEvent.click(screen.getByTestId("access-tab:overview"));
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(writes).toHaveLength(0);
+
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Access configuration changed. Review the latest settings before saving again.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CONFLICT_MESSAGE");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CHECKED_PAYLOAD_ERROR");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(state.config).toEqual({ ...originalConfig, rules: [newerRule] });
+    expect(state.revision).toBe(11);
+    expect(state.applied).toBe(0);
+    expect(screen.getByTestId("access-save-admins")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("access-save-admins"));
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(screen.getByTestId("access-save-admins")).toBeDisabled();
+    expect(writes).toHaveLength(1);
+
+    // Review binds the displayed current base without submitting a write.
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review and reapply", exact: true })); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    expect(writes).toHaveLength(1);
+    expect(screen.getByTestId("access-save-admins")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(screen.queryByTestId("access-admins-input")).toBeNull());
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 11, config: { ...originalConfig, rules: [newerRule], admins: editedAdmins } } },
+    });
+    expect(state.config).toEqual({ ...originalConfig, rules: [newerRule], admins: editedAdmins });
+    expect(state.revision).toBe(12);
+    expect(state.applied).toBe(1);
+    expect(screen.getByText("carol@example.test", { exact: true })).toBeVisible();
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    expect(screen.getByTestId("access-rule:b-newer-rule")).toBeVisible();
+  });
+
+  it("keeps authorized reads usable but sends no mutation without a recognized checked capability", async () => {
+    for (const capability of [undefined, "checked_v2"]) {
+      const { fake, state, writes, reads } = await fixture(capability);
+      const view = await openAccess(fake);
+      expect(reads).toContain("mobkit/access/status");
+      expect(reads).toContain("mobkit/access/get");
+      expect(screen.getByText("alice@example.test", { exact: true })).toBeVisible();
+      unavailableWrite("access-toggle-enabled");
+      unavailableWrite("access-edit-admins");
+      fireEvent.click(screen.getByTestId("access-tab:rules"));
+      unavailableWrite("access-rule-new");
+      fireEvent.click(screen.getByTestId("access-tab:groups"));
+      unavailableWrite("access-group-save");
+      await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+      expect(writes).toHaveLength(0);
+      expect(state.applied).toBe(0);
+      expect(state.revision).toBe(10);
+      view.unmount();
+    }
+  });
+
+  it("retains the draft when a cached capability meets an old backend and never falls back to a legacy write", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    state.legacy = true;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. Checked access saves are unavailable; your draft is retained.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_CHECKED_PAYLOAD_ERROR");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    expect(screen.queryByRole("button", { name: "Review and reapply", exact: true })).toBeNull();
+    expect(writes).toHaveLength(1);
+    expect(state.applied).toBe(0);
+    expect(state.revision).toBe(10);
+    expect(state.config).toEqual(originalConfig);
+  });
+
+  it("routes all six access writes through the complete checked envelope", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    // Reuse the same real HTTP adapter and protected-read fixture for every
+    // control. The mock checks only wire shape/sequence, not owner atomicity.
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (!mutationMethods.has(body.method) || body.method === "mobkit/access/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as Record<string, unknown> | undefined;
+      if (Object.keys(body.params).length !== 1 || !checked
+          || checked.owner_instance !== state.ownerInstance || checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32602, message: "PRIVATE_ROUTING_PAYLOAD_ERROR" } });
+      }
+      switch (body.method) {
+        case "mobkit/access/enable": state.config = { ...state.config, enabled: checked.enabled as boolean }; break;
+        case "mobkit/access/rules/upsert": state.config = { ...state.config, rules: [...(state.config.rules ?? []), checked.rule as NonNullable<ConsoleAccessConfig["rules"]>[number]] }; break;
+        case "mobkit/access/rules/delete": state.config = { ...state.config, rules: state.config.rules?.filter(rule => rule.id !== checked.id) }; break;
+        case "mobkit/access/groups/set": state.config = { ...state.config, groups: { ...state.config.groups, [checked.name as string]: checked.group as { members: string[] } } }; break;
+        case "mobkit/access/groups/delete": {
+          const groups = { ...state.config.groups };
+          delete groups[checked.name as string];
+          state.config = { ...state.config, groups };
+          break;
+        }
+        default: throw new Error(`unhandled routing control ${body.method}`);
+      }
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { config: state.config, revision: state.revision, owner_instance: state.ownerInstance, conditional_mutations: "checked_v1" } });
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await openAccess(fake);
+
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    await waitFor(() => expect(screen.queryByTestId("access-admins-input")).toBeNull());
+    await act(async () => { fireEvent.click(screen.getByTestId("access-toggle-enabled")); });
+    await screen.findByRole("button", { name: "Enable enforcement", exact: true });
+
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    fireEvent.click(screen.getByTestId("access-rule-new"));
+    fireEvent.change(screen.getByTestId("access-rule-id"), { target: { value: "checked-rule" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    await screen.findByTestId("access-rule-delete:checked-rule");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-delete:checked-rule")); });
+    await waitFor(() => expect(screen.queryByTestId("access-rule:checked-rule")).toBeNull());
+    await screen.findByTestId("access-rule-new");
+
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.change(screen.getByTestId("access-group-name"), { target: { value: "checked-group" } });
+    fireEvent.change(screen.getByTestId("access-group-members"), { target: { value: "alice@example.test" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await screen.findByTestId("access-group-delete:checked-group");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-delete:checked-group")); });
+    await waitFor(() => expect(screen.queryByTestId("access-group:checked-group")).toBeNull());
+    expect(screen.queryByTestId("access-error")).toBeNull();
+
+    const payloads = [
+      ["mobkit/access/set", { config: { ...originalConfig, admins: editedAdmins } }],
+      ["mobkit/access/enable", { enabled: false }],
+      ["mobkit/access/rules/upsert", { rule: { id: "checked-rule", effect: "allow", actions: ["agent.view"] } }],
+      ["mobkit/access/rules/delete", { id: "checked-rule" }],
+      ["mobkit/access/groups/set", { name: "checked-group", group: { members: ["alice@example.test"] } }],
+      ["mobkit/access/groups/delete", { name: "checked-group" }],
+    ] as const;
+    expect(writes).toEqual(payloads.map(([method, payload], index) => ({
+      url: "http://console.test/console/rpc", method,
+      params: { checked_v1: { ...payload, owner_instance: "opaque-owner:one", expected_revision: 10 + index } },
+    })));
+    expect(state.applied).toBe(6);
+    expect(state.revision).toBe(16);
+    expect(state.config).toEqual({ ...originalConfig, enabled: false, admins: editedAdmins });
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("reapplies only the intended group members onto the reviewed description", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const initialGroup = { description: "Original group description", members: ["alice@example.test"] };
+    const newerGroup = { ...initialGroup, description: "Another admin's updated description" };
+    const editedMembers = ["carol@example.test"];
+    state.config = { ...originalConfig, groups: { ops: initialGroup } };
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/groups/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; name?: string; group?: { description?: string; members: string[] } } | undefined;
+      if (Object.keys(body.params).length !== 1 || !checked?.group || checked.name !== "ops" || checked.owner_instance !== state.ownerInstance) {
+        return reply({ error: { code: -32602, message: "PRIVATE_GROUP_PAYLOAD_ERROR" } });
+      }
+      if (checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32009, message: "PRIVATE_GROUP_CONFLICT", data: { kind: "access_revision_conflict", expected_revision: checked.expected_revision, actual_revision: state.revision } } });
+      }
+      // Like the real owner, a group save replaces the complete group.
+      state.config = { ...state.config, groups: { ...state.config.groups, ops: checked.group } };
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { revision: state.revision } });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-tab:groups"));
+    fireEvent.click(screen.getByTestId("access-group-edit:ops"));
+    fireEvent.change(screen.getByTestId("access-group-members"), { target: { value: editedMembers.join(", ") } });
+    state.config = { ...state.config, groups: { ops: newerGroup } };
+    state.revision = 11;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      url: "http://console.test/console/rpc", method: "mobkit/access/groups/set",
+      params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, name: "ops", group: { ...initialGroup, members: editedMembers } } },
+    });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Access configuration changed. Review the latest settings before saving again.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_GROUP_CONFLICT");
+    expect(screen.getByTestId("access-group-members")).toHaveValue("carol@example.test");
+    expect(screen.getByTestId("access-group-save")).toBeDisabled();
+    expect(state.config.groups?.ops).toEqual(newerGroup);
+    expect(state.applied).toBe(0);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review and reapply", exact: true })); });
+    expect(writes).toHaveLength(1);
+    expect(screen.getByTestId("access-group-save")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-group-save")); });
+    await screen.findByTestId("access-group:ops");
+    expect(writes).toEqual([
+      writes[0],
+      { url: "http://console.test/console/rpc", method: "mobkit/access/groups/set",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 11, name: "ops", group: { ...newerGroup, members: editedMembers } } } },
+    ]);
+    expect(screen.getByText(newerGroup.description, { exact: true })).toBeVisible();
+    expect(state.config.groups?.ops).toEqual({ ...newerGroup, members: editedMembers });
+    expect(state.revision).toBe(12);
+    expect(state.applied).toBe(1);
+  });
+
+  it("retains a typed unavailable draft and blocks repeated Save even when checked reads remain available", async () => {
+    const { fake, state, writes, reads } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/set") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: {
+        code: -32004, message: "PRIVATE_UNAVAILABLE_MESSAGE", data: { kind: "access_mutation_unavailable" },
+      } }), { status: 200 });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-edit-admins"));
+    fireEvent.change(screen.getByTestId("access-admins-input"), { target: { value: draftText } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-save-admins")); });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. Checked access saves are unavailable; your draft is retained.");
+    expect(document.body).not.toHaveTextContent("PRIVATE_UNAVAILABLE_MESSAGE");
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    const beforeRefresh = reads.length;
+    await act(async () => { fireEvent.click(screen.getByTestId("access-refresh")); });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(beforeRefresh));
+    expect(screen.getByTestId("access-admins-input")).toHaveValue(draftText);
+    unavailableWrite("access-save-admins");
+    expect(writes).toEqual([{ url: "http://console.test/console/rpc", method: "mobkit/access/set", params: {
+      checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, config: { ...originalConfig, admins: editedAdmins } },
+    } }]);
+    expect(state.capability).toBe("checked_v1");
+    expect(state.revision).toBe(10);
+    expect(state.applied).toBe(0);
+    expect(state.config).toEqual(originalConfig);
+  });
+
+  it("keeps an owner-rejected invalid rule draft editable on its own token, then saves the correction", async () => {
+    const { fake, state, writes } = await fixture("checked_v1");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { id: string; method: string; params: Record<string, unknown> };
+      if (body.method !== "mobkit/access/rules/upsert") return originalFetch(url, init);
+      writes.push({ url: String(url), method: body.method, params: body.params });
+      const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...payload }), { status: 200 });
+      const checked = body.params.checked_v1 as { owner_instance?: string; expected_revision?: number; rule?: { groups?: string[] } } | undefined;
+      if (Object.keys(body.params).length !== 1 || checked?.owner_instance !== state.ownerInstance || checked.expected_revision !== state.revision) {
+        return reply({ error: { code: -32602, message: "PRIVATE_RULE_PAYLOAD_ERROR" } });
+      }
+      // Like the real owner: the rule names a group the configuration lacks.
+      if (checked.rule?.groups?.length) {
+        return reply({ error: { code: -32602, message: "Invalid access configuration.", data: { kind: "invalid_access_config" } } });
+      }
+      state.config = { ...state.config, rules: [...(state.config.rules ?? []), checked.rule as NonNullable<ConsoleAccessConfig["rules"]>[number]] };
+      state.applied += 1; state.revision += 1;
+      return reply({ result: { revision: state.revision } });
+    }));
+    await openAccess(fake);
+    fireEvent.click(screen.getByTestId("access-tab:rules"));
+    fireEvent.click(screen.getByTestId("access-rule-new"));
+    fireEvent.change(screen.getByTestId("access-rule-id"), { target: { value: "ops-rule" } });
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "missing-group" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    expect(await screen.findByTestId("access-error")).toHaveTextContent("Changes were not saved. The resulting access configuration is not valid; your draft is retained for correction.");
+    expect(screen.queryByRole("button", { name: "Review and reapply", exact: true })).toBeNull();
+    expect(screen.getByTestId("access-rule-groups")).toHaveValue("missing-group");
+    expect(state.applied).toBe(0);
+    fireEvent.change(screen.getByTestId("access-rule-groups"), { target: { value: "" } });
+    expect(screen.getByTestId("access-rule-save")).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByTestId("access-rule-save")); });
+    await screen.findByTestId("access-rule:ops-rule");
+    expect(writes).toEqual([
+      { url: "http://console.test/console/rpc", method: "mobkit/access/rules/upsert",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, rule: { id: "ops-rule", effect: "allow", actions: ["agent.view"], groups: ["missing-group"] } } } },
+      { url: "http://console.test/console/rpc", method: "mobkit/access/rules/upsert",
+        params: { checked_v1: { owner_instance: state.ownerInstance, expected_revision: 10, rule: { id: "ops-rule", effect: "allow", actions: ["agent.view"] } } } },
+    ]);
+    expect(state.applied).toBe(1);
+    expect(state.revision).toBe(11);
+    expect(screen.queryByTestId("access-error")).toBeNull();
+    expect(document.body).not.toHaveTextContent("PRIVATE_RULE_PAYLOAD_ERROR");
   });
 });

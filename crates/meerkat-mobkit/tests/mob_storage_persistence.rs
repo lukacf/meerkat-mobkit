@@ -38,11 +38,12 @@ use meerkat_mobkit::identity_first::{
     LocalLeaseProvider, MobSessionBridge, MutableRosterProvider, SessionBridge,
 };
 use meerkat_mobkit::mob_composition_manifest::{
-    MobCompositionManifest, MobCompositionProvenanceError, MobStorageProvenance, manifest_path,
-    persistent_mob_storage,
+    CandidateDefinition, MobCompositionManifest, MobCompositionProvenanceError,
+    MobStorageProvenance, manifest_path, persistent_mob_storage,
 };
 use meerkat_mobkit::mob_handle_runtime::{MobRuntimeError, auto_mark_declared_resume_overrides};
 use meerkat_mobkit::spec_update_ceremony::{SpecUpdateError, declare_spec_update};
+use meerkat_mobkit::storage_health::{BlobDurability, ResolvedStorageSummary, StorageSlotSummary};
 use meerkat_mobkit::unified_runtime::edge_reconcile::DefinitionWiringEdgeDiscovery;
 use meerkat_mobkit::{
     DesiredPeerEdge, DiscoverySpec, IdentityBootstrapMode, MobBootstrapOptions, MobBootstrapSpec,
@@ -803,20 +804,54 @@ async fn a_rehearsal_created_store_is_refused_by_name_not_silently_adopted() {
     }
 }
 
-/// The other direction, which exempting creation alone would have wedged: a
-/// candidate rehearsing against a store an AUTHORITATIVE launch created must
-/// not be refused for the fields candidate mode exists to differ in.
-///
-/// This is the legitimate rehearsal shape - real durable state, restricted
-/// composition, nothing durable authored.
-#[tokio::test]
-async fn a_candidate_is_not_refused_by_a_pin_it_does_not_speak_for() {
-    const MOB_ID: &str = "candidate-vs-real-pin";
-    let temp = tempfile::tempdir().expect("temp dir");
-    let mob_path = temp.path().join("mob.sqlite");
-    let session_root = temp.path().join("sessions");
+/// `base_definition_for` with the operator's newly added tool deny on `lead`:
+/// the shape of a config edit that must not silently stay out of effect.
+fn deny_added_definition_for(mob_id: &str) -> MobDefinition {
+    definition_with(&format!(
+        r#"
+[mob]
+id = "{mob_id}"
 
-    let promoted = boot(&mob_path, &session_root, base_definition_for(MOB_ID))
+[profiles.lead]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+deny = ["spawn_member", "wire_members"]
+"#
+    ))
+}
+
+/// A candidate boot with an explicit candidate-definition policy and a
+/// storage census to report health into.
+async fn boot_candidate_with(
+    mob_path: &Path,
+    session_root: &Path,
+    definition: MobDefinition,
+    policy: CandidateDefinition,
+) -> Result<MobRuntime, MobRuntimeError> {
+    let (storage, provenance) =
+        persistent_mob_storage(mob_path.to_path_buf()).expect("open persistent mob storage");
+    MobRuntime::bootstrap(
+        MobBootstrapSpec::new(definition, storage, session_service(session_root).await)
+            .with_mob_storage_provenance(provenance)
+            .with_composition_authority(
+                meerkat_mobkit::mob_composition_manifest::CompositionAuthority::NonAuthoritative,
+            )
+            .with_candidate_definition(policy)
+            .with_resolved_storage(ResolvedStorageSummary::new(
+                BlobDurability::DeclaredEphemeral,
+                None,
+            ))
+            .with_options(options()),
+    )
+    .await
+}
+
+/// An authoritative launch creates the store and pin for `base_definition_for`.
+async fn create_authoritative_store(mob_path: &Path, session_root: &Path, mob_id: &str) {
+    let promoted = boot(mob_path, session_root, base_definition_for(mob_id))
         .await
         .expect("an authoritative launch creates the store and its pin");
     promoted
@@ -825,16 +860,215 @@ async fn a_candidate_is_not_refused_by_a_pin_it_does_not_speak_for() {
         .await
         .expect("shutdown the promoted runtime");
     drop(promoted);
+}
 
-    let candidate =
-        boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID)).await;
+/// The candidate's `mob_composition` health slot, when it reported one.
+fn composition_slot(runtime: &MobRuntime) -> Option<StorageSlotSummary> {
+    runtime
+        .resolved_storage()
+        .expect("the boot declared a storage census")
+        .slots
+        .into_iter()
+        .find(|slot| slot.durability.domain() == "mob_composition")
+}
+
+/// A candidate whose config matches the stored definition boots as before,
+/// with no degraded composition slot.
+#[tokio::test]
+async fn a_candidate_matching_the_stored_definition_boots() {
+    const MOB_ID: &str = "candidate-matches";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        base_definition_for(MOB_ID),
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    .expect("a candidate whose config matches the stored definition boots");
+    assert!(composition_slot(&candidate).is_none());
+    let _ = candidate.handle().shutdown().await;
+}
+
+/// The defect: a candidate resume boots the STORED definition, so a config
+/// whose `profiles.lead.tools.deny` adds a deny the store lacks used to boot
+/// silently without it. It now refuses, naming the diverged field.
+#[tokio::test]
+async fn a_candidate_with_a_divergent_tool_deny_is_refused_naming_the_field() {
+    const MOB_ID: &str = "candidate-divergent-deny";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    match boot_candidate_with(
+        &mob_path,
+        &session_root,
+        deny_added_definition_for(MOB_ID),
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    {
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CandidateDivergent { fields },
+        )) => {
+            assert!(
+                fields
+                    .iter()
+                    .any(|field| field == "profiles.lead.tools.deny"),
+                "the refusal names the diverged deny: {fields:?}"
+            );
+        }
+        Err(other) => panic!("expected a candidate divergence refusal, got: {other}"),
+        Ok(runtime) => {
+            let _ = runtime.handle().shutdown().await;
+            panic!(
+                "the candidate booted the stored definition without the deny its config \
+                 declares: the config is presented but not in effect"
+            );
+        }
+    }
+}
+
+/// The explicit opt-in: a certification candidate that knowingly accepts the
+/// stored definition boots it, and reports the diverged fields as degraded
+/// health instead of hiding them.
+#[tokio::test]
+async fn a_candidate_acknowledging_the_stored_definition_boots_it_with_degraded_health() {
+    const MOB_ID: &str = "candidate-stored-opt-in";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+    create_authoritative_store(&mob_path, &session_root, MOB_ID).await;
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        deny_added_definition_for(MOB_ID),
+        CandidateDefinition::Stored,
+    )
+    .await
+    .expect("an acknowledged stored definition boots");
+    let slot = composition_slot(&candidate).expect("the divergence is health-visible");
+    assert!(slot.degraded, "{slot:?}");
     assert!(
-        candidate.is_ok(),
-        "a candidate must not be refused by a pin it does not speak for: {:?}",
-        candidate.err()
+        slot.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("profiles.lead.tools.deny")),
+        "{slot:?}"
     );
-    if let Ok(runtime) = candidate {
-        let _ = runtime.handle().shutdown().await;
+    let _ = candidate.handle().shutdown().await;
+}
+
+/// The candidate arm makes the authoritative arm's released-representation
+/// allowance: on a store a 0.8.28 writer created, an unchanged operator
+/// config boots as a candidate, while the same config with an added
+/// `tools.deny` still refuses, naming the field.
+#[tokio::test]
+async fn a_candidate_on_a_released_synthesized_store_is_judged_in_the_released_form() {
+    const MOB_ID: &str = "candidate-legacy-synthesized";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let mut supplied = base_definition_for(MOB_ID);
+    supplied
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile")
+        .provider_params = Some(
+        meerkat_core::lifecycle::run_primitive::ProviderParamsOverride {
+            temperature: Some(0.2),
+            ..Default::default()
+        },
+    );
+    let mut released = supplied.clone();
+    let profile = released
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile");
+    profile.provider = Some(meerkat_core::Provider::OpenAI);
+    profile.resume_overrides = vec![
+        meerkat_mob::ResumeOverrideField::Model,
+        meerkat_mob::ResumeOverrideField::Provider,
+        meerkat_mob::ResumeOverrideField::ProviderParams,
+    ];
+    let first = boot(&mob_path, &session_root, released)
+        .await
+        .expect("create using the released synthesized representation");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown released runtime");
+    drop(first);
+    let manifest_path = manifest_path(&mob_path);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+            .expect("decode manifest");
+    let manifest = manifest.as_object_mut().expect("manifest object");
+    manifest.insert(
+        "created_by_mobkit".to_string(),
+        serde_json::Value::String("0.8.28".to_string()),
+    );
+    manifest.remove("legacy_synthesized_profile_normalization");
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("encode released manifest"),
+    )
+    .expect("write released manifest");
+
+    let mut with_deny = supplied.clone();
+    with_deny
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile")
+        .tools
+        .deny = vec!["spawn_member".to_string()];
+
+    let candidate = boot_candidate_with(
+        &mob_path,
+        &session_root,
+        supplied,
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    .expect("an unchanged operator config boots as a candidate on a released store");
+    assert!(composition_slot(&candidate).is_none());
+    candidate
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown the candidate runtime");
+    drop(candidate);
+
+    match boot_candidate_with(
+        &mob_path,
+        &session_root,
+        with_deny,
+        CandidateDefinition::RequireMatch,
+    )
+    .await
+    {
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CandidateDivergent { fields },
+        )) => assert!(
+            fields
+                .iter()
+                .any(|field| field == "profiles.lead.tools.deny"),
+            "{fields:?}"
+        ),
+        Err(other) => panic!("expected a candidate divergence refusal, got: {other}"),
+        Ok(runtime) => {
+            let _ = runtime.handle().shutdown().await;
+            panic!("the added deny booted silently on a released store");
+        }
     }
 }
 

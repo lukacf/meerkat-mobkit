@@ -9,18 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `GatingDecideError` gains `IdsUnavailable(GatingIdUnavailable)`, and
+  `GatingStateSnapshot` gains `owner_epoch: Option<String>` (see Fixed).
+  Exhaustive matches and struct literals must handle the new variant and
+  field.
+- `StewardStore` gains the required method `review_quarantined` (see Added).
+  Implementors must add it; a store without a quarantine queue can return
+  `QuarantineReviewError::Store(AgentMemoryError::Unsupported(..))`.
+- `StewardStore::resolve_pending_promotion` and `rekey_pending_promotion`
+  return `Result<bool, AgentMemoryError>`: whether the promotion was still
+  pending and changed. Implementors must report it and must leave a
+  resolved promotion (including one an operator's tombstone invalidated)
+  as it is.
+- `MemoryTimelineEvent::QuarantineVerdict` gains `successor_id:
+  Option<String>` (see Added). Code constructing it must set it; the console
+  payload omits it when absent.
+- `MemoryRecord` gains `ever_quarantined: bool` (serde default `false`), the
+  durable taint marker the store already kept. Code building the struct with
+  a literal must set it.
+- `AccessConfigError` gains `RevisionExhausted` (see Added): the access owner
+  refuses a mutation that would overflow its `u64` revision before persisting
+  or publishing it. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add the arm.
+- `MobCompositionProvenanceError` gains `CandidateDivergent { fields }`
+  (see Changed). Exhaustive matches must handle it. `MobBootstrapSpec` gains
+  the pub field `candidate_definition: CandidateDefinition`; code that builds
+  the spec with a struct literal must set it (`CandidateDefinition::default()`
+  keeps the refusing default).
+- `MobRuntimeError` gains `MobStopFlowRunsUnsettled(Box<MobStopFlowRunsUnsettled>)`
+  (see Changed). Exhaustive matches must handle it.
+- `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
+  MobTerminalShutdownOutcome` (see Changed). Code constructing the report
+  must set it; `MobTerminalShutdownOutcome` is `#[non_exhaustive]`.
 - `ContinuityStore::as_incremental_sessions` no longer has a default. Every
   continuity store now states whether it serves MobKit's session-delta
   channel: a decorator forwards its inner store's channel, and a
   whole-snapshot store returns `None` and says why.
   - The default `None` let wrappers around incremental-capable stores, and
     native stores that never considered the channel, silently fall back to
-    writing the whole session document at every turn boundary. One OB3
-    coordinator was rewritten in full, at 286 MB, 44 times a day.
+    writing the whole session document at every turn boundary. One
+    production coordinator session was rewritten in full, at 286 MB, 44
+    times a day.
   - Implementors without the method must add it.
 - `UnifiedRuntimeBuilderError` gains
   `SessionStoreNotIncremental { store_kind }` (see Added). Exhaustive matches
   must handle it.
+- `identity_first::ResumeRejectionKind` and
+  `identity_first::ContinuityFailureKind` gain `RoleMigrationNotApplied`
+  (see Fixed). Exhaustive matches must handle it. On the wire,
+  `identity_bootstrap` restore progress can carry the new kind
+  `role_migration_not_applied`.
 
 - `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
   `durability: StorageSlotDurability`. Match `Declared(declaration)` or
@@ -93,6 +131,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- Memory panel reads (`mobkit/memory/panel/*`) treat a tombstoned record
+  that was ever quarantined as quarantine evidence: a caller without
+  `memory.quarantine.review` no longer receives it, as it never received a
+  quarantined one. `memory.quarantine.verdict` frames may carry
+  `successor_id`, and the steward's open-loop nudges
+  (`verdict: "open_loop_escalated"`) no longer carry the dream's rationale
+  (`rationale` is null).
+- `mobkit/access/*` failures are typed and no longer echo server detail (see
+  Added). A failed save of the access file answers `-32000` with
+  `data.kind = "access_persistence_failed"` instead of `-32602`; an exhausted
+  revision answers `-32004` with `access_mutation_unavailable`. Invalid
+  configurations keep `-32602` and `invalid_access_config` with the fixed
+  message "Invalid access configuration.", and unparseable payloads answer
+  "Invalid access config.", "Invalid access rule." or "Invalid access
+  group." instead of the parser text. `mobkit/access/get`, `preview` and
+  every write recheck the caller's current administrator access at the owner
+  instead of the request's captured view. Unchecked top-level writes
+  otherwise keep their shape.
+- `mobkit/init` composition provenance refusals now answer `-32019` with
+  refusal `data` instead of `-32603` (see Added). A client that matched these
+  refusals on `-32603` must match `-32019`; an SDK older than this release
+  raises them as a plain `RpcError` with the new code.
+- `mobkit/console/voice/captions` batches may carry a `playback_hint` entry
+  (`{"kind": "playback_hint", "hint": "duck" | "restore"}`) next to
+  `caption` and `retracted`. The embedded console ships with the gateway that
+  emits it; a client that parses captions strictly must accept the new kind.
 - Storage census slots add `resolution: "unverified"` when a bare injected
   WorkGraph store supplied no durability declaration. Existing declared
   resolutions and slot fields retain their wire shape. Both persistent and
@@ -125,8 +189,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Authorized `/console/experience` responses provide an opaque `storage_scope`
   for runtime/principal-separated browser drafts and queues. Explicit host
   `storageNamespace` values continue to take precedence.
+- The memory steward's `memory.quarantine.verdict` frames report applied
+  releases and tombstones only, with `rationale` null; its `hold` and
+  `promote_pending_gate` verdicts no longer emit one (see Changed).
 
 ### Changed
+
+- The published crate no longer includes in-repo forensic test captures.
+- The memory steward's quarantine `release` and `tombstone` verdicts run the
+  operator review's store transaction (`StewardStore::review_quarantined`,
+  reviewer `steward`; see Added), so a record is decided once, by whichever
+  reviewer commits first; the other is skipped or replays.
+  - A release's successor is `<memory_id>-released` instead of a fresh id,
+    and a quarantined update is released as a supersede of the record it
+    updates instead of leaving two active versions. When that record is
+    gone, the release is refused (`stale_update`) and skipped loudly; the
+    update stays quarantined, tombstone remaining its exit.
+  - `memory.quarantine.verdict` comes from the store once the review
+    commits, without the steward's rationale (its audit row keeps it).
+    `hold` changes nothing and `promote_pending_gate` reports through
+    `memory.promotion.pending_gate`, so neither emits a verdict any more.
+- CI and release jobs on hosted Linux run on `ubuntu-24.04` instead of
+  `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19
+  (actions/runner-images#14748). The move to 26 will be validated
+  separately (meerkat#1767) instead of being inherited.
+- Candidate launches now refuse a config that differs from the stored mob
+  definition. A non-authoritative launch (`runtime_options.mob_composition =
+  {"authority": "candidate"}`) resumes on the mob definition stored in its
+  event log, because a resume cannot apply a new definition. It used to do
+  that without comparing it to the supplied config, so an edited config (for
+  example a profile's newly added `tools.deny`) silently stayed out of effect
+  while the boot looked healthy. Such a boot now refuses with
+  `MobCompositionProvenanceError::CandidateDivergent`, naming the diverged
+  fields as dotted paths (`profiles.lead.tools.deny`).
+  - To boot the stored definition knowingly, for example in a certification
+    pass that deliberately differs from the stored composition, set
+    `runtime_options.mob_composition.candidate_definition = "stored"`
+    (`MobBootstrapSpec::with_candidate_definition(CandidateDefinition::Stored)`).
+    The boot then runs the stored definition, logs the diverged fields at
+    WARN, and reports them in a degraded `mob_composition` storage-health
+    slot.
+  - `candidate_definition` is candidate-only: an authoritative launch that
+    sets `"stored"` is refused at parse time, since the composition pin
+    judges it.
+  - Candidates still never write or claim the composition pin. Authoritative
+    launches are unchanged.
+  - Upgrading: a candidate-then-promote pipeline whose candidate config
+    differs from the stored definition must add
+    `candidate_definition = "stored"` to the candidate launch, or run the
+    candidate on its own storage path.
+- `wait_for_output` and `wait_for_output_containing` no longer poll.
+  - **Rust:** the `IdentityRuntime` methods read the member once, then again
+    only when the identity table signals a change. A completion, a
+    registration and a lease change all signal it. Before, the methods
+    re-read every 500 ms. The caller's timeout is the only timer.
+  - **Python:** a bare `IdentityAgentHandle.wait_for_output()`, the
+    deprecated `baseline=` form and `wait_for_output_containing()` read the
+    member, then wait server-side (`mobkit/wait_for_completion`) for the next
+    completion past the cursor that read saw. Before, they called
+    `mobkit/inspect_identity` every 1.5 s. `poll_interval` now applies only
+    to gateways that predate the server-side wait.
+  - **Behavior change:** a bare `wait_for_output()` or
+    `wait_for_output_containing()` on a live alias with no completion cursor
+    now raises the typed `CompletionCursorUnavailableError` (exported from
+    `meerkat_mobkit`, carrying `identity`) at once. Before, it polled
+    `inspect_identity` until its timeout. **Migration:** a live alias has no
+    completion to wait for, so wait on its turn instead: send or dispatch
+    with `track_turn=True` and pass the ticket as `wait_for_output(turn=...)`
+    or `wait_for_turn(...)`. Identity-first handles are unaffected.
+    `baseline=` is not a migration path, because it now waits on completions
+    too. The cursor waits that already refused a live alias (`after=`,
+    `wait_for_completion`) now raise the same class.
+    `CompletionCursorUnavailableError` subclasses `RuntimeError`, which
+    those waits raised before.
 
 - Behaviour change (identity-first runtimes with a topology provider): with
   a topology provider, reconcile unwires identity edges that neither the
@@ -134,6 +269,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   before a restart; to keep such an edge, declare it in your provider.
   Runtimes without a topology provider are unchanged: they unwire only the
   edges they wired.
+- Behaviour change: dropping a `MobkitRuntimeHandle` without `shutdown()`
+  now terminates its live module processes; previously they kept running.
+  Call `shutdown()` for an orderly stop (see Fixed, module subprocess reaping).
+- MobKit runs on meerkat 0.8.51:
+  - `UnifiedRuntime::shutdown` drives the mob actor's terminal teardown with
+    one `MobHandle::shutdown_with_report` call bounded by
+    `MOB_TERMINAL_SHUTDOWN_BUDGET` (5 s), instead of retrying `shutdown` for
+    up to 5 s. Meerkat now owns the convergence (stuck retirements, held
+    unregisters and in-flight runs are settled or reported, not refused), and
+    the outcome is `UnifiedRuntimeShutdownReport::mob_terminal_shutdown`:
+    `Completed(MobShutdownReport)`, `AlreadyShutDown` (the mob answered with a
+    closed command channel, which a mob shutting down answers to every caller
+    request), `Refused` or `SkippedMobStopFailed`. It stays outside
+    `cleanup_completed()`, as before.
+  - The gateway's runtime shutdown budget counts that 5 s teardown:
+    `GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT` (and `UnifiedRuntime::shutdown_horizon`)
+    is 317 s, and the advertised `stdio_shutdown_horizon_ms` is 352 000, so
+    the outer timeout can never fire inside the teardown and drop the
+    per-member shutdown report. Hosts that honour the advertised horizon need
+    no change. Check the deployment's configured termination grace period
+    against 352 s plus process exit: a shorter grace can cut a shutdown short
+    and lose its per-member report.
+  - The implicit-delegate idle sweep warns when a retirement does not
+    complete within `retire`'s wait, then awaits the member's
+    `retirement_settlement()` and reports how it settled: retired, or stuck
+    at a named stage with its cause. A stuck retirement stays owned by the
+    mob until it is re-driven (`MobHandle::redrive_retirement` or a mob
+    resume); the sweep no longer loses sight of a member that stays
+    `Retiring`.
+  - The mob stop logs each member whose run starts the stop could not hold.
+  - The teardown mob stop (`UnifiedRuntime::shutdown`,
+    `stop_mob_for_teardown`) drops its 10 s retry loop. That loop re-sent
+    Stop every 250 ms and cancelled every member's work on a refusal.
+    - Most stops are now one Stop call.
+    - When an active flow run refuses the Stop (meerkat's `no_active_runs`
+      guard), teardown cancels each non-terminal run, awaits its terminal
+      event on the mob event ledger, and stops the mob.
+    - A run's terminal event lands before the actor retires the run, so a
+      refused re-send is re-issued on each machine commit until it is
+      admitted, never on a timer. meerkat#1593 tracks replacing this with an
+      exact signal.
+    - It is bounded by `MOB_STOP_FLOW_SETTLE_BUDGET` (10 s, the old window).
+      Past it, `MobRuntimeError::MobStopFlowRunsUnsettled` names the
+      unsettled runs and the last refusal; that is also where a refusal from
+      another guard surfaces once teardown has settled runs.
+    - Without flow runs to settle, a refusal is returned as is.
+    - `MobStopOutcome::ProceededWithoutInterrupt` and
+      `ErrorEvent::MobStopProceededWithoutInterrupt` are no longer produced.
+      The `Runtime not ready: attached` refusal they degraded came from
+      meerkat's old stop interrupt path. Both stay for wire and SDK
+      compatibility.
+  - Live channel closes pass their typed cause to meerkat (`OpenAbandoned`
+    for an open-failure cleanup, `ClientRequested` for `live/close`).
+  - A profile naming a Rust tool bundle that is not registered is refused
+    with the typed `MobRuntimeError::Mob(MobError::ToolBundleUnavailable {
+    bundle })` instead of an internal error string; match the variant.
+- Docs: `[profiles.*.tools] deny` (meerkat 0.8.51's per-profile tool deny
+  list) is documented in the configuration reference, including both
+  failure paths, and the `comms` row points at it.
+- Console: member-kickoff status renders as a typed status card instead of a
+  peer request. Meerkat sends kickoff status (`mob.kickoff_pending`,
+  `_starting`, `_started`, `_callback_pending`, `_failed`, `_cancelled`) as
+  one-way comms `lifecycle` notices (meerkat #1608); older sessions keep the
+  `request` form. Both forms render, by their intent, as one compact row:
+  the member, its role and the phase (Pending, Starting, Started, Waiting for
+  callback, Failed, Cancelled). The signals rail labels them "Kickoff
+  <phase>", and a failed kickoff reads as a warning there. A lifecycle
+  notice's content is model-facing notice text and is never shown: any other
+  lifecycle notice renders by its summary (`Peer lifecycle: <kind>`). The
+  shared host previously showed that text verbatim.
+- **Upgrade action for hosts that serve application tool policies:** a
+  member's `delegate` and agent `mob_create` are refused until the host
+  chooses a child application tool policy (see Added). MobKit now hands its
+  tool-policy registry to the agent mob tools, which it never did before, so
+  meerkat 0.8.51's child policy applies: without a child policy, a governed
+  member's delegate helpers and the members of the mobs it created ran
+  outside the host's policy. There is no implicit default. The refusal is
+  the typed tool error `policy_denied` with code
+  `child_tool_policy_required`; the member's turn goes on, and the message
+  says why and names the fixes (the `child_application_tool_policy` init
+  parameter, `with_child_application_tool_policy`, or an explicit
+  `{"kind":"unmanaged"}`). Same-mob `fork_off`, `mob_spawn_member` and
+  councils are unaffected, and hosts without application tool policies see
+  no change.
 
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
@@ -339,6 +558,149 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Operators can decide quarantined agent memory from the console:
+  `mobkit/memory/quarantine/decide` releases or tombstones one quarantined
+  identity-scope record, without the memory steward or the gating flow.
+  - Until now only the steward's dream could decide a quarantined record.
+    With the steward disabled, a write quarantined by session taint could
+    never become memory, and the console's quarantine queue was read-only.
+  - A release keeps the native review semantics. The content is re-staged
+    in the same scope at `agent_observed` as `<memory_id>-released`, with
+    `derived_from` the original, which is tombstoned and kept with its
+    provenance. The successor stays capped at `agent_observed` forever, the
+    secret gate refuses secret-shaped content, and a quarantined update is
+    released as a supersede of its still-active prior instead of forking.
+  - The decision binds the record's `content_hash` (now returned by
+    `mobkit/memory/panel/record`), refuses typed with `-32043`
+    (`MEMORY_QUARANTINE_REVIEW_REFUSED_CODE`; `not_found`,
+    `content_mismatch`, `not_quarantined`, `gate_pending`,
+    `successor_conflict`, `secret_detected`, `stale_update`) and records
+    the review (verdict, authenticated reviewer, bound hash, quarantine
+    reason, rationale) in each audit row.
+  - Replays (`already_released`, `already_tombstoned`) are recognized from
+    that audit evidence alone and return the original decision without
+    writing; a row merely holding the successor id is refused.
+  - Gated promotions expire after seven days (shared with the steward's
+    dream as `GATED_PROMOTION_EXPIRY_MS`). Until then a pending promotion
+    blocks a release of its record (`gate_pending`, with `expires_at_ms`);
+    after that a review expires it itself, so a promotion orphaned by a
+    restart blocks a release only until its expiry, whether or not a
+    steward runs.
+  - An operator's tombstone is never blocked by a pending promotion: it
+    invalidates the record's pending promotions in the same transaction
+    (mappings expired, staged batches discarded, listed as
+    `invalidated_promotions` in the decision), so a later approval
+    publishes nothing. Gating resolutions now change only a still-pending
+    promotion, so a late approval, denial or escalation can neither
+    overwrite an invalidated promotion nor revive it.
+  - Quarantined content stays reviewer-only after a review or `forget`
+    tombstones it: the Memory panel gates tombstoned records that were ever
+    quarantined behind `memory.quarantine.review`, as it gates quarantined
+    ones. The released successor is ordinary memory.
+  - A review emits `memory.quarantine.verdict` only once its decision
+    commits, and the event never carries the reviewer or the rationale.
+  - Authority composes existing grants: `memory.quarantine.review`,
+    `agent.view` and `agent.memory.read` on the identity, plus
+    `agent.memory.write` to release or `agent.memory.delete` to tombstone.
+    Read-only consoles refuse it.
+  - The store operation is `StewardStore::review_quarantined`; the Memory
+    panel offers Release and Tombstone on a quarantined record.
+
+- Checked access saves (`checked_v1`). `mobkit/access/get`, and
+  `mobkit/access/status` for a caller who can administer, advertise
+  `conditional_mutations: "checked_v1"` with an opaque `owner_instance` for
+  the controller lifetime. The six access writes accept a nested
+  `params.checked_v1` carrying `owner_instance`, `expected_revision` and the
+  write's payload. The owner rechecks the caller's administrator access, its
+  instance and its revision inside the serialized mutation, and answers
+  `-32009` with `access_revision_conflict` (expected and actual revisions) or
+  `access_owner_changed` without writing. Malformed, mixed or unknown checked
+  envelopes fail with `-32602` and never fall back to an unchecked write. A
+  controller that could not draw an instance identity advertises no checked
+  capability and refuses checked writes with `-32004`
+  `access_mutation_unavailable`; unchecked writes stay available.
+- Console Access saves are checked. Each edit keeps the owner instance,
+  revision and configuration from when it began. A conflict, owner change or
+  unavailable checked save keeps the draft with a fixed notice and requires
+  **Review and reapply** before another explicit save; an invalid
+  configuration keeps the draft editable for correction. Refreshing never
+  rebases or resends a draft, and edits stay disabled while owner state is
+  loading or stale, or when the owner does not advertise `checked_v1`. A
+  preview survives an unchanged refresh and is discarded when the owner,
+  revision or configuration changes. The real-browser scenario
+  `real-checked-save-recovery` drives this flow against the acceptance
+  fixture's real access owner.
+- A typed `mobkit/init` code for mob composition provenance refusals: `-32019`
+  (`COMPOSITION_PROVENANCE_CODE`), with Python and TypeScript
+  `CompositionProvenanceError` (#613).
+  - Every refusal the gateway raises because a persistent mob storage's
+    recorded composition cannot be proven to match the launch used to reach
+    the client as a generic `-32603`, so an SDK could not tell a deliberate
+    refusal from an internal error without parsing the message. This covers
+    a diverged definition, a candidate launch whose definition differs from
+    the stored one, a rehearsal-created store, an unreadable, malformed,
+    unsupported or unwritten manifest, and undeclared non-empty storage.
+  - The error `data` carries the refusal: `kind` (`divergent`,
+    `candidate_divergent`, `created_by_rehearsal`, `missing`, `unreadable`,
+    `malformed`, `unsupported_version`, `not_recorded`, `unproven_storage`),
+    `fields` (the diverged definition fields as dotted paths, always
+    present), and the manifest path, storage path and manifest versions
+    where the refusal has them. The SDK error exposes `kind` and `fields`.
+  - The message is unchanged, and an accepted init carries the same code and
+    data in its `failed` settlement.
+  - Rust: `MobCompositionProvenanceError::refusal()` returns the data as
+    `CompositionProvenanceRefusal`, and
+    `UnifiedRuntimeBootstrapError::composition_provenance()` finds the
+    refusal behind a bootstrap failure.
+  - `mobkit_gateway` (the console/HTTP binary) still reports these refusals
+    as `-32603`.
+
+- Host-only `mobkit/member_activate_instruction` and
+  `mobkit/member_instruction_activations` (Python
+  `activate_member_instruction` / `member_instruction_activations`,
+  TypeScript `activateMemberInstruction` / `memberInstructionActivations`).
+  A host can change a member's standing instructions after its session was
+  minted. Resume authors nothing, so a restored member otherwise keeps its
+  creation-time prompt, for example after its skills changed.
+  - The verb appends one keyed, immutable instruction activation to the
+    member's current session through Meerkat's
+    `MobHandle::activate_member_instruction`. It is forward-only, survives
+    resume, and re-applying it is a typed `duplicate`.
+  - A call made mid-turn blocks until that turn finalizes, so it can wait
+    for a whole turn, and applies at the boundary. The SDK methods take an
+    optional per-call reply timeout (`transport_timeout` /
+    `transportTimeoutMs`) for members with long turns. Refusals stay typed per
+    Meerkat class in `data.class`, and nothing retries in the gateway:
+    - `admission` with `instruction_activation_code`; `session_busy`,
+      `live_channel_open` and `target_not_materialized` answer `-32015`;
+    - `session` with `session_error_code` and, for a refused request, the
+      typed `instruction_activation_error_code`, such as `digest_mismatch`
+      or `effective_activation_conflict`, answering `-32602`;
+    - `runtime`;
+    - `owner_task`.
+  - The read verb returns the member's durable activation records and, for
+    one exact key, its `key_state`.
+  - Neither verb is an agent tool. The audit actor is `host`.
+
+- The console renders recognized current operation refusals, confinement
+  causes, pre-tool hook decisions/launch failures and outcome-audit failures as
+  distinct local feedback. Permitted sibling results and error status remain
+  visible; an outcome-audit notice does not change the action's actual result.
+  Unknown or malformed tool causes use the ordinary tool-result path, which may
+  display raw output, without a permission or mechanical-refusal classification.
+  Custom workspace hosts should retain `ConversationMessageEntry.operationFeedback`;
+  these projections do not configure native authorization or supply a grant editor.
+- Console voice applies Meerkat's barge-in playback hint
+  (`live/assistant_playback_hint`, meerkat #1651). When the user speaks over
+  audible assistant audio, Meerkat asks the client to duck its playback, and
+  to restore it when the overlap ends; the provider has no command that
+  clears audio it already queued. Console voice's public observation
+  publisher now implements `publish_playback_hint` (playback-output
+  publications are still refused) and puts the newest hint on the call's
+  caption stream as `{"kind": "playback_hint", "hint": "duck" | "restore"}`.
+  The console routes the assistant's audio through a playback gate after the
+  speaker analyser and ramps it to silence on `duck` and back on `restore`.
+  Mute and speaker state stay on the master gain.
 - Python SDK: `MobKitBuilder.gateway_init_timeout(seconds)` sets how long
   `connect()` waits for the gateway to answer `mobkit/init` (its `accepted`
   acknowledgement, or an older gateway's single response). The default stays
@@ -349,7 +711,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses it. Ordinary RPCs and provider callback deadlines keep their own
   timeouts, and `init_deadline(seconds)` still bounds the wait for an
   accepted init to settle.
-
+- `child_application_tool_policy`, the application tool policy members of
+  child mobs (agent `mob_create`, and the implicit mob `delegate` helpers run
+  in) are built with, as an `ApplicationToolPolicyBinding`:
+  `{"kind":"provider","provider_id":...,"policy_id":...}` or the explicit
+  opt-out `{"kind":"unmanaged"}`.
+  - `mobkit/init` top-level parameter, next to `application_tool_policies`.
+    The gateway refuses the boot (`-32602`) for a malformed value,
+    `{"kind":"inherit"}`, or a provider binding whose provider or policy no
+    served policy carries.
+  - Python `MobKitBuilder.child_application_tool_policy(binding)`.
+  - Rust `MobBootstrapSpec::with_child_application_tool_policy` (and
+    `with_optional_child_application_tool_policy`) and
+    `UnifiedRuntimeBuilder::child_application_tool_policy`; two different
+    bindings refuse the build with `ConflictingConfiguration`.
+  - `member_tool_policy::child_application_tool_policy_from_init_params` and
+    `validate_child_application_tool_policy`.
+- Child-available host tool bundles:
+  `MobBootstrapSpec::register_tool_bundle_with_availability` and
+  `UnifiedRuntimeBuilder::register_tool_bundle_with_availability` take a
+  `ChildToolBundleAvailability` (re-exported from MobKit).
+  `register_tool_bundle` keeps registering `HostOnly` bundles, which child
+  mobs never receive; a `ChildAvailable` bundle is supplied to every child
+  member, still narrowed by the child profile's `deny` list and governed by
+  the child application tool policy. Documented under "Child mob tool policy
+  and bundles" in the configuration reference.
 - `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
   `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
   host Rust tool bundles to meerkat-mob's `MobBuilder::register_tool_bundle`,
@@ -357,7 +743,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (including the members resume revives) and respawn. A profile naming an
   unregistered bundle is refused when its member is built. Registering one
   name on both the builder and a supplied spec is refused as conflicting
-  configuration. Agent-created child mobs do not receive host bundles.
+  configuration. Agent-created child mobs receive only the bundles
+  registered as child-available (see above).
+- Console: Find in transcript searches every loaded message, including turns
+  the windowed transcript keeps out of the DOM where the browser's
+  find-in-page cannot reach. Open it from the search button beside Copy
+  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
+  step through matching rows (newest first), each brought into view (and
+  revealed when it is behind Show earlier messages) and highlighted with
+  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
 - `mobkit/init` can run as accepted-then-settled (#550), so startup is no
   longer cut off by the SDK's 60 s request timeout. Both SDKs opt in by
   default.
@@ -633,8 +1027,237 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A conversation pane following the live edge no longer stops following
+  when a tool opened at the end grows the transcript before the browser's
+  own one-pixel scroll event arrives. The pane only leaves the live edge on
+  an upward move; this fixes an intermittent console acceptance failure
+  ("opening the actual tool at live edge remains following").
+- Identity members: tools published by `customize_build` now resolve their
+  execution plan through the dispatcher that serves them. The identity
+  dispatcher used Meerkat's default resolution from its own catalog, so a
+  published tool set composed through a dynamic composite never added the
+  composite's owner witness, and the composite then refused the forwarded
+  plan: the call failed as `tool_unavailable` ("tool execution owner changed
+  after plan resolution"). The serving dispatcher's plan is now kept whole
+  (its owner witnesses, an argument-chosen mode and the deadline chain),
+  validation goes to the same dispatcher, and the identity dispatcher adds
+  its own witness: a plan resolved before a later publication, even one
+  with identical tool metadata, is refused as `ExecutionOwnerChanged`, and a
+  plan for a tool the current publication no longer advertises is refused
+  as not found.
+
+- Gating: gate IDs are no longer reissued after a restart. A runtime
+  restarted without restored gating state minted IDs from the start again,
+  so a staged memory promotion keyed by a pending ID from before the
+  restart could be committed, discarded or rekeyed by a decision on an
+  unrelated gate that reused the ID; a newly staged promotion whose ID
+  collided with an old mapping also lost its own stage while the old
+  mapping stayed. Each runtime now mints action, pending and audit IDs as
+  `gate-<kind>-v2-<epoch>-<sequence>` under its own random 128-bit epoch, so
+  new IDs do not match earlier or restored IDs, barring a random epoch
+  collision, and never match legacy IDs. Treat gate IDs as opaque.
+  Exhausting the sequence, or a missing epoch when the platform's entropy
+  source failed, refuses the evaluation (`safe_draft` with
+  `gating_sequence_exhausted` or `gating_identity_unavailable`) or the
+  decision (`GatingDecideError::IdsUnavailable`) instead of reusing an ID.
+  Over JSON-RPC and the console, that decision refusal is an internal
+  error (`-32603`) with `data.error = "gating_ids_unavailable"` and the
+  reason, not invalid params. Gating snapshots export as version 2 with
+  the owner's epoch; version 1 snapshots still restore, and restored IDs
+  are kept as they are. The agent memory steward no longer lets a
+  decision under a pre-epoch sequential pending ID (`gate-pending-NNNNNN`,
+  including a gate restored from a version 1 snapshot) commit, discard or
+  rekey a staged promotion, because such an ID cannot prove which
+  promotion it was about; those promotions keep their expiry instead.
+- Console: clicking a tool or other control at the bottom of a transcript
+  no longer stops the shared conversation pane following the live edge. A
+  pointer action can bring its target into view before the press, and the
+  browser can then settle the scroll position a pixel above the end the
+  console computed (scrollHeight and clientHeight are whole numbers rounded
+  from fractional sizes, so the two ends can differ by under a pixel). After
+  an earlier click that settle read as the reader moving up, so the opened
+  tool was held in place instead of followed. A move of at most that
+  rounding distance, landing at the end while following, after a primary
+  mouse press on the transcript's content, is now a settle. Any larger
+  upward move, and any move after a scrollbar, middle-button, touch or pen
+  press, still leaves the live edge.
+
+- Console: a workbench click made right as the console first loads is no
+  longer undone. The saved dock layout, or with no saved layout the
+  configured initial panel (`layout.initial_control`, `initial_agent`,
+  `initial_preset`), was applied a moment after the sidebar appeared, so a
+  panel opened in that gap (for example Access) was replaced. Both now land
+  in a synchronous follow-up commit before paint, before any input can be
+  handled.
+
+- Console: a downward wheel or End at the bottom of a transcript no longer
+  stops following the live edge. Such a gesture can leave the scroll position
+  a pixel above the computed end (scrollHeight and clientHeight are rounded,
+  the scroll range is not), and since the scroll-up fix (#597) that settle
+  read as the reader moving up, so a tool expanded afterwards no longer
+  followed. The console now remembers the direction of the reader's last
+  wheel or key gesture: an upward move of at most a pixel right after a
+  downward gesture is a settle, while a larger upward move, or a small one
+  after a click or scrollbar press, still leaves the live edge.
+
+- The gateway delivers Event-kind detached job deliveries again. These come
+  from `monitors/start` in event-steer or event-queue mode and from
+  `jobs/subscribe` with an `event` kind.
+  - **The bug:** the delivery path admitted event inputs on the machine its
+    session service built for itself, not on the machine that serves the
+    sessions. Admission failed ("Runtime not ready: destroyed"). Delivery
+    rows queue under the session that started the job, so that failed row
+    blocked every later delivery for jobs of the same origin session,
+    notifications included, retried without a warning every second.
+  - **The fix:** the delivery path now admits on the serving machine, which
+    the gateway passes explicitly. Both gateway compositions also bind
+    their persistent session service's runtime machine to it.
+  - **A blocked delivery queue is now visible.** It is logged once at WARN
+    with the origin session, the row and the reason, reported in the job
+    health projection under `detached_jobs.blocked_deliveries`, and it
+    degrades that projection's status.
+  - **Not affected:** host-level notification and record deliveries to
+    sessions without an event row ahead of them. `fork_off` and `council`
+    were not affected either.
+
+- The gateway's agent-memory recorder (`memory`) reaches members whenever
+  memory is enabled, not only when the host also supplies an
+  `AgentCustomizer`. With memory enabled and no host customizer, members
+  had `memory_search` but no recorder. There were two causes:
+  - A member materialized outside the roster bootstrap (lazily on first
+    dispatch, or repaired at delivery) ran no customizer, because the
+    gateway never installed its composed customizer (the host's and/or the
+    agent-memory one) as the identity runtime's own. It now does, as the
+    library builder already did.
+  - A member restored natively at start (persistent mob storage), whose
+    later customized resume attaches the restored occupant, only receives
+    customizer tools through the per-identity customizer tool registry.
+    The gateway created that registry only for a host customizer. It now
+    creates it whenever a customizer is composed.
+  - Custody, grants and taint are unchanged. A profile with memory
+    disabled still never carries the recorder.
+
+- The console's Approvals inbox shows the gating owner's recorded audit
+  outcomes as recorded (#594, shipped in 0.8.46).
+  - **Audit rows:** each shows its tier (`r0` to `r3`, or "Unknown" with the
+    recorded value), actor, event, decision, approver and outcome, with
+    "Not recorded" where the record has no value. The view states that an
+    approval record does not confirm execution.
+  - **The Auto tab and count** now cover exactly the `evaluated` events whose
+    outcome is `allowed` or `allowed_with_audit`. Before, the tab guessed
+    from loosely matched `decision` and `event_type` strings and invented
+    risk labels.
+  - The console core package (`packages/console-core`) exports
+    `normalizeGatingAuditEntry` and `GatingAuditEntryView`, a display
+    projection of one audit record (not execution state).
+  - The console guide documents the Approvals tabs and audit records
+    (#603).
+
+- The console RPC handler no longer reserves a 1.17 MB stack frame. At
+  opt-level 0 LLVM gives every local of every branch its own stack slot, so
+  the handler's poll frame reserved every method arm's future at once, while
+  only one arm runs. On the console send path that left under 0.5 MB of a
+  2 MiB worker stack for everything beneath it.
+  - Each awaiting arm is now its own boxed future, built in
+    `box_in_own_frame`'s frame.
+  - Measured on the `api-routine-tool-owner` console scenario (debug,
+    default worker stack):
+    - the handler frame drops from 1,168,696 to 30,336 bytes, and the send
+      arm adds a 9,872-byte frame of its own;
+    - the stack in use where the path reaches its deepest native frame
+      drops from 1,983,704 to 809,256 bytes;
+    - the handler's future drops from 52,248 to 6,256 bytes, and a test
+      fails it above 16 KiB.
+
+- `UnifiedRuntimeBuilder::build()` now returns a `Send` future, so a host
+  can `tokio::spawn(builder.build())` or drive it under a harness that
+  requires `Send`. Two causes, both present since at least 0.8.44:
+  - The builder kept its `PreSpawnHook` (`Send`, not `Sync`) as a plain
+    field while `build` held `&self` across awaits, which made the builder
+    `!Sync` (E0277). The hook now sits behind an uncontended mutex. The
+    public `PreSpawnHook` type is unchanged.
+  - The persisted-authority prewarm that `build` awaits mapped borrowed
+    session ids through an async closure, which the compiler cannot prove
+    `Send` for every lifetime ("implementation of `Send` is not general
+    enough"). It now maps to owned runtime ids first.
+  - A compile-time test pins both: the builder is `Send + Sync`, `build()`'s
+    future is `Send`, and a builder carrying a pre-spawn hook can be spawned.
+
+- The gateway now builds one runtime delivery inbox and shares it between
+  the shell job projector and the detached-job delivery runtime. Before,
+  each built its own `RuntimeDeliveryInbox` over the same runtime store. An
+  inbox's commit signal is per instance (clones share it), so a delivery
+  committed through one path never woke subscribers of the other. Both
+  instances still read the same rows, so backlog counts agreed and hid the
+  split. Waking on commits, rather than on the gateway's timer, depends on
+  this.
+
+- The published `meerkat-mobkit` crate package now includes the license texts
+  its manifest declares (`LICENSE-MIT`, `LICENSE-APACHE`). Cargo packages only
+  files under the crate directory, so earlier releases published the crate
+  without them. The crate directory now carries symlinks to the root files,
+  which `cargo package` follows, and `scripts/verify-crate-package-files.py`
+  fails CI when a published crate's `cargo package --list` lacks either one.
+- Removed an inaccurate third-party attribution from the console scroll
+  geometry, its notices files and the embedded console bundles; the code is
+  original.
+- Console: scrolling up from the bottom of a transcript no longer sticks
+  before it scrolls (#597). The first 32 px of an upward scroll stayed in
+  the live-edge band and kept following the end, and a scroll within 1 px of
+  the console's last write was taken for its own, so a streamed reply's next
+  layout pass snapped the reader back to the end. Any upward movement the
+  console did not write (wheel, scrollbar, touch, or a gesture chained out
+  of a code block) now leaves the live edge at once; following resumes on
+  the way down, within the live-edge band or at the end.
+- MobKit's session-service decorators forward
+  `SessionServiceHistoryExt::read_instruction_activation_records`. Without the
+  forward, the defaulted method answered `Unsupported` through MobKit.
+  `verify-session-service-decorators` now also checks the base
+  `SessionService` and `SessionServiceHistoryExt` traits, so a decorator
+  missing a defaulted base method fails the gate.
+- Python and TypeScript SDK callbacks retain their originating gateway process
+  across reconnect. Late results, errors and deadline/cancellation responses
+  cannot answer reused callback IDs on a replacement process, and retired
+  readers cannot fail its pending requests.
+- A voice channel reopened through MobKit while delegated work from an
+  earlier channel was still running now opens with Meerkat's "work started
+  before this call is still finishing" startup line (meerkat #1652), so the
+  model does not claim that work is done before its result arrives. MobKit's
+  live composition now binds its delegation coordinator as the open
+  authority's post-close work source, as Meerkat's RPC router does; before,
+  no MobKit door bound one.
+- A declared role migration is applied on the boot path, or refused typed;
+  it is never silently dropped (children that declared `role_migrations`
+  to a restricted profile kept their old role and its tools, such as
+  `spawn_member` and `delegate`, after a restart).
+  - The mob's explicit resume restores every member under its durable
+    role before the session bridge runs, and Meerkat lets neither that
+    restore nor its spawn customizer change the profile. The migration
+    rode only on the bridge's resume Spawn, which collided with the
+    restored member, and the collision handling adopted the occupant as
+    it was.
+  - When a declared migration meets an occupant on another role and
+    MobKit has repair custody, the bridge applies it: it retires the
+    restored member to absence (after proving the resume source exists,
+    carrying queued input) and resumes the same session under the
+    declared role with `resume_from_role`, which Meerkat re-verifies
+    against the durable predecessor role.
+  - Where a Present identity intent owns the member's materialization,
+    retiring it would fight MobMachine, so the resume is refused with
+    `ResumeRejectionKind::RoleMigrationNotApplied` and the identity is
+    degraded with a detail naming the migration. The `mobkit/init` result
+    shows it: `identity_bootstrap` reports the identity `broken` with
+    restore kind `role_migration_not_applied` and `ready: false`, so a
+    host never deploys believing the migration landed. Meerkat's own typed
+    refusals (`MemberRoleMigrationRequired`, `MemberRoleMigrationRejected`)
+    now classify as the same kind.
+  - An occupant whose role is not the declared predecessor is refused
+    typed before any retire: the declaration does not describe it, and
+    Meerkat would refuse the restamp after the member was already gone.
+  - Any attach under a declaration checks that the member runs the
+    declared role, and refuses typed when it does not.
 - A managed peer edge the topology no longer wants is unwired after a
-  restart (HomeCore: children's agents kept reaching the parents' after the
+  restart (children's agents kept reaching their parents' agents after the
   topology provider stopped declaring those edges).
   - The managed-edge set was process memory, empty at boot, while the mob's
     wiring is durable and replays. A dropped edge was neither managed nor
@@ -657,7 +1280,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Every kickoff request, and every typed `lifecycle` notice (meerkat #1608),
   now shows its typed summary (`Peer request: mob.kickoff_failed`); an
   ordinary peer request still shows its authored content.
-
 - The console aggregator no longer re-reads a large session's whole history
   twice after registration (#570). Registration's recovery pass could land
   while a member was idle between runs of a queued burst and read the
@@ -689,14 +1311,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     a pass scheduled after it. The large session is now read once (one full
     read, converged after about 7 s), and the measured idle window stays
     near 15 ms. Verifying only the new suffix of a history is #573.
-
+- A restored identity member whose customizer tools could not be published
+  before the mob build (an early `customize_build` failure, #563) no longer
+  starts a run without them. The build asks meerkat to hold its run starts
+  (`MobBuilder::hold_restored_member_run_starts`, reason
+  `HostRunStartHoldReason::ToolsNotPublished`), so a queued input, a kickoff or
+  a peer message admitted when meerkat's own resume revives it waits. The
+  materialization that publishes its tools releases the hold
+  (`MobHandle::release_member_run_starts`). A release that fails keeps the
+  identity in `IdentityStatus::customizer_tools_pending` with the error.
+- Durable-behind admission skips transcript commits that meerkat 0.8.51's
+  history retention has retired. Their parent projection now returns
+  `TranscriptRevisionRetired` (a retired commit has no body to prove
+  against); admission treated it as a store write failure, so a session
+  compacted past its retention cut could no longer be persisted
+  (`identity_first_repeated_compaction`). Other projection errors still
+  fail the write.
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled
   paths such as `../../<other-worktree>/console/node_modules/...` into
   `console/dist/index.cjs`, which passed the freshness check there and
   reached main once (regenerated in 4e337578).
-
 - The stdio gateway no longer queues ordinary requests behind `mobkit/init`
   (#550). Before, a request that arrived during startup waited in a 64-slot
   queue that nothing drained until init finished. A startup provider callback
@@ -710,7 +1346,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Python SDK: a callback response is no longer written behind host requests
   queued for the gateway's stdin. Writes stay whole lines, and a callback
   response now waits only for the line currently being written (#550).
-
 - SDK transports (Python and TypeScript) no longer leave a request or a
   gateway callback waiting out its deadline because one stdout or stdin line
   was bad (#550):
@@ -756,7 +1391,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     holds; such a descendant now gets EPIPE.
   - Behavior change: dropping the runtime handle now terminates its live
     module processes; previously they kept running.
-
 - Identity members no longer lose their `customize_build` tools on a
   restart, an adoption, a respawn or a delivery-time repair (#563). Before,
   those tools reached a member only as the per-spawn overlay of the one
@@ -795,7 +1429,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `IdentityRuntime::set_customizer_tool_registry`, and
     `MobBootstrapSpec::with_spawn_member_customizer`, which composes instead of
     replacing.
-
 - An identity member that had not run a turn before a shutdown is
   materialized again at the next boot. The local continuity store creates its
   head-canonical tables only at the first delta write, but its per-session
@@ -884,7 +1517,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs
   `--trace`, and `--trace-invalidations` names the source) and lowers the
   rect-read limit to 12 per token (about 9 now, 13 before).
-
 - Console: a streaming reply no longer re-parses its whole Markdown source on
   every token. While a reply streams, its document renders as closed blocks,
   each parsed once, plus the open tail. A boundary is a blank line outside a
@@ -898,7 +1530,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   definitions, which resolve across blocks, renders as a whole parse on
   completion. `npm run perf:typing:browser` fails on more than 500 Markdown
   source characters parsed per streamed token.
-
 - Console: a streamed token no longer presents the whole transcript again.
   The continued (incremental) transcript derivation still rendered every
   entry on each token: run durations, the visibility filter, per-entry
@@ -911,7 +1542,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   oracle and seeded fuzz still prove it equal to a full derivation.
   `npm run perf:typing:browser` fails on more than 4 transcript entries
   presented per streamed token (about 2 now, one per derivation).
-
 - Console: two per-render scans of the whole history no longer run on every
   streamed token. Day separators formatted their full date with locale date
   formatting each time the streaming turn rendered; a day key's label is now
@@ -922,7 +1552,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   run instead of the whole log. `npm run perf:typing:browser` reports
   active-run frames read per token and fails on more than 0.05 day-label
   formats per streamed token.
-
 - Console: streamed text renders on every third animation frame instead of
   every frame, as a React transition. A frame that only adds streamed text
   waits for the third animation frame (counted in frames, so the pace slows
@@ -934,15 +1563,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   streams instead of about once per token, and main-thread time per streamed
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
-
-- Console: Find in transcript searches every loaded message, including turns
-  the windowed transcript keeps out of the DOM where the browser's
-  find-in-page cannot reach. Open it from the search button beside Copy
-  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
-  step through matching rows (newest first), each brought into view (and
-  revealed when it is behind Show earlier messages) and highlighted with
-  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
-
 - Console: browser find-in-page and keyboard and screen-reader navigation
   still reach the windowed transcript. Measured turns within 20 turns of the
   mounted window stay in the DOM, parked as `hidden="until-found"` at their
@@ -957,7 +1577,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   parked turns carry their full text, that the path find takes on a match
   keeps the geometry, and that keyboard focus reaches every loaded turn in
   order.
-
 - Console: the transcript mounts only the turns near the viewport. Every
   revealed turn used to stay mounted, so an operator who scrolled back kept
   the whole loaded history in the DOM (about 16,000 elements at 300 turns),
@@ -981,7 +1600,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fonts, without LCD text or subpixel glyph positions) at 17 scroll
   positions including after a resize, and a selection, a focused control, an opened tool call and a rail
   jump must survive.
-
 - Console: a transcript row keeps what the reader opened if it unmounts and
   mounts again. Disclosure state lived in the DOM or in component state, so
   a remounted row reset it: event payloads, thinking blocks, tool calls,
@@ -1084,6 +1702,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   non-terminal audit record exists and no plan, apply or recovery holds the
   mutation lock. A read no longer delays an apply. The same-process bilateral
   coordinator query still takes its coordinator and runtime locks.
+
+- Console access uses the server's action catalog and current administrator
+  state. Stale previews and mutation responses cannot replace another account's
+  state; failed saves retain the draft, and typed refusal details stay private
+  in both current and reconstructed conversation history.
+- Test hygiene with no product change:
+  - the identity background lease renewal test waits for the renewal's own
+    `LeaseUpdated` event instead of a 45 ms wall-clock window (#566);
+  - the console stock-presentation scenario checks the table, link and image
+    in the reply to its accepted input, not the first table in the
+    transcript, which the windowed transcript can park out of view (#583);
+  - the console startup-deadline test expires its deadline once the HTTP
+    read has started, instead of after a fixed 150 ms budget (#586).
 
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,

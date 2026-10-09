@@ -103,7 +103,7 @@ class AppAgentBuilder:
             lambda args: {"error": "detached owner required"},
             description="Run a durable security scan",
             execution=DetachedJobExecution(
-                runner="homecore.security_scan",
+                runner="example.security_scan",
                 version="v1",
                 restart_class="checkpoint_resumable",
                 idempotency_scope="interaction_and_arguments",
@@ -136,8 +136,8 @@ Resolved credentials are attempt-local and never enter durable job state.
 
 ## Identity-First API
 
-For household-style apps (HomeCore), the identity-first API provides durable lifecycle management.
-Agents are addressed by stable identities (`identity:luka`, `triage:main`), not member IDs.
+For apps with durable agent identities, the identity-first API provides durable lifecycle management.
+Agents are addressed by stable identities (`identity:alice`, `triage:main`), not member IDs.
 
 ```python
 from meerkat_mobkit import MobKit, TurnOutputStatus
@@ -158,10 +158,10 @@ rt = await (
 
 # Identity-scoped agent handles
 triage = rt.agent("triage:main")
-luka = rt.agent("identity:luka")
+alice = rt.agent("identity:alice")
 
 # Delivery
-await luka.send("Hello")                                          # Addressable only
+await alice.send("Hello")                                          # Addressable only
 await triage.dispatch_text("School closed", origin="connector")   # Any identity
 
 # On a turn_driven member (runtime_mode = "turn_driven"): send, then wait for
@@ -172,12 +172,12 @@ await triage.dispatch_text("School closed", origin="connector")   # Any identity
 # tracked: the call waits identity-wide with a TurnTrackingUnavailableWarning,
 # and send_and_wait_outcome(...).attributed is False (the text may be another
 # turn's). require_attribution=True raises instead.
-answer = await luka.send_and_wait("Hello", timeout=90)
+answer = await alice.send_and_wait("Hello", timeout=90)
 
 # The same, in two steps: track the turn, then wait on its ticket.
-sent = await luka.send("Hello", track_turn=True)
+sent = await alice.send("Hello", track_turn=True)
 if sent.turn_ticket is not None:
-    turn = await luka.wait_for_turn(sent.turn_ticket, timeout=90)
+    turn = await alice.wait_for_turn(sent.turn_ticket, timeout=90)
     if turn.output_status is TurnOutputStatus.TEXT:
         answer = turn.output  # turn.output_truncated says whether it was cut
 elif sent.turn_unavailable is not None:
@@ -190,13 +190,13 @@ else:
 inspection = await triage.inspect()   # output_preview, completion_cursor, peers
 cursor = await triage.completion_cursor()  # cursor only; never reads the member session
 output = await triage.wait_for_output(timeout=90)   # any output, including an earlier turn's
-await rt.wait_until_ready(["triage:main", "identity:luka"])
+await rt.wait_until_ready(["triage:main", "identity:alice"])
 
 # Status
-status = await luka.status()          # state, session_id, generation, labels
+status = await alice.status()          # state, session_id, generation, labels
 
 # Lifecycle
-await luka.reset()                    # Destructive: new generation, new session
+await alice.reset()                    # Destructive: new generation, new session
 await rt.agent("domain:calendar").respawn()  # Non-destructive recovery
 await rt.reconcile()                  # In-process roster reconciliation
 ```
@@ -341,7 +341,7 @@ the Rust struct:
 ```python
 class MyRoster:
     async def roster(self, context):
-        household = (context.mob_definition or {}).get("id")
+        mob_id = (context.mob_definition or {}).get("id")
         known = set(context.previous_identities)
         ...
 ```
@@ -616,7 +616,7 @@ setter keeps a gateway without a roster on the classic path; a configured
 roster with no explicit mode retains eager materialization.
 
 Gateway memory config accepts `{backend: "local_json"}` with an optional
-`health_check_endpoint` (`memory.local_json(...)`); the legacy Elephant
+`health_check_endpoint` (`memory.local_json(...)`); the legacy `elephant`
 `{backend, endpoint}` shape still works but emits a `DeprecationWarning`.
 `memory(stores=...)` is intentionally rejected because the Rust gateway does not
 accept store lists in `mobkit/init`. JWT auth is the gateway-supported auth mode;
@@ -663,6 +663,28 @@ remediation (`mobkit/storage/doctor`, or the explicit ephemeral
 declaration). Blob-store durability has no wire declaration today — it is
 declared by Rust embedders via `ephemeral_blobs(true)` /
 `binary_blob_store(...)` and reported read-only in the census.
+
+A composition provenance refusal surfaces as the typed
+`CompositionProvenanceError` (code `-32019`, `COMPOSITION_PROVENANCE_CODE`).
+The gateway raises it when the persistent mob storage's recorded composition
+cannot be proven to match this launch, for example a `mob.toml` edited since
+the persistent mob storage was created. Its `kind` names the refusal
+(`"divergent"`, `"created_by_rehearsal"`, the manifest kinds, and
+`"candidate_divergent"` from gateways launched as a candidate) and `fields`
+lists the diverged definition fields as dotted paths, so a host can show what
+changed without parsing the message. Revert the edit, or move the stored
+definition with `declare_spec_update(expected_revision=...)`:
+
+```python
+from meerkat_mobkit import CompositionProvenanceError
+
+try:
+    runtime = await builder.build()
+except CompositionProvenanceError as err:
+    if err.kind == "divergent":
+        print("mob.toml differs from the stored definition in", err.fields)
+    raise
+```
 
 ### Console access
 
@@ -937,6 +959,7 @@ from meerkat_mobkit.errors import (
     CapabilityUnavailableError,  # Requested capability unavailable
     ContractMismatchError,       # SDK/runtime version mismatch
     StorageResolutionError,      # Fail-closed storage refusal at init (-32014)
+    CompositionProvenanceError,  # Mob composition provenance refusal at init (-32019): .kind, .fields
     InitOutcomeUnknownError,     # Init written, settlement never arrived (native state may have changed)
     TransportReaderFailedError,  # The transport reader stopped; no response can arrive
 )
@@ -1006,6 +1029,7 @@ from meerkat_mobkit import (
     MobKitError, TransportError, RpcError,
     MobEventsStaleError, MOB_EVENTS_STALE_CURSOR_CODE,
     StorageResolutionError, STORAGE_RESOLUTION_CODE,
+    CompositionProvenanceError, COMPOSITION_PROVENANCE_CODE,
     NotConnectedError, CapabilityUnavailableError, ContractMismatchError,
     # Typed results
     StatusResult, CapabilitiesResult, ReconcileResult,

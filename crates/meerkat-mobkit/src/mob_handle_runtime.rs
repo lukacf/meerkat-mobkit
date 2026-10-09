@@ -63,34 +63,6 @@ pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
     error.contains("previous member cleanup ambiguous for member ")
 }
 
-/// meerkat's provisioner refuses `interrupt_member` while the member's runtime
-/// session is still mid-kickoff, surfacing as `Runtime not ready: attached`
-/// inside the mob machine's `Internal` error.
-///
-/// `attached` is a READINESS state, not a semantic verdict: the caller cannot
-/// make a member less attached, and the condition clears on its own once
-/// kickoff completes. Teardown that fails outright on it converts a
-/// millisecond-wide window into an operator-visible hard failure - the shape
-/// that reads as an intermittent `stop` flake.
-///
-/// Deliberately narrow. `Runtime not ready: running` is NOT in this class: it
-/// means a turn is genuinely in flight, and teardown already has a real answer
-/// for it (cancel the member's work, then retry the stop).
-pub(crate) fn is_runtime_attach_readiness_refusal(error: &str) -> bool {
-    error.contains("Runtime not ready: attached")
-}
-
-/// The session meerkat names in its refusal (`...must resolve through
-/// MeerkatMachine for {session}: ...`), when the text carries one.
-///
-/// Best-effort by construction: a report that names the subject is far more
-/// actionable, but this returns `None` rather than guessing when the refusal
-/// does not name one. Nothing infers a condition from the absence.
-pub(crate) fn runtime_attach_readiness_subject(error: &str) -> Option<String> {
-    let subject = error.split(" for ").nth(1)?.split(':').next()?.trim();
-    (!subject.is_empty()).then(|| subject.to_string())
-}
-
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")
@@ -2426,7 +2398,82 @@ fn mob_spawn_tool_def_with_idle_retire_secs(
     patched
 }
 
+/// What [`install_agent_mob_tools`] was given, so a spec can reinstall the
+/// agent mob-tool state with its final child policy before bootstrap.
+#[derive(Clone)]
+pub(crate) struct AgentMobToolsInstall {
+    slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
+    session_service: Arc<dyn MobSessionService>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
+    default_llm_client_slot: SharedDefaultLlmClientSlot,
+    council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+}
+
+/// The host application tool policy for child mobs (agent `mob_create` and
+/// delegate's implicit mob), applied to the agent mob-tool state.
+#[derive(Clone, Default)]
+pub(crate) struct AgentMobChildPolicy {
+    registry: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
+    binding: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    bundles: meerkat_mob_mcp::ChildToolBundles,
+    has_child_bundles: bool,
+}
+
+impl AgentMobChildPolicy {
+    /// Whether there is anything to forward: without a registry, a binding or
+    /// a child-available bundle, the installed state already matches.
+    fn is_empty(&self) -> bool {
+        self.registry.is_none() && self.binding.is_none() && !self.has_child_bundles
+    }
+}
+
+/// Install the agent mob tools with no child policy yet; the spec applies its
+/// final child policy at bootstrap (see `MobBootstrapSpec::apply_agent_mob_child_policy`).
 fn install_agent_mob_tools(
+    definition: &MobDefinition,
+    slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
+    session_service: Arc<dyn MobSessionService>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
+    default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
+    council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+) -> (
+    Arc<meerkat_mob_mcp::MobMcpState>,
+    ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
+    SharedConsoleSpawnSinkSlot,
+    SharedIdentityRuntimeSlot,
+    AgentMobToolsInstall,
+) {
+    let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
+        install_agent_mob_tools_with(
+            definition,
+            Arc::clone(&slot),
+            Arc::clone(&session_service),
+            workgraph_service.clone(),
+            default_llm_client_slot,
+            council_store.clone(),
+            AgentMobChildPolicy::default(),
+            None,
+        );
+    let install = AgentMobToolsInstall {
+        slot,
+        session_service,
+        workgraph_service,
+        default_llm_client_slot: Arc::clone(&llm_slot),
+        council_store,
+    };
+    (
+        state,
+        overrides,
+        llm_slot,
+        console_spawn_sink,
+        identity_runtime,
+        install,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_agent_mob_tools_with(
     definition: &MobDefinition,
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
     session_service: Arc<dyn MobSessionService>,
@@ -2440,6 +2487,8 @@ fn install_agent_mob_tools(
     // `TemporaryCouncilStore::list_unfinished` able to see anything after a
     // reboot, which is the whole point of the recovery path.
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+    child_policy: AgentMobChildPolicy,
+    existing_slots: Option<(SharedConsoleSpawnSinkSlot, SharedIdentityRuntimeSlot)>,
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
@@ -2458,6 +2507,16 @@ fn install_agent_mob_tools(
     if let Some(council_store) = council_store {
         state = state.with_temporary_council_store(council_store);
     }
+    // The host's application tool policy for child mobs (agent `mob_create`
+    // and delegate's implicit mob): the registry, the binding every child
+    // member is built with, and the bundles the host makes available to them.
+    if let Some(registry) = child_policy.registry {
+        state = state.with_tool_consequence_policy_registry(registry);
+    }
+    if let Some(binding) = child_policy.binding {
+        state = state.with_child_application_tool_policy(binding);
+    }
+    state = state.with_child_tool_bundles(child_policy.bundles);
     if let Some(base_store) = state.realm_profile_store().cloned()
         && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
     {
@@ -2484,8 +2543,13 @@ fn install_agent_mob_tools(
             &state,
             definition.id.to_string(),
         ));
-    let console_spawn_sink = new_console_spawn_sink_slot();
-    let identity_runtime = Arc::new(std::sync::RwLock::new(None));
+    // A reinstall keeps the slots already handed out.
+    let (console_spawn_sink, identity_runtime) = existing_slots.unwrap_or_else(|| {
+        (
+            new_console_spawn_sink_slot(),
+            Arc::new(std::sync::RwLock::new(None)),
+        )
+    });
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
@@ -4194,14 +4258,27 @@ impl SessionStoreBackedRuntimeStore {
             if commit.messages_before < durable_messages.len() {
                 continue;
             }
-            let parent_session = successor
+            let parent_session = match successor
                 .with_validated_transcript_rewrite_parent_projection(sealed, commit)
-                .map_err(|e| {
-                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                        "parent projection for durable-behind admission at generation {}: {e}",
-                        commit.rewrite_generation
-                    ))
-                })?;
+            {
+                Ok(parent_session) => parent_session,
+                // meerkat 0.8.51 bounds the history a session graph retains:
+                // an older rewrite keeps its commit and digests but not its
+                // body, so its parent cannot be projected. With no body it can
+                // never prove the durable row is its prefix; a later, retained
+                // commit still can.
+                Err(meerkat_core::TranscriptEditError::TranscriptRevisionRetired { .. }) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(meerkat_runtime::store::RuntimeStoreError::WriteFailed(
+                        format!(
+                            "parent projection for durable-behind admission at generation {}: {e}",
+                            commit.rewrite_generation
+                        ),
+                    ));
+                }
+            };
             let parent_messages = parent_session.messages();
             if parent_messages.len() < durable_messages.len() {
                 continue;
@@ -6370,6 +6447,15 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::service::SessionTranscriptRevisionList, SessionError> {
                 self.inner.list_transcript_revisions(id, query).await
             }
+            // The trait default is a typed `Unsupported`: unforwarded, the
+            // member instruction read refuses through this decorator.
+            async fn read_instruction_activation_records(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                query: meerkat_core::InstructionActivationReadQuery,
+            ) -> Result<meerkat_core::InstructionActivationReadPage, SessionError> {
+                self.inner.read_instruction_activation_records(id, query).await
+            }
         }
 
         #[async_trait]
@@ -6408,6 +6494,24 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner
                     .append_system_notice_under_runtime_turn_boundary(session_id, record)
+                    .await
+            }
+
+            // Forwarded exactly: the inner persistent service activates a
+            // durable instruction under the runtime turn boundary. The trait
+            // default refuses, so behind this wrapper activation would fail.
+            async fn activate_instruction_under_runtime_turn_boundary(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                request: meerkat_core::InstructionActivationRequest,
+                write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+            ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+                self.inner
+                    .activate_instruction_under_runtime_turn_boundary(
+                        session_id,
+                        request,
+                        write_fence,
+                    )
                     .await
             }
 
@@ -7539,6 +7643,15 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
     ) -> Result<meerkat_core::service::SessionTranscriptRevisionList, SessionError> {
         self.inner.list_transcript_revisions(id, query).await
     }
+    async fn read_instruction_activation_records(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        query: meerkat_core::InstructionActivationReadQuery,
+    ) -> Result<meerkat_core::InstructionActivationReadPage, SessionError> {
+        self.inner
+            .read_instruction_activation_records(id, query)
+            .await
+    }
 }
 
 #[async_trait]
@@ -7582,6 +7695,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .append_system_notice_under_runtime_turn_boundary(session_id, record)
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: durable
+    // instruction activation under the runtime turn boundary.
+    async fn activate_instruction_under_runtime_turn_boundary(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        request: meerkat_core::InstructionActivationRequest,
+        write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+    ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+        self.inner
+            .activate_instruction_under_runtime_turn_boundary(session_id, request, write_fence)
             .await
     }
 
@@ -8259,6 +8385,15 @@ pub struct MobBootstrapSpec {
     /// declares itself non-authoritative so it neither creates the composition
     /// pin nor is refused by one.
     pub composition_authority: crate::mob_composition_manifest::CompositionAuthority,
+    /// For a candidate (non-authoritative) resume: whether a supplied
+    /// definition that differs from the stored one refuses (the default) or
+    /// boots the stored definition knowingly. Ignored by authoritative
+    /// launches, which the composition pin judges.
+    ///
+    /// A knowing boot logs the diverged fields at WARN and, when the spec
+    /// declares a storage census ([`Self::resolved_storage`]), reports them
+    /// in a degraded `mob_composition` slot.
+    pub candidate_definition: crate::mob_composition_manifest::CandidateDefinition,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -8284,6 +8419,14 @@ pub struct MobBootstrapSpec {
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
     /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
     pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
+    /// Restored members whose customizer tools could not be published before
+    /// the mob build (an early `customize_build` failure, #563). Forwarded to
+    /// `MobBuilder::hold_restored_member_run_starts` for
+    /// `HostRunStartHoldReason::ToolsNotPublished`, so meerkat's restore
+    /// starts no run for them (a queued input, a kickoff, a peer message)
+    /// without their tools; the identity runtime releases each hold when the
+    /// member's materialization publishes them.
+    pub(crate) restored_members_awaiting_tools: Vec<meerkat_mob::AgentIdentity>,
     /// Process-local registry resolving exact application consequence-policy
     /// identities for member builds, forwarded to
     /// `MobBuilder::with_tool_consequence_policy_registry`.
@@ -8305,8 +8448,21 @@ pub struct MobBootstrapSpec {
     /// `MobBuilder::register_tool_bundle` for the profiles'
     /// `tools.rust_bundles`. They are registered on every build of this mob:
     /// create, resume (including the members it revives) and respawn. Mobs
-    /// that agents create through the mob tools do not receive them.
+    /// that agents create through the mob tools receive only the ones marked
+    /// child-available in [`Self::child_tool_bundle_availability`].
     pub(crate) tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
+    /// Which registered bundles the host supplies to child mobs (agent
+    /// `mob_create` and delegate's implicit mob). Absent means host-only.
+    pub(crate) child_tool_bundle_availability:
+        BTreeMap<String, meerkat_mob_mcp::ChildToolBundleAvailability>,
+    /// The application tool policy every child mob member is built with,
+    /// forwarded to the agent mob-tool state with the registry. With a
+    /// registry installed and no child policy, meerkat refuses agent
+    /// `mob_create` and delegate with a typed tool error until one is set.
+    pub(crate) child_application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    /// What the agent mob tools were installed with, so bootstrap can
+    /// reinstall them with the final child policy.
+    pub(crate) agent_mob_tools_install: Option<AgentMobToolsInstall>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8397,6 +8553,7 @@ impl MobBootstrapSpec {
             // ephemerality on the caller's behalf is what would let an
             // external embedder's durable storage resume unverified.
             composition_authority: crate::mob_composition_manifest::CompositionAuthority::default(),
+            candidate_definition: crate::mob_composition_manifest::CandidateDefinition::default(),
             mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance::default(
             ),
             session_service,
@@ -8414,9 +8571,13 @@ impl MobBootstrapSpec {
             runtime_adapter: None,
             live_compose_inputs: None,
             spawn_member_customizer: None,
+            restored_members_awaiting_tools: Vec::new(),
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
             tool_bundles: BTreeMap::new(),
+            child_tool_bundle_availability: BTreeMap::new(),
+            child_application_tool_policy: None,
+            agent_mob_tools_install: None,
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -8485,6 +8646,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &self.definition,
             mob_tools_slot,
@@ -8500,6 +8662,7 @@ impl MobBootstrapSpec {
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         self.identity_runtime_slot = Some(identity_runtime_slot);
+        self.agent_mob_tools_install = Some(agent_mob_tools_install);
         self
     }
 
@@ -8577,18 +8740,129 @@ impl MobBootstrapSpec {
     /// Register a named Rust tool bundle. A profile whose `tools.rust_bundles`
     /// names it gets the dispatcher's tools on every spawn, resume, revival
     /// and respawn; meerkat-mob owns that wiring. A profile naming a bundle
-    /// that is not registered is refused when its member is built. Agent-
-    /// created child mobs never receive host bundles.
+    /// that is not registered is refused when its member is built. The bundle
+    /// is host-only: agent-created child mobs never receive it (see
+    /// [`Self::register_tool_bundle_with_availability`]).
     ///
     /// Registering the same name twice replaces the earlier dispatcher.
     #[must_use]
     pub fn register_tool_bundle(
-        mut self,
+        self,
         name: impl Into<String>,
         dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
     ) -> Self {
-        self.tool_bundles.insert(name.into(), dispatcher);
+        self.register_tool_bundle_with_availability(
+            name,
+            dispatcher,
+            meerkat_mob_mcp::ChildToolBundleAvailability::HostOnly,
+        )
+    }
+
+    /// Register a named Rust tool bundle with its availability to child mobs
+    /// (agent `mob_create` and delegate's implicit mob). A
+    /// [`meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable`] bundle
+    /// is supplied by the host to every inline profile of a child mob when the
+    /// mob is created; agents never name bundles themselves, and can narrow
+    /// what a child member may call with its profile's deny list.
+    ///
+    /// Registering the same name twice replaces the earlier registration.
+    #[must_use]
+    pub fn register_tool_bundle_with_availability(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        availability: meerkat_mob_mcp::ChildToolBundleAvailability,
+    ) -> Self {
+        let name = name.into();
+        self.tool_bundles.insert(name.clone(), dispatcher);
+        self.child_tool_bundle_availability
+            .insert(name, availability);
         self
+    }
+
+    /// The application tool policy every child mob member (agent
+    /// `mob_create`, delegate's implicit mob) is built with. An explicit
+    /// `ApplicationToolPolicyBinding::Unmanaged` is a valid opt-out. With a
+    /// consequence-policy registry installed and no child policy, agent
+    /// `mob_create` and delegate are refused with a typed tool error
+    /// (`child_tool_policy_required`) until one is set.
+    #[must_use]
+    pub fn with_child_application_tool_policy(
+        mut self,
+        binding: meerkat_core::ApplicationToolPolicyBinding,
+    ) -> Self {
+        self.child_application_tool_policy = Some(binding);
+        self
+    }
+
+    /// [`Self::with_child_application_tool_policy`] when one was configured.
+    #[must_use]
+    pub fn with_optional_child_application_tool_policy(
+        mut self,
+        binding: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    ) -> Self {
+        if binding.is_some() {
+            self.child_application_tool_policy = binding;
+        }
+        self
+    }
+
+    /// The child policy the agent mob-tool state forwards.
+    fn agent_mob_child_policy(&self) -> AgentMobChildPolicy {
+        let mut bundles = meerkat_mob_mcp::ChildToolBundles::new();
+        let mut has_child_bundles = false;
+        for (name, dispatcher) in &self.tool_bundles {
+            let availability = self
+                .child_tool_bundle_availability
+                .get(name)
+                .copied()
+                .unwrap_or_default();
+            has_child_bundles |=
+                availability == meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable;
+            bundles = bundles.register(name.clone(), Arc::clone(dispatcher), availability);
+        }
+        AgentMobChildPolicy {
+            registry: self.tool_consequence_policy_registry.clone(),
+            binding: self.child_application_tool_policy.clone(),
+            bundles,
+            has_child_bundles,
+        }
+    }
+
+    /// Reinstall the agent mob tools with the final child policy. The
+    /// constructors install them before a host can set the registry, the
+    /// child policy or a child-available bundle, so bootstrap applies those
+    /// here, once, before anything uses the state. Nothing has run yet, the
+    /// shared state is side-effect free, and the slots already handed out
+    /// are kept; the council store and session service are the ones the
+    /// tools were first installed with.
+    fn apply_agent_mob_child_policy(&mut self) {
+        let child_policy = self.agent_mob_child_policy();
+        if child_policy.is_empty() {
+            return;
+        }
+        let Some(install) = self.agent_mob_tools_install.clone() else {
+            return;
+        };
+        let existing_slots = match (&self.console_spawn_sink_slot, &self.identity_runtime_slot) {
+            (Some(sink), Some(identity)) => Some((Arc::clone(sink), Arc::clone(identity))),
+            _ => None,
+        };
+        let (state, overrides, _llm_slot, console_spawn_sink, identity_runtime) =
+            install_agent_mob_tools_with(
+                &self.definition,
+                install.slot,
+                install.session_service,
+                install.workgraph_service,
+                Some(install.default_llm_client_slot),
+                install.council_store,
+                child_policy,
+                existing_slots,
+            );
+        self.agent_mob_mcp_state = Some(state);
+        self.implicit_delegate_retirement_overrides = Some(overrides);
+        self.console_spawn_sink_slot = Some(console_spawn_sink);
+        self.identity_runtime_slot = Some(identity_runtime);
     }
 
     /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
@@ -8641,6 +8915,15 @@ impl MobBootstrapSpec {
         authority: crate::mob_composition_manifest::CompositionAuthority,
     ) -> Self {
         self.composition_authority = authority;
+        self
+    }
+
+    /// See [`Self::candidate_definition`].
+    pub fn with_candidate_definition(
+        mut self,
+        policy: crate::mob_composition_manifest::CandidateDefinition,
+    ) -> Self {
+        self.candidate_definition = policy;
         self
     }
 
@@ -8968,6 +9251,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -8984,6 +9268,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = effective_runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
@@ -9439,6 +9724,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -9466,6 +9752,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = workgraph_service;
@@ -9780,6 +10067,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -9806,6 +10094,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.runtime_authority_prewarm = Some(runtime_store);
         spec.live_compose_inputs = live_compose_inputs;
@@ -9869,6 +10158,8 @@ pub enum MobRuntimeError {
     /// A persistent mob storage path could not be proven to match the supplied
     /// composition. Raised before the mob actuates.
     CompositionProvenance(crate::mob_composition_manifest::MobCompositionProvenanceError),
+    /// A teardown stop did not settle the mob's flow runs within its budget.
+    MobStopFlowRunsUnsettled(Box<crate::unified_runtime::MobStopFlowRunsUnsettled>),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -9879,6 +10170,7 @@ impl std::fmt::Display for MobRuntimeError {
             Self::HostHumanInput(err) => write!(f, "{err}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
+            Self::MobStopFlowRunsUnsettled(err) => write!(f, "{err}"),
         }
     }
 }
@@ -10267,28 +10559,35 @@ where
 {
     use futures::StreamExt as _;
     let read_authority = &read_authority;
-    futures::stream::iter(session_ids)
-        .map(|session_id| async move {
-            // The constructor owns the `rt:session:` convention; formatting it
-            // here would be a second spelling of the same fact.
-            let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
-            let observed = runtime_id.clone();
-            match read_authority(runtime_id).await {
-                Ok(()) => 1usize,
-                Err(error) => {
-                    tracing::debug!(
-                        runtime_id = %observed,
-                        error = %error,
-                        "prewarming persisted runtime authority failed; the bounded resume \
-                         performs this read itself and owns the typed outcome"
-                    );
-                    0
-                }
+    // The async closure takes an OWNED runtime id: a closure taking
+    // `&SessionId` and returning an async block that holds it makes every
+    // future that awaits this one fail `Send` ("not general enough"), up to
+    // `UnifiedRuntimeBuilder::build()`.
+    // The constructor owns the `rt:session:` convention; formatting it here
+    // would be a second spelling of the same fact.
+    futures::stream::iter(
+        session_ids
+            .iter()
+            .map(meerkat_runtime::LogicalRuntimeId::for_session),
+    )
+    .map(|runtime_id| async move {
+        let observed = runtime_id.clone();
+        match read_authority(runtime_id).await {
+            Ok(()) => 1usize,
+            Err(error) => {
+                tracing::debug!(
+                    runtime_id = %observed,
+                    error = %error,
+                    "prewarming persisted runtime authority failed; the bounded resume \
+                     performs this read itself and owns the typed outcome"
+                );
+                0
             }
-        })
-        .buffer_unordered(PREWARM_CONCURRENCY)
-        .fold(0usize, |read, one| async move { read + one })
-        .await
+        }
+    })
+    .buffer_unordered(PREWARM_CONCURRENCY)
+    .fold(0usize, |read, one| async move { read + one })
+    .await
 }
 
 impl MobRuntime {
@@ -10317,6 +10616,9 @@ impl MobRuntime {
         // is the one ingress where explicit resume intent is normalized before
         // the definition reaches meerkat-mob.
         let raw_definition = spec.definition.clone();
+        // Before anything reads the agent mob-tool state: child mobs get the
+        // host's final application tool policy and child bundles.
+        spec.apply_agent_mob_child_policy();
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
@@ -10386,6 +10688,10 @@ impl MobRuntime {
         // manifest certifying a composition that is not running. Recording the
         // creating authority instead lets that resume refuse with the real reason.
         let speaks_for_composition = spec.composition_authority.speaks_for_composition();
+        // Health-visible record of a candidate that knowingly boots a stored
+        // definition differing from the supplied one.
+        let mut candidate_composition_slot: Option<crate::storage_health::StorageSlotSummary> =
+            None;
         let mut builder = if event_log_empty {
             if let Some(path) = persistent_mob_path {
                 // Refuse rather than leave behind a path whose composition the
@@ -10478,6 +10784,71 @@ impl MobRuntime {
                     Err(other) => return Err(MobRuntimeError::CompositionProvenance(other)),
                 }
                 Some(snapshot)
+            } else if !speaks_for_composition {
+                // A candidate never writes or claims the pin, but it is not
+                // exempt from presenting what it runs: the resume boots the
+                // stored definition, so a supplied definition that differs
+                // refuses unless the launch acknowledges the stored one.
+                let snapshot = spec
+                    .storage
+                    .created_definition_snapshot()
+                    .await
+                    .map_err(|err| MobRuntimeError::Mob(MobError::from(err)))?
+                    .ok_or_else(|| {
+                        MobRuntimeError::Mob(MobError::Internal(
+                            "non-empty mob storage has no canonical definition".to_string(),
+                        ))
+                    })?;
+                let mut diverged = crate::mob_composition_manifest::diverged_definition_fields(
+                    snapshot.definition(),
+                    &spec.definition,
+                );
+                // The same released-representation allowance the
+                // authoritative arm makes: a store a 0.8.9-0.8.28 writer
+                // created (proven by its manifest) carries that release's
+                // auto-marked resume overrides, so an unchanged operator
+                // config is judged in that form.
+                if !diverged.is_empty()
+                    && let Some(path) = persistent_mob_path
+                {
+                    let mut legacy_definition = raw_definition.clone();
+                    legacy_auto_mark_declared_resume_overrides(&mut legacy_definition);
+                    if crate::mob_composition_manifest::verify_legacy_synthesized_definition_before_resume(
+                        path,
+                        snapshot.epoch(),
+                        snapshot.definition(),
+                        &spec.definition,
+                        &legacy_definition,
+                    )
+                    .is_ok()
+                    {
+                        diverged.clear();
+                    }
+                }
+                let diverged = crate::mob_composition_manifest::verify_candidate_resume(
+                    diverged,
+                    spec.candidate_definition,
+                )
+                .map_err(MobRuntimeError::CompositionProvenance)?;
+                if !diverged.is_empty() {
+                    tracing::warn!(
+                        mob_id = %mob_id,
+                        diverged_fields = %diverged.join(", "),
+                        "candidate launch boots the STORED mob definition, which differs from \
+                         the supplied one (runtime_options.mob_composition.candidate_definition \
+                         = \"stored\"); the supplied definition is not in effect"
+                    );
+                    candidate_composition_slot =
+                        Some(crate::storage_health::StorageSlotSummary::degraded(
+                            "mob_composition",
+                            format!(
+                                "candidate launch runs the stored mob definition, not the \
+                                 supplied one; diverged: {}",
+                                diverged.join(", ")
+                            ),
+                        ));
+                }
+                Some(snapshot)
             } else {
                 None
             };
@@ -10505,6 +10876,12 @@ impl MobRuntime {
 
         if let Some(customizer) = spec.spawn_member_customizer.clone() {
             builder = builder.with_spawn_member_customizer(customizer);
+        }
+        if !spec.restored_members_awaiting_tools.is_empty() {
+            builder = builder.hold_restored_member_run_starts(
+                meerkat_mob::HostRunStartHoldReason::ToolsNotPublished,
+                spec.restored_members_awaiting_tools.iter().cloned(),
+            );
         }
         if let Some(registry) = spec.tool_consequence_policy_registry.clone() {
             builder = builder.with_tool_consequence_policy_registry(registry);
@@ -10636,7 +11013,13 @@ impl MobRuntime {
                 workgraph_service: spec.workgraph_service,
                 workgraph_admission,
                 workgraph_realm_migration,
-                resolved_storage: spec.resolved_storage,
+                resolved_storage: match (spec.resolved_storage, candidate_composition_slot) {
+                    (Some(mut summary), Some(slot)) => {
+                        summary.slots.push(slot);
+                        Some(summary)
+                    }
+                    (summary, _) => summary,
+                },
                 session_write_epochs: spec.session_write_epochs,
                 runtime_authority_prewarm: spec.runtime_authority_prewarm,
                 committed_boundary_recoverer: spec.committed_boundary_recoverer,
@@ -13832,7 +14215,7 @@ shell = true
             .expect("staged Allow array");
         assert_ne!(
             active_order, staged_order,
-            "the real HomeCore specimen must retain differently ordered Allow arrays"
+            "the captured specimen must retain differently ordered Allow arrays"
         );
         assert_eq!(
             raw_visibility["filter_witnesses"]
@@ -13840,7 +14223,7 @@ shell = true
                 .expect("fixture witnesses")
                 .len(),
             LEGACY_SHELL_AND_COMMS_TOOL_NAMES.len(),
-            "the real specimen must retain all legacy provenance witnesses"
+            "the captured specimen must retain all legacy provenance witnesses"
         );
 
         let persisted = session_with_visibility_state(session_id.clone(), state.clone());
@@ -22406,34 +22789,6 @@ image_generation = true
             for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
 
         assert!(is_recoverable_lifecycle_cleanup_error(error));
-    }
-
-    /// Field flake (mobkit CI, PR 324): ordinary teardown panicked because
-    /// `MobHandle::stop` refused while a member's runtime session was still
-    /// mid-kickoff. The classifier must recognize that exact production shape,
-    /// so teardown can wait the window out and then degrade instead of turning
-    /// a transient readiness state into an operator-visible failure.
-    #[test]
-    fn runtime_attach_readiness_refusal_matches_the_field_stop_failure() {
-        let error = "runtime-backed interrupt must resolve through MeerkatMachine for \
-            019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
-            failed: Runtime not ready: attached";
-
-        assert!(is_runtime_attach_readiness_refusal(error));
-    }
-
-    /// `running` is a DIFFERENT condition with a different remedy: a turn is
-    /// genuinely in flight, and teardown answers it by cancelling member work
-    /// and retrying the stop. Folding it into the attach-readiness class would
-    /// degrade a real busy-mob refusal into a shrug.
-    #[test]
-    fn runtime_attach_readiness_refusal_excludes_the_running_class() {
-        let error = "internal error: disposal completed but ArchiveSession failed: \
-            session error: agent error: Internal error: runtime cancel-before-retire failed \
-            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
-
-        assert!(!is_runtime_attach_readiness_refusal(error));
-        assert!(!is_runtime_attach_readiness_refusal("actor task dropped"));
     }
 
     #[test]

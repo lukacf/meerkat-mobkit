@@ -90,7 +90,7 @@ def test_an_empty_entry_is_refused_rather_than_forwarded():
 
 def test_a_non_string_entry_is_refused_with_its_index():
     with pytest.raises(TypeError, match=r"application_tool_policies\[0\] must be str"):
-        MobKit.builder().application_tool_policies([{"provider_id": "homecore"}])
+        MobKit.builder().application_tool_policies([{"provider_id": "example-provider"}])
 
 
 def test_invalid_utf8_bytes_are_refused_with_their_index():

@@ -201,7 +201,7 @@ has NO producer in mobkit; the reducer is new work; ChatPane is the real path):
 WorkGraphs are AGENT-operated; the console is a debug/inspection surface.
 Graph surgery (reassign/claim/close/pause) is normally performed by agents
 — transfers specifically by COORDINATE-mode bindings at a human's
-conversational request (HomeCore: triage/gate agents are the natural
+conversational request (the downstream app: triage/gate agents are the natural
 coordinate holders for cross-domain goals). Console mutations exist as
 debug overrides, deniable wholesale via the `workgraph.manage` ABAC
 action. The one human-NATIVE act is goal confirmation: PrincipalConfirmed

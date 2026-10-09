@@ -3,7 +3,13 @@ export { realtimeMessageOrigin, hasRealtimeMessageOriginCarrier, isRealtimeHisto
 export { conversationPresentationRows } from "./assistant-presentation";
 export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
 export type { AssistantHistorySnapshot } from "./assistant-message-identity";
-export { settledHistoryActivity } from "./settled-history-activity";
+export {
+  MEMBER_KICKOFF_PHASES,
+  memberKickoffNotice,
+  memberKickoffPhaseLabel,
+  type MemberKickoffNotice,
+  type MemberKickoffPhase,
+} from "./member-kickoff";
 export type {
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,
@@ -11,6 +17,7 @@ export type {
   ExperienceSectionRefresh,
   GatingActionRequest,
   GatingActionResult,
+  GatingAuditEntryView,
   IdentityStatusRow,
   IdentitySessionRepair,
   MemberProgress,
@@ -27,6 +34,7 @@ export {
   normalizeExperienceSectionMeta,
   normalizeGatingActionRequest,
   normalizeGatingActionResult,
+  normalizeGatingAuditEntry,
   normalizeIdentityInspectViewState,
   normalizeIdentitySessionRepair,
   normalizeIdentityStatusRow,
@@ -290,6 +298,7 @@ export type {
   ConversationParsedSummaryFile,
   ConversationRichBlock,
   ConversationRichBackgroundJobBlock,
+  ConversationRichMemberKickoffBlock,
   ConversationRichMarkdownBlock,
   ConversationTextMode,
   ConversationRichCodeBlock,
@@ -363,6 +372,7 @@ export {
   createUserEntry,
   describeMemoryTimelineEvent,
   inferResponsePhaseFromFrames,
+  ConsoleActivityProjection,
   isAgentPinned,
   mapFramesToTimelineEntries,
   mergeConversationFrames,

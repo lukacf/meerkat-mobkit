@@ -305,6 +305,74 @@ pub fn compiled_policy_payloads_from_init_params(
     }
 }
 
+/// Read the `child_application_tool_policy` init parameter: the application
+/// tool policy every child mob member (agent `mob_create`, delegate's implicit
+/// mob) is built with, as an `ApplicationToolPolicyBinding` JSON object, for
+/// example `{"kind":"provider","provider_id":"example-provider","policy_id":"child-tools"}`
+/// or the explicit opt-out `{"kind":"unmanaged"}`.
+///
+/// Absent means none was chosen. A present value that is not a binding,
+/// including `null`, refuses the boot for the same reason a malformed
+/// `application_tool_policies` does: a host that wrote the key expects it in
+/// force. `{"kind":"inherit"}` is refused too: a child mob has no member to
+/// inherit from when it is created, and Meerkat would refuse every child mob
+/// at use.
+pub fn child_application_tool_policy_from_init_params(
+    params: &serde_json::Value,
+) -> Result<Option<meerkat_core::ApplicationToolPolicyBinding>, ToolConsequenceFailure> {
+    let Some(value) = params.get("child_application_tool_policy") else {
+        return Ok(None);
+    };
+    let binding: meerkat_core::ApplicationToolPolicyBinding = serde_json::from_value(value.clone())
+        .map_err(|error| ToolConsequenceFailure::EvaluationFailed {
+            reason: format!("child_application_tool_policy is malformed: {error}"),
+        })?;
+    if matches!(binding, meerkat_core::ApplicationToolPolicyBinding::Inherit) {
+        return Err(ToolConsequenceFailure::EvaluationFailed {
+            reason: "child_application_tool_policy cannot be {\"kind\":\"inherit\"}: a child \
+                     mob has no member to inherit from; choose a provider binding or \
+                     {\"kind\":\"unmanaged\"}"
+                .to_string(),
+        });
+    }
+    Ok(Some(binding))
+}
+
+/// Check a configured child policy against the providers this boot serves,
+/// so a binding Meerkat could never resolve refuses the boot instead of
+/// failing every later `mob_create` and `delegate`. A provider binding needs
+/// its provider among `providers` and a policy that provider can load;
+/// `Unmanaged` needs nothing.
+pub fn validate_child_application_tool_policy(
+    binding: &meerkat_core::ApplicationToolPolicyBinding,
+    providers: &[Arc<dyn ToolConsequenceNarrowingPolicy>],
+) -> Result<(), ToolConsequenceFailure> {
+    let meerkat_core::ApplicationToolPolicyBinding::Provider {
+        provider_id,
+        policy_id,
+    } = binding
+    else {
+        return Ok(());
+    };
+    let provider = providers
+        .iter()
+        .find(|provider| provider.provider_id() == provider_id)
+        .ok_or_else(|| ToolConsequenceFailure::EvaluationFailed {
+            reason: format!(
+                "child_application_tool_policy names provider '{provider_id}', which no \
+                 application_tool_policies entry carries"
+            ),
+        })?;
+    provider.snapshot(policy_id).map(|_| ()).map_err(|error| {
+        ToolConsequenceFailure::EvaluationFailed {
+            reason: format!(
+                "child_application_tool_policy names policy '{policy_id}' of provider \
+                 '{provider_id}', which it cannot load: {error}"
+            ),
+        }
+    })
+}
+
 /// Build one provider per distinct provider id CARRIED by the supplied
 /// canonical payloads.
 ///
@@ -734,9 +802,9 @@ mod tests {
 
     #[test]
     fn providers_are_derived_from_the_ids_the_artifacts_carry() {
-        // HomeCore compiles provider_id "homecore"; nothing in MobKit names it.
+        // The host compiles provider_id "example-provider"; nothing in MobKit names it.
         let payloads = vec![
-            policy_for("homecore", "household-tools", "member-a", "shell"),
+            policy_for("example-provider", "household-tools", "member-a", "shell"),
             policy_for("some-other-author", "fleet-baseline", "member-b", "network"),
         ];
         let providers =
@@ -745,7 +813,7 @@ mod tests {
             .iter()
             .map(|provider| provider.provider_id().as_str())
             .collect();
-        assert_eq!(ids, vec!["homecore", "some-other-author"]);
+        assert_eq!(ids, vec!["example-provider", "some-other-author"]);
     }
 
     /// The gateway calls `providers_from_canonical_payloads`, not `accept`.
@@ -756,7 +824,7 @@ mod tests {
     #[test]
     fn the_gateways_own_entry_point_refuses_a_wrong_id_space_artifact() {
         let payload = CompiledApplicationToolPolicy::new(
-            PolicyProviderId::new("homecore").expect("provider id"),
+            PolicyProviderId::new("example-provider").expect("provider id"),
             PolicyId::new("household-tools").expect("policy id"),
             PolicyRevision(1),
             source(),
@@ -784,7 +852,7 @@ mod tests {
         // This is the bug this function exists to prevent: a gateway that named
         // its own provider refused every policy compiled by anyone else.
         let payloads = vec![policy_for(
-            "homecore",
+            "example-provider",
             "household-tools",
             "member-a",
             "shell",
@@ -795,7 +863,7 @@ mod tests {
             .snapshot(&PolicyId::new("household-tools").expect("policy id"))
             .expect("the carried policy id resolves");
         let mut request = request("member-a", "shell");
-        request.provider_id = PolicyProviderId::new("homecore").expect("provider id");
+        request.provider_id = PolicyProviderId::new("example-provider").expect("provider id");
         request.policy_id = PolicyId::new("household-tools").expect("policy id");
         assert!(matches!(
             snapshot.evaluate(&request),
@@ -806,8 +874,8 @@ mod tests {
     #[test]
     fn two_policies_from_one_author_share_a_single_provider() {
         let payloads = vec![
-            policy_for("homecore", "household-tools", "member-a", "shell"),
-            policy_for("homecore", "guest-tools", "member-b", "network"),
+            policy_for("example-provider", "household-tools", "member-a", "shell"),
+            policy_for("example-provider", "guest-tools", "member-b", "network"),
         ];
         let providers = providers_from_canonical_payloads(&payloads).expect("both install");
         assert_eq!(providers.len(), 1, "one author means one provider");
@@ -825,7 +893,7 @@ mod tests {
         // consults the supervisor, so passing here proves the composition and
         // not just the pieces.
         let payloads = vec![policy_for(
-            "homecore",
+            "example-provider",
             "household-tools",
             "member-a",
             "shell",
@@ -852,7 +920,7 @@ mod tests {
         registry
             .bind(
                 member.clone(),
-                PolicyProviderId::new("homecore").expect("provider id"),
+                PolicyProviderId::new("example-provider").expect("provider id"),
                 PolicyId::new("household-tools").expect("policy id"),
             )
             .expect("the carried provider and policy identity must bind");
@@ -891,7 +959,7 @@ mod tests {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/application_tool_policies_init_params.json");
         let canonical = String::from_utf8(policy_for(
-            "homecore",
+            "example-provider",
             "household-tools",
             "member-a",
             "shell",
@@ -929,7 +997,7 @@ mod tests {
         let providers = providers_from_canonical_payloads(&payloads)
             .expect("the committed wire payload installs");
         assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].provider_id().as_str(), "homecore");
+        assert_eq!(providers[0].provider_id().as_str(), "example-provider");
         providers[0]
             .snapshot(&PolicyId::new("household-tools").expect("policy id"))
             .expect("the carried policy id resolves");
@@ -968,5 +1036,101 @@ mod tests {
         provider
             .accept(policy(1, "member-a", "shell"))
             .expect_err("a policy naming another provider must be refused");
+    }
+
+    #[test]
+    fn the_child_policy_init_parameter_reads_absent_unmanaged_and_provider() {
+        use meerkat_core::ApplicationToolPolicyBinding;
+        assert_eq!(
+            child_application_tool_policy_from_init_params(&serde_json::json!({})).expect("absent"),
+            None
+        );
+        assert_eq!(
+            child_application_tool_policy_from_init_params(&serde_json::json!({
+                "child_application_tool_policy": {"kind": "unmanaged"}
+            }))
+            .expect("unmanaged"),
+            Some(ApplicationToolPolicyBinding::Unmanaged)
+        );
+        assert_eq!(
+            child_application_tool_policy_from_init_params(&serde_json::json!({
+                "child_application_tool_policy": {
+                    "kind": "provider",
+                    "provider_id": "example-provider",
+                    "policy_id": "household-tools"
+                }
+            }))
+            .expect("provider"),
+            Some(ApplicationToolPolicyBinding::Provider {
+                provider_id: PolicyProviderId::new("example-provider").expect("provider id"),
+                policy_id: PolicyId::new("household-tools").expect("policy id"),
+            })
+        );
+    }
+
+    #[test]
+    fn a_malformed_or_inherit_child_policy_refuses_the_boot() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!("unmanaged"),
+            serde_json::json!({"kind": "provider", "provider_id": "example-provider"}),
+            serde_json::json!({"kind": "inherit"}),
+        ] {
+            let params = serde_json::json!({ "child_application_tool_policy": value });
+            let error = child_application_tool_policy_from_init_params(&params)
+                .expect_err("a value that is not a usable child binding must be refused");
+            assert!(
+                error.to_string().contains("child_application_tool_policy"),
+                "{value}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_policy_must_name_a_served_provider_and_policy() {
+        use meerkat_core::ApplicationToolPolicyBinding;
+        let providers: Vec<Arc<dyn ToolConsequenceNarrowingPolicy>> =
+            providers_from_canonical_payloads(&[policy_for(
+                "example-provider",
+                "household-tools",
+                "member-a",
+                "shell",
+            )])
+            .expect("providers")
+            .into_iter()
+            .map(|provider| provider as Arc<dyn ToolConsequenceNarrowingPolicy>)
+            .collect();
+        let binding = |provider: &str, policy: &str| ApplicationToolPolicyBinding::Provider {
+            provider_id: PolicyProviderId::new(provider).expect("provider id"),
+            policy_id: PolicyId::new(policy).expect("policy id"),
+        };
+        validate_child_application_tool_policy(
+            &binding("example-provider", "household-tools"),
+            &providers,
+        )
+        .expect("a served provider and policy");
+        validate_child_application_tool_policy(&ApplicationToolPolicyBinding::Unmanaged, &[])
+            .expect("unmanaged needs no provider");
+        let error = validate_child_application_tool_policy(
+            &binding("other", "household-tools"),
+            &providers,
+        )
+        .expect_err("an unserved provider");
+        assert!(
+            error
+                .to_string()
+                .contains("which no application_tool_policies entry carries")
+        );
+        let error = validate_child_application_tool_policy(
+            &binding("example-provider", "guest"),
+            &providers,
+        )
+        .expect_err("a policy the provider never accepted");
+        assert!(error.to_string().contains("cannot load"), "{error}");
+        validate_child_application_tool_policy(
+            &binding("example-provider", "household-tools"),
+            &[],
+        )
+        .expect_err("a provider binding without any served policy");
     }
 }

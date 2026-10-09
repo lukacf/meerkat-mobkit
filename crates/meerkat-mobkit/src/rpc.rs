@@ -38,9 +38,10 @@ pub(crate) mod workgraph_methods;
 
 pub use console_ingress::handle_console_ingress_json;
 
+pub(crate) use gating_methods::gating_ids_unavailable_rpc_error;
 use gating_methods::{
-    GatingParamsError, parse_gating_audit_params, parse_gating_decide_params,
-    parse_gating_evaluate_params, parse_gating_pending_params,
+    GatingParamsError, gating_decide_rpc_error, parse_gating_audit_params,
+    parse_gating_decide_params, parse_gating_evaluate_params, parse_gating_pending_params,
 };
 use memory_methods::{
     MemoryParamsError, parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
@@ -417,6 +418,20 @@ pub const STORAGE_RESOLUTION_CODE: i64 = -32014;
 /// TypeScript SDKs.
 pub const INIT_IN_PROGRESS_CODE: i64 = -32018;
 
+/// JSON-RPC error code for the mob composition provenance refusals
+/// `rpc_gateway` emits at `mobkit/init`: a persistent mob storage whose
+/// recorded composition the launch cannot be proven to match (a diverged
+/// definition, a rehearsal-created store, a candidate whose definition
+/// differs from the stored one, an unreadable, malformed or unsupported
+/// manifest, or undeclared non-empty storage; an absent manifest is adopted
+/// by an authoritative launch rather than refused). The error `data` is a
+/// [`crate::mob_composition_manifest::CompositionProvenanceRefusal`]: its
+/// `kind` and, where the variant has them, the diverged `fields`. Distinct
+/// from `-32603` so SDKs can reify a deliberate composition refusal instead of
+/// a generic internal error. Keep in sync with `CompositionProvenanceError` in
+/// the Python and TypeScript SDKs.
+pub const COMPOSITION_PROVENANCE_CODE: i64 = -32019;
+
 /// JSON-RPC error code returned by every `mobkit/workgraph/*` method when
 /// the runtime has no WorkGraph service configured
 /// (`data.kind = "workgraph_unavailable"`). Single source of truth — keep
@@ -432,6 +447,14 @@ pub const WORKGRAPH_CONFLICT_CODE: i64 = -32042;
 /// JSON-RPC error code for all other WorkGraph domain failures
 /// (`data.kind = "workgraph_error"`, full detail — K2 disclosure posture).
 pub const WORKGRAPH_ERROR_CODE: i64 = -32000;
+
+/// JSON-RPC error code for a quarantine review the memory store refused
+/// (`mobkit/memory/quarantine/decide`). Nothing was written.
+/// `data.kind = "memory_quarantine_review_refused"`; `data.reason` is the
+/// typed refusal (`not_found`, `content_mismatch`, `not_quarantined`,
+/// `gate_pending`, `successor_conflict`, `secret_detected`, `stale_update`)
+/// with its fields.
+pub const MEMORY_QUARANTINE_REVIEW_REFUSED_CODE: i64 = -32043;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -1130,11 +1153,7 @@ pub fn handle_mobkit_rpc_json(
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {}", err.message()),
-                        data: None,
-                    }),
+                    error: Some(gating_decide_rpc_error(err)),
                 },
             }
         }
@@ -2107,6 +2126,8 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/wait_for_turn",
                     "mobkit/compact_member",
                     "mobkit/bound_member_transcript",
+                    "mobkit/member_activate_instruction",
+                    "mobkit/member_instruction_activations",
                     "mobkit/reconcile_identity",
                     "mobkit/request_continuity_repair",
                     "mobkit/status_identity_bootstrap",
@@ -3121,11 +3142,7 @@ async fn handle_unified_rpc_json_inner(
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {}", err.message()),
-                        data: None,
-                    }),
+                    error: Some(gating_decide_rpc_error(err)),
                 },
             }
         }
@@ -5182,6 +5199,32 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e) => identity_error_response(response_id, &e),
             }
+        }
+        "mobkit/member_activate_instruction" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_member_activate_instruction(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
+        }
+        "mobkit/member_instruction_activations" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_member_instruction_activations(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
         }
         "mobkit/compact_member" => {
             let ctx = match identity_ctx {

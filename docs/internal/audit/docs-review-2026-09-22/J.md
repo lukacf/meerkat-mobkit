@@ -172,7 +172,7 @@ No actionable defects were found. The independent adjudicator challenged archive
 >       {
 >         "path": "docs/design/agent-memory-architecture.md",
 >         "lines": "17-21",
->         "quote": "Evidence base: five-system survey (Claude Code, Codex, Meerkat, MobKit, Elephant)\nwith adversarially verified findings, committed at\n[`../archive/design/evidence/memory-survey-2026-07/`](../archive/design/evidence/memory-survey-2026-07/). File:line citations below\nrefer to the surveyed checkouts (2026-07-01); the archive README carries the\nstaleness caveat.",
+>         "quote": "Evidence base: five-system survey (Claude Code, Codex, Meerkat, MobKit, an external memory hub)\nwith adversarially verified findings, committed at\n[`../archive/design/evidence/memory-survey-2026-07/`](../archive/design/evidence/memory-survey-2026-07/). File:line citations below\nrefer to the surveyed checkouts (2026-07-01); the archive README carries the\nstaleness caveat.",
 >         "explanation": "The active consumer preserves the date/provenance boundary rather than advertising the archived survey as current implementation truth."
 >       },
 >       {

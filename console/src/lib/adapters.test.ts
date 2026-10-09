@@ -21,7 +21,51 @@ import {
   systemNoticeClearsBusyState,
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
+import { MEERKAT_1608_KICKOFF_NOTICES } from "./fixtures/meerkat-1608-kickoff-notices";
 import { describeFailure, summarizeFailureData } from "./failure-summary";
+
+test("authorization feedback projects a typed operation refusal without ending the active run", () => {
+  const frames = [
+    { id: "auth-start", event: "run_started", data: {}, interactionId: "auth-run" },
+    { id: "auth-refused", event: "system_notice", interactionId: "auth-run", data: { message: {
+      role: "system_notice", kind: "generic", body: "private-owner-detail-canary",
+      blocks: [{ type: "runtime_notice", category: "operation_refused", payload: { code: "operation_refused" } }],
+    } } },
+  ];
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, frames);
+  const feedback = entries.find(entry => "operationFeedback" in entry && entry.operationFeedback)?.operationFeedback;
+  assert.equal(feedback?.kind, "permission-refused");
+  assert.doesNotMatch(JSON.stringify(feedback), /private-owner-detail-canary/);
+  assert.equal(inferResponsePhaseFromFrames(frames, null), "waiting");
+  assert.equal(systemNoticeClearsBusyState(frames[1]), false);
+  const continued = [...frames, { id: "auth-answer", event: "text_delta", interactionId: "auth-run", data: { delta: "Continuing with the permitted action." } }];
+  assert.equal(inferResponsePhaseFromFrames(continued, null), "generating");
+  assert.match(JSON.stringify(mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, continued)), /Continuing with the permitted action/);
+});
+
+test("authorization feedback distinguishes actual tool refusal from ordinary text mentioning refusal", () => {
+  const tool = { id: "auth-tool", event: "tool_result_received", data: { id: "call", name: "calendar", is_error: true,
+    content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "operation refused" }) }] } };
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, [tool]);
+  assert.equal(entries.filter(entry => "operationFeedback" in entry && entry.operationFeedback?.kind === "permission-refused").length, 1);
+  const ordinary = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, [{
+    ...tool, id: "ordinary", data: { ...tool.data, is_error: false, content: [{ type: "text", text: "operation_refused is an example string" }] },
+  }]);
+  assert.equal(ordinary.some(entry => "operationFeedback" in entry && entry.operationFeedback), false);
+});
+
+test("authorization feedback keeps audit observation failure distinct and nonterminal", () => {
+  const frames = [
+    { id: "audit-start", event: "run_started", data: {} },
+    { id: "audit-feedback", event: "operation_observation_failed", data: { operation_id: "op-1", phase: "outcome", secret: "audit-private-canary" } },
+  ];
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, frames);
+  const feedback = entries.find(entry => "operationFeedback" in entry && entry.operationFeedback)?.operationFeedback;
+  assert.equal(feedback?.kind, "audit-unavailable");
+  assert.equal(feedback?.operationId, "op-1");
+  assert.doesNotMatch(JSON.stringify(feedback), /audit-private-canary/);
+  assert.equal(inferResponsePhaseFromFrames(frames, null), "waiting");
+});
 import {
   mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared,
   inferResponsePhaseFromFrames as inferResponsePhaseFromFramesShared,
@@ -30,6 +74,125 @@ import {
 import {
   conversationRichBlockCopyText,
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
+
+const confinementCauses = ["invalid_requirement", "invalid_launch", "unsupported_requirement",
+  "backend_unavailable", "preparation_failed"] as const;
+
+for (const [name, map, phase] of [
+  ["stock", mapFramesToTimelineEntries, inferResponsePhaseFromFrames],
+  ["shared", mapFramesToTimelineEntriesShared, inferResponsePhaseFromFramesShared],
+] as const) {
+  test(`${name} local confinement feedback preserves every cause and exact call without ending the run`, () => {
+    for (const refusal of confinementCauses) {
+      for (const reverse of [false, true]) {
+        const launch = { id: "launch", event: "hook_launch_refused", runId: "run", data: {
+          hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+          reason: { reason_code: "confinement_refused", refusal },
+        } };
+        const result = { id: "result", event: "tool_result_received", runId: "run", data: {
+          id: "blocked", name: "write_file", is_error: true,
+          content: [{ type: "text", text: JSON.stringify({ error: "confinement_refused",
+            message: "permission denied private-canary", data: { refusal } }) }],
+        } };
+        const local = reverse ? [result, launch] : [launch, result];
+        const frames = [{ id: "start", event: "run_started", runId: "run", data: {} }, ...local,
+          { id: "sibling-start", event: "tool_execution_started", runId: "run", data: { id: "permitted", name: "read_file" } },
+          { id: "sibling", event: "tool_execution_completed", runId: "run", data: {
+            id: "permitted", name: "read_file", is_error: false,
+            content: [{ type: "text", text: "Sibling completed" }],
+          } }];
+        const feedback = map(null, frames).flatMap(entry => entry.kind === "message" && entry.operationFeedback ? [entry.operationFeedback] : []);
+        assert.equal(feedback.length, 1);
+        assert.equal(feedback[0].kind, "confinement-refused");
+        assert.equal(feedback[0].confinementRefusal, refusal);
+        assert.equal(feedback[0].toolCallId, "blocked");
+        for (const id of ["  exact-call  ", "call-".repeat(80), " \t  "]) {
+          const exact = map(null, [{ ...result, data: { ...result.data, id } }]).find(entry => entry.kind === "message" && entry.operationFeedback);
+          assert.equal(exact?.kind === "message" ? exact.operationFeedback?.toolCallId : undefined, id);
+        }
+        for (const event of ["tool_result_received", "tool_execution_completed"]) {
+          const canonical = map(null, [{ ...result, event }]).find(entry => entry.kind === "message" && entry.operationFeedback);
+          assert.equal(canonical?.kind, "message");
+          if (canonical?.kind !== "message") throw new Error("missing canonical refusal feedback");
+          assert.equal(canonical.operationFeedback?.confinementRefusal, refusal);
+          assert.equal(canonical.operationFeedback?.toolCallId, "blocked");
+        }
+        assert.match(feedback[0].detail, /did not run/);
+        assert.doesNotMatch(JSON.stringify(feedback), /Permission denied|private-canary/);
+        assert.equal(phase(frames, null), "waiting");
+        const continued = [...frames, { id: "answer", event: "text_delta", runId: "run", data: { delta: "Continuing after the permitted sibling." } }];
+        assert.equal(phase(continued, null), "generating");
+        assert.match(JSON.stringify(map(null, continued)), /Sibling completed/);
+        assert.match(JSON.stringify(map(null, continued)), /Continuing after the permitted sibling/);
+        assert.equal(phase([...continued, { id: "done", event: "run_completed", runId: "run", data: {} }], null), null);
+      }
+    }
+  });
+
+  test(`${name} explicit hook denial keeps its owner and reason distinct from permission feedback`, () => {
+    for (const reason_code of ["policy_violation", "safety_violation", "schema_violation", "timeout", "runtime_error"]) {
+      const frames = [{ id: "start", event: "run_started", data: {} }, {
+        id: "denied", event: "tool_execution_completed", data: { id: "blocked", is_error: true,
+          content: [{ type: "text", text: JSON.stringify({ error: "hook_denied", message: "private-denial-canary",
+            data: { hook_id: "guard", point: "pre_tool_execution", reason_code, payload: { secret: "private-payload-canary" } } }) }],
+        },
+      }];
+      const feedback = map(null, frames).find(entry => entry.kind === "message" && entry.operationFeedback);
+      assert.equal(feedback?.kind, "message");
+      if (feedback?.kind !== "message") throw new Error("missing hook feedback");
+      assert.equal(feedback.operationFeedback?.kind, "hook-denied");
+      assert.equal(feedback.operationFeedback?.hookId, "guard");
+      assert.equal(feedback.operationFeedback?.hookReasonCode, reason_code);
+      assert.equal(feedback.operationFeedback?.toolCallId, "blocked");
+      assert.doesNotMatch(JSON.stringify(feedback.operationFeedback), /Permission denied|private-.*-canary/);
+      assert.equal(phase(frames, null), "waiting");
+    }
+  });
+
+  test(`${name} actual hook launch IO remains infrastructure feedback without an invented confinement cause`, () => {
+    const frames = [{ id: "start", event: "run_started", data: {} }, {
+      id: "launch-io", event: "hook_launch_refused", data: { hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+        reason: { reason_code: "execution_failed", message: "permission denied private-io-canary" },
+      },
+    }];
+    const entry = map(null, frames).find(entry => entry.kind === "message" && entry.operationFeedback);
+    assert.equal(entry?.kind, "message");
+    if (entry?.kind !== "message") throw new Error("missing launch feedback");
+    assert.equal(entry.operationFeedback?.kind, "hook-launch-failed");
+    assert.equal(entry.operationFeedback?.toolCallId, "blocked");
+    assert.equal(entry.operationFeedback?.confinementRefusal, undefined);
+    assert.doesNotMatch(JSON.stringify(entry.operationFeedback), /Permission denied|private-io-canary/);
+    assert.equal(phase(frames, null), "waiting");
+  });
+
+  test(`${name} malformed, unrelated and entered failures do not fabricate local refusal facts`, () => {
+    const invalidPayloads = [
+      { error: "confinement_refused", data: { refusal: "future_cause" } },
+      { error: "confinement_refused", data: { refusal: null } },
+      { error: "hook_denied", data: { hook_id: "guard", point: "pre_tool_execution", reason_code: "future_reason" } },
+      { error: "hook_denied", data: { hook_id: "guard", point: "run_completed", reason_code: "runtime_error" } },
+      { error: "execution_failed", message: "confinement_refused operation_refused permission denied" },
+      { error: "operation_authorization_unavailable" },
+      { error: "operation_observation_unavailable" },
+    ];
+    for (const payload of invalidPayloads) {
+      const entries = map(null, [{ id: "bad", event: "tool_result_received", data: { id: "call", is_error: true,
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+      } }]);
+      assert.equal(entries.some(entry => entry.kind === "message" && entry.operationFeedback), false);
+    }
+    for (const event of ["hook_failed", "run_failed"]) {
+      const frame = { id: event, event, data: { hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+        reason: { reason_code: "confinement_refused", refusal: "invalid_launch" },
+      } };
+      assert.equal(map(null, [frame]).some(entry => entry.kind === "message" && entry.operationFeedback), false);
+    }
+    const missingCall = { id: "unbound", event: "hook_launch_refused", data: {
+      hook_id: "guard", point: "pre_tool_execution", reason: { reason_code: "execution_failed", message: "failed" },
+    } };
+    assert.equal(map(null, [missingCall]).some(entry => entry.kind === "message" && entry.operationFeedback), false);
+  });
+}
 
 function typedCommsNotice(args: {
   peer: string;
@@ -979,6 +1142,58 @@ for (const [surface, inferPhase, resolvePhase] of [
     });
   }
 }
+
+for (const [event, inputStatus, terminalStatus, data] of [
+  ["message_delivery_failed", "delivery_failed", "delivery_failed", { reason: "host-human input refused", data: { kind: "host_human_input_unsupported" } }],
+  ["interaction_complete", "delivered", "completed", { reason: "steer_delivered", handling_mode: "steer" }],
+] as const) {
+  test(`keeps owner A phase after input B emits ${event}`, () => {
+    const scope = { identity: "owner", runtimeKey: "owner-runtime", sessionId: "owner-session" };
+    // The queried input status reflects the same B delivery terminal.
+    const frames = [
+      { ...scope, id: "interaction-A-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+      { ...scope, id: "run-A-start", event: "run_started", interactionId: "interaction-A", runId: "run-A", data: {} },
+      { ...scope, id: "input-B", event: "user_input", sourceKind: "send", interactionId: "interaction-B", status: inputStatus, data: { content: "Steer B", handling_mode: "steer" } },
+      { ...scope, id: "input-B-terminal", event, sourceKind: "synthetic", interactionId: "interaction-B", status: terminalStatus, data },
+    ];
+    assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+    assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+    const completed = [...frames, { ...scope, id: "owner-A-terminal", event: "interaction_complete",
+      interactionId: "interaction-A", data: { text: "Owner A completed" } }];
+    assert.equal(inferResponsePhaseFromFrames(completed), null);
+    assert.equal(resolvePanelResponsePhase({ frames: completed, serverPhase: "generating" }), null);
+  });
+}
+
+test("sparse owner linking cannot merge conflicting known sessions", () => {
+  const interaction = { identity: "owner", runtimeKey: "runtime", sessionId: "session-A" };
+  const run = { identity: "owner", runtimeKey: "runtime", sessionId: "session-B" };
+  const frames = [
+    { ...interaction, id: "interaction-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+    { ...run, id: "run-start", event: "run_started", runId: "run-B", data: {} },
+    { identity: "owner", id: "sparse-link", event: "run_started", interactionId: "interaction-A", runId: "run-B", data: {} },
+    { ...interaction, id: "interaction-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} },
+  ];
+  assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+  assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+  const completed = [...frames, { ...run, id: "run-terminal", event: "run_completed", runId: "run-B", data: {} }];
+  assert.equal(inferResponsePhaseFromFrames(completed), null);
+});
+
+test("sparse owner linking preserves the run's known scope", () => {
+  const scope = { identity: "owner", runtimeKey: "runtime", sessionId: "session-A" };
+  const frames = [
+    { id: "interaction-start", event: "interaction_started", interactionId: "interaction-A", data: {} },
+    { ...scope, id: "run-start", event: "run_started", runId: "run-A", data: {} },
+    { id: "sparse-link", event: "run_started", interactionId: "interaction-A", runId: "run-A", data: {} },
+    { ...scope, sessionId: "session-B", id: "wrong-session-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} },
+  ];
+  assert.equal(inferResponsePhaseFromFrames(frames), "waiting");
+  assert.equal(resolvePanelResponsePhase({ frames, serverPhase: "generating" }), "waiting");
+  const completed = [...frames, { ...scope, id: "owner-terminal", event: "interaction_complete", interactionId: "interaction-A", data: {} }];
+  assert.equal(inferResponsePhaseFromFrames(completed), null);
+  assert.equal(resolvePanelResponsePhase({ frames: completed, serverPhase: "generating" }), null);
+});
 
 test("resolvePanelResponsePhase lets local terminal history clear stale server phase", () => {
   assert.equal(
@@ -4247,6 +4462,115 @@ function meerkat071KickoffNotice() {
   };
 }
 
+// Meerkat 0.8.52 sends member-kickoff status as a one-way typed lifecycle
+// notice: comms `kind: "lifecycle"`, the lifecycle kind as `intent`, no
+// request id, and model-facing notice text as content.
+const MEERKAT_LIFECYCLE_NOTICE_PROJECTION =
+  "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+  + " (display_name: incident-command-center/commander/incident-commander)\n"
+  + "Kind: mob.kickoff_started\n"
+  + "Params: {\n"
+  + "  \"peer\": \"incident-commander\",\n"
+  + "  \"role\": \"commander\"\n"
+  + "}\n"
+  + "\n"
+  + "This is a one-way status notice, not a request. There is nothing to answer:"
+  + " do not call send_response or send_message for it.";
+
+function kickoffNoticeFrame(form: "lifecycle" | "request", intent: string, index: number) {
+  const summary = `${form === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`;
+  return {
+    id: `kickoff-${form}-${index}`,
+    event: "system_notice",
+    timestampMs: Date.parse("2026-10-03T18:48:01.519Z") + index,
+    sourceKind: "session_history" as const,
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "comms",
+        body: summary,
+        blocks: [{
+          type: "comms",
+          kind: form,
+          direction: "incoming",
+          peer: {
+            id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+            display_name: "incident-command-center/commander/incident-commander",
+          },
+          ...(form === "request" ? { request_id: `964020b4-c9b6-4c31-ba6c-3059827${index}` } : {}),
+          intent,
+          summary,
+          payload: { peer: "incident-commander", role: "commander" },
+          content: [{
+            type: "text",
+            text: form === "lifecycle"
+              ? MEERKAT_LIFECYCLE_NOTICE_PROJECTION.replace("mob.kickoff_started", intent)
+              : MEERKAT_071_PEER_REQUEST_PROJECTION.replace("mob.kickoff_started", intent),
+          }],
+        }],
+      },
+    },
+  };
+}
+
+test("mapFramesToTimelineEntries renders every kickoff phase, lifecycle or request form, as its typed status", () => {
+  const phases = ["pending", "starting", "started", "callback_pending", "failed", "cancelled"] as const;
+  const labels = ["pending", "starting", "started", "waiting for callback", "failed", "cancelled"];
+  const agent = { agent_id: "scribe", member_id: "scribe", label: "Scribe", kind: "mob_agent" } as const;
+  const check = (label: string, frames: Parameters<typeof mapFramesToTimelineEntries>[1], expected: Record<string, unknown>) => {
+    const entries = mapFramesToTimelineEntries(agent, frames, { renderInteractionStartsAsUser: true });
+    const blocks = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : []);
+    assert.deepEqual(blocks.find((block) => block.type === "member-kickoff"), expected, label);
+    assert.ok(!blocks.some((block) => block.type === "tool-call"), `${label}: no peer card`);
+    const rendered = JSON.stringify(entries);
+    for (const marker of ["Peer lifecycle notice from", "Peer request from", "pubkey", "send_response", "nothing to answer"]) {
+      assert.ok(!rendered.includes(marker), `${label} must not surface model-facing text "${marker}"`);
+    }
+  };
+  phases.forEach((phase, index) => {
+    // Meerkat #1608's serialized lifecycle notice, as is and with the
+    // peer_spec live mob payloads also carry.
+    const message = structuredClone(MEERKAT_1608_KICKOFF_NOTICES[index]) as unknown as Record<string, unknown>;
+    assert.equal((message.blocks as Array<Record<string, unknown>>)[0].intent, `mob.kickoff_${phase}`);
+    const lifecycle = {
+      type: "member-kickoff", phase, member: "delivery-lead", role: "delivery",
+      copyText: `Kickoff ${labels[index]}: delivery-lead`,
+    };
+    const frame = (data: Record<string, unknown>) => [{
+      id: `kickoff-lifecycle-${index}`, event: "system_notice", timestampMs: Date.parse("2026-10-03T18:48:01.519Z") + index,
+      sourceKind: "session_history" as const, data: { message: data },
+    }];
+    check(`lifecycle mob.kickoff_${phase}`, frame(message), lifecycle);
+    const withPeerSpec = structuredClone(message);
+    const block = (withPeerSpec.blocks as Array<Record<string, unknown>>)[0];
+    block.payload = { ...(block.payload as Record<string, unknown>), peer_spec: {
+      address: "inproc://incident-command-center/delivery/delivery-lead",
+      peer_id: "6f6114cd-2cf7-590f-a172-0e36feacd12c", pubkey: [20, 129, 97, 58],
+    } };
+    check(`lifecycle mob.kickoff_${phase} with peer_spec`, frame(withPeerSpec), lifecycle);
+    // The request form older sessions keep.
+    check(`request mob.kickoff_${phase}`, [kickoffNoticeFrame("request", `mob.kickoff_${phase}`, index)], {
+      type: "member-kickoff", phase, member: "incident-commander", role: "commander",
+      copyText: `Kickoff ${labels[index]}: incident-commander`,
+    });
+  });
+});
+
+test("mapFramesToTimelineEntries renders any other typed lifecycle notice by its summary, never its content", () => {
+  const frame = kickoffNoticeFrame("lifecycle", "mob.member_paused", 0);
+  const block = frame.data.message.blocks[0];
+  block.content = [{ type: "text", text: MEERKAT_LIFECYCLE_NOTICE_PROJECTION.replace("mob.kickoff_started", "mob.member_paused") }];
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "scribe", member_id: "scribe", label: "Scribe", kind: "mob_agent" },
+    [frame],
+    { renderInteractionStartsAsUser: true },
+  );
+  const card = entries.flatMap((entry) => "blocks" in entry && Array.isArray(entry.blocks) ? entry.blocks : [])
+    .find((candidate) => candidate.type === "tool-call");
+  assert.equal(card?.type === "tool-call" ? card.peerBody : undefined, "Peer lifecycle: mob.member_paused");
+  assert.ok(!JSON.stringify(entries).includes("Peer lifecycle notice from"));
+});
+
 test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport projection as the comms body", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -4282,13 +4606,14 @@ test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport 
   const block = commsEntry && "blocks" in commsEntry && Array.isArray(commsEntry.blocks)
     ? commsEntry.blocks[0]
     : null;
-  assert.equal(block?.type, "tool-call");
-  const peerBody = block?.type === "tool-call" ? block.peerBody || "" : "";
-  assert.equal(peerBody, "Peer request: mob.kickoff_started");
+  // A kickoff request renders as its typed status, not a peer message.
+  assert.equal(block?.type, "member-kickoff");
+  const statusText = block?.type === "member-kickoff" ? `${block.member} ${block.role ?? ""} ${block.copyText}` : "";
+  assert.equal(block?.type === "member-kickoff" ? block.copyText : "", "Kickoff started: incident-commander");
   for (const marker of ["pubkey", "peer_spec", "send_response", "Do not answer this request"]) {
     assert.ok(
-      !peerBody.includes(marker),
-      `comms body must not leak transport scaffold marker "${marker}": ${peerBody}`,
+      !statusText.includes(marker),
+      `kickoff status must not leak transport scaffold marker "${marker}": ${statusText}`,
     );
   }
 
@@ -9387,5 +9712,46 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
       const request = normalizePendingApprovalForInputTest({ pending_id: "release-approval", origin: { identity: "router:main", interaction_id: ownerId } })!;
       assert.equal(approvalMatchesInputConversation(request, { identity: "router:main", interactionIds: [] }), false);
     }
+  });
+}
+
+for (const [name, map] of [["console", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`authorization feedback ${name} keeps separate attempts, suppresses replay and omits private diagnostics`, () => {
+    const base = { runId: "run-a", interactionId: "work-a", sessionId: "session", identity: "a" };
+    const start = { ...base, id: "tool-start", event: "tool_call_requested", data: { id: "call-a", name: "calendar", args: {} } };
+    const refused = { ...base, id: "refusal", event: "tool_result_received", data: { id: "call-a", name: "calendar", is_error: true,
+      content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "private-refusal-canary", data: { secret: "hidden-policy-canary" } }) }] } };
+    const result = map({ agent_id: "a", label: "Agent" }, [start, refused,
+      { ...refused, id: "replay", event: "tool_execution_completed" },
+      { ...refused, id: "other-attempt", runId: "run-b", interactionId: "work-b" },
+      { ...base, id: "allowed-start", event: "tool_call_requested", data: { id: "allowed", name: "read", args: {} } },
+      { ...base, id: "allowed-result", event: "tool_result_received", data: { id: "allowed", name: "read", is_error: false, content: [{ type: "text", text: "Actual permitted result" }] } },
+      { ...base, id: "audit", event: "operation_observation_failed", data: { operation_id: "op-a", phase: "outcome", secret: "audit-secret-canary" } },
+    ]);
+    assert.equal(result.filter(e => "operationFeedback" in e && e.operationFeedback?.kind === "permission-refused").length, 2);
+    assert.match(JSON.stringify(result), /Actual permitted result/);
+    assert.doesNotMatch(JSON.stringify(result), /private-refusal-canary|hidden-policy-canary|audit-secret-canary/);
+    const ordinary = map({ agent_id: "a", label: "Agent" }, [{ ...refused, data: { ...refused.data,
+      content: [{ type: "text", text: JSON.stringify({ error: "other", message: "operation_refused" }) }] } }]);
+    assert.equal(ordinary.some(e => "operationFeedback" in e && e.operationFeedback), false);
+  });
+}
+
+for (const [name, project] of [["console", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`authorization feedback ${name} sanitizes reconstructed history tools without changing completion`, () => {
+    const base = { sourceKind: "session_history", identity: "agent", runId: "run", sessionId: "session" };
+    const entries = project({ agent_id: "agent", label: "Agent" }, [
+      { ...base, id: "assistant", event: "text_complete", data: { message: { role: "block_assistant", blocks: [
+        { block_type: "tool_use", data: { id: "denied", name: "delete", args: {} } },
+        { block_type: "tool_use", data: { id: "allowed", name: "read", args: {} } },
+      ] } } },
+      { ...base, id: "denied-result", event: "tool_result_received", data: { id: "denied", is_error: true, content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "PRIVATE_HISTORY_CANARY" }) }] } },
+      { ...base, id: "allowed-result", event: "tool_result_received", data: { id: "allowed", is_error: false, content: [{ type: "text", text: "Actual history result" }] } },
+    ]);
+    assert.doesNotMatch(JSON.stringify(entries), /PRIVATE_HISTORY_CANARY/);
+    assert.match(JSON.stringify(entries), /Actual history result/);
+    const tools = entries.flatMap(entry => entry.kind === "message" ? entry.blocks ?? [] : []).filter(block => block.type === "tool-call");
+    assert(tools.some(block => block.toolCallId === "denied" && block.status === "error"));
+    assert(tools.some(block => block.toolCallId === "allowed" && block.status === "success"));
   });
 }

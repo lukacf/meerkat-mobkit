@@ -6,7 +6,7 @@
 
 One console type: **operator/debugging workbench for identity-based multi-agent systems**.
 
-HomeCore and OB3 are instances of the same product category. The core console needs are shared: agent roster with health, conversation inspection, tool call visibility, activity timelines, lifecycle actions, and flow triggers. HomeCore pushes more edges (gating, routing, household state) but OB3 is a subset of the same design space.
+The downstream app and the operator deployment are instances of the same product category. The core console needs are shared: agent roster with health, conversation inspection, tool call visibility, activity timelines, lifecycle actions, and flow triggers. The downstream app pushes more edges (gating, routing, domain state) but the operator deployment is a subset of the same design space.
 
 **Architecture:** experience endpoint describes available data → host reads data and decides what panels to render → shared components render normalized view states → host provides domain-specific rendering via callbacks.
 
@@ -34,7 +34,7 @@ This method does not exist today. It requires new gateway handler + runtime plum
 
 The current `POST /interactions/stream` is ephemeral (one connection per send, drained and closed). The identity model requires a **persistent SSE connection per identity** that carries all events, with concurrent interactions multiplexed and filtered by `interaction_id`.
 
-**Endpoint:** `POST /console/identity/stream` with `{ identity: string }` in the request body. POST-based because `AgentIdentity` is an opaque string that may contain characters not safe for URL paths (e.g., `identity:luka`, `family-group:main`). POST avoids encoding issues while remaining conventional for SSE subscription endpoints that need parameters.
+**Endpoint:** `POST /console/identity/stream` with `{ identity: string }` in the request body. POST-based because `AgentIdentity` is an opaque string that may contain characters not safe for URL paths (e.g., `identity:alice`, `family-group:main`). POST avoids encoding issues while remaining conventional for SSE subscription endpoints that need parameters.
 
 **Multi-panel stream ownership:** shared refcounted connection per identity, managed by a connection pool in `lib/network.ts`. When the first dock panel targets an identity, the pool opens the SSE connection. Additional panels targeting the same identity share it (refcount increments). When the last panel releases, the connection closes. Panels subscribe/unsubscribe from the pool; they never manage SSE connections directly.
 
@@ -308,7 +308,7 @@ routing: {
 - Recent deliveries with status (from `mobkit/delivery/history`) — delivered, failed, retrying
 - Per-delivery attempt history (attempt count, backoff, final status)
 
-Host-specific overlays (NOT shared): household notification semantics, Slack channel rendering, business-specific routing reasons. The shared component provides the route list + delivery timeline chrome; hosts provide domain-specific context rendering where needed.
+Host-specific overlays (NOT shared): app-specific notification semantics, Slack channel rendering, business-specific routing reasons. The shared component provides the route list + delivery timeline chrome; hosts provide domain-specific context rendering where needed.
 
 ---
 
@@ -346,7 +346,7 @@ interface WatchState {
 
 - `watched` on `ConsoleSidebarItem` — when true, the identity's events are highlighted in the activity log, and state changes trigger visual alerts
 - `alertLevel` drives visual treatment: `null` = standard watched indicator (no alert), `"elevated"` = amber badge, `"critical"` = red badge + optional notification
-- Host sets `alertLevel` based on domain-specific rules (e.g., OB3: agent processing for >60s = elevated; HomeCore: gate decision pending >5m = critical)
+- Host sets `alertLevel` based on domain-specific rules (e.g., the operator deployment: agent processing for >60s = elevated; the downstream app: gate decision pending >5m = critical)
 
 **Sidebar rendering:**
 - Watched items show a persistent indicator (eye icon or status dot), not just on hover
@@ -438,8 +438,8 @@ Console UI: context menu on sidebar items (retire, respawn, reset, inspect). Act
 
 | Surface | Who | Extension point |
 |---|---|---|
-| Household state projections | HomeCore | Custom dock panel `kind` + `renderPanelBody` |
-| Connector-specific routing context | HomeCore | Host overlay on shared routing panel (business routing reasons, channel semantics) |
+| Domain state projections | The downstream app | Custom dock panel `kind` + `renderPanelBody` |
+| Connector-specific routing context | The downstream app | Host overlay on shared routing panel (business routing reasons, channel semantics) |
 | Domain-specific tool renderer | Both | `renderToolBlock` callback |
 | Flow trigger actions | Both | Action strip items + `onBlockAction` |
 | Domain-specific context menu | Both | `onItemContextMenu` callback |
@@ -449,4 +449,4 @@ Console UI: context menu on sidebar items (retire, respawn, reset, inspect). Act
 
 ## Architectural principle
 
-The experience endpoint describes what data is available, with protocol metadata per section (schema version, refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, households, or domain-specific gate policies — but it provides typed extension points for hosts that do.
+The experience endpoint describes what data is available, with protocol metadata per section (schema version, refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, app domains, or domain-specific gate policies — but it provides typed extension points for hosts that do.

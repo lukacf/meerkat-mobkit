@@ -15,6 +15,7 @@ pub mod factory_handle;
 pub mod guards;
 pub mod hygienist;
 pub mod records;
+pub mod review;
 pub mod secrets;
 pub mod spawn_customizer;
 pub mod sqlite_store;
@@ -23,9 +24,9 @@ pub mod steward;
 pub mod taint;
 
 pub use capabilities::{
-    DreamAuditVerdict, DreamRunAudit, EvidenceRefResolver, MemoryPanelStore, PanelRecordsPage,
-    PendingHarvest, PendingPromotion, PendingProposal, PersistedDreamRun, ScopeOverview,
-    StewardStore, TaintableStore,
+    DreamAuditVerdict, DreamRunAudit, EvidenceRefResolver, GATED_PROMOTION_EXPIRY_MS,
+    MemoryPanelStore, PanelRecordsPage, PendingHarvest, PendingPromotion, PendingProposal,
+    PersistedDreamRun, ScopeOverview, StewardStore, TaintableStore,
 };
 pub use coordinator::{
     ConsolePrincipalOperatorResolver, MobScopeResolver, OperatorResolver, RecallCoordinator,
@@ -58,6 +59,11 @@ pub use records::{
     CalibrationRef, EvidenceRef, InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor,
     MemoryId, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId,
     RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
+};
+pub use review::{
+    QuarantineDecision, QuarantineReviewError, QuarantineReviewOutcome, QuarantineReviewRefusal,
+    QuarantineReviewRequest, QuarantineReviewer, ReviewAudit, ReviewDecision,
+    ReviewedRecordReceipt, quarantine_release_ops, release_copy, release_successor_id,
 };
 pub use spawn_customizer::MemorySpawnCustomizer;
 pub use sqlite_store::SqliteAgentMemoryStore;

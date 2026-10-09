@@ -82,6 +82,32 @@ impl Display for UnifiedRuntimeBootstrapError {
 
 impl std::error::Error for UnifiedRuntimeBootstrapError {}
 
+impl UnifiedRuntimeBootstrapError {
+    /// The mob composition provenance refusal behind this bootstrap failure,
+    /// if that is what stopped it, including a refusal whose startup rollback
+    /// then failed too. Surfaces report these deliberate refusals with their
+    /// own code instead of as an internal error.
+    pub fn composition_provenance(
+        &self,
+    ) -> Option<&crate::mob_composition_manifest::MobCompositionProvenanceError> {
+        match self {
+            Self::Mob(MobRuntimeError::CompositionProvenance(refusal)) => Some(refusal),
+            // Defensive: a provenance refusal fails mob preparation before any
+            // module starts, so a rollback failure does not wrap one today.
+            // Seeing through it keeps the refusal typed if that order changes.
+            Self::ModuleStartupRollbackFailed { startup_error, .. } => {
+                startup_error.composition_provenance()
+            }
+            Self::Mob(_)
+            | Self::Module(_)
+            | Self::ModuleStartupThreadPanicked
+            | Self::PreSpawnHook(_)
+            | Self::IdentityFirst(_)
+            | Self::Topology(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnifiedRuntimeBuilderField {
     MobSpec,
@@ -263,6 +289,29 @@ pub struct UnifiedRuntimeShutdownReport {
     /// cleanup did not complete, so excluding this outcome would have made it
     /// unreportable in exactly the case it exists for.
     pub retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome,
+    /// What the mob actor's terminal teardown after the mob stop reported.
+    /// Best-effort, as before: it frees the mob's supervisor route, so it is
+    /// not part of `cleanup_completed()`, and a refusal is logged loudly.
+    pub mob_terminal_shutdown: MobTerminalShutdownOutcome,
+}
+
+/// What the mob actor's terminal teardown (`MobHandle::shutdown_with_report`)
+/// reported during [`UnifiedRuntime::shutdown`](crate::UnifiedRuntime).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum MobTerminalShutdownOutcome {
+    /// The mob stop did not quiesce members, so terminal teardown was not
+    /// attempted.
+    SkippedMobStopFailed,
+    /// The mob actor shut down and reported each member; see
+    /// [`meerkat_mob::MobShutdownReport::is_clean`].
+    Completed(meerkat_mob::MobShutdownReport),
+    /// The mob actor had already shut down: its command channel was closed,
+    /// which a mob shutting down answers to every caller request.
+    AlreadyShutDown,
+    /// The mob actor refused its terminal teardown; its supervisor in-proc
+    /// route may stay registered until process exit.
+    Refused { error: String },
 }
 
 impl UnifiedRuntimeShutdownReport {
@@ -806,6 +855,7 @@ mod tests {
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
             retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+            mob_terminal_shutdown: super::MobTerminalShutdownOutcome::AlreadyShutDown,
         }
     }
 
