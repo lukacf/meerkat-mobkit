@@ -2166,7 +2166,10 @@ comms = true
         )
         .expect("runtime adapter acquisition")
         .expect("persistent service runtime adapter");
-        assert!(!Arc::ptr_eq(&completion_runtime, &harness.adapter));
+        assert!(
+            Arc::ptr_eq(&completion_runtime, &harness.adapter),
+            "the concrete service and bootstrap must share the canonical runtime owner"
+        );
         let configured_observer = harness
             .runtime
             .mob_runtime()
@@ -2176,7 +2179,7 @@ comms = true
             .expect("owner observer");
         assert!(
             Arc::ptr_eq(&configured_observer, &completion_runtime),
-            "operator observer must use the concrete service, not the live-empty bootstrap override"
+            "operator observer must use the concrete service's canonical runtime owner"
         );
         let fat = "seeded transcript ballast ".repeat(160);
         for turn in 0..4 {
