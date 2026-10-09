@@ -1,3 +1,4 @@
+import { consoleWidgetEntryFromFrame } from "@console-core";
 import { assistantPresenter, assistantToolOwnership, conversationPresentationRows, extendAssistantToolOwnership, type AssistantPresenterState } from "../../../packages/console-core/src/assistant-presentation";
 import { userMessageRenderKey } from "../../../packages/console-core/src/user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "../../../packages/console-core/src/realtime-message-identity";
@@ -70,7 +71,8 @@ export type MobKitDockTarget =
   | LogsPanelTarget
   | AccessPanelTarget
   | MemoryPanelTarget
-  | WorkGraphPanelTarget;
+  | WorkGraphPanelTarget
+  | import("@console-core").ConsoleExtensionPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -5081,6 +5083,7 @@ function createTimelineFold(
   } = liveToolDedupeState(orderedFrames, toolBlocks);
   const assistantHistory = buildAssistantHistoryReconciliation(orderedFrames, options.renderTextDeltas !== false);
   const emittedImages = new Set<string>();
+  const emittedWidgets = new Set<string>();
   const emittedUserInputs = new Set<string>();
   // First-emitted user entry per dedupe key. A later twin of the same input
   // (live send frame vs persisted history vs run_started prompt) may be the
@@ -5415,6 +5418,12 @@ function createTimelineFold(
 
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       flushPendingReasoning(true);
+      const widgetEntry = consoleWidgetEntryFromFrame(frame, agentIdentity(agent));
+      if (widgetEntry && !emittedWidgets.has(widgetEntry.renderKey!)) {
+        flushPendingText();
+        emittedWidgets.add(widgetEntry.renderKey!);
+        entries.push(widgetEntry);
+      }
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
         frame,

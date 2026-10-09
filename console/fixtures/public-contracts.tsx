@@ -70,3 +70,18 @@ const invalidTransport: ConsoleTransportState = { ...transportState, phase: "pro
 void invalidMarkdown; void invalidRange; void invalidTransport;
 void controller.transport.send({ identity: viewportKey.identity, content, origin: "console:fixture", idempotencyKey: "key:fixture", handlingMode: "steer" });
 void createConsoleApp(document.createElement("div"), { baseUrl: "/console", storageNamespace: viewportKey.authority, markdownUrlPolicy: urlPolicy });
+
+// Plugin callbacks use DOM mounts, so hosts may bundle their UI framework.
+const extension: import("../src/index").ConsoleExtension = {
+  id: "example",
+  panels: [{ id: "example/overview", title: "Overview", mount(element, context, signal) {
+    element.textContent = context.readOnly ? "View only" : "Ready";
+    signal.throwIfAborted();
+    return { update(next) { element.textContent = next.baseUrl; }, dispose() { element.replaceChildren(); } };
+  } }],
+  widgets: [{ type: "example/result", version: 1, mount(element, context) {
+    element.textContent = context.widget.fallback;
+    element.onclick = () => context.openPanel("example/overview", "split_right");
+  } }],
+};
+createConsoleApp(document.createElement("div"), { extensions: [extension] });

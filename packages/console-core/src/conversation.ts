@@ -1,3 +1,5 @@
+import type { ConsoleChatWidget } from "./extensions";
+
 import {
   conversationRichBlockHasCopyAction,
   conversationRichBlocksToText,
@@ -91,6 +93,7 @@ export interface ConversationRealtimeOrigin {
 
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
   kind: "message";
+  widget?: ConsoleChatWidget;
   variant: "plain" | "rich" | "meta";
   text?: string;
   blocks?: ConversationRichBlock[];

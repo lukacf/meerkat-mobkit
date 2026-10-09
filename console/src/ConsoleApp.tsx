@@ -1,3 +1,6 @@
+import { useConsoleExtensions } from "./lib/extensions";
+import { ConsoleExtensionsProvider, ConsoleExtensionPanel } from "@console-components";
+import { consoleExtensionPanelTarget, type ConsoleExtension, type ConsoleExtensionContext } from "@console-core";
 import { withConsoleSendStorageLock } from "./lib/send-storage-lock";
 import React from "react";
 import "@console-components/styles";
@@ -199,7 +202,8 @@ import {
 } from "./lib/use-voice-readiness";
 import { countRender } from "./lib/render-counts";
 
-interface ConsoleAppProps {
+export interface ConsoleAppProps {
+  extensions?: readonly ConsoleExtension[];
   baseUrl: string;
   /** Opaque host scope covering authority/runtime, realm and authenticated principal. */
   storageNamespace?: string;
@@ -695,7 +699,7 @@ function ConsoleAppAuthority(props: ConsoleAppProps): React.JSX.Element {
   return <ConsoleAppInstance key={generation} {...props} observeScope={observeScope} />;
 }
 
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, extensions, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
   countRender("ConsoleApp");
   const lifetimeRef = React.useRef({ active: true, generation: 0 });
   React.useLayoutEffect(() => {
@@ -4162,6 +4166,20 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
   }
 
+  // Application extension state stays scoped to this console authority.
+  const extensionState = useConsoleExtensions(extensions, experience?.console_config?.extension_modules, baseUrl);
+  const extensionPanels = React.useMemo(() => extensionState.extensions.flatMap(extension => extension.panels ?? []), [extensionState.extensions]);
+  const extensionDockRef = React.useRef(dock.openTarget);
+  extensionDockRef.current = dock.openTarget;
+  const openExtensionPanel = React.useCallback<ConsoleExtensionContext["openPanel"]>((id, intent) => {
+    const panel = extensionPanels.find(panel => panel.id === id);
+    if (panel) extensionDockRef.current(consoleExtensionPanelTarget(panel), intent);
+  }, [extensionPanels]);
+  const extensionContext = React.useMemo<ConsoleExtensionContext>(() => ({
+    baseUrl, readOnly: consoleReadOnly, experience, openPanel: openExtensionPanel,
+  }), [baseUrl, consoleReadOnly, experience, openExtensionPanel]);
+  const extensionProvider = React.useMemo(() => ({ extensions: extensionState.extensions, context: extensionContext }), [extensionState.extensions, extensionContext]);
+
   // =========================================================================
   // WORKGRAPH OPERATOR ACTIONS (inline card + panel)
   // =========================================================================
@@ -5025,6 +5043,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }) {
     const target = panel.target as MobKitDockTarget | null;
     if (!target) return <div className="console-panel">No panel target</div>;
+    if (target.kind === "extension/panel") return <ConsoleExtensionPanel id={target.payload?.panelId ?? target.id} />;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
@@ -5228,6 +5247,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
 
   return (
+    <ConsoleExtensionsProvider value={extensionProvider}>
     <div
       className="cc-theme-scope mobkit-shell"
       data-cc-theme={theme}
@@ -5235,6 +5255,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       data-testid="meerkat-console"
     >
       <SpriteSheet />
+      {extensionState.errors.length > 0 ? <div className="mobkit-action-error" role="alert">
+        Console extensions could not load: {extensionState.errors.join("; ")}
+      </div> : null}
       {actionError && (
         <div className="mobkit-action-error" data-testid="console-action-error" role="alert">
           <span>{actionError}</span>
@@ -5277,6 +5300,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           collapsed={sidebarCollapsed}
           visibleControls={visibleControls}
           customButtons={experience?.console_config?.sidebar?.buttons}
+          extensionPanels={extensionPanels}
+          onOpenExtensionPanel={openExtensionPanel}
           grouping={experience?.console_config?.agent_list}
           storageNamespace={sidebarStorageNamespace}
           pinnedAgentIds={pinnedAgentIds}
@@ -5297,6 +5322,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             viewState={dock.viewState}
             agents={agents}
             renderPanelBody={renderPanelBody}
+            extensionPanels={extensionPanels}
             visibleControls={visibleControls}
             onSelectTab={(id) => dock.selectTab(id)}
             onCloseTab={(id) => dock.closeTab(id)}
@@ -5336,5 +5362,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         ) : null}
       </div>
     </div>
+    </ConsoleExtensionsProvider>
   );
 }

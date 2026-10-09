@@ -1,3 +1,4 @@
+import { ConsoleChatWidgetView } from "../extensions";
 import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import { Fragment } from "react";
 
@@ -122,6 +123,10 @@ export function ConversationMessageView({
     presentation === "participant" ? "cc-message--participant" : "",
     presentation === "system" ? "cc-message--system" : "",
   ].filter(Boolean).join(" ");
+
+  if (entry.kind === "message" && entry.widget) {
+    return <ConsoleChatWidgetView widget={entry.widget} identity={entry.identity} entryId={entry.id} />;
+  }
 
   if (entry.kind === "flow_run") {
     return (

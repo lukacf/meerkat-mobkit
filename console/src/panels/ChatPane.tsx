@@ -1,3 +1,5 @@
+import { ConsoleChatWidgetView } from "@console-components";
+import type { ConversationMessageEntry } from "@console-core";
 import { QuoteSelectionAction } from "../../../packages/console-components/src/conversation/quote-selection-action";
 import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
 import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
@@ -173,6 +175,7 @@ interface Msg {
   blocks?: ConversationRichBlock[];
   workGraphEntry?: ConversationWorkGraphEntry;
   councilEntry?: ConversationCouncilEntry;
+  widgetEntry?: ConversationMessageEntry;
   workedFor?: string;
   workedForCopyText?: string;
 }
@@ -549,6 +552,10 @@ function flattenEntry(
 }
 
 function flattenEntryRows(entry: ConversationTimelineEntry): Msg[] {
+  if (entry.kind === "message" && entry.widget) {
+    return [{ id: entry.id, kind: "agent", time: formatTime(entry.createdAt), createdAt: entry.createdAt,
+      text: entry.widget.fallback, widgetEntry: entry }];
+  }
   if (entry.kind === "summary") {
     return [{
       id: entry.id,
@@ -1150,6 +1157,7 @@ type MessageRowProps = {
 
 function messageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boolean {
   return (
+    prev.message.widgetEntry === next.message.widgetEntry &&
     prev.suppressWorked === next.suppressWorked &&
     prev.workGraphActions === next.workGraphActions &&
     prev.markdownUrlPolicy === next.markdownUrlPolicy &&
@@ -1280,7 +1288,9 @@ function MessageRowBody({
           <CouncilCard entry={m.councilEntry} />
         ) : null}
         <div data-quote-message-id={m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : undefined} data-quote-source={m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : undefined}>
-        {m.kind === "workgraph" && m.workGraphEntry ? (
+        {m.widgetEntry?.widget ? (
+          <ConsoleChatWidgetView widget={m.widgetEntry.widget} identity={m.widgetEntry.identity} entryId={m.widgetEntry.id} />
+        ) : m.kind === "workgraph" && m.workGraphEntry ? (
           <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
         ) : m.contextMessage ? <DeliveredContextMessage message={m.contextMessage} /> : m.blocks && m.blocks.length > 0 ? (
           <ConversationRichContent blocks={m.blocks} displayNormalization={false} markdownUrlPolicy={markdownUrlPolicy} />

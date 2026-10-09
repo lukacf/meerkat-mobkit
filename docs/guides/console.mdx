@@ -36,6 +36,117 @@ cd console
 npm run dev    # starts Vite at http://localhost:5199 with proxy to gateway
 ```
 
+## Custom panels and chat widgets
+
+Extend the stock console without rebuilding its shell by listing trusted ES
+modules at the top level of `config/console.toml`:
+
+```toml
+extension_modules = ["/extensions/application.js"]
+```
+
+Your application host or reverse proxy must serve these files with a JavaScript
+content type on the same origin as the console server. The gateway does not
+serve arbitrary workspace files. Module URLs resolve against `baseUrl`; absolute
+paths resolve at its origin. Realm overlays can replace the list, including
+`extension_modules = []` to disable configured plugins. Reload after changing
+modules; use versioned URLs to invalidate the browser module cache.
+
+Each module exports a default `ConsoleExtension` object. Embedded hosts can
+instead pass the same objects to `createConsoleApp(root, { baseUrl, extensions })`
+or `<ConsoleApp extensions={extensions} />`. Keep the array stable across renders.
+
+```js
+export default {
+  id: "application",
+  panels: [{
+    id: "application/results",
+    title: "Results",
+    mount(container, context, signal) {
+      container.textContent = "Application results";
+      return { dispose() { container.replaceChildren(); } };
+    },
+  }],
+  widgets: [{
+    type: "application/result-count",
+    version: 1,
+    mount(container, context, signal) {
+      const button = document.createElement("button");
+      button.textContent = context.widget.fallback;
+      button.onclick = () => context.openPanel("application/results", "split_right");
+      container.append(button);
+      return { dispose() { button.onclick = null; } };
+    },
+  }],
+};
+```
+
+Panels appear in the sidebar and pane picker, and participate in tabs, splits,
+and saved layouts. `openPanel(id, intent)` accepts `replace_focused` (the default),
+`new_tab`, `split_right`, or `split_down`. A removed plugin leaves a readable
+unavailable view in restored panes.
+
+To emit a chat widget, return explicit metadata from a tool as an object or a
+JSON string:
+
+```json
+{
+  "console_widget": {
+    "type": "application/result-count",
+    "version": 1,
+    "data": { "count": 7 },
+    "fallback": "Found seven matching records."
+  }
+}
+```
+
+MCP-style results may carry this under `structuredContent.console_widget`.
+The console projects successful `tool_result_received` and
+`tool_execution_completed` frames and deduplicates completion twins by tool-call
+identity. It retains the ordinary tool row. Assistant prose cannot load a plugin
+or request execution of a module. The nonempty plain-text `fallback` supports
+copying, missing plugins, unsupported versions, and failed rendering.
+
+The public types are exported from the console entry point and `@console-core`:
+
+| Type | Contract |
+|------|----------|
+| `ConsoleExtension` | Unique `id`, optional `panels` and `widgets` arrays. |
+| `ConsolePanelDefinition` | Namespaced `id`, `title`, and `mount`. |
+| `ConsoleWidgetDefinition` | Namespaced `type`, positive integer `version`, and `mount`. |
+| `ConsoleExtensionContext` | `baseUrl`, `readOnly`, current `experience`, and `openPanel`. |
+| `ConsoleWidgetContext` | Extension context plus `widget`, source `identity`, and `entryId`. |
+| `ConsoleExtensionMount<T>` | Synchronous `(container, context, signal)` callback returning nothing or `{ update?, dispose }`. |
+
+Use application-owned names such as `application/results`; `mobkit/` is reserved.
+Duplicate extension IDs, panel IDs, and widget type/version pairs are rejected.
+Validate widget `data` in your renderer. `readOnly` and `experience` describe the
+current console view; they grant no runtime permissions. Application endpoints
+must enforce their own authorization.
+
+Mounts own their container and may use the DOM or a bundled UI framework. The
+console calls `update(context)` when context changes. Without an update callback,
+it disposes and remounts the view. Closing, retargeting, or unmounting aborts the
+provided signal and calls `dispose`. Use that signal for asynchronous work and
+handle rejected promises in the plugin. Mount/update failures affect only that
+surface. Dispose handlers must release event listeners, subscriptions, timers,
+and any framework root. Module-level code should declare registrations rather
+than start long-lived work.
+
+These modules are trusted application code with the page's privileges. Only
+runtime-configured same-origin HTTP(S) URLs load; widget payloads carry data,
+never module URLs or executable source. Registration does not change runtime
+routing or access control. Independent load failures are reported while stock
+views remain usable.
+
+For a reusable conversation host, wrap the conversation in
+`ConsoleExtensionsProvider` from `@console-components`, passing
+`value={{ extensions, context }}`. Both shared conversations and stock chat use
+`ConsoleChatWidgetView` and the same payload contract.
+
+See `examples/console-extensions` for a dependency-free plugin and a local fixture
+preview that loads it into the actual stock bundle.
+
 ## Runtime contract
 
 The bundled console uses a small set of stable protocol surfaces:

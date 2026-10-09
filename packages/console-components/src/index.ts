@@ -1,3 +1,4 @@
+export { ConsoleExtensionsProvider, ConsoleExtensionPanel, ConsoleChatWidgetView, ConsoleExtensionSurface } from "./extensions";
 export { ConsoleActivityRail } from "./activity/console-activity-rail";
 export { CopyButton } from "./copy-button";
 export { CopyGlyph } from "./copy-glyph";

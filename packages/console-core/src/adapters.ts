@@ -1,3 +1,4 @@
+import { consoleWidgetEntryFromFrame } from "./extensions";
 import { assistantPresentationEntries, conversationPresentationRows } from "./assistant-presentation";
 import { userMessageRenderKey } from "./user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
@@ -3584,6 +3585,7 @@ export function mapFramesToTimelineEntries(
   } = liveToolDedupeState(orderedFrames, toolBlocks);
   const assistantHistory = buildAssistantHistoryReconciliation(orderedFrames, options.renderTextDeltas !== false);
   const emittedImages = new Set<string>();
+  const emittedWidgets = new Set<string>();
   const emittedUserInputs = new Set<string>();
   // First-emitted user entry per dedupe key. A later twin of the same input
   // (live send frame vs persisted history vs run_started prompt) may be the
@@ -3874,6 +3876,12 @@ export function mapFramesToTimelineEntries(
 
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       flushPendingReasoning(true);
+      const widgetEntry = consoleWidgetEntryFromFrame(frame, agentIdentity(agent));
+      if (widgetEntry && !emittedWidgets.has(widgetEntry.renderKey!)) {
+        flushPendingText();
+        emittedWidgets.add(widgetEntry.renderKey!);
+        entries.push(widgetEntry);
+      }
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
         frame,

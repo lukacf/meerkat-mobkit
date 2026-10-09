@@ -203,6 +203,8 @@ export interface ConsoleActionsUiConfig {
 }
 
 export interface ConsoleUiConfig {
+  /** Trusted same-origin ES modules exporting a ConsoleExtension. */
+  extension_modules?: string[];
   title?: string;
   brand?: ConsoleBrandingConfig;
   appearance?: ConsoleAppearanceConfig;

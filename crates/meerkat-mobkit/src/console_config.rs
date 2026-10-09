@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleUiConfig {
+    /// Trusted same-origin JavaScript modules exporting console extensions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "ConsoleBrandingConfig::is_default")]
@@ -38,6 +41,7 @@ impl ConsoleUiConfig {
     }
 
     pub fn normalized(mut self) -> Self {
+        self.extension_modules = normalize_string_vec(self.extension_modules);
         self.title = normalize_optional_string(self.title);
         self.brand = self.brand.normalized();
         self.appearance = self.appearance.normalized();
@@ -424,6 +428,8 @@ impl std::error::Error for ConsoleConfigError {}
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ConsoleUiConfigPatch {
     #[serde(default)]
+    extension_modules: Option<Vec<String>>,
+    #[serde(default)]
     title: Option<String>,
     #[serde(default)]
     brand: Option<ConsoleBrandingConfigPatch>,
@@ -447,6 +453,9 @@ struct ConsoleUiConfigPatch {
 
 impl ConsoleUiConfigPatch {
     fn apply_to(&self, config: &mut ConsoleUiConfig) {
+        if let Some(modules) = &self.extension_modules {
+            config.extension_modules = normalize_string_vec(modules.clone());
+        }
         if let Some(title) = &self.title {
             config.title = normalize_optional_string(Some(title.clone()));
         }
@@ -810,6 +819,34 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_modules_are_projected_and_realm_overridable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+extension_modules = [" /assets/base.js ", ""]
+[realms.demo]
+extension_modules = ["/assets/demo.js"]
+[realms.disabled]
+extension_modules = []
+"#;
+        let base = load_console_ui_config_from_toml(source)?;
+        assert_eq!(base.extension_modules, vec!["/assets/base.js"]);
+        assert_eq!(
+            serde_json::to_value(&base)?["extension_modules"],
+            serde_json::json!(["/assets/base.js"])
+        );
+        let demo = load_console_ui_config_from_toml_for_realm(source, Some("demo"))?;
+        assert_eq!(demo.extension_modules, vec!["/assets/demo.js"]);
+        let disabled = load_console_ui_config_from_toml_for_realm(source, Some("disabled"))?;
+        assert!(disabled.extension_modules.is_empty());
+        assert!(
+            serde_json::to_value(disabled)?
+                .get("extension_modules")
+                .is_none()
+        );
+        Ok(())
+    }
 
     #[test]
     fn loads_console_toml_with_sidebar_buttons_and_agent_selectors()
