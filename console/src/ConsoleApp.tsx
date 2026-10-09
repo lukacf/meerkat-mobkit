@@ -1,3 +1,4 @@
+import { ConsoleMcpAppsProvider, type ConsoleMcpAppsHost } from "@console-components";
 import { useConsolePanels, createConsolePanelService, bindConsolePanelService } from "./lib/custom-panels";
 import { ConsolePanelsProvider, ConsoleCustomPanel } from "@console-components";
 import { consoleCustomPanelTarget, type ConsolePanelDefinition, type ConsolePanelContext, type ConsolePanelService } from "@console-core";
@@ -204,6 +205,7 @@ import { countRender } from "./lib/render-counts";
 
 export interface ConsoleAppProps {
   customPanels?: readonly ConsolePanelDefinition[];
+  mcpAppsHost?: ConsoleMcpAppsHost;
   panelService?: ConsolePanelService;
   baseUrl: string;
   /** Opaque host scope covering authority/runtime, realm and authenticated principal. */
@@ -392,13 +394,8 @@ function createIdempotencyKey(): string {
   return createConsoleId("console");
 }
 
-function dockLayoutStorageKey(
-  baseUrl: string,
-  experience: ConsoleExperience | null,
-): string {
-  const runtimeId = experience?.runtime_id?.trim();
-  const title = experience?.console_config?.title?.trim();
-  return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
+function dockLayoutStorageKey(authorityScope: string): string {
+  return `${DOCK_LAYOUT_STORAGE_PREFIX}:${authorityScope}`;
 }
 
 function stableHash(value: string): string {
@@ -679,7 +676,7 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 export function ConsoleApp(props: ConsoleAppProps): React.JSX.Element {
   // All authorized state belongs to one host authority and transport lifetime.
   // A keyed instance clears it in the same commit as the host scope change.
-  const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace, props.panelService]);
+  const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace, props.panelService, props.mcpAppsHost]);
   return <ConsoleAppAuthority key={instanceKey} {...props} />;
 }
 
@@ -700,7 +697,7 @@ function ConsoleAppAuthority(props: ConsoleAppProps): React.JSX.Element {
   return <ConsoleAppInstance key={generation} {...props} observeScope={observeScope} />;
 }
 
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, customPanels: suppliedPanels, panelService, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, customPanels: suppliedPanels, panelService, mcpAppsHost, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
   countRender("ConsoleApp");
   const lifetimeRef = React.useRef({ active: true, generation: 0 });
   React.useLayoutEffect(() => {
@@ -2098,8 +2095,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }),
   });
   const currentDockLayoutStorageKey = React.useMemo(
-    () => dockLayoutStorageKey(baseUrl, experience),
-    [baseUrl, experience?.runtime_id, experience?.console_config?.title],
+    () => dockLayoutStorageKey(sendScope),
+    [sendScope],
   );
 
   React.useEffect(() => {
@@ -5276,6 +5273,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
 
   return (
+    <ConsoleMcpAppsProvider value={mcpAppsHost ? { host: mcpAppsHost, authority: sendScope, readOnly: consoleReadOnly } : null}>
     <ConsolePanelsProvider value={panelProvider}>
     <div
       className="cc-theme-scope mobkit-shell"
@@ -5397,5 +5395,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       </div>
     </div>
     </ConsolePanelsProvider>
+    </ConsoleMcpAppsProvider>
   );
 }

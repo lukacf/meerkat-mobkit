@@ -70,7 +70,8 @@ panel_modules = ["/panels/inventory.js"]
 The application or reverse proxy serves the module with a JavaScript MIME type
 on the Console origin. Relative paths resolve against `baseUrl`. Realm overlays
 can replace the list, including `panel_modules = []`. Reload after changing it.
-This is a frontend loading option; tools do not supply these modules.
+This is a frontend loading option; tools do not supply these modules. The
+application host owns module integrity and should serve versioned, audited assets.
 
 Each panel needs a unique namespaced `id`, a `title`, and a `mount` function.
 Console adds its sidebar button and pane-menu entry and owns tabs, splits and
@@ -84,7 +85,8 @@ Optional `instanceKey`, JSON `params`, and a pure `validateParams` function allo
 multiple instances. Layout storage contains selectors only: never put private
 results or secrets in panel parameters. Set `followSelection: true` to follow the
 selected conversation instead of pinning it. Context and pending requests are
-discarded when the host authority changes; opening and restoring conversation
+discarded when the host authority changes. Layout keys include the authority
+and principal scope; opening and restoring conversation
 panels checks current visibility.
 
 Panels can use `context.request({ path, method, body }, signal)`. The default
@@ -96,7 +98,8 @@ from its authenticated session and enforce access on every request. Panels are
 trusted application code, so browser checks do not replace server policy.
 
 Embedded hosts may inject `panelService(request, scope, signal)` to use their
-existing application service. The host still applies view-only and lifetime
+existing application service, forwarding the scope locators through its own
+authenticated API. The host still applies view-only and lifetime
 checks. The request scope includes the original panel conversation, not whichever
 conversation happens to be focused later.
 

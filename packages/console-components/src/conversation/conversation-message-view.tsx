@@ -1,3 +1,4 @@
+import { ConsoleMcpAppView } from "../mcp-apps";
 import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import { Fragment } from "react";
 
@@ -156,6 +157,8 @@ export function ConversationMessageView({
   if (entry.kind === "summary") {
     return <SummaryCard entry={entry} />;
   }
+
+  if (entry.mcpApp) return <ConsoleMcpAppView locator={{ ...entry.mcpApp, identity: entry.identity.id }} fallback={entry.text ?? "Tool result"} />;
 
   if (entry.taskKind || entry.taskLabel) {
     const taskLabel = entry.taskLabel?.trim() || "System task";

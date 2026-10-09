@@ -47,5 +47,10 @@ describe("stock custom panels", () => {
     const restored = render(<ConsoleApp baseUrl="" transport={transport} customPanels={customPanels} panelService={extensionService} />);
     await waitFor(() => expect(screen.getByText("Custom overview")).toBeVisible());
     expect(restored.container.querySelectorAll(".pane")).toHaveLength(1);
+    restored.unmount();
+    experience.storage_scope = "different-principal";
+    render(<ConsoleApp baseUrl="" transport={transport} customPanels={customPanels} panelService={extensionService} />);
+    await waitFor(() => expect(screen.getByTestId("nav-custom-panel:demo/overview")).toBeVisible());
+    expect(screen.queryByText("Custom overview")).toBeNull();
   });
 });

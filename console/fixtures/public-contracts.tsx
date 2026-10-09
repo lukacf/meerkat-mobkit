@@ -86,3 +86,14 @@ createConsoleApp(document.createElement("div"), { customPanels: [panel],
     return { original, method: request.method };
   },
 });
+
+// MCP Apps is a separate host adapter. App authors supply standard tools/resources.
+const mcpAppsHost: import("../src/index").ConsoleMcpAppsHost = {
+  sandboxProxyUrl: "https://sandbox.example.test/sandbox.html",
+  async resolve(locator, signal) {
+    signal.throwIfAborted();
+    void locator.sessionId;
+    return null;
+  },
+};
+createConsoleApp(document.createElement("div"), { mcpAppsHost });

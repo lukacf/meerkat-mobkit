@@ -73,7 +73,7 @@ export function ConsoleCustomPanel({ target, focused }: { target: ConsoleCustomP
     if (conversation && (conversation.scopeKey !== state.context.authority.key || !state.context.visibleIdentities.includes(conversation.identity))) return null;
     return { ...targetContext(state.context, conversation), panel: { instanceKey: payload.instanceKey, params: payload.params, focused } };
   }, [panel, state?.context, payload, target.payloadVersion, focused]);
-  const fallback = <div role="status">Custom panel unavailable: {panel?.title ?? payload?.panelId ?? target.id}</div>;
+  const fallback = <div role="status">Custom panel unavailable: {panel?.title ?? "Unknown panel"}</div>;
   // Replacing a target or following another conversation destroys private DOM
   // and aborts its work before mounting the replacement selection.
   const key = JSON.stringify([target.id, context?.authority.key, context?.conversation, context?.panel?.params]);
