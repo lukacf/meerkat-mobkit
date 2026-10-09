@@ -17279,9 +17279,20 @@ comms = true
         });
         let session_id = meerkat_core::SessionId::new();
         for wrapper in [pre_build, after_create] {
+            *probe
+                .retained_metadata_reply
+                .lock()
+                .expect("retained reply") = Some(Err(SessionError::NotFound {
+                id: session_id.clone(),
+            }));
             let result = wrapper.load_retained_session_metadata(&session_id).await;
             assert!(matches!(result, Err(SessionError::NotFound { id }) if id == session_id));
         }
+        assert_eq!(
+            *probe.retained_metadata_requests.lock().expect("requests"),
+            vec![session_id.clone(), session_id],
+            "both wrappers preserve the exact requested session"
+        );
         assert_eq!(
             probe.calls(),
             vec![
