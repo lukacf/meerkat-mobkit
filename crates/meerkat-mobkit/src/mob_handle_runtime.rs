@@ -9634,6 +9634,7 @@ impl MobBootstrapSpec {
             agent_config,
             None,
             None,
+            false,
         )
     }
 
@@ -9661,6 +9662,7 @@ impl MobBootstrapSpec {
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
         mcp_call_context_provider: Option<Arc<dyn meerkat_mcp::McpCallContextProvider>>,
+        wait_for_document_mcp: bool,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         // H1 fail-closed blob slot: the slot resolves to a configured
@@ -9810,6 +9812,9 @@ impl MobBootstrapSpec {
         }
         let config = agent_config.unwrap_or_default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
+        // Mount document MCP tools before native inherited visibility is resolved.
+        // The native wait covers every configured MCP server, using its connection timeout.
+        builder.wait_for_mcp = wait_for_document_mcp;
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let (job_store, job_store_slot): (Arc<dyn meerkat::DetachedJobStore>, StorageSlotSummary) =
@@ -10065,6 +10070,7 @@ impl MobBootstrapSpec {
             agent_config,
             None,
             None,
+            false,
         )
     }
 
@@ -10088,6 +10094,7 @@ impl MobBootstrapSpec {
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
         mcp_call_context_provider: Option<Arc<dyn meerkat_mcp::McpCallContextProvider>>,
+        wait_for_document_mcp: bool,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
@@ -10177,6 +10184,9 @@ impl MobBootstrapSpec {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
         let mut builder = FactoryAgentBuilder::new(factory, config);
+        // Mount document MCP tools before native inherited visibility is resolved.
+        // The native wait covers every configured MCP server, using its connection timeout.
+        builder.wait_for_mcp = wait_for_document_mcp;
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let job_store: Arc<dyn meerkat::DetachedJobStore> = provider_meerkat_stores
@@ -21938,6 +21948,7 @@ comms = true
                 None,
                 provider,
                 None,
+                false,
             )
             .expect("persistent constructor")
         } else {
@@ -21957,6 +21968,7 @@ comms = true
                 None,
                 provider,
                 None,
+                false,
             )
             .expect("bootstrap spec")
         }
