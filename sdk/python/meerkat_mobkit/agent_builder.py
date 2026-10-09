@@ -1,4 +1,4 @@
-"""SessionAgentBuilder protocol — imperative mutation pattern matching HomeCore."""
+"""SessionAgentBuilder protocol - imperative mutation pattern matching the downstream app's."""
 from __future__ import annotations
 
 import asyncio

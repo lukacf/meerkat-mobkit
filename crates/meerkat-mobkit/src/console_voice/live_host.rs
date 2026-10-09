@@ -1540,7 +1540,7 @@ pub(crate) mod tests {
                 Some(session_b.clone()),
                 Some("agent-b".to_string()),
                 "mobkit/live/open".to_string(),
-                // The member's text model is not realtime-capable; reachyd
+                // The member's text model is not realtime-capable; the device daemon
                 // selects the realtime lane per open exactly like this.
                 json!({"identity":"agent-b", "model":"gpt-realtime-2"}),
                 json!(rpc_id),

@@ -277,8 +277,8 @@ test("topology activity derives pulses from typed incoming comms notices", () =>
             kind: "message",
             direction: "incoming",
             peer: {
-              id: "ob3/review-worker/review-worker-daily-candy",
-              display_name: "ob3/review-worker/review-worker-daily-candy",
+              id: "ops/review-worker/review-worker-daily-candy",
+              display_name: "ops/review-worker/review-worker-daily-candy",
             },
             request_id: "peer-result-1",
             content: [{ type: "text", text: "Worker result" }],

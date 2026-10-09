@@ -37,7 +37,7 @@ it("uses the canonical job and monitor domain methods", async () => {
     restartClass: "non_resumable",
     delivery: { kind: "notification" },
     protocol: "framed_jsonl",
-    workingDir: "/srv/homecore",
+    workingDir: "/srv/example",
     maxLineBytes: 4096,
   });
 
@@ -65,7 +65,7 @@ it("uses the canonical job and monitor domain methods", async () => {
       protocol: "framed_jsonl",
       restart_class: "non_resumable",
       delivery: { kind: "notification" },
-      working_dir: "/srv/homecore",
+      working_dir: "/srv/example",
       max_line_bytes: 4096,
     }],
   ]);

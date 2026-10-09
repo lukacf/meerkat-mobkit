@@ -67,7 +67,7 @@ fn registry() -> Arc<ToolConsequencePolicyRegistry> {
     Arc::new(
         ToolConsequencePolicyRegistry::new(
             vec![Arc::new(HostProvider(
-                PolicyProviderId::new("household").unwrap(),
+                PolicyProviderId::new("workspace").unwrap(),
             ))],
             PolicyEvaluationSupervisorConfig::default(),
             None,
@@ -76,9 +76,9 @@ fn registry() -> Arc<ToolConsequencePolicyRegistry> {
     )
 }
 
-fn household_policy() -> ApplicationToolPolicyBinding {
+fn workspace_policy() -> ApplicationToolPolicyBinding {
     ApplicationToolPolicyBinding::Provider {
-        provider_id: PolicyProviderId::new("household").unwrap(),
+        provider_id: PolicyProviderId::new("workspace").unwrap(),
         policy_id: PolicyId::new("helper-tools").unwrap(),
     }
 }
@@ -252,7 +252,7 @@ async fn delegate_through_a_bare_surface(
         &surface,
         "delegate",
         json!({
-            "task": "summarize the household calendar",
+            "task": "summarize the project notes",
             "member_id": "helper",
             "result_label": "helper_result",
             "max_text_bytes": 4096,
@@ -438,7 +438,7 @@ async fn delegate_is_refused_until_a_child_policy_is_configured() {
 async fn delegate_runs_under_a_configured_provider_child_policy() {
     let result = delegate_from_a_member_turn(|spec| {
         spec.with_tool_consequence_policy_registry(registry())
-            .with_child_application_tool_policy(household_policy())
+            .with_child_application_tool_policy(workspace_policy())
     })
     .await;
     assert_delegate_completed(&result);
@@ -504,7 +504,7 @@ async fn fork_off_and_councils_are_not_governed_by_the_child_policy() {
     dispatch(
         &forker,
         "fork_off",
-        json!({"member_id": "alice-fork", "task": "check the calendar"}),
+        json!({"member_id": "alice-fork", "task": "check the status board"}),
     )
     .await
     .expect("same-mob fork_off is untouched");

@@ -91,7 +91,7 @@ feature-depth = 1
 # exposed to anything. Upstream is unreachable - last commit 5 years ago, a
 # maintainer contact in June 2025 and a community PR both unanswered.
 # SCOPE, corroborated by a default-feature embedder rather than only derived
-# from our own tree: OB3 ships meerkat-live and its production lock contains
+# from our own tree: a production embedder ships meerkat-live and its production lock contains
 # ZERO opus / audiopus_sys / webrtc, with live cargo-deny passing. So this is
 # confined to the OPTIONAL realtime audio/WebRTC path; an embedder that does
 # not enable `openai-live` never acquires the dependency and is not

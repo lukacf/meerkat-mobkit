@@ -2,7 +2,7 @@
 //!
 //! `IdentityRuntime::respawn` is a *recovery boundary*: it re-fences the live
 //! member and keeps its SessionId (`refresh_existing_session_runtime_state`),
-//! so the conversation must survive across a respawn. The live OB3 smoke test
+//! so the conversation must survive across a respawn. The live operator smoke test
 //! proves this via a model's verbal recall but is feature-gated and never runs
 //! in CI. This scripted version proves the same invariant every build: a
 //! `CaptureClient` records the exact messages sent to the LLM. We deliver turn 1
@@ -10,7 +10,7 @@
 //! turn 2's request REPLAYS turn 1's transcript. If respawn had torn the member
 //! down and started fresh, the token would be gone — exactly the "respawn
 //! forgets the conversation" regression (the identity-first analogue of the
-//! reported HomeCore behavior).
+//! reported downstream-app behavior).
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;

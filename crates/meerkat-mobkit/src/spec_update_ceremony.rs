@@ -325,7 +325,7 @@ fn map_update_error(mob_id: &str, error: MobError) -> SpecUpdateError {
 
 /// One-shot declaration: the operator already knows the revision they observed.
 ///
-/// This is the shape HomeCore's activation machinery wants - the activation
+/// This is the shape the downstream app's activation machinery wants - the activation
 /// payload names the diverged fields and the expected revision, the deploy
 /// invokes this once, and the receipt goes into the activation evidence. The
 /// two-phase [`propose_spec_update`] / [`commit_spec_update`] pair remains for
@@ -477,7 +477,7 @@ model = "{security_model}"
         .expect("definition parses")
     }
 
-    /// HomeCore's note 2, and the reason it matters: "profiles diverged" on a
+    /// The downstream app's note 2, and the reason it matters: "profiles diverged" on a
     /// one-field model pin is the message that makes an operator declare through
     /// without reading. The path has to name the field that actually moved.
     ///

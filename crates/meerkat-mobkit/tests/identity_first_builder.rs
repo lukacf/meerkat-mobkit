@@ -1316,7 +1316,7 @@ runtime_mode = "turn_driven"
 comms = true
 
 [flows.review_cycle]
-description = "OB3-shaped review flow"
+description = "Ops-shaped review flow"
 
 [flows.review_cycle.steps.review]
 role = "default"
@@ -3290,7 +3290,7 @@ async fn identity_first_lazy_reconcile_serializes_with_foreground_materializatio
     runtime.shutdown().await;
 }
 
-/// #404 (OB3 2026-09-05): `retire_member` leaves the identity registered in
+/// #404 (a 2026-09-05 production incident): `retire_member` leaves the identity registered in
 /// the retired terminal form (`Retiring`), and the next topology refresh no
 /// longer lists it. Before the fix `apply_roster_controlled` refused with
 /// `InvalidState { operation: "reconcile_roster_remove", state: Retiring }` on
@@ -3366,7 +3366,7 @@ async fn identity_first_retired_identity_is_removed_by_topology_refresh() {
         "the reduced roster must report ready: {bootstrap:?}"
     );
 
-    // A second refresh (OB3 refreshed forever) is a no-op, not an error.
+    // A second refresh (refreshes repeat indefinitely) is a no-op, not an error.
     runtime
         .refresh_desired_topology()
         .await
@@ -3724,7 +3724,7 @@ async fn identity_first_builder_lazy_topology_refresh_stays_metadata_only() {
 }
 
 #[tokio::test]
-async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_before_flow_start() {
+async fn identity_first_builder_lazy_run_flow_materializes_ops_shaped_roster_before_flow_start() {
     let tmp = tempfile::tempdir().unwrap();
     let specs = vec![
         durable_spec("review:singleton"),
@@ -3771,14 +3771,14 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
         "lazy build must still start without concrete members"
     );
 
-    // Embedded applications such as OB3 hold the raw MobHandle. The
+    // Embedded applications hold the raw MobHandle. The
     // identity-first barrier must therefore be installed on that handle,
     // rather than living only in MobKit's JSON-RPC wrapper.
     let run_id = runtime
         .mob_handle()
         .run_flow(
             meerkat_mob::FlowId::from("review_cycle"),
-            json!({ "source": "ob3" }),
+            json!({ "source": "ops" }),
         )
         .await
         .expect("direct MobHandle flow should hydrate lazy identities");

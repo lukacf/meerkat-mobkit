@@ -299,7 +299,7 @@ impl AgentLlmClient for TaintObservingLlmClient {
     // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
     // omits it compiles cleanly and silently downgrades every wrapped client.
     // meerkat 0.8.31 rejects resume for a client reporting LegacySplit when the
-    // inner adapter is Unified: ob3 measured 72 identities marked Broken at boot
+    // inner adapter is Unified: production measured 72 identities marked Broken at boot
     // on the candidate and 0 across three 0.8.30 runs. A decorator must report
     // what it wraps, never what it is.
     fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
@@ -685,7 +685,7 @@ mod tests {
 /// `LegacySplit`. A decorator that omits it therefore compiles cleanly and
 /// silently downgrades everything it wraps - no error, no warning, no test
 /// failure. meerkat 0.8.31 rejects `materialize resume` for a client reporting
-/// LegacySplit over a Unified adapter, which ob3 measured as 72 identities
+/// LegacySplit over a Unified adapter, which production measured as 72 identities
 /// marked Broken at boot on the candidate against 0 on three 0.8.30 runs.
 ///
 /// This test exists because the compiler cannot express that requirement. It

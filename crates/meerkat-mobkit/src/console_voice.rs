@@ -1633,7 +1633,7 @@ mod tests {
                 .reason,
             Some("external_live_active")
         );
-        // reachyd's socket drops; meerkat-live closes the channel by itself.
+        // the device daemon's socket drops; meerkat-live closes the channel by itself.
         live.lock().expect("live").remove("agent-b-channel");
         let readiness = controller
             .readiness("alice", "agent-a")

@@ -1543,7 +1543,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   with 200 turns mounted), forcing layout over the transcript while the
   operator typed the next message. Holding an anchor now measures only the
   anchor row (and its recorded neighbors); every row is read only when the
-  anchor is gone. Against the real gateway in an OB3-style nested iframe with
+  anchor is gone. Against the real gateway in a production-style nested iframe with
   300 turns and 4x CPU throttling, main-thread time per keystroke while the
   reply streams drops from 29-31 ms to 13-15 ms (p95 52-58 ms to 36-37 ms).
   `npm run perf:typing:browser` adds a send-then-type scenario and fails on
@@ -1701,7 +1701,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Console: typing in the chat composer no longer lags with a long history,
   idle or while a reply streams. In Chromium against the real gateway with
-  300 turns mounted (nested iframe, as OB3 embeds it), keystroke-to-next-paint
+  300 turns mounted (nested iframe, as the operator deployment embeds it), keystroke-to-next-paint
   p95 drops from 18-20 ms to 4-5 ms; with a full 5000-event identity log and
   a reply streaming it drops from 97-269 ms to 20-25 ms. Each keystroke
   re-laid out every mounted transcript row: the textarea was a flex item,
@@ -1760,7 +1760,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `WaitEndedError` now carries the top-level `ticket` as well as `admission`.
   The docs name the one exception: a thrown value that cannot carry fields.
 - `mobkit/topology/query` no longer serializes behind the topology mutation
-  lock. In OB3 production (MobKit 0.8.43) queries arriving about once a second
+  lock. In a production deployment (MobKit 0.8.43) queries arriving about once a second
   with a roughly 0.8 s edge discovery queued behind each other, with p50 67 s
   and p95 119 s, almost all of it waiting before the provider ran: every read
   took the exclusive mutation lock and ran reconcile and recovery under it. A
@@ -2048,7 +2048,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   patience window, which returns the retryable
   `MobError::LifecycleOperationProgressStalled`. MobKit treated it as fatal,
   shut down, and exited, so a supervisor restarted the whole boot from scratch
-  in a loop (seen in HomeCore production). Activation now re-joins the same
+  in a loop (seen in a downstream app's production). Activation now re-joins the same
   meerkat operation in-process (`MobHandle::resume` on the prepared handle
   joins the still-current Resume) for as long as it makes progress: a changed
   member or stage resets the count. It gives up after
@@ -2105,7 +2105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   admissions (durable-behind replays the graph per commit) inside the
   boundary commit, under the runtime's driver mutex, found nothing to
   repair, logged a "no repair admission holds" WARN and fell through to the
-  plain projection save (HomeCore: about 3.6 s per pass across 16
+  plain projection save (the downstream app: about 3.6 s per pass across 16
   identities and one WARN per turn). A durable row that is the committed
   transcript's digest-prefix past its last rewrite, at the committed rewrite
   generation, now goes straight to that save. Reading the rewrite generation
@@ -2174,7 +2174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the runtime default. The null disabled retirement for the child, so a model
   that filled in every optional field with null pinned each fork child until
   the session ceiling refused new work, the very outcome `fork_off`'s
-  runtime-default opt-in exists to prevent (reported by HomeCore). Helpers
+  runtime-default opt-in exists to prevent (reported by the downstream app). Helpers
   sent through `delegate` with a null had the same problem. See the behavior
   change under Changed.
 
@@ -2367,7 +2367,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Typed "session needs repair" hold for the WholeBlob audited-endpoint wedge
-  (HomeCore 2026-09-22, session `01a000bb-b69e-7570-933d-ffd5d61d51ee`).
+  (downstream app report 2026-09-22, session `01a000bb-b69e-7570-933d-ffd5d61d51ee`).
   meerkat 0.8.41 types the refusal (`SessionError::WholeBlobAuditedEndpointDivergence`,
   resume hold `audited_endpoint_divergence`): the committed document keeps
   every message, but every read refuses until the operator runs the sanctioned
@@ -2541,7 +2541,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that is already bound to the resumed session (the spawn finished between
   the collision and classification) is adopted the same way; committed
   occupants bound elsewhere keep the existing custody-gated retire path, and
-  a roster read failure refuses to retire and stays retryable. OB3 twin report 2026-09-22 item 3
+  a roster read failure refuses to retire and stays retryable. The operator deployment twin report 2026-09-22 item 3
   (`review:singleton`, spawn ticket 15).
 - Capability invariant reporting. The post-materialization
   declared-versus-resolved capability invariant logged `requires operator
@@ -3049,7 +3049,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `console_auth_required(required)` (emits
   `runtime_options.console_require_app_auth`) and `console_config(path)` (emits
   `runtime_options.console_config_path`), the two knobs Python hosts, including
-  the in-repo memory live driver and HomeCore, had to inject by overriding
+  the in-repo memory live driver and the downstream app, had to inject by overriding
   `MobKitRuntime._build_init_params`. The Rust library gains
   `RuntimeDecisionState::local_console(console, bigquery)`, the one exported
   constructor for a console that trusts no identity provider, plus
@@ -3101,7 +3101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   leaves the durable identity registered in `Retiring` (member gone, session
   archived, lease released), but the roster reconciler refused that state:
   every later topology refresh failed with `cannot reconcile_roster_remove
-  identity ... in state Retiring`, forever (OB3 2026-09-05), and neither a
+  identity ... in state Retiring`, forever (a 2026-09-05 production incident), and neither a
   send nor the embodiment door would re-materialize it. `Retiring` after
   `retire_locked` IS the retired terminal form (the console's
   `retired`/`RetiredReadable`, `reset_all`'s leaving-fleet classification and
@@ -3139,7 +3139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a plain `<pre>`).
 
 - **Deliveries no longer wait the whole 600 s admission budget behind a
-  stalled mob actor loop.** OB3 2026-09-04: one repair-blocked member's inline
+  stalled mob actor loop.** A 2026-09-04 production incident: one repair-blocked member's inline
   work wedged meerkat-mob's single serialized command loop; the probe paged
   `actor_loop_stalled`, and every console send still queued behind the wedged
   command and was abandoned after exactly `MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS`
@@ -3247,7 +3247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   predicates for one fact. The builder is now resolved once, before any
   gateway process is spawned, and a non-conforming object raises `TypeError`
   naming the contract and the offending type; a conforming builder registers
-  exactly as before. Hosts whose builders already conform (HomeCore) see no
+  exactly as before. Hosts whose builders already conform (the downstream app) see no
   change. `MobHandle.reconcile_edges()`'s docstring no longer claims the call
   needs an `EdgeDiscovery` configured on the builder (there is no such knob;
   the definition-derived wiring policy is installed automatically) and now
@@ -3272,7 +3272,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Meerkat's to refuse at create time. Behaviour change an exact-pinned host
   observes: a PROVIDER-ANNOTATED profile is resolvable by Meerkat's rule
   whatever its model string says, so a dated or misspelled id on a
-  `provider = "openai"` profile (every HomeCore profile is annotated) now
+  `provider = "openai"` profile (every profile in the downstream app is annotated) now
   passes init and fails at the first LLM call, where the old catalog check
   refused it at init with the hint. `rpc_gateway` does not add a second
   refusal authority for that case; it logs one WARN per such profile at init
@@ -3338,7 +3338,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   wrappers: a wrapped `SessionUnavailableForResume { ArchivedNotRevivable }`
   or `MemberRestoreFailed` classified as `Other` before, so the typed
   archived-not-revivable park never fired for it and the identity
-  heal-looped (the OB3 shape on a different door). Exact-pinned hosts
+  heal-looped (the production shape on a different door). Exact-pinned hosts
   observe `error` and `reason` keys on `run_failed` payloads and
   `interaction_failed` frames, a populated `RunFailed.error` in the SDKs, a
   `HostLoopCrash` message that names the cause, and a keyless identity that
@@ -3574,7 +3574,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   wrapper the dispatch door uses logs the first skip per identity and reason at
   INFO with the effective config, then DEBUG. Before this, the injection ledger
   recorded only what was injected, so "off", "no memory" and "budget spent"
-  were the same absence; HomeCore's two months of zero turn-surface rows would
+  were the same absence; the downstream app's two months of zero turn-surface rows would
   have named themselves on the first turn.
 
 - **A real-API end-to-end lane (`make e2e-live`).** Boots the real
@@ -3631,7 +3631,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now reads the durable generation from `SessionHead::rewrite_count`, which
   advances 1:1 with each adopted commit, and compares a slim row's envelope
   like for like so the equal arm does not re-project forever.
-  The regression drives HomeCore's A->B shape in process and asserts leg A
+  The regression drives the downstream app's A->B shape in process and asserts leg A
   walks once and leg B walks zero times.
 - **The committed->durable projection no longer walks the rewrite chain for a
   row already at the committed head.** With the generation read fixed, the
@@ -3682,12 +3682,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   boolean form (`agent_memory: true`) followed it. The object form did not:
   `rpc_gateway` substituted a literal `"off"` when the field was omitted, so
   every SDK client that passed an options object and trusted the documented
-  default got zero turn-surface injections. HomeCore measured the consequence
+  default got zero turn-surface injections. The downstream app measured the consequence
   as 10,283 build-surface injections and zero turn-surface ledger rows over the
   lifetime of its store. The parser now derives the fallback from
   `AgentMemoryPerTurnInjection::default()`, so one default governs both forms
   and the next change cannot fork them; a non-string value is a typed refusal
-  instead of silently meaning off. The regression test is HomeCore's exact call
+  instead of silently meaning off. The regression test is the downstream app's exact call
   shape. The design document's "off by default" text, which predated the
   library change, is corrected.
 
@@ -3787,12 +3787,12 @@ pins.
   and only `Deny` reaches the observer, so an operator's only evidence is an
   absence that reads identically either way.
 
-  Found by HomeCore on 2026-08-31: 17 members compiled as the encoded runtime
+  Found by the downstream app on 2026-08-31: 17 members compiled as the encoded runtime
   id, `default_deny = true`, 120 grants each, and three ungranted tools
   executing successfully with zero denials fleet-wide. Confirmed against their
   live continuity store rather than only against source - all 17 stored
   `MobMemberBinding.member` values are the encoded durable identity, and all 17
-  declared tokens diverge from them. OB3 independently hit the same
+  declared tokens diverge from them. The operator deployment independently hit the same
   two-id-space trap the same night on event subscription, where the wrong space
   yields silence rather than an error. `member_comms_id.rs` already documented
   the conversion as producing "binding detail that no longer names a roster row
@@ -3870,7 +3870,7 @@ pins.
   fleet materialization with nothing linking them to the flow that caused them.
   A consumer measuring a slow trigger saw a materialization burst and no
   connection between the two - which is how a 358-second trigger read as a hang
-  rather than as work (OB3, 2026-08-31: 144 spawns, 17 to 161, their entire
+  rather than as work (the operator deployment, 2026-08-31: 144 spawns, 17 to 161, their entire
   identity count).
 
   The barrier now logs its cause on entry and its `materialized` count plus
@@ -4190,7 +4190,7 @@ nothing.
   `UnifiedRuntime::shutdown()`. Earlier notes, including mine, put this in
   MobKit's own teardown; that attribution was wrong.
 
-  **It is not a regression.** ob3 reproduced it on meerkat 0.8.29 / MobKit
+  **It is not a regression.** The operator deployment reproduced it on meerkat 0.8.29 / MobKit
   0.8.24 - their current production pins - with the same harness, phases and a
   freshly cloned dataset. Across three pin pairs on the same arm: 0.8.29/0.8.24
   hung, 0.8.30/0.8.26 hung 2 of 2, 0.8.31/0.8.27 hung 4 of 6. It predates all of
@@ -4203,7 +4203,7 @@ nothing.
   identical - green. The defect is old; the instrument that can see it is days
   old.
 
-  It is a **race**, not a deterministic trigger: ob3 measured 4 hangs in 6 runs
+  It is a **race**, not a deterministic trigger: the operator deployment measured 4 hangs in 6 runs
   on identical 0.8.31 Rust, alternating clean and hung with the same dataset
   shape, phases and spawn count. The conditions previously believed to form a
   required conjunction only raise the probability.
@@ -4211,7 +4211,7 @@ nothing.
   **Do not read "4 in 6" as the odds that any given graceful stop hangs.** It is
   a conditional rate under adversarial setup: every one of those runs booted 161
   identities, drove a real OpenAI turn, a real Anthropic turn and a spawn, then
-  SIGTERMed immediately with no idle period. ob3 also corroborated it in real
+  SIGTERMed immediately with no idle period. The operator deployment also corroborated it in real
   production: 6 of 9 pod shutdowns in a 30-day window did not complete, with a
   control ruling out log loss.
 
@@ -4231,7 +4231,7 @@ nothing.
 
   Two consequences worth carrying forward. Any regression test for this must
   **repeat rather than sample** - a single green run has roughly a 1 in 3 chance
-  of meaning nothing under ob3's conditions. And the teardown retry count is
+  of meaning nothing under the operator deployment's conditions. And the teardown retry count is
   **not** a severity signal: across two independent measurement sets the highest
   count (209, and earlier 161) sat on the only *clean* run each time.
 
@@ -4243,7 +4243,7 @@ nothing.
   drain, by `GATEWAY_RPC_DRAIN_TIMEOUT`) or non-awaiting. That ordering was
   chosen for an unrelated reason - the release is a store write and composition
   teardown closes the store - so the independence is a consequence, not a design
-  goal, and it has not been observed against ob3's reproducer.
+  goal, and it has not been observed against the operator deployment's reproducer.
 
   Named here so it is explicitly outstanding rather than silently dropped.
 
@@ -4695,7 +4695,7 @@ Pins meerkat `=0.8.25`.
   silently, because a caller that keeps sending an overridden tier must be able
   to find out it is being overridden. An action absent from the table still
   keeps the caller's value: the table binds what it declares and no more.
-  Reported by HomeCore's tools/grants fork with file:line, verified here before
+  Reported by the downstream app's tools/grants fork with file:line, verified here before
   fixing. The regression test is mutation-proven: restoring the
   `!params.contains_key("risk_tier")` guard turns it red with left `"r0"`,
   right `"r3"`.
@@ -4758,7 +4758,7 @@ report of that is still an operational loose end you have to close.
   session task or the mob actor loop with no bound at all, and both are strict
   sequential command loops, so any long turn (a tool chain, a post-cycle
   compaction) made every console read on that member queue silently instead of
-  degrading. Reported by OB3 as `mobkit/identity/resolved_tools` hanging past 60
+  degrading. Reported by the operator deployment as `mobkit/identity/resolved_tools` hanging past 60
   seconds with no completion. The seven read arms that cross those two loops -
   `identity/resolved_tools`, `member_status`, `list_members`, `get_member`,
   `find_members`, `flow_status`, `list_runs` - are now bounded and return a
@@ -4790,7 +4790,7 @@ report of that is still an operational loose end you have to close.
   on the bare conversation the UI renders. The result is a thread showing
   questions and never answers.
 
-  **Scope, corrected by HomeCore after the first fix:** this was reported as a
+  **Scope, corrected by the downstream app after the first fix:** this was reported as a
   `/dev/dispatch` problem because that is where it was first hit, and describing
   it that way understates it badly. A recurring SCHEDULED prompt reaches the
   runtime through `WorkSpec`/`MobHandle` and reserves nothing on the console
@@ -4803,7 +4803,7 @@ report of that is still an operational loose end you have to close.
   **Whether you saw it depends on which history your UI renders, not on which
   version you run.** The split is in MobKit's console conversation store, so it
   reaches operators whose UI reads that store. An adopter whose dashboard reads
-  its OWN session store (OB3 renders `/api/dashboard/chat/history` off their
+  its OWN session store (the operator deployment renders `/api/dashboard/chat/history` off their
   BigQuery store) saw completions normally throughout and would never have
   noticed. Check which endpoint your console calls before concluding you were
   unaffected - and note that mounting `/console/*` is enough to be exposed:
@@ -4816,11 +4816,11 @@ report of that is still an operational loose end you have to close.
   Classic (non-identity-first) mobs were never affected, because there the
   roster alias IS the identity and the self-map was benign.
 - **`send_message` self-mapped the incarnation on its `AuthorityUnavailable`
-  arm,** the same shape on a second call site, also found by HomeCore. It now
+  arm,** the same shape on a second call site, also found by the downstream app. It now
   reserves under the durable identity with the incarnation as the mapping key.
 - **Every `ErrorEvent` now reaches the log whether or not an error hook is
   wired.** Previously the three fire points only logged through a registered
-  hook, so a host that never called `on_error` - HomeCore's case - had every
+  hook, so a host that never called `on_error` - the downstream app's case - had every
   `ErrorEvent` this platform ever emitted go to `None` with nothing in the log
   either. The default sink logs at ERROR (INFO for resolutions) and records
   `hook_registered`, so an absent hook is visible as an absent hook rather than
@@ -5179,8 +5179,8 @@ Paired release on meerkat v0.8.21.
 Paired release on meerkat 0.8.20 (the direct pairing: 0.8.19's
 resume-authoring fix and 0.8.20's singular input-lane authority ship
 together under one adoption; no intermediate 0.8.19 artifact exists).
-Field-driven: every fix below was drilled against HomeCore's byte-exact
-production corpus or OB3's 69-board rig, and the exact shipping pair
+Field-driven: every fix below was drilled against the downstream app's byte-exact
+production corpus or the operator deployment's 69-board rig, and the exact shipping pair
 (this tree + the 0.8.20 release tree) passed the 17-member restore gate,
 the three-boot accretion drill, and a real end-to-end member
 resurrection before tagging.
@@ -5197,7 +5197,7 @@ resurrection before tagging.
 
 ### Fixed
 
-- **Cold mint hydrates the rewrite graph** (HomeCore window-4 fleet
+- **Cold mint hydrates the rewrite graph** (the downstream app's window-4 fleet
   blocker): `mint_runtime_authority_from_durable` seeded the runtime
   WholeBlob from the SLIM durable materialization, so on a REWRITTEN head
   every boundary projection composed rewrite-shaped state without compact
@@ -5217,7 +5217,7 @@ resurrection before tagging.
   identities with zero log lines. Each Broken registration now emits one
   warn line with identity + kind + detail.
 - **App-supplied delivery correlations are canonicalized at the dispatch
-  door** (HomeCore 2h outage on 0.8.12 + meerkat 0.8.16): non-UUID app
+  door** (the downstream app's 2h outage on 0.8.12 + meerkat 0.8.16): non-UUID app
   correlation strings now map deterministically to UUIDv5 under the
   mobkit delivery namespace instead of drawing typed refusals from the
   fail-closed delivery-identity matrix; the schedule lane stays strict.
@@ -5236,7 +5236,7 @@ resurrection before tagging.
   through the typed rewrite door - groups by (content, identity), keeps
   the first occurrence per group, hydrates the rewrite graph from the
   store's own records, one full-range rewrite commit + authoritative
-  projection. Field-proven in HomeCore window 4 (17/17 applies, parent-1
+  projection. Field-proven in the downstream app's window 4 (17/17 applies, parent-1
   36 -> 4 System rows, heads 80-460KB from 82MB-class documents).
 - **Load representation traces**: `load_persisted_session` and
   `load_previous_session_for_save` emit representation+count debug lines
@@ -5262,7 +5262,7 @@ resurrection before tagging.
   - The fan-in admission stall is fixed upstream: durable input admission
     returns without awaiting any ephemeral actor-boundary handshake, so a
     wedged live-boundary preparation can no longer silently starve every
-    queued peer delivery behind it (OB3 field class: 30-of-69 completion
+    queued peer delivery behind it (the operator deployment's field class: 30-of-69 completion
     pings, then an idle member with queued inputs and no wake).
   - WorkGraph/Mob Flow interoperation (meerkat PR #941): flow executions
     bind WorkGraph work items (`MobRun.flow_definition_digest`,
@@ -5277,7 +5277,7 @@ resurrection before tagging.
 - **Converged rows no longer WARN from the tear-repair diagnostic.**
   Repair passes after a heal match no admission by design (nothing to
   repair), and the "no repair admission holds" WARN read as a failure in
-  HomeCore's v0.8.11 production validation. Content equality with the
+  the downstream app's v0.8.11 production validation. Content equality with the
   committed authority now logs debug and returns.
 
 ## [0.8.11] - 2026-08-04
@@ -5313,7 +5313,7 @@ resurrection before tagging.
   - Shared delivery preparation: `dispatch_with_expected_member_alias`
     previously delivered RAW - internal dispatches (schedules foremost)
     skipped inbound defanging, taint session attribution, and ambient
-    memory injection for the member's whole lifetime (HomeCore: zero
+    memory injection for the member's whole lifetime (the downstream app: zero
     surface=Turn injection-ledger rows ever). Both member doors now run
     the ONE preparation helper (note_current_session + generation bind,
     defang, inject_for_turn), and dispatch populates the admitted
@@ -5322,13 +5322,13 @@ resurrection before tagging.
     the send door.
 
 - **Steward dream honesty: turn-only usage evidence, quarantine window
-  pin-down, durable run rows** (HomeCore dream rehearsal). Three findings,
+  pin-down, durable run rows** (the downstream app's dream rehearsal). Three findings,
   one root shape:
   - Usage-audit data boundary: the audit now judges only `surface=Turn`
     injection evidence - build-surface rows are spawn hydration
     bookkeeping, not proof a record earned its context slot. A store with
     zero Turn rows for the scope SKIPS the audit and queues NOTHING
-    (HomeCore: 53/53 dead-weight noise verdicts minted from hydration
+    (the downstream app: 53/53 dead-weight noise verdicts minted from hydration
     counts on a store where turn evidence could not yet accrue).
   - Legacy quarantine review: proven from code that no
     "new-since-last-dream" window exists - every dream loads the full
@@ -5345,7 +5345,7 @@ resurrection before tagging.
     panel sees failed runs instead of nothing.
 
 - **WholeBlob-to-durable projection tear healed: missing rewrite commits
-  replay through the typed rewrite door** (HomeCore parent-1 production
+  replay through the typed rewrite door** (the downstream app's parent-1 production
   park). The runtime-store facade projected committed WholeBlob
   boundaries into the durable session store with a plain authoritative
   projection, which cannot INSTALL a new rewrite generation - a
@@ -5391,12 +5391,12 @@ resurrection before tagging.
   committed snapshot converged to the rebased state in the same pass)
   and the true parent-1 shape - the durable row as a strict PREFIX of
   the sealed parent (a failed projection; admission authored by
-  HomeCore and validated on the live corpus, GATE_PASS 17/17). All
+  the downstream app and validated on the live corpus, GATE_PASS 17/17). All
   admission verdicts log unconditionally with both digests; a durable
   row proving neither shape is a foreign lineage and keeps the typed
   refusal, byte-untouched.
 
-- **Memory scope keys are LOGICAL identities end to end** (HomeCore
+- **Memory scope keys are LOGICAL identities end to end** (the downstream app
   activation smoke, launch blocker). The platform's observe-stream paths
   keyed identity scopes by the mob-plane roster id - for identity-first
   members the comms-safe encoding of a generated runtime alias
@@ -5433,7 +5433,7 @@ resurrection before tagging.
     remediation).
 
 - **Repair honesty: the typed `ArchivedNotRevivable` refusal parks on the
-  FIRST pass instead of heal-looping** (OB3 prod-data rehearsal at the
+  FIRST pass instead of heal-looping** (the operator deployment's prod-data rehearsal at the
   0.8.14/0.8.10 pins, 4258-session corpus: 4 personal-agent identities whose
   latest sessions carry a 0.6.x body-written archived terminal with no
   runtime record entered an endless heal/refusal loop - continuity repair
@@ -5515,7 +5515,7 @@ resurrection before tagging.
 
 ### Fixed
 
-- **Continuity repair no longer destroys a member's queued work** (OB3 field
+- **Continuity repair no longer destroys a member's queued work** (the operator deployment's field
   runs 33758a41 + 6bb7010e: repair healed a stream-dead-but-Attached review
   member by full disposal and took its 15 pending fan-in inputs with it —
   irrecoverably, on the ephemeral runtime-store shape). Three changes, all in
@@ -5606,7 +5606,7 @@ resurrection before tagging.
   until a provider byte cap broke the deployment). Now, at runtime bootstrap,
   every inline definition profile gets its explicitly declared fields marked
   resume-overridden automatically. `model` and `provider` are treated as a
-  **coherent pair, never independently masked** (OB3 cutover incident: a
+  **coherent pair, never independently masked** (the operator deployment's cutover incident: a
   model-only mask let the durable provider survive under a profile model it
   was never registered for, and the resume was rejected typed with an invalid
   `(model, provider)` pair): a declared `provider`/`self_hosted_server_id`
@@ -5775,7 +5775,7 @@ resurrection before tagging.
   session id re-proved). Read-side interpret only: durable adoption follows
   the first write-path decode, which rebases the strand under a
   current-format head. Regression drives the committed released baseline
-  realm with its runtime store deleted - HomeCore's exact binding leg.
+  realm with its runtime store deleted - the downstream app's exact binding leg.
 
 - **A restored/rolled-back runtime store no longer serves stale committed
   authority over the newer durable continuity row** (advisory Form 1, the
@@ -5834,7 +5834,7 @@ resurrection before tagging.
   wins), keeping the head-canonical refusal on the same lifecycle footing as
   the blob parking guard.
 
-- **Ephemeral-runtime durability round trip is now facade-owned** (the OB3
+- **Ephemeral-runtime durability round trip is now facade-owned** (the production
   pod-scratch shape: durable truth in an injected session/continuity store,
   runtime store on ephemeral pod scratch). At 0.8.11 the session service
   keeps no plain `SessionStore` write path (WholeBlob session authority lives
@@ -5979,7 +5979,7 @@ reading a silent-but-working phase as a hung one.
   incremental branch once the capability is `Some`, an ordinary turn on an
   identity gateway now moves the turn's delta plus a few KB of head instead
   of reading, reparsing, re-serializing and rewriting the entire document.
-  On the profiled HomeCore 82 MB session that removes the continuity half of
+  On the profiled downstream app 82 MB session that removes the continuity half of
   the per-turn write amplification, including the whole-document decode.
 
   The canonical-representation rule is the same one meerkat-store uses for
@@ -6112,7 +6112,7 @@ reading a silent-but-working phase as a hung one.
   `*.corrupt-*` quarantines; default threshold 30 days; deletion refuses
   anything outside the registered naming). Backup naming is shared with
   meerkat verbatim (`<original>.pre-<version>-<timestamp>[.<purpose>]`,
-  reusing `meerkat_store::migrate`'s helpers), so HomeCore-class
+  reusing `meerkat_store::migrate`'s helpers), so downstream-app-class
   generation-cloning recognizes MobKit artifacts the same way — but
   recognition validates the COMPLETE generated shape
   (`is_registered_backup_artifact_name` /
@@ -6153,7 +6153,7 @@ reading a silent-but-working phase as a hung one.
   profiles (baseline, append-only, incremental, blobs, artifacts) through
   its `meerkat_provider()`.
 - **New `UnifiedRuntimeBuilder` seams:** `schedule_store(Arc<dyn
-  ScheduleStore>)` (the public schedule-store seam ob3 lacked — schedule
+  ScheduleStore>)` (the public schedule-store seam the operator deployment lacked — schedule
   tools attach over the caller's store on both the persistent and the
   ephemeral/scratch paths; library mode wires no firing host, and injection
   is a foundation: shadow-scheduler deletion downstream still requires a
@@ -6950,7 +6950,7 @@ reading a silent-but-working phase as a hung one.
   bootstrap tokens; per-open credential resolution matching text-turn
   auth; per-open `model` override. SDK methods in both languages. Design:
   docs/design/live-sessions.md.
-- Definition wiring is a reconcilable desired state (HomeCore field
+- Definition wiring is a reconcilable desired state (the downstream app's field
   report): `auto_wire_orchestrator`/`role_wiring` now converge regardless
   of member bring-up order and re-converge after restarts — a
   definition-derived default edge policy installs at bootstrap,
@@ -6964,7 +6964,7 @@ reading a silent-but-working phase as a hung one.
 ### Fixed
 
 - `ContinuitySessionStoreAdapter` adopts the machine-owned
-  `RebuildToAuthority` rollback (HomeCore Bug B-2): the torn-shutdown save
+  `RebuildToAuthority` rollback (the downstream app's Bug B-2): the torn-shutdown save
   wedge — a stamped intra-turn checkpoint head rejecting the resume's
   shorter committed-authority save with `MonotonicityViolation`, degrading
   the identity forever — now converges the row back onto committed truth.
@@ -6991,7 +6991,7 @@ reading a silent-but-working phase as a hung one.
 
 - The rpc_gateway's `callback/build_agent` path composes host-returned tools
   OVER pre-installed dispatchers instead of assigning the slot wholesale
-  (HomeCore "Bug D"): callback-built agents keep the native agent-memory
+  (the downstream app's "Bug D"): callback-built agents keep the native agent-memory
   recorder's `memory` tool (a host tool named `memory` now shadows it by
   design — primary wins name collisions). New
   `meerkat_mobkit::tool_compose::ComposedExternalTools` is the canonical
@@ -7104,7 +7104,7 @@ reading a silent-but-working phase as a hung one.
   marker-prefixed input by design), missed the roster, and silently fell
   through to the external door, reproducing the addressability rejection the
   internal lane exists to bypass ("mob member is not externally addressable:
-  mk--rt_cdomain_chome_c0" on HomeCore 0.7.28). Plain member names are
+  mk--rt_cdomain_chome_c0" on the downstream app's 0.7.28). Plain member names are
   unaffected (canonicalization is the identity on them). E2e pins the
   roster-space binding shape end to end; the codec contract test pins
   decode-then-encode as the only correct roster-key derivation.
@@ -7133,7 +7133,7 @@ reading a silent-but-working phase as a hung one.
   identity bridge uses), not the external ingress door. Previously delivery
   routed through `member_send`'s external path, which rejected members whose
   profile is `external_addressable = false` ("mob member is not externally
-  addressable") — HomeCore's domain agents are internal-only by design, and
+  addressable") — the downstream app's domain agents are internal-only by design, and
   a schedule firing back into its own author's session was blocked by the
   external posture. Flows/helpers/probes keep the stock host behavior. E2e
   pins self-delivery to an internal_only author at `stage=completed`.
@@ -7142,7 +7142,7 @@ reading a silent-but-working phase as a hung one.
 
 ### Fixed
 
-- Agent-authored schedules now DELIVER on both gateways (the HomeCore 0.7.26
+- Agent-authored schedules now DELIVER on both gateways (the downstream app's 0.7.26
   "last link": authoring ✓ planning ✓ claim ✓ no runaway ✓ delivery ✗ with
   "scheduled identity targets are not supported by this session host").
   Root cause was mobkit-side: specs built via `MobBootstrapSpec::new` (both
@@ -7318,7 +7318,7 @@ reading a silent-but-working phase as a hung one.
   its own tick errors, and one poisoned row anywhere in the schedule store
   (a Deleted tombstone the recovery invariant rejects, a stale-schema
   occurrence) aborts every tick before anything is claimed — due occurrences
-  then sit `pending` forever with nothing in any log (the HomeCore 0.7.24
+  then sit `pending` forever with nothing in any log (the downstream app's 0.7.24
   report: 31/31 pending, no lease ever taken). The new read-only
   `spawn_schedule_claim_watchdog` probes the pipeline every 60s and, when
   due work is not being claimed, logs a row-level diagnosis naming the
@@ -7330,7 +7330,7 @@ reading a silent-but-working phase as a hung one.
 ### Changed
 
 - Upgraded the meerkat family 0.7.17 → 0.7.18. Carries the fix for the
-  HomeCore cold-restart regression (meerkat #837): idle members whose
+  downstream app's cold-restart regression (meerkat #837): idle members whose
   turn-less boots chained resume-system-prompt-refresh rewrite commits were
   refused resume with "incoming append-only save would change retained
   transcript revision graph" — the rewrite-chain walk now proves continuity
@@ -7350,7 +7350,7 @@ reading a silent-but-working phase as a hung one.
   reconcile retry" promised a retry that only a manual
   `mobkit/reconcile_identity` RPC or a restart delivered: delivery refuses
   Broken identities by design, and so does on-demand materialization, which
-  is how HomeCore's 14 preserved-but-parked identities stayed parked. The
+  is how the downstream app's 14 preserved-but-parked identities stayed parked. The
   task is quiet while nothing is Broken (no lease churn on healthy
   deployments) and the backoff bounds retry log noise.
 
@@ -7382,7 +7382,7 @@ reading a silent-but-working phase as a hung one.
 - Upgraded the meerkat family 0.7.15 → 0.7.17. Carries (from the batch-2
   upstream asks): typed `ToolProvenance` on tool definitions (ask 9's
   attribution half) and the compaction-archive fix that stranded compacted
-  singletons on retire (`MonotonicityViolation`, ask 12 / OB3's report).
+  singletons on retire (`MonotonicityViolation`, ask 12 / the operator deployment's report).
   Remaining asks (dispatch-time taint surfacing, fork authorization,
   incremental session persistence, forwarder backoff, member health,
   transcript interaction-id persistence) land in later meerkat releases.
@@ -7437,7 +7437,7 @@ reading a silent-but-working phase as a hung one.
   session. The identity bridge's deliver-time repair used to blind-respawn
   (`MobHandle::respawn` = retire + fresh spawn), abandoning the durable
   transcript and rotating the bridge session out from under the durable alias
-  (the OB3 `identity_alias_respawn_rotation` report). Repair now rebuilds the
+  (the operator deployment's `identity_alias_respawn_rotation` report). Repair now rebuilds the
   member ONTO its recorded durable session (`MemberLaunchMode::Resume`) —
   transcript preserved, no session rotation; the fresh respawn survives only
   as the fallback for meerkat's explicit "durable session snapshot is gone"
@@ -7459,7 +7459,7 @@ reading a silent-but-working phase as a hung one.
 - **A rejected resume no longer destroys the conversation.** The identity-first
   session bridge used to catch *any* resume error and fall back to a fresh,
   empty member spawn — permanently abandoning the durable transcript (the
-  HomeCore restart-loss bug). A resume failure now keeps the identity → session
+  downstream app's restart-loss bug). A resume failure now keeps the identity → session
   binding intact, marks the identity **Broken** with the real error attached,
   and the next reconcile retries the resume. A roster collision (in-process
   restart) retires the stale member and retries the *resume*, never a fresh

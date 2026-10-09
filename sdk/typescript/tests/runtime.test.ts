@@ -404,13 +404,13 @@ describe("MobKitRuntime", () => {
 
   it("builds meerkat_config_path runtime option", () => {
     const { rt } = createMockRuntime();
-    (rt as any)._config.meerkatConfigPath = "/etc/homecore/config.toml";
+    (rt as any)._config.meerkatConfigPath = "/etc/example/config.toml";
 
     const params = (rt as any)._buildInitParams();
 
     assert.equal(
       params.runtime_options.meerkat_config_path,
-      "/etc/homecore/config.toml",
+      "/etc/example/config.toml",
     );
   });
 
@@ -567,20 +567,20 @@ describe("MobKitRuntime", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.openaiLiveConfig = {
       principal: "user:luka",
-      realm: "family",
-      authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      realm: "example",
+      authBinding: { realm: "example", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      sessionInstructions: "You are Reachy's voice embodiment.",
+      sessionInstructions: "You are a test voice agent.",
     };
 
     const params = (rt as any)._buildInitParams();
 
     assert.deepEqual(params.runtime_options.openai_live, {
       principal: "user:luka",
-      realm: "family",
-      auth_binding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      realm: "example",
+      auth_binding: { realm: "example", binding: "openai-api-key", profile: "luka" },
       voice: "marin",
-      session_instructions: "You are Reachy's voice embodiment.",
+      session_instructions: "You are a test voice agent.",
     });
     assert.equal("experimental_live" in params.runtime_options, false);
   });
@@ -589,20 +589,20 @@ describe("MobKitRuntime", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.experimentalLiveConfig = {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factoryKind: "openai-gpt-live",
       factoryVersion: "v1",
       gate0Qualification: "gate0-v1",
       authBinding: {
-        realm: "family",
+        realm: "example",
         binding: "chatgpt-oauth",
         profile: "luka",
       },
       voice: "marin",
       executionProfiles: [
         {
-          profileId: "homecore.reachy.open-room.v1",
-          sessionInstructions: "You are Reachy's voice embodiment.",
+          profileId: "example.device.open-room.v1",
+          sessionInstructions: "You are a test voice agent.",
         },
       ],
     };
@@ -611,20 +611,20 @@ describe("MobKitRuntime", () => {
 
     assert.deepEqual(params.runtime_options.experimental_live, {
       principal: "user:luka",
-      realm: "family",
+      realm: "example",
       factory_kind: "openai-gpt-live",
       factory_version: "v1",
       gate0_qualification: "gate0-v1",
       auth_binding: {
-        realm: "family",
+        realm: "example",
         binding: "chatgpt-oauth",
         profile: "luka",
       },
       voice: "marin",
       execution_profiles: [
         {
-          profile_id: "homecore.reachy.open-room.v1",
-          session_instructions: "You are Reachy's voice embodiment.",
+          profile_id: "example.device.open-room.v1",
+          session_instructions: "You are a test voice agent.",
         },
       ],
     });
@@ -2078,30 +2078,30 @@ describe("MobHandle.rememberAgentMemory()", () => {
       memory_id: "mem-1",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["calendar", "family"],
+      tags: ["calendar", "team"],
       created_at_ms: 10,
       updated_at_ms: 20,
     }));
 
     const result = await handle.rememberAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["family", "calendar"],
+      tags: ["team", "calendar"],
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/remember");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup is before calendar planning.",
-      tags: ["family", "calendar"],
+      tags: ["team", "calendar"],
     });
     assert.equal(result.memoryId, "mem-1");
     assert.equal(result.title, "School pickup");
     assert.equal(result.body, "Pickup is before calendar planning.");
-    assert.deepEqual(result.tags, ["calendar", "family"]);
+    assert.deepEqual(result.tags, ["calendar", "team"]);
     assert.equal(result.createdAtMs, 10);
     assert.equal(result.updatedAtMs, 20);
   });
@@ -2115,14 +2115,14 @@ describe("MobHandle.recallAgentMemory()", () => {
         memory_id: "mem-1",
         title: "School pickup",
         body: "Pickup is before calendar planning.",
-        tags: ["calendar", "family"],
+        tags: ["calendar", "team"],
         created_at_ms: 10,
         updated_at_ms: 20,
       }],
     }));
 
     const result = await handle.recallAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       queryText: "Where is pickup?",
       queryTerms: ["pickup"],
@@ -2132,7 +2132,7 @@ describe("MobHandle.recallAgentMemory()", () => {
     assert.equal(calls[0].method, "mobkit/agent_memory/recall");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       query_text: "Where is pickup?",
       query_terms: ["pickup"],
@@ -2153,14 +2153,14 @@ describe("MobHandle.forgetAgentMemory()", () => {
     }));
 
     const result = await handle.forgetAgentMemory("identity:luka", "mem-1", {
-      realm: "family",
+      realm: "example",
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/forget");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
       memory_id: "mem-1",
-      realm: "family",
+      realm: "example",
     });
     assert.equal(result.memoryId, "mem-1");
     assert.equal(result.deleted, true);
@@ -2176,10 +2176,10 @@ describe("MobHandle.updateAgentMemory()", () => {
     }));
 
     const result = await handle.updateAgentMemory("identity:luka", "mem-1", {
-      realm: "family",
+      realm: "example",
       title: "School pickup",
       body: "Pickup moved to 15:30.",
-      tags: ["family"],
+      tags: ["team"],
     });
 
     assert.equal(calls[0].method, "mobkit/agent_memory/update");
@@ -2188,8 +2188,8 @@ describe("MobHandle.updateAgentMemory()", () => {
       memory_id: "mem-1",
       title: "School pickup",
       body: "Pickup moved to 15:30.",
-      realm: "family",
-      tags: ["family"],
+      realm: "example",
+      tags: ["team"],
     });
     assert.equal(result.memoryId, "mem-2");
     assert.equal(result.supersedes, "mem-1");
@@ -2211,7 +2211,7 @@ describe("MobHandle.manifestAgentMemory()", () => {
     }));
 
     const result = await handle.manifestAgentMemory("identity:luka", {
-      realm: "family",
+      realm: "example",
       tier: "working_set",
       k: 4,
     });
@@ -2219,7 +2219,7 @@ describe("MobHandle.manifestAgentMemory()", () => {
     assert.equal(calls[0].method, "mobkit/agent_memory/manifest");
     assert.deepEqual(calls[0].params, {
       identity: "identity:luka",
-      realm: "family",
+      realm: "example",
       tier: "working_set",
       k: 4,
     });
@@ -3118,20 +3118,20 @@ describe("MobHandle live methods", () => {
       transport: { type: "websocket", url: "ws://x/live/ws", token: "t" },
     }));
 
-    const opened = await handle.liveOpen("reachy", {
+    const opened = await handle.liveOpen("robot", {
       model: "gpt-realtime-2",
       instructions: "Use the current room voice.",
     });
     assert.equal(calls[0].method, "mobkit/live/open");
     assert.deepEqual(calls[0].params, {
-      identity: "reachy",
+      identity: "robot",
       model: "gpt-realtime-2",
       instructions: "Use the current room voice.",
     });
     assert.equal((opened.transport as Record<string, unknown>).type, "websocket");
 
     setResponse(() => ({ open: true }));
-    await handle.liveStatus("reachy");
+    await handle.liveStatus("robot");
     assert.equal(calls[1].method, "mobkit/live/status");
 
     setResponse(() => ({ closed: true }));
@@ -3140,14 +3140,14 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[2].params, { channel_id: "live-channel-1" });
 
     setResponse(() => ({ refreshed: true }));
-    await handle.liveRefresh("reachy");
+    await handle.liveRefresh("robot");
     assert.equal(calls[3].method, "mobkit/live/refresh");
 
     setResponse(() => ({ accepted: true }));
-    await handle.liveSendInputImage("reachy", "frame-0001", "image/jpeg", "aGVsbG8=");
+    await handle.liveSendInputImage("robot", "frame-0001", "image/jpeg", "aGVsbG8=");
     assert.equal(calls[4].method, "mobkit/live/send_input");
     assert.deepEqual(calls[4].params, {
-      identity: "reachy",
+      identity: "robot",
       chunk: {
         kind: "image",
         idempotency_key: "frame-0001",
@@ -3159,7 +3159,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "truncated" }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3170,7 +3170,7 @@ describe("MobHandle live methods", () => {
     );
     assert.equal(calls[5].method, "mobkit/live/truncate");
     assert.deepEqual(calls[5].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       activation_receipt: "active-receipt",
       output_id: "opaque-output-1",
@@ -3190,7 +3190,7 @@ describe("MobHandle live methods", () => {
       ],
     } : ({
       channel_id: "ch-typed",
-      target_identity: "identity:reachy",
+      target_identity: "identity:robot",
       execution_mode: "function_bridge",
       pending_receipt: "pending-receipt",
       transport: { transport: "webrtc", token: "t", answer_method: "live/webrtc/answer" },
@@ -3208,18 +3208,18 @@ describe("MobHandle live methods", () => {
       continuity: { mode: "transcript_only" },
     }));
 
-    const opened = await handle.liveOpenTyped("identity:reachy", {
-      profileId: "homecore.reachy.open-room.v1",
+    const opened = await handle.liveOpenTyped("identity:robot", {
+      profileId: "example.device.open-room.v1",
     });
 
     assert.equal(opened.channelId, "ch-typed");
-    assert.equal(opened.targetIdentity, "identity:reachy");
+    assert.equal(opened.targetIdentity, "identity:robot");
     assert.equal(calls[0].method, "mobkit/capabilities");
     assert.deepEqual(calls[1].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       execution_identity: {
         version: "v1",
-        profile_id: "homecore.reachy.open-room.v1",
+        profile_id: "example.device.open-room.v1",
       },
     });
   });
@@ -3233,8 +3233,8 @@ describe("MobHandle live methods", () => {
     }));
 
     await assert.rejects(
-      handle.liveOpenTyped("identity:reachy", {
-        profileId: "homecore.reachy.open-room.v1",
+      handle.liveOpenTyped("identity:robot", {
+        profileId: "example.device.open-room.v1",
       }),
       CapabilityUnavailableError,
     );
@@ -3248,7 +3248,7 @@ describe("MobHandle live methods", () => {
       ["responses_model", "gpt-5.5"],
       ["responses_tools", []],
       ["responses_instructions", "delegate"],
-      ["auth_binding", { realm: "family", binding: "other" }],
+      ["auth_binding", { realm: "example", binding: "other" }],
       ["self_hosted_server_id", "server"],
       ["provider_params", {}],
       ["tools", []],
@@ -3257,9 +3257,9 @@ describe("MobHandle live methods", () => {
       const { handle, calls } = createMockRuntime();
       await assert.rejects(
         handle.liveOpenTyped(
-          "identity:reachy",
+          "identity:robot",
           {
-            profileId: "homecore.reachy.open-room.v1",
+            profileId: "example.device.open-room.v1",
           },
           { [field]: value },
         ),
@@ -3295,7 +3295,7 @@ describe("MobHandle live methods", () => {
     }));
     await assert.rejects(
       handle.liveOpenTyped("caller-alias", {
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       }),
       /unknown field|non-empty string/,
     );
@@ -3335,7 +3335,7 @@ describe("MobHandle live methods", () => {
       };
       if (method === "mobkit/live/open") return {
         channel_id: "chan-1",
-        target_identity: "identity:reachy",
+        target_identity: "identity:robot",
         execution_mode: "function_bridge",
         pending_receipt: "pending-receipt",
         transport: {
@@ -3365,7 +3365,7 @@ describe("MobHandle live methods", () => {
         phase: "active",
         handle: {
           channel_id: "chan-1",
-          target_identity: "identity:reachy",
+          target_identity: "identity:robot",
           execution_mode: "function_bridge",
           activation_receipt: "active-receipt",
         },
@@ -3377,9 +3377,9 @@ describe("MobHandle live methods", () => {
     });
 
     const active = await handle.liveConnect(
-      "identity:reachy",
+      "identity:robot",
       {
-        profileId: "homecore.reachy.open-room.v1",
+        profileId: "example.device.open-room.v1",
       },
       {
         async prepare(pending) {
@@ -3415,13 +3415,13 @@ describe("MobHandle live methods", () => {
       "mobkit/live/status",
     ]);
     assert.deepEqual(calls[2].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
     assert.equal(calls[3].params?.readiness_receipt, "ready-receipt");
     assert.deepEqual(calls[4].params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
@@ -3430,7 +3430,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls.at(-1), {
       method: "mobkit/live/playback_owner/revoke",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         pending_receipt: "pending-receipt",
         readiness_receipt: "ready-receipt",
@@ -3454,7 +3454,7 @@ describe("MobHandle live methods", () => {
       };
       if (method === "mobkit/live/open") return {
         channel_id: "chan-1",
-        target_identity: "identity:reachy",
+        target_identity: "identity:robot",
         execution_mode: "function_bridge",
         pending_receipt: "pending-receipt",
         transport: {
@@ -3487,9 +3487,9 @@ describe("MobHandle live methods", () => {
 
     await assert.rejects(
       handle.liveConnect(
-        "identity:reachy",
+        "identity:robot",
         {
-          profileId: "homecore.reachy.open-room.v1",
+          profileId: "example.device.open-room.v1",
         },
         {
           async prepare() {
@@ -3521,7 +3521,7 @@ describe("MobHandle live methods", () => {
       "mobkit/live/close",
     ]);
     assert.deepEqual(calls.at(-1)?.params, {
-      identity: "identity:reachy",
+      identity: "identity:robot",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
     });
@@ -3531,7 +3531,7 @@ describe("MobHandle live methods", () => {
     const { handle, calls } = createMockRuntime();
     const pending = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       pendingReceipt: "pending-receipt",
       transport: {
@@ -3564,7 +3564,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ required: false }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3573,7 +3573,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[0], {
       method: "mobkit/live/replacement_required",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         activation_receipt: "active-receipt",
       },
@@ -3585,7 +3585,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "completed" }));
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3598,7 +3598,7 @@ describe("MobHandle live methods", () => {
     assert.deepEqual(calls[0], {
       method: "mobkit/live/playback_complete",
       params: {
-        identity: "identity:reachy",
+        identity: "identity:robot",
         channel_id: "chan-1",
         activation_receipt: "active-receipt",
         output_id: "opaque-output-1",
@@ -3613,7 +3613,7 @@ describe("MobHandle live methods", () => {
       : { status: "closed" });
     const active = {
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge" as const,
       activationReceipt: "active-receipt",
     };
@@ -3643,7 +3643,7 @@ describe("MobHandle live methods", () => {
       {
         method: "mobkit/live/playback_complete",
         params: {
-          identity: "identity:reachy",
+          identity: "identity:robot",
           channel_id: "chan-1",
           activation_receipt: "active-receipt",
           output_id: "opaque-output-1",
@@ -3652,7 +3652,7 @@ describe("MobHandle live methods", () => {
       {
         method: "mobkit/live/close",
         params: {
-          identity: "identity:reachy",
+          identity: "identity:robot",
           channel_id: "chan-1",
           activation_receipt: "active-receipt",
         },
@@ -3665,7 +3665,7 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ status: "closed" }));
     const outputs = handle.liveOutputs({
       channelId: "chan-1",
-      targetIdentity: "identity:reachy",
+      targetIdentity: "identity:robot",
       executionMode: "function_bridge",
       activationReceipt: "active-receipt",
     }, { capacity: 1 });

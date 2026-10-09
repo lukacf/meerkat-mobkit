@@ -152,14 +152,14 @@ test("normalizeAgents maps runtime member sidebar rows back to durable agent ide
         live_snapshot: {
           agents: [
             {
-              identity: "rt:channel:C0SMOKEOB3:0",
-              member_id: "rt:channel:C0SMOKEOB3:0",
-              label: "C0SMOKEOB3",
+              identity: "rt:channel:C0SMOKEOPS:0",
+              member_id: "rt:channel:C0SMOKEOPS:0",
+              label: "C0SMOKEOPS",
               kind: "channel",
               state: "active",
               addressable: true,
               labels: {
-                agent_identity: "channel:C0SMOKEOB3",
+                agent_identity: "channel:C0SMOKEOPS",
                 agent_type: "channel",
               },
             },
@@ -170,13 +170,13 @@ test("normalizeAgents maps runtime member sidebar rows back to durable agent ide
         schema_version: "1",
         rows: [
           {
-            identity: "channel:C0SMOKEOB3",
-            display_name: "C0SMOKEOB3",
+            identity: "channel:C0SMOKEOPS",
+            display_name: "C0SMOKEOPS",
             role: "domain",
             state: "active",
             addressability: "addressable",
             labels: {
-              agent_identity: "channel:C0SMOKEOB3",
+              agent_identity: "channel:C0SMOKEOPS",
               agent_type: "channel",
             },
           },
@@ -188,9 +188,9 @@ test("normalizeAgents maps runtime member sidebar rows back to durable agent ide
 
   assert.equal(agents.length, 1);
   const agent = agents[0];
-  assert.equal(agent?.identity, "channel:C0SMOKEOB3");
-  assert.equal(agent?.member_id, "rt:channel:C0SMOKEOB3:0");
-  assert.equal(agent?.agent_id, "channel:C0SMOKEOB3");
+  assert.equal(agent?.identity, "channel:C0SMOKEOPS");
+  assert.equal(agent?.member_id, "rt:channel:C0SMOKEOPS:0");
+  assert.equal(agent?.agent_id, "channel:C0SMOKEOPS");
 });
 
 test("canonicalConsoleIdentity maps runtime/member aliases back to durable chat identity", () => {

@@ -1,44 +1,44 @@
 {
   "experimental_gateway_config": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "factory_kind": "openai-gpt-live",
     "factory_version": "v1",
     "gate0_qualification": "gate0-v1",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "chatgpt-oauth",
       "profile": "luka"
     },
     "voice": "marin",
     "execution_profiles": [
       {
-        "profile_id": "homecore.reachy.open-room.v1",
-        "session_instructions": "You are Reachy's voice embodiment."
+        "profile_id": "example.device.open-room.v1",
+        "session_instructions": "You are a test voice agent."
       }
     ]
   },
   "openai_live_gateway_config": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "openai-api-key",
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are Reachy's voice embodiment."
+    "session_instructions": "You are a test voice agent."
   },
   "openai_live_gateway_config_with_summary": {
     "principal": "user:luka",
-    "realm": "family",
+    "realm": "example",
     "auth_binding": {
-      "realm": "family",
+      "realm": "example",
       "binding": "openai-api-key",
       "profile": "luka"
     },
     "voice": "marin",
-    "session_instructions": "You are Reachy's voice embodiment.",
+    "session_instructions": "You are a test voice agent.",
     "summary": {
       "model": "gpt-5.4-mini",
       "max_input_bytes": 32768,
@@ -48,7 +48,7 @@
   "openai_live_public_profile_id": "openai.gpt-live-1.client-context.v1",
   "execution_identity": {
     "version": "v1",
-    "profile_id": "homecore.reachy.open-room.v1"
+    "profile_id": "example.device.open-room.v1"
   },
   "channel_handle": {
     "channel_id": "live-ch-1",

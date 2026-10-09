@@ -93,7 +93,7 @@ describe("decorateModuleSpec()", () => {
       id: "mod",
       command: "cmd",
       boundary: "mcp",
-      env: { ROUTER_FIXTURE: "homecore" },
+      env: { ROUTER_FIXTURE: "example" },
     });
     const result = decorateModuleSpec(base);
 
@@ -228,7 +228,7 @@ describe("defineModule()", () => {
       command: "cmd",
       args: ["a"],
       boundary: "mcp",
-      env: { ROUTER_FIXTURE: "homecore" },
+      env: { ROUTER_FIXTURE: "example" },
     });
     const tools = [defineModuleTool({ name: "t", handler: async () => {} })];
 

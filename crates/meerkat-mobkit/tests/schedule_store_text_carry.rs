@@ -1,4 +1,4 @@
-//! Upgrade-carry regression (Bug 2, HomeCore 0.7.20 report): a schedule store
+//! Upgrade-carry regression (Bug 2, a downstream app's 0.7.20 report): a schedule store
 //! written with `schedule_json` as TEXT — the encoding pre-0.7.20 deployments
 //! carried — must still read after the upgrade.
 //!

@@ -30,7 +30,7 @@ function message(overrides: Partial<ConversationMessageEntry>): ConversationTime
 const PEER_INGESTED = {
   kind: "message",
   peer: {
-    display_name: "homecore/triage/mk--triage_cmain",
+    display_name: "example/triage/mk--triage_cmain",
     id: "978419a8-69f6-5103-8d31-4482e1f76b52",
   },
   sender_taint: "tainted",
@@ -63,10 +63,10 @@ describe("transcript entry source classification", () => {
   });
 
   test("any other send origin stays a User message and names the caller", () => {
-    const source = describeConversationEntrySource(message({ origin: { sendOrigin: "homecore-gate" } }));
+    const source = describeConversationEntrySource(message({ origin: { sendOrigin: "example-gate" } }));
     expect(source.kind).toBe("user");
     expect(source.label).toBe("User message");
-    expect(source.detail).toBe("via homecore-gate");
+    expect(source.detail).toBe("via example-gate");
   });
 
   test("the typed console-send origin kind labels the turn", () => {
@@ -82,11 +82,11 @@ describe("transcript entry source classification", () => {
     for (const [originKind, kind, label] of cases) {
       const source = describeConversationEntrySource(message({
         text: "Reply with exactly the token and nothing else.",
-        origin: { originKind, sendOrigin: "homecore:gate" },
+        origin: { originKind, sendOrigin: "example:gate" },
       }));
       expect(source.kind).toBe(kind);
       expect(source.label).toBe(label);
-      expect(source.detail).toBe("via homecore:gate");
+      expect(source.detail).toBe("via example:gate");
     }
   });
 
@@ -105,10 +105,10 @@ describe("transcript entry source classification", () => {
 
   test("an origin kind this console does not know falls back to the send origin", () => {
     const source = describeConversationEntrySource(message({
-      origin: { originKind: "future_kind", sendOrigin: "homecore:gate" },
+      origin: { originKind: "future_kind", sendOrigin: "example:gate" },
     }));
     expect(source.label).toBe("User message");
-    expect(source.detail).toBe("via homecore:gate");
+    expect(source.detail).toBe("via example:gate");
   });
 
   test("a persisted render class labels history user messages", () => {
@@ -148,7 +148,7 @@ describe("transcript entry source classification", () => {
     const runtimeEvent = runtimeEventFromFrame("peer_content_ingested", PEER_INGESTED);
     expect(runtimeEvent.peer).toEqual({
       id: "978419a8-69f6-5103-8d31-4482e1f76b52",
-      displayName: "homecore/triage/mk--triage_cmain",
+      displayName: "example/triage/mk--triage_cmain",
     });
     expect(runtimeEvent.senderTaint).toBe("tainted");
     const source = describeConversationEntrySource(message({
@@ -158,7 +158,7 @@ describe("transcript entry source classification", () => {
     }));
     expect(source.kind).toBe("peer_message");
     expect(source.label).toBe("Message from triage:main");
-    expect(source.sentence).toBe("Received a message from triage:main (homecore mob).");
+    expect(source.sentence).toBe("Received a message from triage:main (example mob).");
     expect(source.untrusted).toBe(true);
   });
 
@@ -168,7 +168,7 @@ describe("transcript entry source classification", () => {
       message({ identity: SYSTEM, variant: "meta", runtimeEvent }),
       { resolvePeerLabel: (alias) => (alias === "triage:main" ? "Triage" : null) },
     );
-    expect(source.sentence).toBe("Received a message from Triage (homecore mob).");
+    expect(source.sentence).toBe("Received a message from Triage (example mob).");
   });
 
   test("clean peer content is not flagged", () => {
@@ -201,15 +201,15 @@ describe("typed provenance from frame payloads", () => {
       message: { role: "user", render_metadata: { class: "external_event", salience: "normal" } },
     })).toEqual({ renderClass: "external_event" });
     expect(entryOriginFromFrameData({ content: "hi" })).toBe(null);
-    expect(entryOriginFromFrameData({ content: "hi", origin: "homecore:gate", origin_kind: "operator_probe" }))
-      .toEqual({ sendOrigin: "homecore:gate", originKind: "operator_probe" });
+    expect(entryOriginFromFrameData({ content: "hi", origin: "example:gate", origin_kind: "operator_probe" }))
+      .toEqual({ sendOrigin: "example:gate", originKind: "operator_probe" });
   });
 });
 
 describe("member comms names", () => {
   test("parses exactly three identifier-safe components", () => {
-    expect(parseMemberCommsName("homecore/identity/mk--identity_cparent-1")).toEqual({
-      mobId: "homecore",
+    expect(parseMemberCommsName("example/identity/mk--identity_cparent-1")).toEqual({
+      mobId: "example",
       role: "identity",
       member: "mk--identity_cparent-1",
     });

@@ -1,5 +1,5 @@
 // A roster collision against a spawn that is still in asynchronous custody is
-// convergence to await, never a stale occupant to retire (OB3 twin report
+// convergence to await, never a stale occupant to retire (production twin report
 // 2026-09-22, item 3, identity review:singleton).
 //
 // The production sequence: a send materializes the identity and the bridge's
@@ -421,7 +421,7 @@ async fn resume_collision_with_in_flight_spawn_awaits_convergence_and_attaches()
     // The client retry: a second resume for the same member and session while
     // the first spawn is still in custody. It collides pre-custody.
     let second = spawn_resume(&raced);
-    // OB3 timing: the original spawn completed ~250 ms after the collision.
+    // Production timing: the original spawn completed ~250 ms after the collision.
     tokio::time::sleep(Duration::from_millis(300)).await;
     raced.gate_tx.send(true).expect("open gate");
 
@@ -466,7 +466,7 @@ async fn resume_collision_with_in_flight_spawn_awaits_convergence_and_attaches()
     raced.boot.runtime.shutdown().await;
 }
 
-/// The other side of the OB3 window: the spawn in custody completes BEFORE the
+/// The other side of the production window: the spawn in custody completes BEFORE the
 /// colliding resume classifies the occupant. The collision then names a
 /// committed roster member that is already bound to the very session being
 /// resumed. That member is healthy and it IS the resume target, so it must be

@@ -49,12 +49,12 @@ fn execution_identity_v1_rejects_unknown_fields_and_ambiguous_clear() {
     );
 
     for invalid in [
-        json!({"profile_id": "homecore.reachy.open-room.v1"}),
-        json!({"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "model": "gpt-live-1-codex"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "provider": "openai"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "self_hosted_server_id": "server"}),
-        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "auth_binding": {"action": "clear"}}),
+        json!({"profile_id": "example.device.open-room.v1"}),
+        json!({"version": "v2", "profile_id": "example.device.open-room.v1"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "model": "gpt-live-1-codex"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "provider": "openai"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "self_hosted_server_id": "server"}),
+        json!({"version": "v1", "profile_id": "example.device.open-room.v1", "auth_binding": {"action": "clear"}}),
     ] {
         assert!(serde_json::from_value::<LiveExecutionIdentityV1>(invalid).is_err());
     }
@@ -179,7 +179,7 @@ fn strict_experimental_surface_is_identity_only_and_provider_neutral() {
         json!({"identity": "identity:luka", "responses_instructions": "delegate"}),
         json!({"identity": "identity:luka", "profile_id": "gpt-live-function-bridge-v1"}),
         json!({"identity": "identity:luka", "execution_profile": "function_bridge"}),
-        json!({"identity": "identity:luka", "auth_binding": {"realm": "family", "binding": "other"}}),
+        json!({"identity": "identity:luka", "auth_binding": {"realm": "example", "binding": "other"}}),
         json!({"identity": "identity:luka", "self_hosted_server_id": "server"}),
         json!({"identity": "identity:luka", "provider_params": {}}),
         json!({"identity": "identity:luka", "tools": []}),

@@ -7,7 +7,7 @@
 //!
 //! That gap shipped. `roster_member_id_for_identity` was `pub(crate)` while
 //! being the only correct way for an embedder to produce a roster key, and an
-//! instruction to call it produced E0603 for OB3 rather than a working fix - an
+//! instruction to call it produced E0603 for a production embedder rather than a working fix - an
 //! instruction that was correct and premature, which is harder to diagnose than
 //! one that is simply wrong, because the compiler error has three plausible
 //! causes and no way to rank them.
@@ -49,12 +49,12 @@ fn an_embedder_reaches_the_roster_row_from_any_spelling_it_holds() {
         "generation must not change which roster row is named"
     );
 
-    // OB3's exact persisted binding shape (only the address is a placeholder): a comms encoding
+    // The production embedder's exact persisted binding shape (only the address is a placeholder): a comms encoding
     // wrapped around a runtime alias, alias innermost. Theirs is the only store known to carry the
     // stacked shape, so an input built from this crate's own helpers cannot stand in for it.
     assert_eq!(
         roster_member_id_for_supplied_id("mk--rt_cperson_cjane_x2e_doe_x40_example_x2e_com_c2"),
         roster_member_id_for_identity("person:jane.doe@example.com"),
-        "OB3's persisted stacked alias must reach the durable person row"
+        "the production embedder's persisted stacked alias must reach the durable person row"
     );
 }

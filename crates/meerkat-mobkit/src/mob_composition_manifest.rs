@@ -541,7 +541,7 @@ fn verify_authoritative_definition(
 /// Reported at the deepest point where both sides are still objects, so a single
 /// changed model pin reads `profiles.security.model` instead of `profiles`.
 /// That granularity is the difference between an operator reading the diff and
-/// declaring through it unread - HomeCore named this directly, and they are the
+/// declaring through it unread - a downstream app named this directly, and they are the
 /// party who would be clicking past it on every activation.
 ///
 /// Stops descending when either side is a non-object (a list, a scalar, or

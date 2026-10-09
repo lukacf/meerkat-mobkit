@@ -435,7 +435,7 @@ fn gateways_report_name_and_version() {
 /// (that is `rpc_gateway`). If the SDK — which drives a gateway by sending
 /// JSON-RPC over stdin — is misconfigured to spawn `mobkit_gateway`, init still
 /// succeeds (one stdin line), but the *next* RPC must get a clear error instead
-/// of an infinite hang. This is the regression test for the HomeCore reconcile
+/// of an infinite hang. This is the regression test for a downstream app's reconcile
 /// "deadlock": before the fail-loud guard, `mobkit_gateway` read only the init
 /// line and then served HTTP forever, silently ignoring `reconcile_identity`.
 #[test]

@@ -2799,7 +2799,7 @@ async function runLiveSystemNoticeAppearsInOpenChatProof() {
           blocks: [{
             content: [{
               type: "text",
-              text: "Peer message from ob3/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
+              text: "Peer message from ops/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
             }],
           }],
         },

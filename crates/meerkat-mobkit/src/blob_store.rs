@@ -918,7 +918,7 @@ mod tests {
         );
     }
 
-    /// HomeCore regression: a transcript holding a pre-0.8.41 image reference
+    /// Downstream app regression: a transcript holding a pre-0.8.41 image reference
     /// failed every durable fork with "blob identity mismatch". Through the
     /// MobKit adapter the fork preflight now re-homes the child's reference to
     /// meerkat's content address and leaves the source's object in place.

@@ -29,7 +29,7 @@ const EDGE_RECONCILE_CONCURRENCY: usize = 64;
 /// the non-orchestrator side (meerkat-mob `spawn_wiring_targets`), which
 /// makes the result bring-up-order dependent: a lead ensured after its
 /// workers — or any member resumed after a gateway restart — ends up with
-/// `wired_to: []` and the declared crew never forms (HomeCore field report,
+/// `wired_to: []` and the declared crew never forms (downstream app field report,
 /// 2026-07-09). This policy makes the declaration a RECONCILABLE desired
 /// state: `reconcile_edges` wires whatever the definition implies over the
 /// live roster, order-independently and restart-healingly. It is installed

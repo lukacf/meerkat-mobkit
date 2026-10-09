@@ -1,12 +1,12 @@
-//! Idle-CPU regression gate (HomeCore activation blocker, 2026-07).
+//! Idle-CPU regression gate (2026-07).
 //!
 //! A fully idle mobkit gateway burned ~0.3 CPU cores PER durable member
 //! forever: the mob actor's identity reconcile re-read and re-verified each
 //! member's full persisted session document once per scan interval even when
 //! nothing had changed (sha256 canonical-digest + serde of the whole
 //! transcript, reached through `mob_handle_runtime` →
-//! `PersistentSessionService::resolve_runtime_snapshot_read_source`). A
-//! 17-member fleet consumed ~5 cores on a 4-core host.
+//! `PersistentSessionService::resolve_runtime_snapshot_read_source`), so a
+//! mob of a dozen or more members could saturate a small host.
 //!
 //! This gate boots a real persistent gateway with multiple durable members,
 //! waits for convergence, idles, and asserts the PROCESS CPU-TIME delta over
@@ -38,7 +38,7 @@
 //! third idle-burn generation survived the builder-composed version of
 //! this gate: the builder path threads the write-epoch witness internally,
 //! but the gateways' external composition left it absent, silently
-//! disabling the console epoch gate in every production deployment while
+//! disabling the console epoch gate in every gateway-composed runtime while
 //! the test stayed green. Diverge from the gateways' composition here only
 //! with a reason written down.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -89,8 +89,8 @@ const IDLE_WINDOW: Duration = Duration::from_secs(30);
 const MAX_IDLE_CPU: Duration = Duration::from_secs(3);
 /// The large member's transcript is built from turns carrying inputs of this
 /// size, giving a persisted session document of
-/// `LARGE_SESSION_TURNS * LARGE_TURN_INPUT_BYTES` ≈ 12 MB — the
-/// production-dump scale class (synthetic; nothing committed).
+/// `LARGE_SESSION_TURNS * LARGE_TURN_INPUT_BYTES` ≈ 12 MB - a large
+/// real-world scale class (synthetic; nothing committed).
 const LARGE_TURN_INPUT_BYTES: usize = 3_000_000;
 const LARGE_SESSION_TURNS: usize = 4;
 
@@ -312,7 +312,7 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
         sleep(Duration::from_millis(100)).await;
     }
 
-    // Grow ONE member to production-dump scale (~12 MB of persisted
+    // Grow ONE member to a large scale (~12 MB of persisted
     // transcript, synthetic): the size-proportional idle-burn class only
     // reproduces against a large session document.
     let large_member = &roster[0].identity;

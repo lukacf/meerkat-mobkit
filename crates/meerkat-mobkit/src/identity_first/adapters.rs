@@ -555,7 +555,7 @@ enum HeadCanonicalShape {
 /// per-process hash order, frozen into the session metadata. Equality on
 /// that field is SET equality by the type's own semantics; comparing the
 /// arrays order-sensitively made every zero-turn boot rewrite the head of
-/// any session carrying a multi-tool filter (HomeCore domain:security, the
+/// any session carrying a multi-tool filter (downstream app domain:security, the
 /// boot-2 exactly-once violation: same content, same length, shuffled
 /// bytes, checkpoint churn every boot). Only these two arrays are
 /// canonicalized; no other array in the document is touched (arrays are
@@ -1187,7 +1187,7 @@ impl ContinuitySessionStoreAdapter {
             ))),
             (false, Some(stored)) => {
                 let Some(state) = self.lookup_session(&id.to_string()) else {
-                    // Parked repair (task #56 corpus, HomeCore parent-1): an
+                    // Parked repair (task #56 corpus, a production member): an
                     // EXPLICITLY unregistered session whose continuity
                     // record still binds it hydrates write authority from
                     // the DURABLE record - identity, generation, and fencing
@@ -1812,7 +1812,7 @@ impl ContinuitySessionStoreAdapter {
 
     /// The PROJECTION doors' variant of
     /// [`Self::ensure_session_mutation_allowed`] (task #56 corpus finding,
-    /// HomeCore parent-1): `save_authoritative_projection*` and
+    /// a production member): `save_authoritative_projection*` and
     /// `save_transcript_rewrite` carry STORE-ISSUED committed runtime
     /// authority by trait contract, and the durable-tear reconciliation must
     /// be able to repair a PARKED member's durable head - a member that
@@ -1951,7 +1951,7 @@ impl ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
         if let Some(session) = self.load_head_canonical_session(id).await? {
-            // Representation+count trace (task #61, HomeCore cold-mint
+            // Representation+count trace (task #61, a downstream app cold-mint
             // 839-vs-851): names which durable representation each load
             // served, so a mint-vs-save-guard split is attributable from a
             // debug log instead of a store dump.
@@ -2089,7 +2089,7 @@ impl ContinuitySessionStoreAdapter {
                         // through the explicit one-time importer. This is the
                         // one path EVERY external whole-blob store traverses,
                         // so the import-on-load lives here rather than in
-                        // each store (OB3 field finding: an external corpus
+                        // each store (production field finding: an external corpus
                         // of v2 rows was otherwise unreadable at turn-time
                         // resume).
                         self.import_released_snapshot_on_load(id, snap.data, &decode_error)
@@ -3793,7 +3793,7 @@ mod tests {
         }
     }
 
-    /// OB3 release-critical regression (2026-07-31): a released 0.8.10
+    /// Production release-critical regression (2026-07-31): a released 0.8.10
     /// session envelope (v2) held by a continuity store must import exactly
     /// once on the adapter load path - the seam every external whole-blob
     /// store traverses - and adopt durably, so the second load takes the
@@ -4110,7 +4110,7 @@ mod tests {
     /// released realms committed under tests/fixtures carry no
     /// rewrite-carrying heads (rewrite_count is 0 in all four), and the
     /// failing fleet shape is exactly a rewrite-carrying released head.
-    /// Replace with the HomeCore forensic bundle when it lands.
+    /// Replace with a real released-binary capture if one becomes available.
     fn seed_released_rewrite_carrying_head(
         db_path: &std::path::Path,
         session_id: &meerkat_core::types::SessionId,
@@ -4141,7 +4141,7 @@ mod tests {
         });
         let conn = rusqlite::Connection::open(db_path).expect("seed connection");
         // The released deployment's file already carries the head-canonical
-        // tables and the ledger stamp (the HomeCore closure's ledger row is
+        // tables and the ledger stamp (the downstream app's closure's ledger row is
         // mobkit-continuity=2); a freshly opened store creates them lazily on
         // the first delta write, so the seed converges the schema itself.
         conn.execute_batch(
@@ -4382,9 +4382,9 @@ mod tests {
         );
     }
 
-    /// The HomeCore boot-2 exactly-once violation, pinned on its captured
-    /// head rows with synthetic content
-    /// (fixtures/homecore_security_idempotency/, sha256 2f2c8443...,
+    /// A boot-2 exactly-once violation seen in the field, pinned on head rows
+    /// of that shape with synthetic content
+    /// (fixtures/security_idempotency/, sha256 2f2c8443...,
     /// domain:security 019fae11-4e87-...): two consecutive boots of the same
     /// binary wrote two byte-different heads for an unchanged document. The
     /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility
@@ -4394,9 +4394,9 @@ mod tests {
     /// recognize it as zero durable change - the pin that stops the
     /// per-boot head rewrite.
     #[test]
-    fn homecore_security_boot_drift_is_zero_durable_change() {
+    fn downstream_security_boot_drift_is_zero_durable_change() {
         const BUNDLE: &[u8] = include_bytes!(
-            "../../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+            "../../tests/fixtures/security_idempotency/security-head-evolution.json"
         );
         let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("bundle JSON");
         let head_of = |state: &str| -> meerkat_core::session_store::SessionHead {
@@ -4439,7 +4439,7 @@ mod tests {
         );
     }
 
-    /// The HomeCore class-3 binding failure, pinned: a released 0.8.10 head
+    /// The downstream app's class-3 binding failure, pinned: a released 0.8.10 head
     /// that RETAINS REWRITES cannot authorize a current mutation
     /// (`session_head_cas_token` refuses "rewritten current head has no
     /// compact graph-prefix authority" - the rewrite-generation authority

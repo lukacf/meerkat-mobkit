@@ -50,7 +50,7 @@ describe("MobKitBuilder.agentMemory()", () => {
   it("serializes camelCase options to gateway wire keys", () => {
     const builder = MobKit.builder();
     builder.agentMemory({
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       maxEntries: 3,
       recallTimeoutMs: 1200,
@@ -59,7 +59,7 @@ describe("MobKitBuilder.agentMemory()", () => {
     });
 
     assert.deepEqual(builder._config.agentMemoryConfig, {
-      realm: "family",
+      realm: "example",
       selection: "contextual",
       max_entries: 3,
       recall_timeout_ms: 1200,

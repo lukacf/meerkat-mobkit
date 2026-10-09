@@ -3,7 +3,7 @@
 //! `domain:calendar`, roster id `mk--domain_ccalendar`, persistent mob
 //! storage), driven by a scripted model through the real tool dispatch.
 //!
-//! HomeCore's 0.8.43 candidate recheck saw `mob_check_member` and
+//! A downstream app's 0.8.43 candidate recheck saw `mob_check_member` and
 //! `mob_retire_member` on calendar's fork child return access_denied. The child
 //! had already been idle-retired, and meerkat's owned-member admission used to
 //! report a target no longer on the roster as access_denied. Since meerkat
@@ -486,7 +486,7 @@ fn tool_error(recorded: &str, call: &str) -> Option<(String, Option<String>)> {
     ))
 }
 
-/// HomeCore's case: the fork child was idle-retired (the default is 300 s,
+/// The downstream app's case: the fork child was idle-retired (the default is 300 s,
 /// here 1 s) before the forker checked and retired it. Meerkat #1234 observes
 /// the target's presence before ownership, so both tools answer the typed
 /// `member_retired` tool error, never access_denied.

@@ -1271,18 +1271,18 @@ fn released_0_8_8_deploy_cycles_realm_upgrades_and_drives() {
     drive_released_realm(&DEPLOY_CYCLES);
 }
 
-/// The HomeCore binding leg, byte-for-byte: a RESET runtime store over a
+/// The downstream app's binding leg, byte-for-byte: a RESET runtime store over a
 /// RELEASED-minted head-canonical continuity store.
 ///
 /// The runtime store is deleted whole (the sanctioned reset/loss shape the
 /// facade mint reseeds), so the mint's durable read is the ONLY path back to
 /// the session - and on a released realm that read materializes from HEAD
 /// ROWS carrying v2 session envelopes. Before the head-lane importer, this
-/// leg failed uniformly in the field (HomeCore, 17/17 identities): "durable
+/// leg failed uniformly in the field (a downstream app, 17/17 identities): "durable
 /// session read for runtime-authority mint: failed to restore session from
 /// head row: generated session persistence version authority rejected
 /// SessionEnvelope: expected current 3, got 2" - the blob-lane importer
-/// covered whole-blob rows (OB3's shape) while head-canonical fleets
+/// covered whole-blob rows (the production shape) while head-canonical fleets
 /// refused. The fail-closed side worked as designed (durable rows preserved,
 /// identities degraded pending retry); the lane was missing its importer.
 ///
@@ -1318,7 +1318,7 @@ fn released_0_8_8_continuity_with_reset_runtime_store_mints_from_head_rows() {
 
     // Stage the drive copy, then RESET the runtime store: delete
     // runtime.sqlite and every sidecar while the released continuity bytes
-    // stay untouched (HomeCore's reset/purge shape).
+    // stay untouched (the downstream app's reset/purge shape).
     let state = temp.path().join("state");
     stage_realm_copy(&fixture, &state);
     let mut removed = Vec::new();

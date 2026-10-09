@@ -524,7 +524,7 @@ mod console_turn_origin_tests {
         assert!(serde_json::to_value(&absent)?.get("origin_kind").is_none());
 
         let probe: ConsoleSendRequest = serde_json::from_value(serde_json::json!({
-            "identity": "agent:a", "content": "hi", "origin": "homecore:gate",
+            "identity": "agent:a", "content": "hi", "origin": "example:gate",
             "idempotency_key": "k", "origin_kind": "operator_probe"
         }))?;
         assert_eq!(probe.origin_kind, Some(ConsoleTurnOrigin::OperatorProbe));

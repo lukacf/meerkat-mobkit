@@ -307,7 +307,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "method": "mobkit/live/open",
         "params": {
             "identity": "worker-1",
-            "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+            "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
         }
     }));
     let unavailable = gateway.wait_for_response("experimental-off", Duration::from_secs(15));
@@ -324,7 +324,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "params": {
             "identity": "worker-1",
             "model": "legacy",
-            "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+            "execution_identity": {"version": "v1", "profile_id": "example.device.open-room.v1"}
         }
     }));
     let conflict = gateway.wait_for_response("experimental-conflict", Duration::from_secs(15));
@@ -466,7 +466,7 @@ fn init_accepts_host_runnables_and_rejects_duplicates() {
 }
 
 // ---------------------------------------------------------------------------
-// In-process cross-provider open coverage (HomeCore regression): these tests
+// In-process cross-provider open coverage (downstream-app regression): these tests
 // call `handle_live_method` directly over a real PersistentSessionService +
 // MeerkatMachine pair with meerkat's scripted realtime factory swapped in,
 // so the exact channel identity handed to the provider lane is observable
@@ -501,7 +501,7 @@ mod cross_provider_open {
     }
 
     /// A persistent service + machine pair carrying one Anthropic-identity
-    /// member session (the HomeCore text-profile shape, realm-scoped auth
+    /// member session (the downstream app's text-profile shape, realm-scoped auth
     /// binding included), with the live context's realtime factory swapped
     /// for the scripted fixture.
     async fn anthropic_member_stack() -> LiveOpenStack {
@@ -566,7 +566,7 @@ mod cross_provider_open {
                 build: Some(SessionBuildOptions {
                     provider: Some(meerkat_core::Provider::Anthropic),
                     auth_binding: Some(meerkat_core::AuthBindingRef {
-                        realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm id"),
+                        realm: meerkat_core::RealmId::parse("mob.example").expect("realm id"),
                         binding: meerkat_core::BindingId::parse("anthropic-main")
                             .expect("binding id"),
                         profile: None,
@@ -797,7 +797,7 @@ mod cross_provider_open {
         }
     }
 
-    /// (a) HomeCore regression: an Anthropic-profile member opens a live
+    /// (a) Downstream-app regression: an Anthropic-profile member opens a live
     /// channel with `provider = "openai"` + a realtime-capable model. The
     /// channel identity's (provider, model) pair must be re-paired BEFORE
     /// the B19 precheck and the inherited Anthropic auth binding cleared,

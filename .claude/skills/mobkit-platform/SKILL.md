@@ -1,6 +1,6 @@
 ---
 name: mobkit-platform
-description: "MobKit platform architecture, SDK patterns, console/runtime surfaces, release workflow, and Rust core internals. Use this skill whenever working on /Users/luka/src/meerkat-mobkit, adding SDK features, writing tests, debugging console/RPC/SSE behavior, updating Meerkat dependencies, understanding MobKit's relationship to Meerkat, releasing MobKit, or authoring MobKit examples."
+description: "MobKit platform architecture, SDK patterns, console/runtime surfaces, release workflow, and Rust core internals. Use this skill whenever working on the meerkat-mobkit repository, adding SDK features, writing tests, debugging console/RPC/SSE behavior, updating Meerkat dependencies, understanding MobKit's relationship to Meerkat, releasing MobKit, or authoring MobKit examples."
 ---
 
 # MobKit Platform
@@ -11,7 +11,7 @@ Apps own desired roster and product policy. Meerkat machines admit member and se
 
 ## Current Baseline
 
-Primary repo: `/Users/luka/src/meerkat-mobkit`
+Primary repo: `meerkat-mobkit` (operator-retained path)
 
 The authoritative MobKit release line is `[workspace.package].version` in the
 root `Cargo.toml`. `make verify-version-parity` checks the Python and TypeScript
@@ -108,12 +108,12 @@ Key files:
 Current shape:
 
 ```toml
-title = "OB3"
+title = "Ops"
 
 [brand]
-label = "Open Brain"
-logo_url = "/assets/ob3.svg"
-logo_alt = "OB3"
+label = "Ops Console"
+logo_url = "/assets/ops.svg"
+logo_alt = "Ops"
 
 [appearance]
 default_theme = "dark"
@@ -144,9 +144,9 @@ visible_controls = ["topology", "roster", "logs", "health"]
 hidden_controls = []
 
 [[sidebar.buttons]]
-id = "ob3-board"
-label = "OB3 Board"
-href = "https://example.test/ob3"
+id = "ops-board"
+label = "Ops Board"
+href = "https://example.test/ops"
 target = "_blank"
 icon_name = "external-link"
 
@@ -180,10 +180,10 @@ retire_label = "Retire"
 reset_label = "Reset"
 show_reset = false
 
-[realms.ob3]
-title = "OB3"
+[realms.ops]
+title = "Ops"
 
-[realms.ob3.agent_list]
+[realms.ops.agent_list]
 subgroup_by = ["labels.org"]
 ```
 
@@ -223,7 +223,7 @@ Image forwarding gotcha: the old failure was `image_ref_unavailable: current_tur
 
 ## Identity-First Continuity
 
-**Doctrine (DECIDED 2026-07-06, `docs/design/identity-first-doctrine.md`): MobKit is dual-plane.** Durable members live on the identity plane (`IdentityRuntime`: continuity records, lease-fenced embodiment, tolerant disposal, reconcile from a roster). Ephemeral workers live on the mob plane (`MobHandle`: `spawn`/`mob_spawn_member`/`delegate`, idle-retire reaping). The mob plane is NOT legacy — it is the worker plane and the substrate the identity bridge is built on. What is wrong is building DURABLE populations on the mob plane (member-per-user, long-lived coordinators via `ensure_member`): use an identity roster instead. Never route worker churn through identities (per-worker continuity records are pure overhead — OB3-scale deployments pay for every dead identity at reconcile).
+**Doctrine (DECIDED 2026-07-06, `docs/design/identity-first-doctrine.md`): MobKit is dual-plane.** Durable members live on the identity plane (`IdentityRuntime`: continuity records, lease-fenced embodiment, tolerant disposal, reconcile from a roster). Ephemeral workers live on the mob plane (`MobHandle`: `spawn`/`mob_spawn_member`/`delegate`, idle-retire reaping). The mob plane is NOT legacy - it is the worker plane and the substrate the identity bridge is built on. What is wrong is building DURABLE populations on the mob plane (member-per-user, long-lived coordinators via `ensure_member`): use an identity roster instead. Never route worker churn through identities (per-worker continuity records are pure overhead - production-scale deployments pay for every dead identity at reconcile).
 
 Identity-first makes stable `AgentIdentity` strings the control-plane key and treats runtime member IDs as generated bindings. Prefer identity-scoped APIs for durable agents and member-scoped APIs for ephemeral workers at the mob layer.
 

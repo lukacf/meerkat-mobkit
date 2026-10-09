@@ -178,7 +178,7 @@ struct GatewayRuntimeOptions {
     /// For candidate/certification boots in a candidate-then-promote pipeline
     /// against one state directory. Without it such a boot pins its own
     /// deliberately-restricted composition and the promoted boot is refused -
-    /// which cost a live household 929 supervisor respawns and a rollback.
+    /// which in one production incident cost 929 supervisor respawns and a rollback.
     composition_authority: meerkat_mobkit::mob_composition_manifest::CompositionAuthority,
     /// `runtime_options.mob_composition.candidate_definition`: `"stored"` lets
     /// a candidate boot the stored mob definition when the supplied one
@@ -215,7 +215,7 @@ struct GatewayRuntimeOptions {
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
 /// transport on the gateway's HTTP listener with bootstrap URLs derived from
 /// the loopback base; the object form
-/// `{"public_base_url": "ws://192.168.0.123:8080", "seed_max_chars": 200000}`
+/// `{"public_base_url": "ws://10.0.0.5:8080", "seed_max_chars": 200000}`
 /// additionally rewrites the minted bootstrap URLs for clients that reach
 /// the gateway through a proxy or a LAN address (the token/channel query
 /// parameters are appended to this base) and/or clamps the projected seed
@@ -561,7 +561,7 @@ fn is_catalogued_model(model: &str) -> bool {
 /// meerkat's rule (`validate_definition`) accepts such a profile at init: the
 /// provider annotation is what makes the model resolvable, so
 /// `unknown_model_init_error` says nothing about it, and a dated or misspelled
-/// id on a `provider = "openai"` profile (every HomeCore profile is annotated)
+/// id on a `provider = "openai"` profile (every downstream-app profile is annotated)
 /// surfaces at the first LLM call rather than at init. These lines keep that
 /// visible without making the gateway a second refusal authority; the catalog
 /// hint rides along for the typo case. A `provider = "self_hosted"` alias is
@@ -848,14 +848,14 @@ mod tests {
     #[test]
     fn configured_risk_tier_overrides_a_caller_supplied_tier() {
         let mut action_risk_tiers = HashMap::new();
-        action_risk_tiers.insert("delete_household_data".to_string(), "r3".to_string());
+        action_risk_tiers.insert("delete_workspace_data".to_string(), "r3".to_string());
         let gating = GatewayGatingConfig { action_risk_tiers };
 
         let claimed_low = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "mobkit/gating/evaluate",
-            "params": {"action": "delete_household_data", "risk_tier": "r0"}
+            "params": {"action": "delete_workspace_data", "risk_tier": "r0"}
         })
         .to_string();
 
@@ -872,7 +872,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "mobkit/gating/evaluate",
-            "params": {"action": "delete_household_data"}
+            "params": {"action": "delete_workspace_data"}
         })
         .to_string();
         let applied = apply_gateway_runtime_config_to_request(&omitted, &gating);
@@ -939,7 +939,7 @@ mod tests {
                 "restart_policy": "on_failure",
                 "boundary": "mcp",
                 "env": {
-                    "ROUTER_FIXTURE": "homecore"
+                    "ROUTER_FIXTURE": "example"
                 }
             }]
         });
@@ -961,7 +961,7 @@ mod tests {
                 module_id: "router".to_string(),
                 env: vec![
                     ("MOBKIT_MODULE_BOUNDARY".to_string(), "mcp".to_string()),
-                    ("ROUTER_FIXTURE".to_string(), "homecore".to_string()),
+                    ("ROUTER_FIXTURE".to_string(), "example".to_string()),
                 ],
             }]
         );
@@ -1034,7 +1034,7 @@ mod tests {
     ///
     /// Both of these shipped in 0.8.24 with a working handler, a documented
     /// struct field, and NO allowlist entry, so the unknown-field rejection ran
-    /// first and the handlers were dead code in the published binary. HomeCore
+    /// first and the handlers were dead code in the published binary. A downstream app
     /// found it by sending the documented line to the released artifact and
     /// getting `unsupported runtime_options fields: mob_composition` - one step
     /// EARLIER than the refusal the flag existed to avoid.
@@ -1658,7 +1658,7 @@ default_binding = "local"
         );
         let error = refuse_misplaced_runtime_options(&json!({
             "http_listen": "0.0.0.0:8080",
-            "meerkat_config_path": "/etc/homecore/config.toml"
+            "meerkat_config_path": "/etc/example/config.toml"
         }))
         .err()
         .unwrap_or_default();
@@ -2947,7 +2947,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -2969,7 +2969,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -2991,7 +2991,7 @@ default_binding = "local"
                     "name": "report_export",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.report_export", "version": "1"},
+                        "runner": {"name": "example.report_export", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -3024,17 +3024,13 @@ default_binding = "local"
         };
         assert!(runtime.owns_callback_job(&make_spec(
             "security_scan",
-            "homecore.security_scan",
+            "example.security_scan",
             "1"
         )));
-        assert!(!runtime.owns_callback_job(&make_spec(
-            "other_tool",
-            "homecore.security_scan",
-            "1"
-        )));
+        assert!(!runtime.owns_callback_job(&make_spec("other_tool", "example.security_scan", "1")));
         assert!(!runtime.owns_callback_job(&make_spec(
             "security_scan",
-            "homecore.security_scan",
+            "example.security_scan",
             "2"
         )));
     }
@@ -3051,7 +3047,7 @@ default_binding = "local"
             meerkat::ExecutionIntentId::from_string("intent:reconcile").expect("intent"),
             meerkat::InteractionLineageId::from_string("lineage:reconcile").expect("lineage"),
             meerkat::ToolIdentity::new("security_scan", "1").expect("tool"),
-            meerkat::RunnerIdentity::new("homecore.security_scan", "1").expect("runner"),
+            meerkat::RunnerIdentity::new("example.security_scan", "1").expect("runner"),
             meerkat::RestartClass::Adoptable,
             meerkat::CanonicalArgumentsHash::new(format!("sha256:{}", "a".repeat(64)))
                 .expect("arguments hash"),
@@ -3083,7 +3079,7 @@ default_binding = "local"
                     "name": "security_scan",
                     "execution": {
                         "mode": "detached",
-                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "runner": {"name": "example.security_scan", "version": "1"},
                         "restart_class": "adoptable",
                         "idempotency_scope": "interaction_and_arguments",
                         "submission_timeout_ms": 30000
@@ -3546,7 +3542,7 @@ actions = ["agent.view"]
         assert_eq!(options.max_sessions, 320);
     }
 
-    /// Task #62 (HomeCore field ask): the build callback must carry the
+    /// Task #62 (downstream app field ask): the build callback must carry the
     /// mint-vs-resume signal so a host can append standing instructions on
     /// MINT and inherit on RESUME. Measured field gap: both boots printed
     /// session_id=None resume_session_id=None, so every host composing
@@ -3691,7 +3687,7 @@ actions = ["agent.view"]
     fn calendar_fork_source() -> meerkat_core::service::ForkBuildSource {
         meerkat_core::service::ForkBuildSource::new(
             meerkat_core::MobMemberBinding {
-                mob_id: "home".to_string(),
+                mob_id: "main".to_string(),
                 role: "domain".to_string(),
                 member: meerkat_mobkit::member_comms_id::roster_member_id_for_identity(
                     "domain:calendar",
@@ -3718,7 +3714,7 @@ actions = ["agent.view"]
             peer_meta: Some(
                 meerkat_core::PeerMeta::default()
                     .with_label("role", "domain")
-                    .with_label("team", "home"),
+                    .with_label("team", "main"),
             ),
             ..Default::default()
         };
@@ -3734,7 +3730,7 @@ actions = ["agent.view"]
             options["fork_source"],
             json!({
                 "source_member": {
-                    "mob_id": "home",
+                    "mob_id": "main",
                     "role": "domain",
                     "member": "mk--domain_ccalendar"
                 },
@@ -3745,7 +3741,7 @@ actions = ["agent.view"]
         assert_eq!(options["resume_session_id"], child_session_id.as_str());
         assert_eq!(options["session_id"], child_session_id.as_str());
         assert_ne!(child_session_id, CALENDAR_SOURCE_SESSION);
-        assert_eq!(options["labels"], json!({"role": "domain", "team": "home"}));
+        assert_eq!(options["labels"], json!({"role": "domain", "team": "main"}));
 
         for build in [
             None,
@@ -4091,7 +4087,7 @@ comms = true
         let mut source_spec = meerkat_mob::SpawnMemberSpec::new("domain", source_id.clone());
         source_spec.labels = Some(BTreeMap::from([
             ("agent_identity".to_string(), "domain:calendar".to_string()),
-            ("team".to_string(), "home".to_string()),
+            ("team".to_string(), "main".to_string()),
         ]));
         Box::pin(first.runtime.mob_handle().spawn_spec(source_spec))
             .await
@@ -4222,7 +4218,7 @@ comms = true
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
     }
 
-    /// HomeCore's exact call shape (`.agent_memory(selection="contextual",
+    /// The downstream app's exact call shape (`.agent_memory(selection="contextual",
     /// max_entries=3)`), which for two months yielded 10,283 build-surface
     /// injections and zero turn-surface rows: the object form omitted
     /// `per_turn_injection` and the gateway supplied its own "off" while the
@@ -5502,21 +5498,21 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "auth_binding": {
-                            "realm": "family",
+                            "realm": "team",
                             "binding": "openai-api-key",
                             "profile": "luka"
                         },
                         "voice": "marin",
-                        "session_instructions": "You are Reachy's voice embodiment."
+                        "session_instructions": "Synthetic system prompt for the voice profile."
                     }
                 }
             }),
             None,
         )
         .expect("public registration");
-        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        let realm = meerkat_core::RealmId::parse("team").expect("realm");
         assert_eq!(
             options.openai_live,
             Some(GatewayOpenAiLiveOption {
@@ -5529,7 +5525,9 @@ comms = true
                     origin: meerkat_core::BindingOrigin::Configured,
                 },
                 voice: "marin".to_string(),
-                session_instructions: Some("You are Reachy's voice embodiment.".to_string()),
+                session_instructions: Some(
+                    "Synthetic system prompt for the voice profile.".to_string()
+                ),
                 summary: Default::default(),
             })
         );
@@ -5540,8 +5538,8 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
-                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "realm": "team",
+                        "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                         "voice": "marin",
                         "session_instructions": null
                     }
@@ -5556,49 +5554,49 @@ comms = true
 
         for invalid in [
             json!("gpt-live-1"),
-            json!({"principal": "user:luka", "realm": "family", "voice": "marin"}),
+            json!({"principal": "user:luka", "realm": "team", "voice": "marin"}),
             json!({
                 "principal": " ",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "auth_binding": {"realm": "other", "binding": "openai-api-key"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key", "token": "x"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key", "token": "x"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": " "
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "session_instructions": " "
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "model": "gpt-live-1"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
-                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "realm": "team",
+                "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                 "voice": "marin",
                 "execution_profiles": []
             }),
@@ -5621,17 +5619,17 @@ comms = true
                 "runtime_options": {
                     "openai_live": {
                         "principal": "user:luka",
-                        "realm": "family",
-                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "realm": "team",
+                        "auth_binding": {"realm": "team", "binding": "openai-api-key"},
                         "voice": "marin"
                     },
                     "experimental_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "factory_kind": "private-live",
                         "factory_version": "v1",
                         "gate0_qualification": "gate0-v1",
-                        "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                        "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                         "voice": "marin"
                     }
                 }
@@ -5658,19 +5656,19 @@ comms = true
                 "runtime_options": {
                     "experimental_live": {
                         "principal": "user:luka",
-                        "realm": "family",
+                        "realm": "team",
                         "factory_kind": "private-live",
                         "factory_version": "v1",
                         "gate0_qualification": "gate0-v1",
                         "auth_binding": {
-                            "realm": "family",
+                            "realm": "team",
                             "binding": "chatgpt-oauth",
                             "profile": "luka"
                         },
                         "voice": "marin",
                         "execution_profiles": [{
-                            "profile_id": "homecore.reachy.open-room.v1",
-                            "session_instructions": "You are Reachy's voice embodiment."
+                            "profile_id": "example.device.open-room.v1",
+                            "session_instructions": "Synthetic system prompt for the voice profile."
                         }]
                     }
                 }
@@ -5680,31 +5678,31 @@ comms = true
         .expect("explicit registration parses");
         let experimental = options.experimental_live.expect("registration");
         assert_eq!(experimental.principal, "user:luka");
-        assert_eq!(experimental.realm.as_str(), "family");
-        assert_eq!(experimental.binding.realm.as_str(), "family");
+        assert_eq!(experimental.realm.as_str(), "team");
+        assert_eq!(experimental.binding.realm.as_str(), "team");
         assert_eq!(experimental.binding.binding.as_str(), "chatgpt-oauth");
         assert_eq!(experimental.voice, "marin");
         assert_eq!(
             experimental.execution_profiles,
             vec![GatewayExperimentalLiveExecutionProfile {
-                profile_id: "homecore.reachy.open-room.v1".to_string(),
-                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+                profile_id: "example.device.open-room.v1".to_string(),
+                session_instructions: "Synthetic system prompt for the voice profile.".to_string(),
             }]
         );
         assert_eq!(options.live, GatewayLiveOption::Disabled);
 
         for invalid in [
             json!({
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
@@ -5713,88 +5711,88 @@ comms = true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "ambient_default": true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "instructions": "caller-owned prompt"
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": {}
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{"profile_id": " ", "session_instructions": "voice"}]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
-                "execution_profiles": [{"profile_id": "reachy", "session_instructions": " "}]
+                "execution_profiles": [{"profile_id": "device", "session_instructions": " "}]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
-                    "profile_id": "reachy",
+                    "profile_id": "device",
                     "session_instructions": "voice",
                     "tools": []
                 }]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [
-                    {"profile_id": "reachy", "session_instructions": "voice"},
-                    {"profile_id": " reachy ", "session_instructions": "other"}
+                    {"profile_id": "device", "session_instructions": "voice"},
+                    {"profile_id": " device ", "session_instructions": "other"}
                 ]
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
                     "profile_id": meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
@@ -5803,11 +5801,11 @@ comms = true
             }),
             json!({
                 "principal": "user:luka",
-                "realm": "family",
+                "realm": "team",
                 "factory_kind": "private-live",
                 "factory_version": "v1",
                 "gate0_qualification": "gate0-v1",
-                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "auth_binding": {"realm": "team", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "execution_profiles": [{
                     "profile_id": meerkat::GPT_LIVE_FUNCTION_BRIDGE_PROFILE_ID,
@@ -5833,8 +5831,8 @@ comms = true
             "capabilities",
         ] {
             let mut profile = json!({
-                "profile_id": "homecore.reachy.open-room.v1",
-                "session_instructions": "You are Reachy's voice embodiment."
+                "profile_id": "example.device.open-room.v1",
+                "session_instructions": "Synthetic system prompt for the voice profile."
             });
             profile
                 .as_object_mut()
@@ -5845,12 +5843,12 @@ comms = true
                     "runtime_options": {
                         "experimental_live": {
                             "principal": "user:luka",
-                            "realm": "family",
+                            "realm": "team",
                             "factory_kind": "private-live",
                             "factory_version": "v1",
                             "gate0_qualification": "gate0-v1",
                             "auth_binding": {
-                                "realm": "family",
+                                "realm": "team",
                                 "binding": "chatgpt-oauth"
                             },
                             "voice": "marin",
@@ -5871,7 +5869,7 @@ comms = true
     fn production_experimental_live_operator_advertises_only_client_context() {
         let canonical = meerkat::ExperimentalLiveOperatorConfig::gpt_live_client_context();
         let selected_factory = canonical.factory().clone();
-        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        let realm = meerkat_core::RealmId::parse("team").expect("realm");
         let experimental = GatewayExperimentalLiveOption {
             principal: "user:luka".to_string(),
             realm: realm.clone(),
@@ -5885,8 +5883,8 @@ comms = true
             },
             voice: "marin".to_string(),
             execution_profiles: vec![GatewayExperimentalLiveExecutionProfile {
-                profile_id: "homecore.reachy.open-room.v1".to_string(),
-                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+                profile_id: "example.device.open-room.v1".to_string(),
+                session_instructions: "Synthetic system prompt for the voice profile.".to_string(),
             }],
         };
         let operator =
@@ -5916,7 +5914,7 @@ comms = true
             .experimental_live_execution_feature_capabilities(
                 &realm,
                 &selected_factory,
-                "homecore.reachy.open-room.v1",
+                "example.device.open-room.v1",
             )
             .expect("host-trusted named client-context qualification");
         assert_eq!(named_capabilities, capabilities);
@@ -12237,7 +12235,7 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
             request_labels
                 .and_then(|labels| labels.get("profile_name").or_else(|| labels.get("role")))
         });
-    // Mint-vs-resume signal (task #62, HomeCore field ask 2026-08-06): a
+    // Mint-vs-resume signal (task #62, a downstream app field ask 2026-08-06): a
     // spawn-level resume is known here via `build.resume_session`, so the
     // host can honor the System-message contract (append standing
     // instructions on MINT, inherit on RESUME) instead of inferring
@@ -12376,8 +12374,8 @@ impl StdioCallbackAgentBuilder {
         // explicit SystemPromptOverride::Set, a transcript-authoring
         // ruling this layer does not own: an explicit Set at resume
         // IS new transcript intent by contract, so the runtime
-        // recorded one assembled System row per boot (the HomeCore
-        // accretion: parent-1 reached 1,294,962 tokens against a
+        // recorded one assembled System row per boot (the downstream app's
+        // accretion: one member reached 1,294,962 tokens against a
         // 922,000 ceiling). Standing instructions are per-session
         // build state baked at mint; a deliberate mid-life change
         // must use the typed transcript admission.
@@ -12509,7 +12507,7 @@ impl StdioCallbackAgentBuilder {
                             meerkat_core::service::SessionBuildOptions::default()
                         });
                         // COMPOSE over whatever an earlier installer
-                        // put in the slot (HomeCore Bug D: assigning
+                        // put in the slot (downstream app Bug D: assigning
                         // wholesale silently discarded the agent-memory
                         // recorder's `memory` tool for every
                         // callback-built agent). Python-registered
@@ -13227,7 +13225,7 @@ external_addressable = true
         );
     }
     // Member role migrations this boot is authorized to perform, e.g.
-    // `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    // `[{"identity": "domain:automation", "from_role": "domain"}]`.
     //
     // A malformed declaration refuses the boot rather than arming nothing. An
     // operator who wrote a declaration expects it to be in force, and silently
@@ -13975,7 +13973,7 @@ external_addressable = true
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
             .with_workgraph_service(workgraph_service.clone())
-            // Agent mob tools + the schedule host's mob authority (HomeCore
+            // Agent mob tools + the schedule host's mob authority (a downstream app
             // 0.7.26 last-link fix): without this, agent-authored schedules
             // can't rewrite to mob-member targets or deliver them.
             .with_runtime_delivery(runtime_delivery.composition.clone())
@@ -15721,7 +15719,7 @@ external_addressable = true
     // Python/TS callback round-trip, and the host may issue further RPCs
     // (e.g. mobkit/agent_memory/recall) from INSIDE that callback. With
     // sequential dispatch those reentrant requests starve behind the turn
-    // until the callback times out (HomeCore recall deadlock). Both SDK
+    // until the callback times out (downstream app recall deadlock). Both SDK
     // transports match responses by id, and the HTTP surface already serves
     // the same methods concurrently, so completion order is free.
     let identity_ctx = identity_ctx.map(Arc::new);

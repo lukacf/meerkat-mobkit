@@ -522,7 +522,7 @@ impl RecallCoordinator {
 
     /// Announce a skip once per (identity, reason) at INFO, then at DEBUG.
     ///
-    /// HomeCore ran for two months with zero turn-surface injections because
+    /// A downstream app ran for two months with zero turn-surface injections because
     /// the gateway defaulted `per_turn_injection` to off while the library
     /// default was budgeted, and nothing anywhere said so: the ledger only
     /// records what WAS injected, so "off" and "no memory" and "budget spent"
@@ -1474,16 +1474,16 @@ mod tests {
     #[test]
     fn scope_set_composes_identity_then_realm() -> Result<(), Box<dyn Error>> {
         let id = identity()?;
-        let scopes = compose_identity_scope_set("family", &id);
+        let scopes = compose_identity_scope_set("team", &id);
         assert_eq!(
             scopes,
             vec![
                 MemoryScope::Identity {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     identity: "identity:luka".to_string(),
                 },
                 MemoryScope::Realm {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                 },
             ]
         );
@@ -1538,37 +1538,37 @@ mod tests {
     #[test]
     fn operator_scope_composes_between_identity_and_realm() -> Result<(), Box<dyn Error>> {
         let id = identity()?;
-        let scopes = compose_identity_scope_set_with_operator("family", &id, Some("op:luka"));
+        let scopes = compose_identity_scope_set_with_operator("team", &id, Some("op:luka"));
         assert_eq!(
             scopes,
             vec![
                 MemoryScope::Identity {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     identity: "identity:luka".to_string(),
                 },
                 MemoryScope::Operator {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     operator: "op:luka".to_string(),
                 },
                 MemoryScope::Realm {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                 },
             ]
         );
         // Same-realm confinement by construction: the operator scope is
         // keyed with the composing realm.
-        assert!(scopes.iter().all(|scope| scope.realm() == "family"));
+        assert!(scopes.iter().all(|scope| scope.realm() == "team"));
         // No operator (or a blank one) leaves composition unchanged.
         assert_eq!(
-            compose_identity_scope_set_with_operator("family", &id, None),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set_with_operator("team", &id, None),
+            compose_identity_scope_set("team", &id)
         );
         assert_eq!(
-            compose_identity_scope_set_with_operator("family", &id, Some("  ")),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set_with_operator("team", &id, Some("  ")),
+            compose_identity_scope_set("team", &id)
         );
         // The operator scope gets a real, non-zero sub-budget slice.
-        let scopes = compose_identity_scope_set_with_operator("family", &id, Some("op:luka"));
+        let scopes = compose_identity_scope_set_with_operator("team", &id, Some("op:luka"));
         let budgets = compose_scope_budgets(&scopes, BUILD_INDEX_BUDGET_BYTES);
         assert_eq!(budgets.len(), 3);
         assert!(budgets[1].budget_bytes > 0, "{budgets:?}");
@@ -1614,7 +1614,7 @@ mod tests {
         fn active_operator(&self, realm: &str, _identity: &str) -> Option<String> {
             // Same-realm law: a resolver keyed for another realm yields
             // nothing — composition stays confined by construction.
-            (realm == "family").then(|| self.0.to_string())
+            (realm == "team").then(|| self.0.to_string())
         }
     }
 
@@ -1623,12 +1623,12 @@ mod tests {
         let id = identity()?;
         let provider = Arc::new(FakeProvider::with_manifest(vec![], vec![], vec![]));
         let config = |scope: AgentMemoryOperatorScope| AgentMemoryConfig {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             operator_scope: scope,
             ..AgentMemoryConfig::default()
         };
         let operator = MemoryScope::Operator {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             operator: "op:luka".to_string(),
         };
 
@@ -1648,7 +1648,7 @@ mod tests {
         );
         assert_eq!(
             coordinator.scope_set(&id),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set("team", &id)
         );
 
         // off + resolver ⇒ inert (the resolver alone activates nothing).
@@ -1657,7 +1657,7 @@ mod tests {
                 .with_operator_resolver(Some(Arc::new(FixedOperator("op:luka"))));
         assert_eq!(
             coordinator.scope_set(&id),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set("team", &id)
         );
 
         // provisional + resolver that yields nothing for this realm ⇒ inert.
@@ -1697,35 +1697,34 @@ mod tests {
             "mob:beta".to_string(),
             "mob:alpha".to_string(),
         ];
-        let scopes =
-            compose_identity_scope_set_with_bindings("family", &id, &mobs, Some("op:luka"));
+        let scopes = compose_identity_scope_set_with_bindings("team", &id, &mobs, Some("op:luka"));
         assert_eq!(
             scopes,
             vec![
                 MemoryScope::Identity {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     identity: "identity:luka".to_string(),
                 },
                 MemoryScope::Mob {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     mob: "mob:alpha".to_string(),
                 },
                 MemoryScope::Mob {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     mob: "mob:beta".to_string(),
                 },
                 MemoryScope::Operator {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                     operator: "op:luka".to_string(),
                 },
                 MemoryScope::Realm {
-                    realm: "family".to_string(),
+                    realm: "team".to_string(),
                 },
             ],
             "§7.2 order: Identity ∪ Mob(bound mobs, deduped) ∪ Operator ∪ Realm"
         );
         // Same-realm confinement by construction.
-        assert!(scopes.iter().all(|scope| scope.realm() == "family"));
+        assert!(scopes.iter().all(|scope| scope.realm() == "team"));
         // Every mob scope gets a real, non-zero sub-budget slice.
         let budgets = compose_scope_budgets(&scopes, BUILD_INDEX_BUDGET_BYTES);
         assert!(budgets.iter().all(|budget| budget.budget_bytes > 0));
@@ -1735,8 +1734,8 @@ mod tests {
         );
         // No mobs ⇒ identical to the operator-only composition.
         assert_eq!(
-            compose_identity_scope_set_with_bindings("family", &id, &[], None),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set_with_bindings("team", &id, &[], None),
+            compose_identity_scope_set("team", &id)
         );
         Ok(())
     }
@@ -1746,7 +1745,7 @@ mod tests {
         let id = identity()?;
         let provider = Arc::new(FakeProvider::with_manifest(vec![], vec![], vec![]));
         let config = AgentMemoryConfig {
-            realm: "family".to_string(),
+            realm: "team".to_string(),
             ..AgentMemoryConfig::default()
         };
 
@@ -1755,25 +1754,20 @@ mod tests {
             .with_mob_resolver(Some(Arc::new(FixedMobs(&["mob:alpha"]))));
         assert_eq!(
             coordinator.scope_set(&id),
-            compose_identity_scope_set_with_bindings(
-                "family",
-                &id,
-                &["mob:alpha".to_string()],
-                None
-            )
+            compose_identity_scope_set_with_bindings("team", &id, &["mob:alpha".to_string()], None)
         );
 
         // No resolver (or one yielding nothing) ⇒ composition unchanged.
         let coordinator = RecallCoordinator::new(provider.clone(), config.clone());
         assert_eq!(
             coordinator.scope_set(&id),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set("team", &id)
         );
         let coordinator = RecallCoordinator::new(provider, config)
             .with_mob_resolver(Some(Arc::new(FixedMobs(&[]))));
         assert_eq!(
             coordinator.scope_set(&id),
-            compose_identity_scope_set("family", &id)
+            compose_identity_scope_set("team", &id)
         );
         Ok(())
     }
@@ -1851,7 +1845,7 @@ mod tests {
         let provider = Arc::new(FakeProvider::bodies_only(vec![record(
             "mem-1",
             "Calendar preference",
-            "School logistics before deep work.",
+            "Standup logistics before deep work.",
         )]));
         let coordinator = RecallCoordinator::new(
             provider.clone(),
@@ -1875,7 +1869,7 @@ mod tests {
         );
         assert!(text.contains("<mobkit_memory_observation "), "{text}");
         assert!(
-            text.contains("School logistics before deep work."),
+            text.contains("Standup logistics before deep work."),
             "{text}"
         );
         // The ledger hook is a no-op by default, but the coordinator still

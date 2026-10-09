@@ -1,7 +1,7 @@
 """ConsoleIdentityRecord: the typed identity -> (session, profile) map.
 
 This record is the supported replacement for hosts reading the continuity
-store directly (HomeCore's positional profile recovery). The parsing
+store directly (a downstream app's positional profile recovery). The parsing
 contract mirrors the Rust `ConsoleIdentityRecord` serde shape:
 `session_id` is optional (skip-serialized when absent), `topology_peers`
 and `labels` default to empty.

@@ -2,8 +2,8 @@
 
 A durable member whose role changed refuses to resume until the host declares
 the migration. These tests pin the only two things the SDK owes that contract:
-the declaration is REACHABLE from Python (HomeCore found it was not, which made
-the whole carrier unusable from the SDK they run), and it is ABSENT unless the
+the declaration is REACHABLE from Python (it once was not, which made the
+whole carrier unusable from the SDK), and it is ABSENT unless the
 host asked for it.
 """
 import json
@@ -24,22 +24,22 @@ def test_declaration_reaches_the_init_params():
     builder = MobKit.builder().role_migrations(
         [
             RoleMigrationDeclaration(
-                identity="domain:home-automation", from_role="domain"
+                identity="domain:automation", from_role="domain"
             )
         ]
     )
     params = _init_params(builder)
     assert params["role_migrations"] == [
-        {"identity": "domain:home-automation", "from_role": "domain"}
+        {"identity": "domain:automation", "from_role": "domain"}
     ]
 
 
 def test_a_plain_dict_is_accepted_and_still_validated():
     builder = MobKit.builder().role_migrations(
-        [{"identity": "domain:home-automation", "from_role": "domain"}]
+        [{"identity": "domain:automation", "from_role": "domain"}]
     )
     assert _init_params(builder)["role_migrations"] == [
-        {"identity": "domain:home-automation", "from_role": "domain"}
+        {"identity": "domain:automation", "from_role": "domain"}
     ]
 
     with pytest.raises(ValueError):
@@ -91,15 +91,15 @@ def test_conflicting_declarations_are_refused_and_repeats_are_not():
     with pytest.raises(ValueError, match="cannot be resolved by order"):
         MobKit.builder().role_migrations(
             [
-                {"identity": "domain:home-automation", "from_role": "domain"},
-                {"identity": "domain:home-automation", "from_role": "other"},
+                {"identity": "domain:automation", "from_role": "domain"},
+                {"identity": "domain:automation", "from_role": "other"},
             ]
         )
 
     repeated = MobKit.builder().role_migrations(
         [
-            {"identity": "domain:home-automation", "from_role": "domain"},
-            {"identity": "domain:home-automation", "from_role": "domain"},
+            {"identity": "domain:automation", "from_role": "domain"},
+            {"identity": "domain:automation", "from_role": "domain"},
         ]
     )
     assert len(_init_params(repeated)["role_migrations"]) == 2
