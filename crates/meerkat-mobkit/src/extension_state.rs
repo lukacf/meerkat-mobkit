@@ -633,6 +633,42 @@ comms = true
             .bridge_session_id()
             .unwrap()
             .clone();
+        // Spawn returns before its autonomous initial turn has completed.
+        // This fixture edits retained metadata outside that actor, so first
+        // settle the native kickoff and prove no turn still owns a checkpoint.
+        let kickoffs = handle
+            .wait_for_members_kickoff_complete(
+                std::slice::from_ref(&identity),
+                Some(std::time::Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        let [(member, kickoff)] = kickoffs.as_slice() else {
+            panic!("fixture requires the source's completed kickoff");
+        };
+        assert_eq!(member, &identity);
+        assert_eq!(
+            kickoff.kickoff.as_ref().map(|kickoff| kickoff.phase),
+            Some(meerkat_mob::MobMemberKickoffPhase::Started)
+        );
+        let activity = sessions
+            .subscribe_session_activity(&session_id)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            activity.clone().wait_inactive(),
+        )
+        .await
+        .expect("the native source activity must settle before external policy commits");
+        assert!(
+            !activity.is_active(),
+            "external retained-policy edits require an idle native source actor"
+        );
+        // Native cleanup fencing waits out checkpoint writers and disables
+        // later saves of the actor's old metadata during the raw commit loop.
+        // No turn is admitted until the fixture restores the gates below.
+        sessions.cancel_all_checkpointers().await;
         let snapshot = handle
             .member_creation_for_session(&session_id)
             .await
@@ -694,11 +730,30 @@ comms = true
                 )
                 .await
                 .unwrap();
+            let retained = sessions
+                .load_retained_session_metadata(&session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retained.session_id, session_id);
+            assert_eq!(
+                serde_json::to_value(
+                    retained
+                        .session_metadata
+                        .unwrap()
+                        .tooling
+                        .tool_access_policy
+                )
+                .unwrap(),
+                serde_json::to_value(&metadata.tooling.tool_access_policy).unwrap(),
+                "the native retained authority must observe this exact policy commit"
+            );
             assert_eq!(
                 resolver.source_ceiling(&registry, &snapshot).await.unwrap(),
                 expected
             );
         }
+        sessions.rearm_all_checkpointers().await;
         registry.before_activation()(handle.read_handle())
             .await
             .unwrap();
