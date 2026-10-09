@@ -1246,6 +1246,7 @@ mod tests {
 
     fn run_started(session: &SessionId) -> AgentEvent {
         AgentEvent::RunStarted {
+            request_reasoning: None,
             identity: Default::default(),
             session_id: session.clone(),
             input: meerkat_core::types::RunInput::Content {
@@ -1892,6 +1893,7 @@ mod tests {
         // injected input carries the canonical projection text.
         let receiver_session = SessionId::new();
         let delivery = AgentEvent::RunStarted {
+            request_reasoning: None,
             identity: Default::default(),
             session_id: receiver_session.clone(),
             input: meerkat_core::types::RunInput::Content {
@@ -1916,6 +1918,7 @@ mod tests {
         tracker.observe_agent_event("identity:carol", &run_started(&clean_session));
         let receiver2 = SessionId::new();
         let clean_delivery = AgentEvent::RunStarted {
+            request_reasoning: None,
             identity: Default::default(),
             session_id: receiver2.clone(),
             input: meerkat_core::types::RunInput::Content {

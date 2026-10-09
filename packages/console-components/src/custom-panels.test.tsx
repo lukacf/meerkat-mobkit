@@ -102,6 +102,26 @@ describe("custom panel registration", () => {
 
 describe("panel context ownership", () => {
   const original = { scopeKey: "scope:one", identity: "agent:a" };
+  it("follows the current visible conversation after the original selection leaves", () => {
+    const signals: AbortSignal[] = [];
+    const mount = vi.fn((element, value, signal) => {
+      signals.push(signal);
+      element.textContent = value.conversation.identity;
+      return { dispose: vi.fn() };
+    });
+    const definition = { ...panel, mount };
+    const target = consoleCustomPanelTarget(definition, { conversation: original, followSelection: true });
+    const show = (ctx: ConsolePanelContext) => <ConsolePanelsProvider value={{ panels: [definition], context: ctx }}>
+      <ConsoleCustomPanel target={target} focused />
+    </ConsolePanelsProvider>;
+    const view = render(show({ ...context, selection: original }));
+    expect(screen.getByText("agent:a")).toBeVisible();
+    view.rerender(show({ ...context, visibleIdentities: ["agent:b"], selection: { ...original, identity: "agent:b" } }));
+    expect(signals[0].aborted).toBe(true);
+    expect(screen.getByText("agent:b")).toBeVisible();
+    expect(mount).toHaveBeenCalledTimes(2);
+  });
+
   it("pins panels, remounts follow-selection panels, and clears DOM on authority changes", () => {
     const signals: AbortSignal[] = [];
     const mount = vi.fn((element, value, signal) => {

@@ -96,6 +96,7 @@ struct HostTools;
 impl AgentToolDispatcher for HostTools {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         vec![Arc::new(ToolDef {
+            audience: Default::default(),
             name: TOOL.into(),
             description: "Look up the household record.".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -106,6 +107,8 @@ impl AgentToolDispatcher for HostTools {
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         Ok(meerkat_core::ToolResult {
+            host_metadata: Default::default(),
+            settlement_failures: Default::default(),
             tool_use_id: call.id.to_string(),
             content: vec![],
             is_error: false,
@@ -238,7 +241,11 @@ async fn resolved_tools(runtime: &meerkat_mobkit::UnifiedRuntime) -> Vec<String>
 async fn member_run_starts_held(runtime: &meerkat_mobkit::UnifiedRuntime) -> Option<bool> {
     let status = runtime.identity_runtime()?.status(&id(MEMBER)).await.ok()?;
     let session_id = status.session_id?;
-    let machine = runtime.mob_runtime().session_service()?.runtime_adapter()?;
+    let machine = runtime
+        .mob_runtime()
+        .session_service()?
+        .acquire_runtime_adapter(None)
+        .expect("runtime adapter acquisition")?;
     machine.run_starts_held_for_test(&session_id).await
 }
 

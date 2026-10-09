@@ -518,10 +518,13 @@ mod cross_provider_open {
         );
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::MemoryBlobStore::new());
-        let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let machine = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("runtime owner"),
+        );
         let agent_factory = AgentFactory::new(&state_path).builtins(false);
         let mut builder = FactoryAgentBuilder::new(agent_factory.clone(), Config::default());
         builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
@@ -529,13 +532,16 @@ mod cross_provider_open {
         )));
         builder.default_blob_store = Some(blob_store.clone());
         builder.default_llm_client = Some(Arc::new(TestClient::default()));
-        let service = Arc::new(PersistentSessionService::new(
-            builder,
-            16,
-            session_store,
-            Arc::clone(&runtime_store),
-            blob_store,
-        ));
+        let service = Arc::new(
+            PersistentSessionService::new(
+                builder,
+                16,
+                session_store,
+                Arc::clone(&runtime_store),
+                blob_store,
+            )
+            .with_canonical_runtime_adapter(machine.clone()),
+        );
 
         // Runtime-backed create, the same shape every runtime surface uses:
         // pre-mint the session, prepare machine-owned bindings on the SAME

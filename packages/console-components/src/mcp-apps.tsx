@@ -42,15 +42,26 @@ export class McpAppTransport implements Transport {
   onmessage?: Transport["onmessage"];
   onerror?: Transport["onerror"];
   onclose?: Transport["onclose"];
+  private phase: "open" | "closing" | "closed" = "open";
   private readonly receive = (event: MessageEvent) => {
-    if (event.source !== this.target || event.origin !== this.origin) return;
+    if (this.phase === "closed" || event.source !== this.target || event.origin !== this.origin) return;
     const parsed = JSONRPCMessageSchema.safeParse(event.data);
-    if (parsed.success) this.onmessage?.(parsed.data);
+    if (parsed.success && (this.phase === "open" || !("method" in parsed.data))) this.onmessage?.(parsed.data);
   };
   constructor(private readonly target: Window, private readonly origin: string) {}
   async start() { window.addEventListener("message", this.receive); }
-  async send(message: JSONRPCMessage) { this.target.postMessage(message, this.origin); }
-  async close() { window.removeEventListener("message", this.receive); this.onclose?.(); }
+  async send(message: JSONRPCMessage) {
+    if (this.phase === "closed" || (this.phase === "closing" && !("method" in message && message.method === "ui/resource-teardown"))) return;
+    this.target.postMessage(message, this.origin);
+  }
+  /** Retain only teardown responses. Retired views cannot initiate more host work. */
+  beginTeardown() { if (this.phase === "open") this.phase = "closing"; }
+  async close() {
+    if (this.phase === "closed") return;
+    this.phase = "closed";
+    window.removeEventListener("message", this.receive);
+    this.onclose?.();
+  }
 }
 
 export function mcpSandboxUrl(url: string, hostOrigin = window.location.origin): URL {
@@ -80,16 +91,24 @@ async function withAppRequest<T>(lifetime: AbortSignal, request: AbortSignal, ru
 
 export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocator; fallback: string }) {
   const state = React.useContext(ConsoleMcpAppsProviderContext);
-  const iframe = React.useRef<HTMLIFrameElement>(null);
+  const container = React.useRef<HTMLDivElement>(null);
   const [status, setStatus] = React.useState<"loading" | "ready" | "unavailable">("loading");
   const key = JSON.stringify([state?.authority, locator.identity, locator.sessionId, locator.toolCallId, state?.readOnly]);
   React.useLayoutEffect(() => {
-    if (!state || !iframe.current) { setStatus("unavailable"); return; }
-    const frame = iframe.current;
+    if (!state || !container.current) { setStatus("unavailable"); return; }
+    // Every binding owns a separate WindowProxy, including during bounded teardown.
+    // Reusing an iframe lets a retired bridge receive a new binding's messages.
+    const frame = document.createElement("iframe");
+    frame.title = "Interactive tool result";
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.referrerPolicy = "no-referrer";
+    Object.assign(frame.style, { width: "100%", height: "240px", border: "0", display: "block" });
     frame.style.visibility = "hidden";
+    container.current.append(frame);
     const controller = new AbortController();
     let session: ConsoleMcpAppSession | null = null;
     let bridge: AppBridge | null = null;
+    let transport: McpAppTransport | null = null;
     let observer: ResizeObserver | null = null;
     let initialized = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -100,14 +119,24 @@ export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocato
       controller.abort();
       clearTimeout(timer);
       observer?.disconnect();
-      // Drop private pixels immediately, including on initialization failure.
+      // Drop private pixels and revoke requests immediately. Keep this generation's
+      // isolated frame alive briefly so the app can acknowledge teardown.
       frame.style.visibility = "hidden";
-      frame.removeAttribute("src");
-      if (bridge) void (initialized ? bridge.teardownResource({}, { timeout: 500 }).catch(() => {}) : Promise.resolve()).finally(() => bridge!.close());
+      frame.style.display = "none";
+      frame.title = "Closing interactive tool result";
+      transport?.beginTeardown();
+      const finish = () => {
+        void bridge?.close();
+        frame.removeAttribute("src");
+        frame.remove();
+      };
+      if (bridge && initialized) void bridge.teardownResource({}, { timeout: 500 }).catch(() => {}).finally(finish);
+      else finish();
       try { session?.dispose?.(); } catch { /* Isolate view cleanup. */ }
     };
     const fail = () => { if (!controller.signal.aborted) { setStatus("unavailable"); stop(); } };
     setStatus("loading");
+    timer = setTimeout(fail, 15_000);
     void (async () => {
       const sandbox = mcpSandboxUrl(state.host.sandboxProxyUrl);
       const resolved = await state.host.resolve(locator, controller.signal);
@@ -146,8 +175,9 @@ export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocato
         controller.signal.throwIfAborted();
         return CallToolResultSchema.parse(result);
       };
-      bridge.onrequestdisplaymode = async () => ({ mode: "inline" });
+      bridge.onrequestdisplaymode = async () => { controller.signal.throwIfAborted(); return { mode: "inline" }; };
       bridge.onsizechange = ({ height }) => {
+        if (controller.signal.aborted) return;
         if (typeof height === "number" && Number.isFinite(height)) frame.style.height = `${Math.min(1200, Math.max(80, height))}px`;
       };
       bridge.oninitialized = () => {
@@ -162,12 +192,13 @@ export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocato
         })().catch(fail);
       };
       bridge.onsandboxready = () => {
+        if (controller.signal.aborted) return;
         void bridge!.sendSandboxResourceReady({ html, csp: ui?.csp }).catch(fail);
       };
-      timer = setTimeout(fail, 15_000);
       frame.src = sandbox.href;
       // Listener registration runs synchronously before the sandbox can load.
-      await bridge.connect(new McpAppTransport(frame.contentWindow!, sandbox.origin));
+      transport = new McpAppTransport(frame.contentWindow!, sandbox.origin);
+      await bridge.connect(transport);
       controller.signal.throwIfAborted();
       observer = new ResizeObserver(([entry]) => {
         if (initialized && !controller.signal.aborted) void Promise.resolve(bridge!.sendHostContextChange({ containerDimensions: { width: entry.contentRect.width, maxHeight: 1200 } })).catch(fail);
@@ -177,8 +208,7 @@ export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocato
     return stop;
   }, [state?.host, key]);
   return <div className="console-mcp-app" data-mcp-app-call={locator.toolCallId}>
-    <iframe ref={iframe} title="Interactive tool result" sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer"
-      style={{ width: "100%", height: 240, border: 0, display: status === "unavailable" ? "none" : "block" }} />
+    <div ref={container} />
     {status !== "ready" ? <div role="status">{fallback}{status === "loading" ? " (loading view)" : ""}</div> : null}
   </div>;
 }

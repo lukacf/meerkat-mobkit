@@ -235,6 +235,7 @@ pub enum ScenarioKind {
     Image,
     Routine,
     AssistantIdentity,
+    McpApps,
 }
 
 /// A unique run id also supplies the explicit trigger in the user message:
@@ -528,6 +529,34 @@ fn scenario_turn(scenario: &ScenarioPlan, messages: &[Message]) -> Result<Turn, 
         ScenarioKind::Image => image_turn(&recorded),
         ScenarioKind::Routine => routine_turn(&recorded),
         ScenarioKind::AssistantIdentity => assistant_identity_turn(&recorded),
+        ScenarioKind::McpApps => mcp_apps_turn(&recorded),
+    }
+}
+
+fn mcp_apps_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
+    let Some(loaded) = recorded.result("load-display")? else {
+        return Ok(Turn::Tools(vec![recorded.call(
+            "load-display",
+            "tool_catalog_load",
+            json!({"names": ["display"]}),
+        )]));
+    };
+    let admitted = ["accepted_names", "noop_names"].iter().any(|field| {
+        loaded
+            .get(field)
+            .and_then(Value::as_array)
+            .is_some_and(|names| names.iter().any(|name| name == "display"))
+    });
+    if loaded.get("catalog_exact") != Some(&Value::Bool(true)) || !admitted {
+        return Err(format!("native catalog did not stage display: {loaded}"));
+    }
+    match recorded.result("display")? {
+        Some(_) => Ok(Turn::Text("The MCP App is ready.".into())),
+        None => Ok(Turn::Tools(vec![recorded.call(
+            "display",
+            "display",
+            json!({"query": "records"}),
+        )])),
     }
 }
 
@@ -1323,6 +1352,39 @@ mod tests {
             value.to_string(),
             false,
         )])
+    }
+
+    #[test]
+    fn mcp_apps_script_stages_only_the_model_tool_and_preserves_catalog_refusal() {
+        let scenario = scenario(ScenarioKind::McpApps);
+        let mut messages = start(&scenario);
+        let initial = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].name, "tool_catalog_load");
+        assert_eq!(initial[0].args, json!({"names": ["display"]}));
+        messages.push(result(
+            &scenario,
+            "load-display",
+            json!({"catalog_exact": true, "accepted_names": ["display"], "noop_names": []}),
+        ));
+        let display = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(display.len(), 1);
+        assert_eq!(display[0].name, "display");
+        messages.push(result(&scenario, "display", json!({"count": 7})));
+        assert!(matches!(scenario_turn(&scenario, &messages).unwrap(),
+            Turn::Text(text) if text == "The MCP App is ready."));
+
+        let mut refused = start(&scenario);
+        refused.push(result(
+            &scenario,
+            "load-display",
+            json!({"catalog_exact": true, "accepted_names": [], "noop_names": []}),
+        ));
+        assert!(
+            scenario_turn(&scenario, &refused)
+                .unwrap_err()
+                .contains("native catalog did not stage display")
+        );
     }
 
     #[test]

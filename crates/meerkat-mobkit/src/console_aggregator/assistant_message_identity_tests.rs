@@ -1310,7 +1310,8 @@ async fn assistant_identity_pending_refresh_retries_unchanged_head_through_disco
         .await
         .ok_or("fixture identity missing")?;
     let session_id = record.session_id.clone().ok_or("fixture session missing")?;
-    let machine = meerkat_mob::MobSessionService::runtime_adapter(&service)
+    let machine = meerkat_mob::MobSessionService::acquire_runtime_adapter(&service, None)
+        .expect("runtime adapter acquisition")
         .ok_or("fixture must expose the real runtime machine")?;
     let typed_session_id = meerkat_core::SessionId::parse(&session_id)?;
     assert!(

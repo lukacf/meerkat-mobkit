@@ -116,17 +116,23 @@ async fn boot(state: &std::path::Path, mob_id: &str, gate: watch::Receiver<bool>
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
-    let session_service = Arc::new(PersistentSessionService::new(
-        builder,
-        16,
-        session_store.clone(),
-        runtime_store,
-        blob_store,
-    ));
+    let machine = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        )
+        .expect("runtime owner"),
+    );
+    let session_service = Arc::new(
+        PersistentSessionService::new(
+            builder,
+            16,
+            session_store.clone(),
+            runtime_store,
+            blob_store,
+        )
+        .with_canonical_runtime_adapter(machine.clone()),
+    );
     let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]

@@ -1,4 +1,5 @@
 import { ConsoleMcpAppsProvider, type ConsoleMcpAppsHost } from "@console-components";
+import { createNativeMcpAppsHost } from "./mcp-apps/native-host";
 import { useConsolePanels, createConsolePanelService, bindConsolePanelService } from "./lib/custom-panels";
 import { ConsolePanelsProvider, ConsoleCustomPanel } from "@console-components";
 import { consoleCustomPanelTarget, type ConsolePanelDefinition, type ConsolePanelContext, type ConsolePanelService } from "@console-core";
@@ -619,6 +620,7 @@ function internAgents(current: ConsoleAgent[], next: ConsoleAgent[]): ConsoleAge
 }
 
 const PANEL_ROUTABLE_EVENTS = new Set([
+  "mcp_app",
   "user_input",
   "interaction_started",
   "interaction_complete",
@@ -656,6 +658,7 @@ const HISTORY_REFRESH_EVENTS = new Set([
 ]);
 // Events filtered from the activity rail — don't buffer them
 const ACTIVITY_SKIP_EVENTS = new Set([
+  "mcp_app",
   "subscribed",
   "run_started",
   "run_completed",
@@ -4219,12 +4222,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const customPanels = panelState.panels;
   const panelDockRef = React.useRef(dock.openTarget);
   panelDockRef.current = dock.openTarget;
+  const panelVisibleIdentities = React.useMemo(() => agents.flatMap(agent => [agent.identity, agent.member_id, agent.agent_id]).filter((id): id is string => Boolean(id)), [agents]);
   const panelSelectionRef = React.useRef<string | null>(null);
-  if (dock.focusedTarget?.kind === "agent-chat") panelSelectionRef.current = dock.focusedTarget.identity;
+  if (dock.focusedTarget?.kind === "agent-chat" && panelVisibleIdentities.includes(dock.focusedTarget.identity)) {
+    panelSelectionRef.current = dock.focusedTarget.identity;
+  } else if (panelSelectionRef.current && !panelVisibleIdentities.includes(panelSelectionRef.current)) {
+    panelSelectionRef.current = null;
+  }
   const selectedPanelIdentity = panelSelectionRef.current;
   const panelSelection = React.useMemo(() => selectedPanelIdentity
     ? { scopeKey: sendScope, identity: selectedPanelIdentity } : null, [sendScope, selectedPanelIdentity]);
-  const panelVisibleIdentities = React.useMemo(() => agents.flatMap(agent => [agent.identity, agent.member_id, agent.agent_id]).filter((id): id is string => Boolean(id)), [agents]);
   const panelAuthority = React.useMemo(() => ({ key: sendScope, runtimeId: experience?.runtime_id }), [sendScope, experience?.runtime_id]);
   const panelLifetime = React.useMemo(() => ({ abort: new AbortController() }), [sendScope]);
   React.useLayoutEffect(() => {
@@ -4255,6 +4262,19 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     },
   }), [baseUrl, consoleReadOnly, experience, openCustomPanel, panelAuthority, panelSelection, panelHostService, panelVisibleIdentities, sendScope]);
   const panelProvider = React.useMemo(() => ({ panels: panelState.panels, context: panelContext }), [panelState.panels, panelContext]);
+  const effectiveMcpAppsHost = React.useMemo(() => {
+    if (mcpAppsHost) return mcpAppsHost;
+    const sandboxProxyUrl = experience?.console_config?.mcp_apps_sandbox_url;
+    if (!sandboxProxyUrl) return undefined;
+    try {
+      return createNativeMcpAppsHost({ baseUrl, sandboxProxyUrl, authority: sendScope,
+        runtimeId: experience?.runtime_id, readOnly: consoleReadOnly,
+        requestTimeoutMs: consoleFetchTimeoutMsRef.current });
+    } catch {
+      // A missing or invalid isolated sandbox retains the ordinary transcript.
+      return undefined;
+    }
+  }, [mcpAppsHost, baseUrl, experience?.console_config?.mcp_apps_sandbox_url, experience?.runtime_id, sendScope, consoleReadOnly]);
 
   // =========================================================================
   // WORKGRAPH OPERATOR ACTIONS (inline card + panel)
@@ -5321,7 +5341,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
 
   return (
-    <ConsoleMcpAppsProvider value={mcpAppsHost ? { host: mcpAppsHost, authority: sendScope, readOnly: consoleReadOnly } : null}>
+    <ConsoleMcpAppsProvider value={effectiveMcpAppsHost ? { host: effectiveMcpAppsHost, authority: sendScope, readOnly: consoleReadOnly } : null}>
     <ConsolePanelsProvider value={panelProvider}>
     <div
       className="cc-theme-scope mobkit-shell"

@@ -2449,7 +2449,9 @@ where
     B: meerkat_session::SessionAgentBuilder + 'static,
 {
     fn runtime_completion_observer(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        MobSessionService::runtime_adapter(self)
+        MobSessionService::acquire_runtime_adapter(self, None)
+            .ok()
+            .flatten()
     }
 
     async fn recover_committed_boundary(
@@ -4050,7 +4052,9 @@ impl MobSessionBridge {
         }
         self.session_service
             .as_ref()?
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()
             .map(|machine| machine as Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>)
     }
 
@@ -5696,7 +5700,12 @@ impl SessionBridge for MobSessionBridge {
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> Option<super::types::MemberDurability> {
-        let machine = self.session_service.as_ref()?.runtime_adapter()?;
+        let machine = self
+            .session_service
+            .as_ref()?
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()?;
         member_durability_from_machine(machine.durability_reload_required(session_id).await)
     }
 
@@ -6955,6 +6964,9 @@ mod tests {
 
     fn probe_input_header() -> meerkat_runtime::InputHeader {
         meerkat_runtime::InputHeader {
+            ingress_context: None,
+            retained_resume: None,
+            authority_association: None,
             id: meerkat_core::lifecycle::InputId::new(),
             timestamp: chrono::Utc::now(),
             source: meerkat_runtime::InputOrigin::External {

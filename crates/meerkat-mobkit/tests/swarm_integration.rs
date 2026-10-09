@@ -524,8 +524,12 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
         self.inner.supports_persistent_sessions()
     }
 
-    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        self.inner.runtime_adapter()
+    fn acquire_runtime_adapter(
+        &self,
+        explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+    {
+        self.inner.acquire_runtime_adapter(explicit)
     }
 
     async fn session_belongs_to_mob(&self, session_id: &SessionId, mob_id: &MobId) -> bool {

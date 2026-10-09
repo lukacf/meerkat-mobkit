@@ -583,10 +583,14 @@ mob = true
             .expect("runtime exposes its session service");
         assert!(
             std::sync::Arc::ptr_eq(
-                &service.runtime_adapter().expect("parent runtime machine"),
+                &service
+                    .acquire_runtime_adapter(None)
+                    .expect("runtime adapter acquisition")
+                    .expect("parent runtime machine"),
                 &state
                     .session_service()
-                    .runtime_adapter()
+                    .acquire_runtime_adapter(None)
+                    .expect("runtime adapter acquisition")
                     .expect("child runtime machine"),
             ),
             "agent-created mobs must share the parent's real runtime authority"

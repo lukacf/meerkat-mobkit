@@ -145,7 +145,9 @@ async fn control_run(runtime: &UnifiedRuntime, request: RunRequest) -> Result<Va
     let machine = runtime
         .mob_runtime()
         .session_service()
-        .and_then(|service| service.runtime_adapter())
+        .ok_or("fixture needs a session service")?
+        .acquire_runtime_adapter(None)
+        .map_err(|error| error.to_string())?
         .ok_or("fixture needs the actual session runtime adapter")?;
     // Both operations compare and admit under the owner's mutation gate. A
     // stale test request cannot cancel a successor run of the same member.
@@ -212,8 +214,8 @@ impl AgentCustomizer for RoutineCustomizer {
 impl AgentToolDispatcher for RoutineTools {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         [
-            ToolDef { name: "read_file".into(), description: "Read one file from the acceptance workspace.".into(), input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}), provenance: None },
-            ToolDef { name: "list_files".into(), description: "List the acceptance workspace files.".into(), input_schema: json!({"type":"object","properties":{},"additionalProperties":false}), provenance: None },
+            ToolDef { audience: Default::default(), name: "read_file".into(), description: "Read one file from the acceptance workspace.".into(), input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}), provenance: None },
+            ToolDef { audience: Default::default(), name: "list_files".into(), description: "List the acceptance workspace files.".into(), input_schema: json!({"type":"object","properties":{},"additionalProperties":false}), provenance: None },
         ].into_iter().map(Arc::new).collect::<Vec<_>>().into()
     }
 

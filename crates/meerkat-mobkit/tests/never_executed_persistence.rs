@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{AgentFactory, Config, build_ephemeral_service};
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
 use meerkat_client::TestClient;
 use meerkat_core::{
     AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
@@ -327,8 +327,12 @@ impl MobSessionService for NeverStartsActorRunService {
         self.inner.supports_persistent_sessions()
     }
 
-    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        self.inner.runtime_adapter()
+    fn acquire_runtime_adapter(
+        &self,
+        explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+    {
+        self.inner.acquire_runtime_adapter(explicit)
     }
 
     async fn session_belongs_to_mob(&self, session_id: &SessionId, mob_id: &MobId) -> bool {
@@ -355,9 +359,21 @@ async fn boot_runtime(
     );
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::MemoryBlobStore::new());
+    let machine = Arc::new(
+        meerkat_runtime::MeerkatMachine::persistent(runtime_store.clone(), blob_store.clone())
+            .expect("runtime owner"),
+    );
     let factory = AgentFactory::new(state).comms(true).builtins(false);
-    let service: Arc<dyn MobSessionService> =
-        Arc::new(build_ephemeral_service(factory, Config::default(), 1));
+    let service: Arc<dyn MobSessionService> = Arc::new(
+        PersistentSessionService::new(
+            FactoryAgentBuilder::new(factory, Config::default()),
+            1,
+            Arc::new(meerkat_store::MemoryStore::new()),
+            runtime_store,
+            blob_store,
+        )
+        .with_canonical_runtime_adapter(machine.clone()),
+    );
     let attempted = refuse_actor_runs.then(|| Arc::new(Notify::new()));
     let service: Arc<dyn MobSessionService> = if let Some(attempted) = attempted.as_ref() {
         Arc::new(NeverStartsActorRunService {
@@ -367,10 +383,6 @@ async fn boot_runtime(
     } else {
         service
     };
-    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        runtime_store,
-        blob_store,
-    ));
     let definition = MobDefinition::from_toml(
         r#"
 [mob]
@@ -414,7 +426,8 @@ fn runtime_adapter(runtime: &UnifiedRuntime) -> Arc<meerkat_runtime::MeerkatMach
         .mob_runtime()
         .session_service()
         .expect("MobKit runtime exposes its session service");
-    MobSessionService::runtime_adapter(service.as_ref())
+    MobSessionService::acquire_runtime_adapter(service.as_ref(), None)
+        .expect("runtime adapter acquisition")
         .expect("MobKit session service exposes its runtime adapter")
 }
 

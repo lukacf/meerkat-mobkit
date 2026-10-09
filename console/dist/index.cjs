@@ -20079,19 +20079,27 @@ var McpAppTransport = class {
     __publicField(this, "onmessage");
     __publicField(this, "onerror");
     __publicField(this, "onclose");
+    __publicField(this, "phase", "open");
     __publicField(this, "receive", (event) => {
-      if (event.source !== this.target || event.origin !== this.origin) return;
+      if (this.phase === "closed" || event.source !== this.target || event.origin !== this.origin) return;
       const parsed = JSONRPCMessageSchema.safeParse(event.data);
-      if (parsed.success) this.onmessage?.(parsed.data);
+      if (parsed.success && (this.phase === "open" || !("method" in parsed.data))) this.onmessage?.(parsed.data);
     });
   }
   async start() {
     window.addEventListener("message", this.receive);
   }
   async send(message) {
+    if (this.phase === "closed" || this.phase === "closing" && !("method" in message && message.method === "ui/resource-teardown")) return;
     this.target.postMessage(message, this.origin);
   }
+  /** Retain only teardown responses. Retired views cannot initiate more host work. */
+  beginTeardown() {
+    if (this.phase === "open") this.phase = "closing";
+  }
   async close() {
+    if (this.phase === "closed") return;
+    this.phase = "closed";
     window.removeEventListener("message", this.receive);
     this.onclose?.();
   }
@@ -20121,19 +20129,25 @@ async function withAppRequest(lifetime, request, run) {
 }
 function ConsoleMcpAppView({ locator, fallback }) {
   const state = import_react.default.useContext(ConsoleMcpAppsProviderContext);
-  const iframe = import_react.default.useRef(null);
+  const container = import_react.default.useRef(null);
   const [status, setStatus] = import_react.default.useState("loading");
   const key = JSON.stringify([state?.authority, locator.identity, locator.sessionId, locator.toolCallId, state?.readOnly]);
   import_react.default.useLayoutEffect(() => {
-    if (!state || !iframe.current) {
+    if (!state || !container.current) {
       setStatus("unavailable");
       return;
     }
-    const frame = iframe.current;
+    const frame = document.createElement("iframe");
+    frame.title = "Interactive tool result";
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.referrerPolicy = "no-referrer";
+    Object.assign(frame.style, { width: "100%", height: "240px", border: "0", display: "block" });
     frame.style.visibility = "hidden";
+    container.current.append(frame);
     const controller = new AbortController();
     let session = null;
     let bridge = null;
+    let transport = null;
     let observer = null;
     let initialized = false;
     let timer;
@@ -20145,9 +20159,17 @@ function ConsoleMcpAppView({ locator, fallback }) {
       clearTimeout(timer);
       observer?.disconnect();
       frame.style.visibility = "hidden";
-      frame.removeAttribute("src");
-      if (bridge) void (initialized ? bridge.teardownResource({}, { timeout: 500 }).catch(() => {
-      }) : Promise.resolve()).finally(() => bridge.close());
+      frame.style.display = "none";
+      frame.title = "Closing interactive tool result";
+      transport?.beginTeardown();
+      const finish = () => {
+        void bridge?.close();
+        frame.removeAttribute("src");
+        frame.remove();
+      };
+      if (bridge && initialized) void bridge.teardownResource({}, { timeout: 500 }).catch(() => {
+      }).finally(finish);
+      else finish();
       try {
         session?.dispose?.();
       } catch {
@@ -20160,6 +20182,7 @@ function ConsoleMcpAppView({ locator, fallback }) {
       }
     };
     setStatus("loading");
+    timer = setTimeout(fail, 15e3);
     void (async () => {
       const sandbox = mcpSandboxUrl(state.host.sandboxProxyUrl);
       const resolved = await state.host.resolve(locator, controller.signal);
@@ -20206,8 +20229,12 @@ function ConsoleMcpAppView({ locator, fallback }) {
         controller.signal.throwIfAborted();
         return CallToolResultSchema.parse(result);
       };
-      bridge.onrequestdisplaymode = async () => ({ mode: "inline" });
+      bridge.onrequestdisplaymode = async () => {
+        controller.signal.throwIfAborted();
+        return { mode: "inline" };
+      };
       bridge.onsizechange = ({ height }) => {
+        if (controller.signal.aborted) return;
         if (typeof height === "number" && Number.isFinite(height)) frame.style.height = `${Math.min(1200, Math.max(80, height))}px`;
       };
       bridge.oninitialized = () => {
@@ -20225,11 +20252,12 @@ function ConsoleMcpAppView({ locator, fallback }) {
         })().catch(fail);
       };
       bridge.onsandboxready = () => {
+        if (controller.signal.aborted) return;
         void bridge.sendSandboxResourceReady({ html: html5, csp: ui?.csp }).catch(fail);
       };
-      timer = setTimeout(fail, 15e3);
       frame.src = sandbox.href;
-      await bridge.connect(new McpAppTransport(frame.contentWindow, sandbox.origin));
+      transport = new McpAppTransport(frame.contentWindow, sandbox.origin);
+      await bridge.connect(transport);
       controller.signal.throwIfAborted();
       observer = new ResizeObserver(([entry]) => {
         if (initialized && !controller.signal.aborted) void Promise.resolve(bridge.sendHostContextChange({ containerDimensions: { width: entry.contentRect.width, maxHeight: 1200 } })).catch(fail);
@@ -20239,16 +20267,7 @@ function ConsoleMcpAppView({ locator, fallback }) {
     return stop;
   }, [state?.host, key]);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "console-mcp-app", "data-mcp-app-call": locator.toolCallId, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      "iframe",
-      {
-        ref: iframe,
-        title: "Interactive tool result",
-        sandbox: "allow-scripts allow-same-origin",
-        referrerPolicy: "no-referrer",
-        style: { width: "100%", height: 240, border: 0, display: status === "unavailable" ? "none" : "block" }
-      }
-    ),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { ref: container }),
     status !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { role: "status", children: [
       fallback,
       status === "loading" ? " (loading view)" : ""
@@ -23099,6 +23118,29 @@ function operationFeedbackFromFrame(frame) {
   return null;
 }
 
+// ../packages/console-core/src/mcp-app-projection.ts
+function mcpAppEntryFromFrame(frame, entryId, identity) {
+  if (frame.event !== "mcp_app" || frame.sourceKind !== "session_history" && frame.sourceKind !== "tool_application") return null;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const memberIdentity = frame.identity?.trim();
+  const sessionId = typeof data?.session_id === "string" ? data.session_id.trim() : "";
+  const toolCallId = typeof data?.tool_call_id === "string" ? data.tool_call_id.trim() : "";
+  if (!memberIdentity || !sessionId || !toolCallId || frame.sessionId && frame.sessionId !== sessionId) return null;
+  const date6 = typeof frame.timestampMs === "number" ? new Date(frame.timestampMs) : null;
+  return {
+    kind: "message",
+    id: entryId,
+    variant: "plain",
+    renderKey: JSON.stringify(["mcp-app", frame.runtimeKey || "", memberIdentity, sessionId, toolCallId]),
+    identity: { ...identity, id: memberIdentity },
+    createdAt: date6 && Number.isFinite(date6.getTime()) ? date6.toISOString() : void 0,
+    interactionId: frame.interactionId?.trim() || void 0,
+    runId: frame.runId?.trim() || void 0,
+    mcpApp: { sessionId, toolCallId },
+    text: typeof data?.fallback === "string" ? data.fallback : "Tool result"
+  };
+}
+
 // ../packages/console-core/src/user-message-identity.ts
 var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function userMessageRenderKey(frame) {
@@ -23914,6 +23956,7 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
 ]);
 var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   ...HIDDEN_EVENTS,
+  "mcp_app",
   "text_delta",
   "tool_call_requested",
   "tool_call",
@@ -25921,7 +25964,6 @@ function ConsoleCustomPanel({ target, focused }) {
       return null;
     }
     if (payload.scopeKey !== state.context.authority.key) return null;
-    if (payload.conversation && (payload.conversation.scopeKey !== state.context.authority.key || !state.context.visibleIdentities.includes(payload.conversation.identity))) return null;
     const conversation = payload.followSelection ? state.context.selection : payload.conversation;
     if (conversation && (conversation.scopeKey !== state.context.authority.key || !state.context.visibleIdentities.includes(conversation.identity))) return null;
     return { ...targetContext(state.context, conversation), panel: { instanceKey: payload.instanceKey, params: payload.params, focused } };
@@ -43526,6 +43568,94 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
   ] });
 }
 
+// src/mcp-apps/native-host.ts
+function createNativeMcpAppsHost(options) {
+  const base = new URL(options.baseUrl || "/", window.location.href);
+  if (base.origin !== window.location.origin || base.username || base.password || base.search || base.hash) {
+    throw new Error("The stock MCP Apps adapter requires the Console's authenticated origin");
+  }
+  const sandboxProxyUrl = mcpSandboxUrl(options.sandboxProxyUrl).href;
+  const request = async (operation2, locator, params, signal) => {
+    signal.throwIfAborted();
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => controller.abort(new Error("MCP App request timed out")), options.requestTimeoutMs ?? 6e4);
+    try {
+      const url2 = new URL(`${base.pathname.replace(/\/$/, "")}/console/mcp-apps/${operation2}`, base.origin);
+      const response = await fetch(url2.href, {
+        method: "POST",
+        credentials: "same-origin",
+        redirect: "error",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          // Routing context only. These headers cannot establish viewer authority.
+          "X-Console-Authority": encodeURIComponent(JSON.stringify({ key: options.authority, runtimeId: options.runtimeId })),
+          "X-Console-Conversation": encodeURIComponent(JSON.stringify({ scopeKey: options.authority, identity: locator.identity }))
+        },
+        body: JSON.stringify({ ...locator, ...params })
+      });
+      controller.signal.throwIfAborted();
+      if (!response.ok) throw new Error(`MCP App request failed (HTTP ${response.status})`);
+      const result = await response.json();
+      controller.signal.throwIfAborted();
+      return result;
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+    }
+  };
+  return {
+    sandboxProxyUrl,
+    async resolve(locator, signal) {
+      const original = { identity: locator.identity, sessionId: locator.sessionId, toolCallId: locator.toolCallId };
+      if (Object.values(original).some((value) => typeof value !== "string" || !value.trim())) throw new Error("Invalid MCP App invocation");
+      const response = await request("resolve", original, {}, signal);
+      if (response === null) return null;
+      if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("Invalid MCP App response");
+      const resolved = response;
+      const tool = ToolSchema.parse(resolved.tool);
+      const args = resolved.arguments;
+      if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Invalid MCP App arguments");
+      const result = CallToolResultSchema.parse(resolved.result);
+      let cachedResource = resolved.resource == null ? void 0 : ReadResourceResultSchema.parse(resolved.resource);
+      let disposed = false;
+      const resourceUri = AG(tool);
+      const current = (requestSignal) => {
+        signal.throwIfAborted();
+        requestSignal.throwIfAborted();
+        if (disposed) throw new DOMException("MCP App view is closed", "AbortError");
+      };
+      return {
+        tool,
+        arguments: args,
+        result,
+        dispose() {
+          disposed = true;
+          cachedResource = void 0;
+        },
+        async readResource(uri2, requestSignal) {
+          current(requestSignal);
+          if (cachedResource && uri2 === resourceUri && cachedResource.contents.some((content3) => content3.uri === uri2)) {
+            const cached2 = cachedResource;
+            cachedResource = void 0;
+            return cached2;
+          }
+          return ReadResourceResultSchema.parse(await request("read-resource", original, { uri: uri2 }, requestSignal));
+        },
+        ...resolved.canCallTools === true && !options.readOnly ? {
+          async callTool(name2, toolArgs, requestSignal) {
+            current(requestSignal);
+            return CallToolResultSchema.parse(await request("call-tool", original, { name: name2, arguments: toolArgs }, requestSignal));
+          }
+        } : {}
+      };
+    }
+  };
+}
+
 // src/lib/custom-panels.ts
 var import_react28 = __toESM(require("react"));
 var EMPTY_PANELS = [];
@@ -44517,6 +44647,7 @@ function reasoningFrameText(frame) {
 }
 var ACTIVITY_HIDDEN_EVENTS2 = /* @__PURE__ */ new Set([
   ...HIDDEN_EVENTS2,
+  "mcp_app",
   "text_delta",
   "tool_call_requested",
   "tool_call",
@@ -47375,6 +47506,7 @@ function createTimelineFold(agent, frames, options) {
   const councilArgs = councilArgsByCallId(orderedFrames);
   const emittedCouncilIds = /* @__PURE__ */ new Set();
   const emittedOperationFeedback = /* @__PURE__ */ new Set();
+  const emittedMcpApps = /* @__PURE__ */ new Set();
   const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -47536,6 +47668,15 @@ function createTimelineFold(agent, frames, options) {
   function step(i2) {
     const frame = orderedFrames[i2];
     const entryId = frame.id || `${frame.event || "frame"}:${i2}`;
+    if (frame.event === "mcp_app") {
+      const entry = mcpAppEntryFromFrame(frame, entryId, agentIdentity(agent));
+      if (!entry || emittedMcpApps.has(entry.renderKey)) return;
+      emittedMcpApps.add(entry.renderKey);
+      flushPendingReasoning(true);
+      flushPendingText();
+      entries.push(entry);
+      return;
+    }
     if (frame.runId?.trim() && frame.sourceKind !== "session_history" && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out" || frame.event === "turn_completed" || frame.event === "turn_started")) {
       if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
       completeOwnedStream(frame);
@@ -62377,6 +62518,7 @@ function internAgents(current, next) {
   return changed ? interned : current;
 }
 var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
+  "mcp_app",
   "user_input",
   "interaction_started",
   "interaction_complete",
@@ -62413,6 +62555,7 @@ var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
   "message_delivery_failed"
 ]);
 var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
+  "mcp_app",
   "subscribed",
   "run_started",
   "run_completed",
@@ -65148,11 +65291,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const customPanels = panelState.panels;
   const panelDockRef = import_react48.default.useRef(dock.openTarget);
   panelDockRef.current = dock.openTarget;
+  const panelVisibleIdentities = import_react48.default.useMemo(() => agents.flatMap((agent) => [agent.identity, agent.member_id, agent.agent_id]).filter((id) => Boolean(id)), [agents]);
   const panelSelectionRef = import_react48.default.useRef(null);
-  if (dock.focusedTarget?.kind === "agent-chat") panelSelectionRef.current = dock.focusedTarget.identity;
+  if (dock.focusedTarget?.kind === "agent-chat" && panelVisibleIdentities.includes(dock.focusedTarget.identity)) {
+    panelSelectionRef.current = dock.focusedTarget.identity;
+  } else if (panelSelectionRef.current && !panelVisibleIdentities.includes(panelSelectionRef.current)) {
+    panelSelectionRef.current = null;
+  }
   const selectedPanelIdentity = panelSelectionRef.current;
   const panelSelection = import_react48.default.useMemo(() => selectedPanelIdentity ? { scopeKey: sendScope, identity: selectedPanelIdentity } : null, [sendScope, selectedPanelIdentity]);
-  const panelVisibleIdentities = import_react48.default.useMemo(() => agents.flatMap((agent) => [agent.identity, agent.member_id, agent.agent_id]).filter((id) => Boolean(id)), [agents]);
   const panelAuthority = import_react48.default.useMemo(() => ({ key: sendScope, runtimeId: experience?.runtime_id }), [sendScope, experience?.runtime_id]);
   const panelLifetime = import_react48.default.useMemo(() => ({ abort: new AbortController() }), [sendScope]);
   import_react48.default.useLayoutEffect(() => {
@@ -65190,6 +65337,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
   }), [baseUrl, consoleReadOnly, experience, openCustomPanel, panelAuthority, panelSelection, panelHostService, panelVisibleIdentities, sendScope]);
   const panelProvider = import_react48.default.useMemo(() => ({ panels: panelState.panels, context: panelContext }), [panelState.panels, panelContext]);
+  const effectiveMcpAppsHost = import_react48.default.useMemo(() => {
+    if (mcpAppsHost) return mcpAppsHost;
+    const sandboxProxyUrl = experience?.console_config?.mcp_apps_sandbox_url;
+    if (!sandboxProxyUrl) return void 0;
+    try {
+      return createNativeMcpAppsHost({
+        baseUrl,
+        sandboxProxyUrl,
+        authority: sendScope,
+        runtimeId: experience?.runtime_id,
+        readOnly: consoleReadOnly,
+        requestTimeoutMs: consoleFetchTimeoutMsRef.current
+      });
+    } catch {
+      return void 0;
+    }
+  }, [mcpAppsHost, baseUrl, experience?.console_config?.mcp_apps_sandbox_url, experience?.runtime_id, sendScope, consoleReadOnly]);
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
   const runWorkGraphCommand = import_react48.default.useCallback(
     async (command, params, cardIdentity) => {
@@ -65989,7 +66153,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     return /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsoleMcpAppsProvider, { value: mcpAppsHost ? { host: mcpAppsHost, authority: sendScope, readOnly: consoleReadOnly } : null, children: /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsolePanelsProvider, { value: panelProvider, children: /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsoleMcpAppsProvider, { value: effectiveMcpAppsHost ? { host: effectiveMcpAppsHost, authority: sendScope, readOnly: consoleReadOnly } : null, children: /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsolePanelsProvider, { value: panelProvider, children: /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)(
     "div",
     {
       className: "cc-theme-scope mobkit-shell",

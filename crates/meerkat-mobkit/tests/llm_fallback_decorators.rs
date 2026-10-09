@@ -182,6 +182,8 @@ fn messages(include_transient: bool) -> Vec<Message> {
     vec![
         Message::BlockAssistant(BlockAssistantMessage::new(blocks, StopReason::ToolUse)),
         Message::tool_results(vec![ToolResult {
+            host_metadata: Default::default(),
+            settlement_failures: Default::default(),
             tool_use_id: "call-1".to_string(),
             content: vec![ContentBlock::Text {
                 text: "untrusted source".to_string(),
@@ -288,6 +290,7 @@ async fn check_decoration(decoration: Decoration) {
     }
     let expected_messages = json!(expected);
     let tools = vec![Arc::new(ToolDef {
+        audience: Default::default(),
         name: "scrape_page".into(),
         description: "request witness".to_string(),
         input_schema: json!({"type": "object", "properties": {"url": {"type": "string"}}}),

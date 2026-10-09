@@ -341,7 +341,15 @@ async fn observe_member_execution(
 ) -> MemberExecution {
     use meerkat_runtime::SessionServiceRuntimeExt as _;
 
-    if let Some(runtime) = session_service.runtime_adapter()
+    let runtime = match session_service.acquire_runtime_adapter(None) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return MemberExecution::Unreadable(meerkat_core::service::SessionError::Agent(
+                meerkat_core::AgentError::InternalError(error.to_string()),
+            ));
+        }
+    };
+    if let Some(runtime) = runtime
         && let Ok(Ok(meerkat_runtime::RuntimeState::Running)) = tokio::time::timeout(
             MEMBER_EXECUTION_OBSERVATION_TIMEOUT,
             runtime.runtime_state(session_id),

@@ -6,6 +6,8 @@
   "main": "index.cjs",
   "scripts": {
     "dev": "vite",
+    "mcp-apps:sandbox": "node mcp-apps-sandbox.cjs",
+    "e2e:mcp-apps": "node mcp-apps-native-e2e.cjs",
     "build": "node build.cjs",
     "embedded:freshness": "npm run build --silent && node check-embedded-freshness.cjs",
     "smoke": "npm run build --silent && node smoke.cjs",

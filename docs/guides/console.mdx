@@ -105,6 +105,71 @@ conversation happens to be focused later.
 
 See `examples/console-extensions` for a module and local stock Console preview.
 
+## Inline MCP Apps
+
+Inline widgets use the [MCP Apps standard](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx).
+An MCP server supplies tool metadata, a `ui://` HTML resource, and the original
+tool result. No panel module or Console-specific app manifest is needed.
+
+Enable the stock host in `config/console.toml`:
+
+```toml
+mcp_apps_sandbox_url = "http://127.0.0.1:5001/sandbox.html"
+```
+
+Run the sandbox on a separate origin, with the exact Console origin allowed:
+
+```sh
+MCP_APPS_HOST_ORIGIN=http://127.0.0.1:5000 MCP_APPS_SANDBOX_PORT=5001 npm --prefix console run mcp-apps:sandbox
+```
+
+The originating member profile selects its MCP servers through
+`tools.mcp_servers`, or uses its existing host tool provider. Global server
+configuration alone does not grant every member access to those tools.
+The bundled gateways enable native MCP Apps negotiation when this sandbox URL
+is configured. Rust library hosts opt in with `UnifiedRuntime::builder().mcp_apps(true)`
+and set `ConsolePolicy.ui.mcp_apps_sandbox_url` on their Console policy.
+Hosts that create their own external MCP connections must also negotiate the
+standard UI extension, for example with `McpAppsClientServiceFactory`; this
+cannot be added after a connection's handshake.
+Headless hosts omit the capability. An unavailable widget retains its ordinary
+text tool result.
+
+The host retains the original tool, arguments, complete result and available UI
+resource with the canonical session. The declared HTML is preloaded before tool
+execution; the app receives invocation inputs and results through MCP Apps
+messages. Reopening a retained view never repeats
+its original tool call or waits for the current agent turn. The resolved
+`canCallTools` capability describes access to the live host action surface;
+actual calls still require fresh native admission and the original connection.
+During a continuing model turn, an actor- and run-bound native observation
+exposes accepted tool results for display without changing committed history.
+Completed-run replay uses the runtime's committed session. These observations
+carry no action authority. UI-only `_meta` is excluded from model requests and the
+public transcript. Timeline frames carry locators, not private HTML or metadata.
+Every lookup rechecks the authenticated viewer and session ownership. Uncached
+resource reads and app actions also require the original live MCP connection; replacing
+or retiring it cannot silently redirect an old widget.
+
+Tool visibility follows `_meta.ui.visibility`: omitted permits model and app,
+`["model"]` permits only the model, `["app"]` permits only the app, and `[]`
+permits neither. A model-only launch tool can still own a view. App actions use
+fresh native authorization and normal tool execution policy, including review
+when required. View-only users cannot invoke them.
+
+The current host profile supports inline rendering, resource reads and tool
+calls. It does not advertise conversation handoff, model-context updates,
+external links or downloads. The sandbox denies undeclared network access and
+sensitive browser permissions. Serve it without Console cookies or application
+APIs; production hosts should use a dedicated HTTPS origin.
+
+Future generated interfaces can use an ordinary MCP App renderer with a
+versioned generated document in result data. The runtime does not impose a
+component language. Keep generated content inside the app sandbox, separate
+from trusted developer panels, and route external actions through the same
+native admission path. Streaming updates and conversation handoff require their
+own explicit lifecycle and provenance contracts when added.
+
 ## Runtime contract
 
 The bundled console uses a small set of stable protocol surfaces:
@@ -117,6 +182,7 @@ The bundled console uses a small set of stable protocol surfaces:
 | `GET /console/timeline` | Replayable console frames for initial load and older-history paging. |
 | `GET /console/timeline/stream` | Bounded replay followed by live timeline frames. |
 | `GET /console/identity/{identity}/stream` | Identity-filtered timeline stream convenience route. |
+| `POST /console/mcp-apps/{resolve,read-resource,call-tool}` | Authenticated operations bound to the originating tool invocation. |
 | `POST /console/rpc` | JSON-RPC 2.0 endpoint for console commands. |
 | `POST /console/rpc/multipart` | Multipart JSON-RPC for image send/upload. |
 | `GET /blobs/{blob_id}` | Blob/image retrieval for rendered media. |

@@ -56,7 +56,7 @@ describe('standard MCP Apps host', () => {
     render(show(async () => binding));
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Seven results'));
     await waitFor(() => expect(binding.dispose).toHaveBeenCalledTimes(1));
-    expect(screen.getByTitle('Interactive tool result')).not.toBeVisible();
+    expect(screen.queryByTitle('Interactive tool result')).not.toBeInTheDocument();
     expect(binding.callTool).not.toHaveBeenCalled();
   });
 
@@ -106,6 +106,77 @@ describe('standard MCP Apps host', () => {
     expect(sent.mock.calls.some(([m]) => m.id === 2 && m.result)).toBe(false);
   });
 
+  it('isolates a new authority from the retiring app until teardown is acknowledged', async () => {
+    const first = session();
+    const second = session();
+    second.result = { content: [{ type: 'text', text: 'Only the second app may receive this' }] };
+    second.readResource = vi.fn(async () => ({ contents: [{ uri: 'ui://example/result', mimeType: 'text/html;profile=mcp-app', text: '<html>Second app</html>' }] }));
+    const view = render(show(async () => first));
+    const oldFrame = screen.getByTitle('Interactive tool result') as HTMLIFrameElement;
+    await waitFor(() => expect(oldFrame.src).toContain('sandbox.test'));
+    const oldSent = vi.spyOn(oldFrame.contentWindow!, 'postMessage');
+    await initialize(oldFrame, oldSent);
+    await waitFor(() => expect(oldSent.mock.calls.some(([m]) => m.method === 'ui/notifications/tool-result')).toBe(true));
+    oldSent.mockClear();
+
+    view.rerender(show(async () => second, false, 'scope:two'));
+    const newFrame = screen.getByTitle('Interactive tool result') as HTMLIFrameElement;
+    expect(newFrame).not.toBe(oldFrame);
+    expect(newFrame.contentWindow).not.toBe(oldFrame.contentWindow);
+    expect(oldFrame.isConnected).toBe(true);
+    expect(oldFrame.src).toContain('sandbox.test');
+    expect(oldFrame).not.toBeVisible();
+    const teardown = oldSent.mock.calls.find(([m]) => m.method === 'ui/resource-teardown')?.[0];
+    expect(teardown).toBeDefined();
+
+    // Retired callbacks cannot supply old HTML, start work, or alter the live frame.
+    await act(async () => {
+      message(oldFrame, 'ui/notifications/sandbox-proxy-ready', {});
+      message(oldFrame, 'tools/call', { name: 'refresh', arguments: {} }, 2);
+      message(oldFrame, 'resources/read', { uri: 'private://old' }, 3);
+      message(oldFrame, 'ui/notifications/size-changed', { width: 900, height: 1200 });
+    });
+    expect(oldSent.mock.calls.filter(([m]) => m.method === 'ui/notifications/sandbox-resource-ready')).toEqual([]);
+    expect(first.callTool).not.toHaveBeenCalled();
+    expect(first.readResource).toHaveBeenCalledTimes(1);
+    expect(newFrame.style.height).toBe('240px');
+
+    await waitFor(() => expect(newFrame.src).toContain('sandbox.test'));
+    const newSent = vi.spyOn(newFrame.contentWindow!, 'postMessage');
+    await initialize(newFrame, newSent);
+    await waitFor(() => expect(newSent.mock.calls.find(([m]) => m.method === 'ui/notifications/tool-result')?.[0].params).toEqual(second.result));
+    expect(newSent.mock.calls.filter(([m]) => m.method === 'ui/notifications/sandbox-resource-ready').map(([m]) => m.params.html)).toEqual(['<html>Second app</html>']);
+
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { source: oldFrame.contentWindow, origin: 'https://sandbox.test', data: { jsonrpc: '2.0', id: teardown.id, result: {} } }));
+    });
+    expect(oldFrame.isConnected).toBe(false);
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it.each(['resolve', 'readResource'])('times out a stalled %s and aborts its lifetime', async (stage) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal;
+    const binding = session();
+    const pending = new Promise<never>(() => {});
+    const resolve = stage === 'resolve'
+      ? vi.fn((_locator, lifetime) => { signal = lifetime; return pending; })
+      : vi.fn(async () => binding);
+    if (stage === 'readResource') binding.readResource = vi.fn((_uri, lifetime) => { signal = lifetime; return pending; });
+    const view = render(show(resolve));
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(signal!.aborted).toBe(true);
+      expect(screen.getByRole('status')).toHaveTextContent(/^Seven results$/);
+      expect(screen.queryByTitle('Interactive tool result')).not.toBeInTheDocument();
+      if (stage === 'readResource') expect(binding.dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it('requires an isolated HTTP sandbox and checks both source and origin', async () => {
     expect(() => mcpSandboxUrl('https://console.test/sandbox', 'https://console.test')).toThrow(/separate/);
     expect(() => mcpSandboxUrl('data:text/html,hi', 'https://console.test')).toThrow();
@@ -120,6 +191,18 @@ describe('standard MCP Apps host', () => {
     expect(transport.onmessage).not.toHaveBeenCalled();
     window.dispatchEvent(new MessageEvent('message', { source: target.contentWindow, origin: 'https://sandbox.test', data }));
     expect(transport.onmessage).toHaveBeenCalledTimes(1);
+    const sent = vi.spyOn(target.contentWindow!, 'postMessage');
+    transport.beginTeardown();
+    window.dispatchEvent(new MessageEvent('message', { source: target.contentWindow, origin: 'https://sandbox.test', data }));
+    expect(transport.onmessage).toHaveBeenCalledTimes(1);
+    await transport.send(data);
+    expect(sent).not.toHaveBeenCalled();
+    await transport.send({ jsonrpc: '2.0', method: 'ui/resource-teardown', id: 2, params: {} });
+    expect(sent).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new MessageEvent('message', { source: target.contentWindow, origin: 'https://sandbox.test', data: { jsonrpc: '2.0', id: 2, result: {} } }));
+    expect(transport.onmessage).toHaveBeenCalledTimes(2);
     await transport.close(); target.remove();
+    await transport.send(data);
+    expect(sent).toHaveBeenCalledTimes(1);
   });
 });

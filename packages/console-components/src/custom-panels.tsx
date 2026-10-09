@@ -68,7 +68,6 @@ export function ConsoleCustomPanel({ target, focused }: { target: ConsoleCustomP
       || typeof payload.followSelection !== "boolean" || !("params" in payload) || !("conversation" in payload)) return null;
     try { consoleCustomPanelTarget(panel, payload); } catch { return null; }
     if (payload.scopeKey !== state.context.authority.key) return null;
-    if (payload.conversation && (payload.conversation.scopeKey !== state.context.authority.key || !state.context.visibleIdentities.includes(payload.conversation.identity))) return null;
     const conversation = payload.followSelection ? state.context.selection : payload.conversation;
     if (conversation && (conversation.scopeKey !== state.context.authority.key || !state.context.visibleIdentities.includes(conversation.identity))) return null;
     return { ...targetContext(state.context, conversation), panel: { instanceKey: payload.instanceKey, params: payload.params, focused } };
@@ -81,4 +80,3 @@ export function ConsoleCustomPanel({ target, focused }: { target: ConsoleCustomP
     ? <ConsolePanelSurface key={key} mount={panel.mount} context={context} fallback={fallback} />
     : fallback}</div>;
 }
-

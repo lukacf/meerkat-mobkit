@@ -1761,6 +1761,7 @@ mod tests {
         impl meerkat_core::AgentToolDispatcher for ExactInner {
             fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
                 vec![Arc::new(meerkat_core::types::ToolDef {
+                    audience: Default::default(),
                     name: "meerkat_schedule_list".into(),
                     description: String::new(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -3362,20 +3363,33 @@ external_addressable = true
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        inner_builder.default_detached_job_store = Some(job_store.clone());
+        let runtime_delivery = Arc::new(crate::MobRuntimeDelivery::new(
+            runtime_store.clone(),
+            job_store,
+        ));
         let attached = attach_schedule_tools_with_identity_targets(&inner_builder, &state)
             .expect("schedule tools attach");
         let inner_builder_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
-        let concrete = Arc::new(PersistentSessionService::new(
-            inner_builder,
-            16,
-            session_store,
-            runtime_store,
-            blob_store,
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("runtime owner"),
+        );
+        let concrete = Arc::new(
+            PersistentSessionService::new(
+                inner_builder,
+                16,
+                session_store,
+                runtime_store,
+                blob_store,
+            )
+            .with_canonical_runtime_adapter(adapter.clone()),
+        );
         static NEXT_DELIVERY_MOB: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         // Per-call mob id: 0.8.23's fail-closed in-proc registration means
@@ -3406,7 +3420,9 @@ schedule = true
             concrete.clone(),
         )
         .with_session_runtime_adapter(adapter.clone())
+        .with_runtime_delivery(runtime_delivery)
         .with_agent_mob_tools(agent_mob_tools_slot)
+        .expect("canonical agent mob tool runtime owner")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

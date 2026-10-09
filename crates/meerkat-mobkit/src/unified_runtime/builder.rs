@@ -153,6 +153,13 @@ pub struct UnifiedRuntimeBuilder {
 }
 
 impl UnifiedRuntimeBuilder {
+    /// Enable standard MCP Apps capabilities for a host with an isolated UI
+    /// renderer. The stock Console also needs `mcp_apps_sandbox_url` configured.
+    pub fn mcp_apps(mut self, enabled: bool) -> Self {
+        self.capability_flags.mcp_apps = enabled;
+        self
+    }
+
     // -----------------------------------------------------------------------
     // New convenience API
     // -----------------------------------------------------------------------
@@ -2184,7 +2191,8 @@ impl UnifiedRuntimeBuilder {
                 | crate::storage_health::StorageResolutionError::JobStore(_)
                 // An unreadable council store is the same class: a durable slot
                 // present on disk that refused at composition time.
-                | crate::storage_health::StorageResolutionError::Council(_) => {
+                | crate::storage_health::StorageResolutionError::Council(_)
+                | crate::storage_health::StorageResolutionError::RuntimeAuthority(_) => {
                     UnifiedRuntimeBuilderError::Io(error.to_string())
                 }
             })?
@@ -2212,6 +2220,7 @@ impl UnifiedRuntimeBuilder {
                 agent_config,
                 self.provider_meerkat_stores.clone(),
             )
+            .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.
             let temp_dir = tempfile::tempdir().map_err(|e| {
@@ -2233,7 +2242,8 @@ impl UnifiedRuntimeBuilder {
                 caps,
                 after_hook,
                 agent_config,
-            );
+            )
+            .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?;
             spec._ephemeral_dir = Some(Arc::new(temp_dir));
             spec
         };

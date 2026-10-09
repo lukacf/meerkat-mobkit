@@ -8,6 +8,9 @@ test('CSP defaults deny network and undeclared nested frames', () => {
   assert.match(policy, /object-src 'none'/);
   assert.match(policy, /form-action 'none'/);
   assert.match(appCsp({ connectDomains: ['https://api.example.test'] }), /connect-src https:\/\/api.example.test/);
+  assert.match(appCsp({ connectDomains: ['wss://live.example.test', 'ws://localhost:8080'] }), /connect-src wss:\/\/live.example.test ws:\/\/localhost:8080/);
+  assert.match(appCsp({ resourceDomains: ['https://*.example.test'] }), /https:\/\/\*\.example.test/);
+  assert.throws(() => appCsp({ resourceDomains: ['wss://live.example.test'] }));
   for (const domain of ['*', 'https://example.test; script-src *', 'https://user@example.test', 'javascript:alert(1)', 'https://example.test/path']) {
     assert.throws(() => appCsp({ connectDomains: [domain] }));
   }
@@ -23,7 +26,13 @@ test('sandbox response applies policy in HTTP headers and rejects unapproved par
     assert.match(valid.headers.get('content-security-policy'), /connect-src 'none'/);
     assert.equal(valid.headers.get('cache-control'), 'no-store');
     assert.equal((await fetch(root + '?hostOrigin=https://other.test')).status, 400);
+    assert.equal((await fetch(root.replace('/sandbox.html', '/console/mcp-apps/resolve'))).status, 404);
     const bad = new URL(root); bad.searchParams.set('hostOrigin', 'https://console.example.test'); bad.searchParams.set('csp', JSON.stringify({ resourceDomains: ["https://x.test; default-src *"] }));
     assert.equal((await fetch(bad)).status, 400);
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+test('sandbox configuration accepts only exact HTTP Console origins', () => {
+  for (const allowedHostOrigins of [[], ['*'], ['https://*.example.test'], ['file:///tmp'], ['https://console.test/private']]) {
+    assert.throws(() => createSandboxServer({ allowedHostOrigins }));
+  }
 });

@@ -1051,6 +1051,13 @@ async fn complete_text(
                 }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
+            LlmEvent::OperationObservationFailed {
+                operation_id,
+                phase,
+            } => {
+                // Observation failure does not change the provider's physical outcome.
+                tracing::warn!(%operation_id, ?phase, "memory distiller operation observation failed");
+            }
             LlmEvent::ReasoningDelta { .. }
             | LlmEvent::ReasoningComplete { .. }
             | LlmEvent::ToolCallDelta { .. }
@@ -2020,6 +2027,10 @@ mod tests {
                         meta: None,
                     });
                 }
+                events.push(LlmEvent::OperationObservationFailed {
+                    operation_id: meerkat_core::OperationId::new(),
+                    phase: meerkat_core::authorization::OperationObservationPhase::Outcome,
+                });
                 events.push(LlmEvent::AssistantOutput { blocks });
                 events.push(LlmEvent::Done {
                     outcome: LlmDoneOutcome::Success {

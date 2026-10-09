@@ -124,6 +124,13 @@ async fn collect_summary(
             LlmEvent::ToolCallDelta { .. }
             | LlmEvent::ToolCallComplete { .. }
             | LlmEvent::ServerToolContent { .. } => return Err(SummaryError::NonTextOutput),
+            LlmEvent::OperationObservationFailed {
+                operation_id,
+                phase,
+            } => {
+                // Observation failure does not change the provider's physical outcome.
+                tracing::warn!(%operation_id, ?phase, "console voice summary operation observation failed");
+            }
             LlmEvent::ReasoningDelta { .. }
             | LlmEvent::ReasoningComplete { .. }
             | LlmEvent::UsageUpdate { .. }
@@ -307,6 +314,35 @@ mod tests {
             Ok("Deadline: Friday.".to_string())
         );
         assert_eq!(serde_json::to_value(&source).expect("after"), original);
+    }
+
+    #[tokio::test]
+    async fn observation_diagnostic_preserves_the_actual_completion_outcome() {
+        for fail in [false, true] {
+            let terminal = if fail {
+                LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Error {
+                        error: meerkat_client::LlmError::ConnectionReset,
+                    },
+                }
+            } else {
+                done(meerkat_core::StopReason::EndTurn)
+            };
+            let client = ScriptedClient(Mutex::new(vec![
+                delta("Deadline: Friday."),
+                LlmEvent::OperationObservationFailed {
+                    operation_id: meerkat_core::OperationId::new(),
+                    phase: meerkat_core::authorization::OperationObservationPhase::Outcome,
+                },
+                terminal,
+            ]));
+            let actual = summarize_context(&client, "test-summary-model", &[], 1024).await;
+            if fail {
+                assert_eq!(actual, Err(SummaryError::Provider));
+            } else {
+                assert_eq!(actual, Ok("Deadline: Friday.".to_string()));
+            }
+        }
     }
 
     #[tokio::test]

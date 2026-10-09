@@ -241,6 +241,7 @@ async fn incident_dispatcher_composes_inner_external_tools() {
     impl AgentToolDispatcher for FakeInner {
         fn tools(&self) -> Arc<[Arc<ToolDef>]> {
             vec![Arc::new(ToolDef {
+                audience: Default::default(),
                 name: "memory".into(),
                 description: "stand-in recorder".to_string(),
                 input_schema: json!({"type": "object"}),
@@ -363,6 +364,7 @@ struct RecorderMarkerDispatcher;
 impl AgentToolDispatcher for RecorderMarkerDispatcher {
     fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
         vec![Arc::new(meerkat_core::types::ToolDef {
+            audience: Default::default(),
             name: "memory-marker".into(),
             description: "stand-in recorder".to_string(),
             input_schema: json!({"type": "object"}),
@@ -1214,8 +1216,10 @@ comms = true
         MobSessionService::supports_runtime_turn_apply(session_service.as_ref()),
         "the stock ephemeral service must support generic runtime-turn apply"
     );
-    let runtime_adapter = MobSessionService::runtime_adapter(session_service.as_ref())
-        .expect("the stock ephemeral service exposes its runtime adapter");
+    let runtime_adapter =
+        MobSessionService::acquire_runtime_adapter(session_service.as_ref(), None)
+            .expect("runtime adapter acquisition")
+            .expect("the stock ephemeral service exposes its runtime adapter");
     assert!(
         !runtime_adapter.has_session_llm_reconfigure_host(),
         "this fixture deliberately leaves the session LLM reconfiguration host uninstalled"

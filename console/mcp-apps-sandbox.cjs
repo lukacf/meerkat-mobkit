@@ -3,20 +3,20 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
-function domains(value) {
+function domains(value, schemes = ['https:', 'http:']) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 100) throw Error('Invalid CSP domains');
   return value.map(item => {
     if (typeof item !== 'string' || /[\s;'"\\]/.test(item)) throw Error('Invalid CSP domain');
     const url = new URL(item);
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw Error('CSP requires HTTP origins');
+    if (!schemes.includes(url.protocol) || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw Error('CSP requires allowed origins');
     return url.origin;
   });
 }
 
 function appCsp(csp = {}, proxy = false) {
   const resource = domains(csp.resourceDomains).join(' ');
-  const connect = domains(csp.connectDomains).join(' ') || "'none'";
+  const connect = domains(csp.connectDomains, ['https:', 'http:', 'wss:', 'ws:']).join(' ') || "'none'";
   const frames = domains(csp.frameDomains).join(' ');
   const base = domains(csp.baseUriDomains).join(' ') || "'self'";
   return ["default-src 'none'", `script-src 'self' 'unsafe-inline' ${resource}`,
@@ -27,7 +27,8 @@ function appCsp(csp = {}, proxy = false) {
 }
 
 function createSandboxServer({ allowedHostOrigins }) {
-  const allowed = new Set(allowedHostOrigins.map(value => new URL(value).origin));
+  const allowed = new Set(domains(allowedHostOrigins));
+  if (!allowed.size || [...allowed].some(value => new URL(value).hostname.includes('*'))) throw Error('Configure exact Console origins');
   return http.createServer((req, res) => {
     try {
       const url = new URL(req.url, 'http://sandbox.invalid');
@@ -51,7 +52,12 @@ function createSandboxServer({ allowedHostOrigins }) {
 }
 module.exports = { appCsp, createSandboxServer };
 if (require.main === module) {
-  const host = process.env.MCP_APPS_HOST_ORIGIN;
-  if (!host) throw Error('Set MCP_APPS_HOST_ORIGIN to the Console origin');
-  createSandboxServer({ allowedHostOrigins: [host] }).listen(Number(process.env.MCP_APPS_SANDBOX_PORT || 8081), '127.0.0.1');
+  const origins = process.env.MCP_APPS_HOST_ORIGINS || process.env.MCP_APPS_HOST_ORIGIN;
+  if (!origins) throw Error('Set MCP_APPS_HOST_ORIGIN to the Console origin');
+  const allowedHostOrigins = origins.split(',').map(value => value.trim());
+  const server = createSandboxServer({ allowedHostOrigins });
+  const port = Number(process.env.MCP_APPS_SANDBOX_PORT || 8081);
+  const bind = process.env.MCP_APPS_SANDBOX_HOST || '127.0.0.1';
+  server.listen(port, bind, () => console.log(JSON.stringify({ sandbox: `http://${bind}:${server.address().port}/sandbox.html`, allowedHostOrigins })));
+  for (const event of ['SIGINT', 'SIGTERM']) process.on(event, () => server.close());
 }

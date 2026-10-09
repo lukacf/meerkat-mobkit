@@ -502,6 +502,7 @@ impl std::error::Error for JobStoreResolutionError {}
 /// bootstrap path: any durable slot that can refuse at composition time.
 #[derive(Debug)]
 pub enum StorageResolutionError {
+    RuntimeAuthority(meerkat_runtime::RuntimeDriverError),
     Blob(BlobStoreResolutionError),
     RuntimeStore(RuntimeStoreResolutionError),
     JobStore(JobStoreResolutionError),
@@ -517,6 +518,7 @@ pub enum StorageResolutionError {
 impl std::fmt::Display for StorageResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RuntimeAuthority(error) => error.fmt(f),
             Self::Blob(error) => error.fmt(f),
             Self::RuntimeStore(error) => error.fmt(f),
             Self::JobStore(error) => error.fmt(f),

@@ -67,6 +67,8 @@ pub mod storage_migrate;
 pub mod storage_provider;
 #[cfg(test)]
 mod test_wait;
+#[cfg(test)]
+mod tool_application_test_support;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -196,8 +198,8 @@ pub use memory::{
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
-    MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,
-    send_message_on_mob,
+    MobRuntimeDelivery, MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook,
+    member_entry_to_json, send_message_on_mob,
 };
 pub use mobpack::{
     MOBPACK_MEDIA_TYPE, MOBPACK_SCHEMA_VERSION, MobpackDeployCommandResult, MobpackDiagnostic,

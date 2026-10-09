@@ -1,83 +1,165 @@
 # MCP Apps host integration
 
-This is independent of `customPanels` and `panel_modules`. App authors use
-standard MCP tool `_meta.ui.resourceUri`, `ui://` resources, the
-`text/html;profile=mcp-app` MIME type and standard MCP Apps communication.
-No Meta manifest, custom result block, or renderer registration is required.
+Inline widgets are independent of developer `customPanels` and `panel_modules`.
+App authors use standard MCP tool `_meta.ui.resourceUri`, `ui://` resources,
+`text/html;profile=mcp-app`, and MCP Apps communication. No Meta manifest,
+custom result block, or renderer registration is required.
 
-## Implemented frontend
+## Stock Console setup
 
-`ConsoleMcpAppView` uses the official `@modelcontextprotocol/ext-apps` AppBridge.
-`ConsoleMcpAppsHost` is a host integration adapter, not an app-facing contract.
-A `resolve` call opens a view for the exact identity/session/tool-call locator,
-returning its original standard Tool, arguments and CallToolResult. Resource
-reads and app actions use closures bound to that same runtime registration.
-An optional resource listing supplies standard UI metadata when resources/read
-omits it. No result body is written to browser storage.
+The stock Console creates its native gateway adapter from the experience
+configuration. Products do not need to pass `mcpAppsHost` or register renderers.
+Configure the isolated sandbox URL in `config/console.toml`:
 
-The host delivers input and the full result after initialization, supports
-resource reads and optional tool calls, bounds view size, and rejects actions in
-view-only mode. It does not retry calls. Missing resources, invalid MIME types,
-initialization failures and unavailable bindings retain the provided fallback.
-Closing a view aborts its requests and disposes its subscriptions. It must not
-close the shared MCP connection.
+```toml
+mcp_apps_sandbox_url = "http://127.0.0.1:5001/sandbox.html"
 
-`ConsoleMcpAppsProvider` is available to reusable conversation hosts.
-`ConsoleApp` / `createConsoleApp` accept a separate `mcpAppsHost` option. The
-conversation projection carries an `mcpApp` locator on a message entry. It must
-come from authenticated runtime observation of an actual UI-enabled tool call,
-never from arbitrary tool text or model-generated JSON.
-
-## Native integration still required
-
-Automatic discovery and durable invocation projection in the stock gateway are
-not wired yet. The coordinator's native MCP owner is rewriting per-registration
-observation and has requested no parallel edits to that owner until its commit
-lands. A frontend fixture is not evidence of native admission, durable replay,
-or application authorization.
-
-The native adapter must:
-
-- Resolve the exact originating member and registration through existing MCP
-  observation/composer ownership. Recheck viewer access on every open/read/action.
-- Preserve standard tool metadata and full CallToolResult, including `_meta`, in
-  the host channel and durable session history. Keep UI-only data out of LLM input.
-- Restore an existing invocation without executing its original tool again.
-- Read resources through the existing authenticated MCP connection, preserving
-  cancellation, generation/retirement checks and in-flight accounting.
-- Admit app actions through the member's existing runtime policy and approval
-  path, with standard app visibility and same-registration restrictions.
-- Exclude app-only tools from model discovery. Do not broaden the model catalog
-  to make app actions pass its current visibility precheck.
-- Advertise the standard UI capability only when those operations are supported.
-
-Do not construct another browser-owned MCP connection, bypass the native action
-path, or treat client locators as authorization. The coordinator has the exact
-native seam request and will route it after the current ownership commit.
-
-## Sandbox deployment
-
-Serve `console/mcp-apps-sandbox.cjs` on a dedicated origin, separate from Console
-and its authentication cookies. It exposes only the sandbox proxy; do not serve
-application APIs or sensitive files on that origin. Configure its exact allowed
-Console origin. The UI resource's declared domains become HTTP CSP headers;
-network and nested frames are denied by default. The inner view has an opaque
-origin. Camera, microphone, geolocation, downloads, popups and form submission
-are unavailable in this host profile. External-link host requests are unsupported.
-
-For a local proxy:
-
-```sh
-MCP_APPS_HOST_ORIGIN=http://127.0.0.1:5000 MCP_APPS_SANDBOX_PORT=5001 node console/mcp-apps-sandbox.cjs
+[realms.production]
+mcp_apps_sandbox_url = "https://console-apps.example.net/sandbox.html"
 ```
 
-For the deterministic protocol/rendering fixture:
+Serve the bundled proxy in a separate Node process:
+
+```sh
+MCP_APPS_HOST_ORIGIN=http://127.0.0.1:5000 MCP_APPS_SANDBOX_PORT=5001 npm --prefix console run mcp-apps:sandbox
+```
+
+`MCP_APPS_HOST_ORIGIN` is the exact Console origin, including its port. For
+multiple approved origins, use comma-separated `MCP_APPS_HOST_ORIGINS`. The
+process binds loopback by default; `MCP_APPS_SANDBOX_HOST=0.0.0.0` supports a
+container or dedicated reverse proxy. In production, terminate TLS on the
+sandbox's dedicated origin and forward only to this process. It serves only
+`/sandbox.html`, never gateway APIs. Keep Console cookies host-only and do not
+serve credentials, sensitive files, or application APIs on the sandbox origin.
+The proxy needs Node's standard library and `src/mcp-apps/sandbox.js`, with no
+npm dependencies.
+
+Omitting the URL or setting a realm override to an empty string retains text
+tool results. Gateways reject malformed URLs, credentials, fragments and a
+sandbox sharing their known local or declared public Console origin before
+advertising MCP Apps. The browser also checks its actual origin, including
+when an embedding host supplies a custom adapter. A reusable product can
+still supply its own `ConsoleMcpAppsHost` adapter, but the stock HTTP adapter is
+the default for configured gateways on the Console's authenticated origin.
+
+## Invocation and authority
+
+`ConsoleMcpAppView` uses the official `@modelcontextprotocol/ext-apps` AppBridge.
+The conversation projection supplies an identity/session/tool-call locator from
+an observed tool invocation. Arbitrary tool text and model-generated JSON cannot
+create an authorized binding.
+
+The live Agent can expose an accepted result before the turn commits. These
+locator frames use the `tool_application` source; observing a view does not
+change committed history or grant permission to invoke a tool.
+
+The stock adapter sends authenticated, non-cacheable requests to:
+
+- `POST /console/mcp-apps/resolve`
+- `POST /console/mcp-apps/read-resource`
+- `POST /console/mcp-apps/call-tool`
+
+Every request includes the original locator. The gateway derives the viewer from
+its normal authentication and checks access to the originating member. Headers
+carrying Console scope are routing context, not authorization. The runtime owns
+the physical MCP registration, its retirement checks, app visibility, policy and
+approval. Browser code never opens another MCP connection or receives its
+credentials.
+
+Resolve returns the original Tool, arguments and complete CallToolResult, plus
+an optional retained resource and `canCallTools`. Cached display does not wait
+for the current agent turn. `canCallTools` reports the authenticated viewer's
+access to the live host action surface; each action still requires fresh native
+admission and the original MCP connection. Reopening a view does not run
+its original tool. Retained HTML can render a historical invocation; uncached
+resource reads and app actions must re-enter the live registration check. A
+resource need not appear in `resources/list` to be read through its declared URI.
+
+During a run, the native Agent publishes a process-only display observation
+only after accepting the actual tool result into its canonical Session. The
+session service fences that read to the current actor and run. This observation
+is separate from committed history and never authorizes a tool action. After
+the run, replay comes from the runtime's committed session. Both paths omit
+ambiguous duplicate tool-call IDs. Live timeline frames use
+`source.kind = "tool_application"` and carry only locators.
+
+No result body or HTML is stored in localStorage or sessionStorage. UI-only
+`_meta` stays in the host channel. Native persistence retains original evidence;
+the browser keeps only the current view's data in memory. Text content remains
+the fallback for other channels and unavailable views.
+
+The native host preloads the declared renderer resource before `tools/call`,
+then delivers the actual invocation's input and result after view initialization.
+The host permits resource reads
+and authorized tool calls, and rejects actions in view-only mode. Calls are never
+automatically retried. Setup times out after 15 seconds; API calls also obey a
+bounded timeout. Closing or changing authority aborts requests and retires its
+isolated iframe. The host allows a bounded teardown acknowledgment without
+letting the retiring view send further requests or affect a replacement view.
+
+The proxy applies CSP from resource metadata, denying undeclared connections and
+frames by default. The inner view has an opaque origin. Camera, microphone,
+geolocation, downloads, popups and form submission are unavailable in this host
+profile. External-link requests, conversation handoff and model-context updates
+are not advertised or supported by this profile.
+
+## Future generated interfaces
+
+The [OpenUI article](https://www.openui.com/blog/how-chatgpt-intelligent-ui-works)
+is a reverse-engineering report, not an OpenAI interoperability contract. It
+motivates keeping generated descriptions, execution, data and admitted actions
+separate. This implementation does not add a generated UI language or compiler.
+
+A future MCP server can expose a predeclared renderer and return a versioned,
+opaque generated document with its data. The runtime should retain that data
+without interpreting a particular language or component catalog. Generated
+content must not enter the trusted custom-panel module loader.
+
+Keep these boundaries when adding that feature:
+
+- Preserve invocation identity and original result independently of transient
+  view state. Do not execute the original tool to restore a view.
+- Apply future ordered updates to an existing view rather than reloading an
+  iframe for every patch. Define revision, completion, cancellation and fallback
+  semantics when streaming is implemented; completed results are not partial
+  generation events.
+- Keep local controls local. Route tool effects through the original member and
+  registration's admission path. A renderer must not create a credentialed
+  browser MCP client or arbitrary network-action map.
+- Add conversation handoff only through an explicit host action, preserving its
+  app provenance and normal admission. Generated text cannot assert human
+  authorization or become a higher-priority instruction.
+- Use a constrained renderer or separately budgeted execution environment for
+  generated programs. Iframe isolation alone does not bound arbitrary JavaScript
+  CPU usage. Bind authoritative values from actual tool results rather than
+  asking a model to transcribe them.
+
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
+provides the app hosting and communication contract. It does not standardize a
+generated component language or native renderer operations. Those are future
+product decisions, not additional requirements on today's app authors.
+
+## Protocol fixture
 
 ```sh
 node console/mcp-apps-preview.cjs
 ```
 
-The fixture uses in-memory host data and standard App/AppBridge messages. It
-intentionally does not simulate the native MCP registration owner or claim its
-policy path is verified. `/counts` reports resolve, resource-read and action
-counts; the original tool result remains fixed across view reopening.
+This deterministic fixture uses in-memory data and standard App/AppBridge
+messages. It tests the host protocol and rendering, not native registration,
+member policy or durable replay. `/counts` reports resolve, resource-read and
+action counts. A native end-to-end check must exercise the real gateway and its
+MCP connection separately.
+
+Build the stock Console and native `console_acceptance_fixture` first, then run
+the native browser lane against those artifacts:
+
+```sh
+MOBKIT_EXAMPLE_BIN_DIR=/path/to/prebuilt/examples npm --prefix console run e2e:mcp-apps
+```
+
+That lane starts the real native member runtime and a stdio MCP server, loads
+the stock Console, invokes its app-only action, and checks reload, original
+connection custody, private metadata separation and native request rejection.
+It writes screenshots and wire evidence under `output/playwright/` and never
+contacts a model provider.

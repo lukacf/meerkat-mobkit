@@ -2436,14 +2436,17 @@ fn install_agent_mob_tools(
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
-) -> (
-    Arc<meerkat_mob_mcp::MobMcpState>,
-    ImplicitDelegateRetirementOverrides,
-    SharedDefaultLlmClientSlot,
-    SharedConsoleSpawnSinkSlot,
-    SharedIdentityRuntimeSlot,
-    AgentMobToolsInstall,
-) {
+) -> Result<
+    (
+        Arc<meerkat_mob_mcp::MobMcpState>,
+        ImplicitDelegateRetirementOverrides,
+        SharedDefaultLlmClientSlot,
+        SharedConsoleSpawnSinkSlot,
+        SharedIdentityRuntimeSlot,
+        AgentMobToolsInstall,
+    ),
+    meerkat_runtime::RuntimeDriverError,
+> {
     let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
         install_agent_mob_tools_with(
             definition,
@@ -2454,7 +2457,7 @@ fn install_agent_mob_tools(
             council_store.clone(),
             AgentMobChildPolicy::default(),
             None,
-        );
+        )?;
     let install = AgentMobToolsInstall {
         slot,
         session_service,
@@ -2462,14 +2465,14 @@ fn install_agent_mob_tools(
         default_llm_client_slot: Arc::clone(&llm_slot),
         council_store,
     };
-    (
+    Ok((
         state,
         overrides,
         llm_slot,
         console_spawn_sink,
         identity_runtime,
         install,
-    )
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2489,21 +2492,26 @@ fn install_agent_mob_tools_with(
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
     child_policy: AgentMobChildPolicy,
     existing_slots: Option<(SharedConsoleSpawnSinkSlot, SharedIdentityRuntimeSlot)>,
-) -> (
-    Arc<meerkat_mob_mcp::MobMcpState>,
-    ImplicitDelegateRetirementOverrides,
-    SharedDefaultLlmClientSlot,
-    SharedConsoleSpawnSinkSlot,
-    SharedIdentityRuntimeSlot,
-) {
+) -> Result<
+    (
+        Arc<meerkat_mob_mcp::MobMcpState>,
+        ImplicitDelegateRetirementOverrides,
+        SharedDefaultLlmClientSlot,
+        SharedConsoleSpawnSinkSlot,
+        SharedIdentityRuntimeSlot,
+    ),
+    meerkat_runtime::RuntimeDriverError,
+> {
     let default_llm_client_slot = default_llm_client_slot
         .unwrap_or_else(|| Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>)));
     let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
     // Forward the workgraph service so agent-spawned child mobs
     // (delegate / mob_spawn_member) inherit apply-time attention overlays.
-    let mut state =
-        meerkat_mob_mcp::MobMcpState::new(session_service, meerkat_mob::MobControlPrincipal::Owner)
-            .with_workgraph_service(workgraph_service);
+    let mut state = meerkat_mob_mcp::MobMcpState::new(
+        session_service,
+        meerkat_mob::MobControlPrincipal::Owner,
+    )?
+    .with_workgraph_service(workgraph_service);
     if let Some(council_store) = council_store {
         state = state.with_temporary_council_store(council_store);
     }
@@ -2563,13 +2571,13 @@ fn install_agent_mob_tools_with(
     *slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    (
+    Ok((
         state,
         implicit_delegate_retirement_overrides,
         default_llm_client_slot,
         console_spawn_sink,
         identity_runtime,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -4965,6 +4973,90 @@ impl SessionStoreBackedRuntimeStore {
 
 #[async_trait]
 impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
+    fn execution_custody(&self) -> Option<&meerkat_runtime::store::RuntimeStoreExecutionCustody> {
+        self.inner.execution_custody()
+    }
+
+    fn try_controller_mutation_custody<'a>(
+        &'a self,
+        claim: &'a meerkat_runtime::store::RuntimeStoreExecutionClaim,
+    ) -> Result<
+        Box<dyn meerkat_runtime::store::RuntimeStoreControllerCustody + 'a>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.try_controller_mutation_custody(claim)
+    }
+
+    fn hosting_capability(&self) -> meerkat_runtime::session_hosting::HostingCapability {
+        self.inner.hosting_capability()
+    }
+
+    async fn load_continuation_key_binding(
+        &self,
+        owner: &str,
+        key: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::ContinuationKeyBinding>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_continuation_key_binding(owner, key).await
+    }
+
+    async fn compare_and_swap_runtime_delivery_authority_with_key_binding(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_revision: Option<u64>,
+        replacement: meerkat_runtime::store::RuntimeDeliveryAuthorityRecord,
+        inserted_delivery: meerkat_runtime::store::RuntimeDeliveryStoreRecord,
+        binding: meerkat_runtime::store::ContinuationKeyBinding,
+    ) -> Result<
+        meerkat_runtime::store::KeyedRuntimeDeliveryCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_runtime_delivery_authority_with_key_binding(
+                runtime_id,
+                expected_revision,
+                replacement,
+                inserted_delivery,
+                binding,
+            )
+            .await
+    }
+
+    async fn load_continuation_admission(
+        &self,
+        address: &meerkat_runtime::LogicalRuntimeId,
+        delivery_id: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::ContinuationAdmission>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_continuation_admission(address, delivery_id)
+            .await
+    }
+
+    async fn transition_continuation_admission(
+        &self,
+        address: &meerkat_runtime::LogicalRuntimeId,
+        delivery_id: &str,
+        transition: meerkat_runtime::store::ContinuationAdmissionTransition,
+    ) -> Result<
+        meerkat_runtime::store::ContinuationAdmissionOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .transition_continuation_admission(address, delivery_id, transition)
+            .await
+    }
+
+    async fn load_delivery_generation(
+        &self,
+    ) -> Result<u64, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_delivery_generation().await
+    }
+
     // The complete store-owned session-authority seam is carried by the
     // backend; this decorator forwards the one required accessor and keeps
     // its intentional per-operation overrides below (write-epoch bumps on
@@ -6187,6 +6279,17 @@ macro_rules! delegate_mob_session_service {
     ($wrapper:ty) => {
         #[async_trait]
         impl meerkat_core::service::SessionService for $wrapper {
+            async fn read_tool_application_observations(
+                &self,
+                id: &meerkat_core::SessionId,
+            ) -> Result<Vec<meerkat_core::ToolApplicationObservation>, SessionError> {
+                self.inner.read_tool_application_observations(id).await
+            }
+
+            async fn tool_application(self: Arc<Self>, control: Arc<meerkat_core::ToolApplicationControlRequest>) -> Result<serde_json::Value, SessionError> {
+                Arc::clone(&self.inner).tool_application(control).await
+            }
+
             async fn create_session(
                 &self,
                 req: CreateSessionRequest,
@@ -6752,10 +6855,18 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<bool, SessionError> {
                 self.inner.session_known_to_archive_authority(session_id).await
             }
-            fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-                self.runtime_adapter_override
-                    .clone()
-                    .or_else(|| self.inner.runtime_adapter())
+            fn acquire_runtime_adapter(
+                &self,
+                explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+            ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError> {
+                if let (Some(explicit), Some(installed)) = (explicit.as_ref(), self.runtime_adapter_override.as_ref())
+                    && !explicit.shares_runtime_execution_owner_with(installed)
+                {
+                    return Err(meerkat_runtime::RuntimeDriverError::StaleAuthority {
+                        reason: "session service runtime owner differs from explicit owner".into(),
+                    });
+                }
+                self.inner.acquire_runtime_adapter(explicit.or_else(|| self.runtime_adapter_override.clone()))
             }
             async fn interrupt_with_machine_authority(
                 &self,
@@ -6940,6 +7051,12 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
                 self.inner.load_persisted_session_metadata(session_id).await
+            }
+            async fn load_retained_session_metadata(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+                self.inner.load_retained_session_metadata(session_id).await
             }
             async fn authorize_revivable_retired_session(
                 &self,
@@ -7399,6 +7516,20 @@ impl AfterCreateMobSessionService {
 
 #[async_trait]
 impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
+    async fn read_tool_application_observations(
+        &self,
+        id: &meerkat_core::SessionId,
+    ) -> Result<Vec<meerkat_core::ToolApplicationObservation>, SessionError> {
+        self.inner.read_tool_application_observations(id).await
+    }
+
+    async fn tool_application(
+        self: Arc<Self>,
+        control: Arc<meerkat_core::ToolApplicationControlRequest>,
+    ) -> Result<serde_json::Value, SessionError> {
+        Arc::clone(&self.inner).tool_application(control).await
+    }
+
     async fn create_session(
         &self,
         req: CreateSessionRequest,
@@ -7901,8 +8032,12 @@ impl MobSessionService for AfterCreateMobSessionService {
             .session_known_to_archive_authority(session_id)
             .await
     }
-    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-        self.inner.runtime_adapter()
+    fn acquire_runtime_adapter(
+        &self,
+        explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+    {
+        self.inner.acquire_runtime_adapter(explicit)
     }
     async fn interrupt_with_machine_authority(
         &self,
@@ -8065,6 +8200,12 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
         self.inner.load_persisted_session_metadata(session_id).await
+    }
+    async fn load_retained_session_metadata(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+        self.inner.load_retained_session_metadata(session_id).await
     }
     async fn authorize_revivable_retired_session(
         &self,
@@ -8370,6 +8511,184 @@ pub(crate) struct LiveComposeInputs {
     pub(crate) config: Config,
 }
 
+/// The native delivery owner shared by a MobKit runtime and its job producers.
+///
+/// The inbox, detached job store, and continuation bindings are the same ones
+/// supplied to Core's owner. Keeping this value alive retains the owner; dropping
+/// it stops delivery. Externally composed hosts inject it with
+/// [`MobBootstrapSpec::with_runtime_delivery`].
+pub struct MobRuntimeDelivery {
+    runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+    inbox: meerkat_runtime::RuntimeDeliveryInbox,
+    jobs: Arc<dyn meerkat::DetachedJobStore>,
+    bindings: Arc<meerkat::ContinuationHostBindings>,
+    armed: std::sync::Mutex<Option<ArmedMobRuntimeDelivery>>,
+    stopped: std::sync::atomic::AtomicBool,
+    mob_state: std::sync::Mutex<Option<std::sync::Weak<meerkat_mob_mcp::MobMcpState>>>,
+}
+
+struct ArmedMobRuntimeDelivery {
+    handle: meerkat::RuntimeDeliveryOwnerHandle,
+    // The native host deliberately holds these weakly. This composition owns
+    // them for precisely the lifetime of its delivery owner.
+    _service: Arc<PreBuildMobSessionService>,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    realm_id: Option<String>,
+}
+
+impl MobRuntimeDelivery {
+    pub fn new(
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+        jobs: Arc<dyn meerkat::DetachedJobStore>,
+    ) -> Self {
+        Self {
+            inbox: meerkat_runtime::RuntimeDeliveryInbox::new(runtime_store.clone()),
+            runtime_store,
+            jobs,
+            bindings: Arc::default(),
+            armed: std::sync::Mutex::new(None),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            mob_state: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn inbox(&self) -> meerkat_runtime::RuntimeDeliveryInbox {
+        self.inbox.clone()
+    }
+
+    pub fn subscribe_passes(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<meerkat::RuntimeDeliveryPass>> {
+        self.armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|armed| !armed.handle.is_stopped())
+            .map(|armed| armed.handle.subscribe_passes())
+    }
+
+    /// Arm Core's owner over the session service's canonical machine.
+    ///
+    /// Call from a Tokio runtime. A second arm with the same live service,
+    /// machine, and realm is idempotent. Different authority is refused.
+    pub fn arm(
+        &self,
+        service: Arc<dyn MobSessionService>,
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        realm_id: Option<String>,
+    ) -> Result<(), MobRuntimeError> {
+        if !machine.shares_runtime_store_authority(&self.runtime_store) {
+            return Err(MobRuntimeError::InvalidConfig(
+                "runtime delivery inbox and machine must share their exact runtime store".into(),
+            ));
+        }
+        let canonical = service
+            .acquire_runtime_adapter(Some(machine.clone()))
+            .map_err(|error| MobRuntimeError::InvalidConfig(error.to_string()))?
+            .ok_or_else(|| {
+                MobRuntimeError::InvalidConfig(
+                    "runtime delivery requires a canonical machine".into(),
+                )
+            })?;
+        if !Arc::ptr_eq(&canonical, &machine) {
+            return Err(MobRuntimeError::InvalidConfig(
+                "runtime delivery must use the session service's canonical machine".into(),
+            ));
+        }
+        let mut armed = self
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(MobRuntimeError::InvalidConfig(
+                "runtime delivery has been shut down".into(),
+            ));
+        }
+        if let Some(current) = armed.as_ref() {
+            return if Arc::ptr_eq(&current.machine, &machine)
+                && Arc::ptr_eq(&current._service.inner, &service)
+                && current.realm_id == realm_id
+                && !current.handle.is_stopped()
+            {
+                Ok(())
+            } else {
+                Err(MobRuntimeError::InvalidConfig(
+                    "runtime delivery already has a different or stopped owner".into(),
+                ))
+            };
+        }
+        let service = Arc::new(PreBuildMobSessionService {
+            inner: service,
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: Some(machine.clone()),
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let host = Arc::new(
+            meerkat::surface::SessionServiceDeliveryHost::new(
+                &service,
+                &machine,
+                meerkat::DetachedJobService::new(self.jobs.clone()),
+                realm_id.clone(),
+            )
+            .with_continuation_bindings(self.bindings.clone()),
+        );
+        let handle = meerkat::RuntimeDeliveryOwner::new(self.jobs.clone(), self.inbox.clone())
+            .with_attachment_commits(machine.subscribe_attachment_commits())
+            .with_run_settlements(machine.subscribe_run_settlements())
+            .arm(host)
+            .map_err(|error| MobRuntimeError::InvalidConfig(error.to_string()))?;
+        *armed = Some(ArmedMobRuntimeDelivery {
+            handle,
+            _service: service,
+            machine,
+            realm_id,
+        });
+        Ok(())
+    }
+
+    fn bind_mob(&self, state: &Arc<meerkat_mob_mcp::MobMcpState>) -> Result<(), MobRuntimeError> {
+        state
+            .bind_continuations(self.inbox.clone(), &self.bindings)
+            .map_err(|error| MobRuntimeError::InvalidConfig(error.to_string()))?;
+        *self
+            .mob_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(state));
+        Ok(())
+    }
+
+    /// Stop the native owner and stop advertising detached completion delivery.
+    pub fn shutdown(&self) {
+        let mut armed = self
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(state) = self
+            .mob_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            state.set_detached_completion_delivery(
+                meerkat_mob_mcp::DetachedCompletionDelivery::Unavailable,
+            );
+        }
+        armed.take();
+    }
+}
+
+impl Drop for MobRuntimeDelivery {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
@@ -8409,6 +8728,7 @@ pub struct MobBootstrapSpec {
     /// upstream adapter cache is weak, so an installed host would otherwise be
     /// lost before bootstrap asks the service for its adapter again.
     pub runtime_adapter: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    pub(crate) runtime_delivery: Option<Arc<MobRuntimeDelivery>>,
     /// The concrete inputs a live door (console voice, `mobkit/live/*`)
     /// composes over, retained only when the launch path built a
     /// persistent session service. The erased `session_service` above stays
@@ -8569,6 +8889,7 @@ impl MobBootstrapSpec {
                 default_llm_client: None,
             },
             runtime_adapter: None,
+            runtime_delivery: None,
             live_compose_inputs: None,
             spawn_member_customizer: None,
             restored_members_awaiting_tools: Vec::new(),
@@ -8610,6 +8931,13 @@ impl MobBootstrapSpec {
         self
     }
 
+    /// Share the native delivery owner with detached job producers and this mob.
+    #[must_use]
+    pub fn with_runtime_delivery(mut self, delivery: Arc<MobRuntimeDelivery>) -> Self {
+        self.runtime_delivery = Some(delivery);
+        self
+    }
+
     pub fn with_options(mut self, options: MobBootstrapOptions) -> Self {
         self.options = options;
         self
@@ -8639,7 +8967,7 @@ impl MobBootstrapSpec {
         mob_tools_slot: Arc<
             std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>,
         >,
-    ) -> Self {
+    ) -> Result<Self, meerkat_runtime::RuntimeDriverError> {
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8656,14 +8984,14 @@ impl MobBootstrapSpec {
             // No `store_path` in this builder path, so no durable council
             // store: councils stay process-bound, exactly as before.
             None,
-        );
+        )?;
         self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         self.identity_runtime_slot = Some(identity_runtime_slot);
         self.agent_mob_tools_install = Some(agent_mob_tools_install);
-        self
+        Ok(self)
     }
 
     /// Thread a realm-scoped WorkGraph service into the mob runtime.
@@ -8836,13 +9164,13 @@ impl MobBootstrapSpec {
     /// shared state is side-effect free, and the slots already handed out
     /// are kept; the council store and session service are the ones the
     /// tools were first installed with.
-    fn apply_agent_mob_child_policy(&mut self) {
+    fn apply_agent_mob_child_policy(&mut self) -> Result<(), meerkat_runtime::RuntimeDriverError> {
         let child_policy = self.agent_mob_child_policy();
         if child_policy.is_empty() {
-            return;
+            return Ok(());
         }
         let Some(install) = self.agent_mob_tools_install.clone() else {
-            return;
+            return Ok(());
         };
         let existing_slots = match (&self.console_spawn_sink_slot, &self.identity_runtime_slot) {
             (Some(sink), Some(identity)) => Some((Arc::clone(sink), Arc::clone(identity))),
@@ -8858,11 +9186,12 @@ impl MobBootstrapSpec {
                 install.council_store,
                 child_policy,
                 existing_slots,
-            );
+            )?;
         self.agent_mob_mcp_state = Some(state);
         self.implicit_delegate_retirement_overrides = Some(overrides);
         self.console_spawn_sink_slot = Some(console_spawn_sink);
         self.identity_runtime_slot = Some(identity_runtime);
+        Ok(())
     }
 
     /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
@@ -9146,28 +9475,38 @@ impl MobBootstrapSpec {
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        let runtime_adapter = if caps.image_generation {
-            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-            Some(Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-                runtime_store,
-                Arc::clone(&blob_store),
-            )))
-        } else {
-            None
-        };
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        // This store is freshly allocated and has no other custody holder.
+        #[allow(clippy::expect_used)]
+        let runtime_adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(runtime_store.clone(), blob_store.clone())
+                .expect("fresh memory runtime store accepts its first owner"),
+        );
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let runtime_delivery = Arc::new(MobRuntimeDelivery::new(
+            runtime_store.clone(),
+            job_store.clone(),
+        ));
         let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
             .mob(caps.mob)
             .comms(caps.comms)
-            .memory(caps.memory);
-        if let Some(machine) = runtime_adapter.clone() {
-            factory = factory.with_image_generation_machine(machine);
+            .memory(caps.memory)
+            .mcp_apps(caps.mcp_apps);
+        if caps.image_generation {
+            factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
         let config = agent_config.unwrap_or_default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
-        builder.default_blob_store = Some(blob_store);
+        builder.default_blob_store = Some(blob_store.clone());
+        builder.default_detached_job_store = Some(job_store.clone());
+        builder.default_shell_job_delivery_projector = Some(meerkat::JobOutboxProjector::new(
+            job_store,
+            runtime_delivery.inbox(),
+        ));
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
         }
@@ -9182,55 +9521,29 @@ impl MobBootstrapSpec {
                 &builder,
                 definition.id.as_str(),
             );
-        let concrete_session_service = Arc::new(meerkat_session::EphemeralSessionService::new(
-            builder,
-            max_sessions,
-        ));
-        let effective_runtime_adapter = runtime_adapter
-            .clone()
-            .or_else(|| MobSessionService::runtime_adapter(concrete_session_service.as_ref()));
+        let service = Arc::new(
+            meerkat_session::PersistentSessionService::new(
+                builder,
+                max_sessions,
+                Arc::new(meerkat_store::MemoryStore::new()),
+                runtime_store,
+                blob_store,
+            )
+            .with_canonical_runtime_adapter(runtime_adapter.clone()),
+        );
         let reconfigure_service: Arc<
             dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
-        > = concrete_session_service.clone();
-        if let Some(effective_runtime_adapter) = effective_runtime_adapter.as_ref() {
-            session_llm_reconfigure_blueprint
-                .install(effective_runtime_adapter, reconfigure_service);
-        } else {
-            tracing::error!(
-                "ephemeral session service has no runtime adapter; runtime LLM reconfiguration is unavailable"
-            );
+        > = service.clone();
+        let session_service: Arc<dyn MobSessionService> = service;
+        // A fresh ephemeral service cannot have a competing runtime owner.
+        #[allow(clippy::expect_used)]
+        let effective_runtime_adapter = session_service
+            .acquire_runtime_adapter(Some(runtime_adapter.clone()))
+            .expect("fresh session service accepts its canonical runtime owner");
+        if let Some(adapter) = effective_runtime_adapter.as_ref() {
+            session_llm_reconfigure_blueprint.install(adapter, reconfigure_service);
         }
-        let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
-        let after_create_hook = if let Some(runtime_adapter) = runtime_adapter {
-            let user_after_create_hook = after_create_hook.clone();
-            Some(Arc::new(
-                move |session_id: meerkat_core::types::SessionId, ctx: SessionCreatedContext| {
-                    let runtime_adapter = runtime_adapter.clone();
-                    let user_after_create_hook = user_after_create_hook.clone();
-                    Box::pin(async move {
-                        // The after-create hook is fire-and-forget; surface a
-                        // failed control-plane registration in logs instead of
-                        // silently dropping it (it cannot abort the session).
-                        if let Err(error) =
-                            runtime_adapter.register_session(session_id.clone()).await
-                        {
-                            tracing::error!(
-                                session_id = %session_id,
-                                error = %error,
-                                "post-create session runtime registration failed"
-                            );
-                        }
-                        if let Some(user_after_create_hook) = user_after_create_hook {
-                            user_after_create_hook(session_id, ctx).await;
-                        }
-                    })
-                        as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                },
-            ) as AfterCreateHook)
-        } else {
-            after_create_hook
-        };
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
@@ -9245,6 +9558,7 @@ impl MobBootstrapSpec {
         // they get every layer member creates get (the gateway's
         // `with_agent_mob_tools` order).
         let mut spec = Self::new(definition, storage, session_service);
+        #[allow(clippy::expect_used)] // The private service's exact owner was acquired above.
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9262,7 +9576,8 @@ impl MobBootstrapSpec {
             // database from a mob that keeps nothing else would leave records
             // behind that no later boot of this mob can claim.
             None,
-        );
+        )
+        .expect("fresh session service retains its canonical runtime owner");
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -9270,17 +9585,17 @@ impl MobBootstrapSpec {
         spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = effective_runtime_adapter;
+        spec.runtime_delivery = Some(runtime_delivery);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
         spec.workgraph_admission_slots
             .push(workgraph_admission_slot);
-        // Ephemeral mode: in-memory blobs are the declared choice of the
-        // mode itself; the ephemeral session service persists nothing, so
-        // the incremental capability is not applicable.
+        // Native continuation custody uses the persistent-service lifecycle
+        // over memory stores. This launch still declares ephemeral storage.
         let mut slots = vec![
             StorageSlotSummary::declared_ephemeral(
                 "sessions",
-                "EphemeralSessionService",
+                "MemoryStore",
                 "declared by the ephemeral launch mode",
             ),
             blob_slot_summary(BlobDurability::DeclaredEphemeral),
@@ -9561,16 +9876,20 @@ impl MobBootstrapSpec {
                 session_store.clone(),
             ),
         );
-        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let runtime_adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .map_err(StorageResolutionError::RuntimeAuthority)?,
+        );
         let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
             .mob(caps.mob)
             .comms(caps.comms)
-            .memory(caps.memory);
+            .memory(caps.memory)
+            .mcp_apps(caps.mcp_apps);
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
@@ -9599,7 +9918,12 @@ impl MobBootstrapSpec {
                     StorageSlotSummary::persistent("jobs", "SqliteDetachedJobStore"),
                 )
             };
-        builder.default_detached_job_store = Some(job_store);
+        builder.default_detached_job_store = Some(job_store.clone());
+        let runtime_delivery = Arc::new(MobRuntimeDelivery::new(runtime_store.clone(), job_store));
+        builder.default_shell_job_delivery_projector = Some(meerkat::JobOutboxProjector::new(
+            runtime_delivery.jobs.clone(),
+            runtime_delivery.inbox(),
+        ));
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
@@ -9675,13 +9999,16 @@ impl MobBootstrapSpec {
             };
         let runtime_authority_prewarm = Arc::clone(&runtime_store);
         let archived_terminal_authority = Arc::clone(&runtime_store);
-        let concrete_session_service = Arc::new(meerkat_session::PersistentSessionService::new(
-            builder,
-            max_sessions,
-            session_store,
-            runtime_store,
-            blob_store,
-        ));
+        let concrete_session_service = Arc::new(
+            meerkat_session::PersistentSessionService::new(
+                builder,
+                max_sessions,
+                session_store,
+                runtime_store,
+                blob_store,
+            )
+            .with_canonical_runtime_adapter(Arc::clone(&runtime_adapter)),
+        );
         let reconfigure_service: Arc<
             dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
         > = concrete_session_service.clone();
@@ -9743,7 +10070,8 @@ impl MobBootstrapSpec {
             crate::council_wiring::open_council_store(
                 &crate::council_wiring::council_db_for_store_path(&store_path),
             )?,
-        );
+        )
+        .map_err(StorageResolutionError::RuntimeAuthority)?;
         spec.runtime_authority_prewarm = Some(runtime_authority_prewarm);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
@@ -9754,6 +10082,7 @@ impl MobBootstrapSpec {
         spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.runtime_delivery = Some(runtime_delivery);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = workgraph_service;
         if let Some(slot) = workgraph_admission_slot {
@@ -9804,7 +10133,7 @@ impl MobBootstrapSpec {
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         Self::ephemeral_runtime_backed_with_provider_stores(
             definition,
             storage,
@@ -9843,7 +10172,7 @@ impl MobBootstrapSpec {
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
         provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
-    ) -> Self {
+    ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
         let has_custom_session_store = custom_session_store.is_some();
@@ -9879,18 +10208,14 @@ impl MobBootstrapSpec {
                 BlobDurability::DeclaredEphemeral,
             )
         };
-        // H2 probe — only meaningful when a custom store backs a persistent
-        // session service below; the ephemeral service persists nothing.
+        // H2 describes the caller's durable session store. The selected native
+        // session service also commits memory-backed sessions within this process.
         let session_store_incremental = custom_session_store
             .as_ref()
             .map(|store| probe_session_store_incremental(store, session_store_kind));
-        // Runtime-backed ephemeral mode keeps the live EphemeralSessionService
-        // as the comms authority, but registers each created session with the
-        // same in-memory machine used by image generation. Meerkat 0.6.4's
-        // persistent runtime-backed create path does not expose member comms
-        // handles early enough for mob edge reconciliation; this bounded bridge
-        // preserves live comms while avoiding the old "image tool sees the
-        // session as destroyed" split-machine bug.
+        // Storage mode and native ownership are independent: a memory-backed
+        // persistent session service shares the runtime machine's exact store,
+        // while the storage census continues to report process-local memory.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             if let Some(provider) = provider_meerkat_stores.as_ref() {
                 // M4b single-bundle: runtime authority rides the composite
@@ -9915,25 +10240,36 @@ impl MobBootstrapSpec {
             } else {
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
             };
-        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let runtime_adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .map_err(StorageResolutionError::RuntimeAuthority)?,
+        );
         let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
             .mob(caps.mob)
             .comms(caps.comms)
-            .memory(caps.memory);
+            .memory(caps.memory)
+            .mcp_apps(caps.mcp_apps);
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
-        if let Some(provider) = provider_meerkat_stores.as_ref() {
-            builder.default_detached_job_store = Some(Arc::clone(&provider.job_store));
-        }
+        let job_store: Arc<dyn meerkat::DetachedJobStore> = provider_meerkat_stores
+            .as_ref()
+            .map(|provider| provider.job_store.clone())
+            .unwrap_or_else(|| Arc::new(meerkat::MemoryDetachedJobStore::new()));
+        builder.default_detached_job_store = Some(job_store.clone());
+        let runtime_delivery = Arc::new(MobRuntimeDelivery::new(runtime_store.clone(), job_store));
+        builder.default_shell_job_delivery_projector = Some(meerkat::JobOutboxProjector::new(
+            runtime_delivery.jobs.clone(),
+            runtime_delivery.inbox(),
+        ));
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
@@ -9992,66 +10328,37 @@ impl MobBootstrapSpec {
                     ),
                 )
             };
-        let mut live_compose_inputs: Option<LiveComposeInputs> = None;
-        let session_service: Arc<dyn MobSessionService> =
-            if let Some(custom_session_store) = custom_session_store {
-                let live_factory = builder.factory().clone();
-                let live_config = builder.config().clone();
-                let concrete_session_service =
-                    Arc::new(meerkat_session::PersistentSessionService::new(
-                        builder,
-                        max_sessions,
-                        custom_session_store,
-                        runtime_store.clone(),
-                        blob_store,
-                    ));
-                let reconfigure_service: Arc<
-                dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
-            > = concrete_session_service.clone();
-                session_llm_reconfigure_blueprint.install(&runtime_adapter, reconfigure_service);
-                live_compose_inputs = Some(LiveComposeInputs {
-                    service: Arc::clone(&concrete_session_service),
-                    machine: Arc::clone(&runtime_adapter),
-                    factory: live_factory,
-                    config: live_config,
-                });
-                concrete_session_service
-            } else {
-                let concrete_session_service = Arc::new(
-                    meerkat_session::EphemeralSessionService::new(builder, max_sessions),
-                );
-                let reconfigure_service: Arc<
-                dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
-            > = concrete_session_service.clone();
-                session_llm_reconfigure_blueprint.install(&runtime_adapter, reconfigure_service);
-                concrete_session_service
-            };
-        let hook = hook.unwrap_or_else(no_op_pre_build_hook);
-        let runtime_adapter_for_after_create = runtime_adapter.clone();
-        let combined_after_create_hook: AfterCreateHook = Arc::new(move |session_id, ctx| {
-            let runtime_adapter = runtime_adapter_for_after_create.clone();
-            let after_create_hook = after_create_hook.clone();
-            Box::pin(async move {
-                // The after-create hook is fire-and-forget; surface a failed
-                // control-plane registration in logs instead of silently
-                // dropping it (it cannot abort the session).
-                if let Err(error) = runtime_adapter.register_session(session_id.clone()).await {
-                    tracing::error!(
-                        session_id = %session_id,
-                        error = %error,
-                        "post-create session runtime registration failed"
-                    );
-                }
-                if let Some(after_create_hook) = after_create_hook {
-                    after_create_hook(session_id, ctx).await;
-                }
-            })
+        // Runtime-backed storage has one matching persistent session owner.
+        // Memory stores remain explicitly ephemeral; no disk fallback is added.
+        let live_factory = builder.factory().clone();
+        let live_config = builder.config().clone();
+        let concrete_session_service = Arc::new(
+            meerkat_session::PersistentSessionService::new(
+                builder,
+                max_sessions,
+                Arc::clone(&session_store),
+                runtime_store.clone(),
+                blob_store,
+            )
+            .with_canonical_runtime_adapter(Arc::clone(&runtime_adapter)),
+        );
+        let reconfigure_service: Arc<
+            dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
+        > = concrete_session_service.clone();
+        session_llm_reconfigure_blueprint.install(&runtime_adapter, reconfigure_service);
+        let live_compose_inputs = Some(LiveComposeInputs {
+            service: Arc::clone(&concrete_session_service),
+            machine: Arc::clone(&runtime_adapter),
+            factory: live_factory,
+            config: live_config,
         });
+        let session_service: Arc<dyn MobSessionService> = concrete_session_service;
+        let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            after_create_hook: Some(combined_after_create_hook),
+            after_create_hook,
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
             archived_terminal_authority: None,
@@ -10088,7 +10395,8 @@ impl MobBootstrapSpec {
             // guard's detection missed, so the site was attributed to the
             // preceding `persistent_*` function and read as correct.
             None,
-        );
+        )
+        .map_err(StorageResolutionError::RuntimeAuthority)?;
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -10096,6 +10404,7 @@ impl MobBootstrapSpec {
         spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.runtime_delivery = Some(runtime_delivery);
         spec.runtime_authority_prewarm = Some(runtime_store);
         spec.live_compose_inputs = live_compose_inputs;
         spec.binary_blob_store = Some(binary_blob_store);
@@ -10142,7 +10451,7 @@ impl MobBootstrapSpec {
             ResolvedStorageSummary::new(blob_durability, session_store_incremental)
                 .with_slots(slots),
         );
-        spec
+        Ok(spec)
     }
 }
 
@@ -10232,6 +10541,8 @@ pub struct CapabilityFlags {
     pub comms: bool,
     pub memory: bool,
     pub image_generation: bool,
+    /// Advertise standard MCP Apps support only when a presentation host exists.
+    pub mcp_apps: bool,
 }
 
 impl Default for CapabilityFlags {
@@ -10243,6 +10554,7 @@ impl Default for CapabilityFlags {
             comms: true,
             memory: true,
             image_generation: false,
+            mcp_apps: false,
         }
     }
 }
@@ -10403,6 +10715,7 @@ async fn bounded_commit_pending<E>(
 pub struct MobRuntime {
     handle: MobHandle,
     session_service: Option<Arc<dyn MobSessionService>>,
+    runtime_delivery: Option<Arc<MobRuntimeDelivery>>,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
@@ -10618,7 +10931,8 @@ impl MobRuntime {
         let raw_definition = spec.definition.clone();
         // Before anything reads the agent mob-tool state: child mobs get the
         // host's final application tool policy and child bundles.
-        spec.apply_agent_mob_child_policy();
+        spec.apply_agent_mob_child_policy()
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))?;
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
@@ -10642,10 +10956,23 @@ impl MobRuntime {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = default_llm_client.clone();
         }
-        let effective_runtime_adapter = spec
-            .runtime_adapter
-            .clone()
-            .or_else(|| session_service.runtime_adapter());
+        let effective_runtime_adapter = session_service
+            .acquire_runtime_adapter(spec.runtime_adapter.clone())
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))?;
+        if let Some(delivery) = spec.runtime_delivery.as_ref() {
+            let machine = effective_runtime_adapter.as_ref().ok_or_else(|| {
+                MobRuntimeError::InvalidConfig(
+                    "native runtime delivery requires a runtime adapter".into(),
+                )
+            })?;
+            if !machine.shares_runtime_store_authority(&delivery.runtime_store)
+                || delivery.stopped.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(MobRuntimeError::InvalidConfig(
+                    "native runtime delivery requires its live canonical runtime store".into(),
+                ));
+            }
+        }
 
         // Create-vs-resume selection, in ONE place. An in-memory storage is
         // always empty at boot, so this single read serves both modes:
@@ -10865,7 +11192,7 @@ impl MobRuntime {
         // and persistent-with-runtime-backed-service), forward that adapter
         // explicitly so autonomous members do not come up session-backed but
         // runtime-unattached.
-        if let Some(adapter) = effective_runtime_adapter {
+        if let Some(adapter) = effective_runtime_adapter.clone() {
             builder = builder.with_runtime_adapter(adapter);
         }
 
@@ -10965,7 +11292,24 @@ impl MobRuntime {
             handle
         };
         if let Some(state) = agent_mob_mcp_state.as_ref() {
+            // Inserting the restored handle may relink completed council jobs.
+            // Install their native submission route before that sweep can run.
+            if let Some(delivery) = spec.runtime_delivery.as_ref() {
+                delivery.bind_mob(state)?;
+            }
             state.mob_insert_handle(mob_id, handle.clone()).await;
+        }
+        if let Some(delivery) = spec.runtime_delivery.as_ref() {
+            let machine = effective_runtime_adapter.clone().ok_or_else(|| {
+                MobRuntimeError::InvalidConfig(
+                    "native runtime delivery requires a runtime adapter".into(),
+                )
+            })?;
+            delivery.arm(
+                session_service.clone(),
+                machine,
+                Some(crate::storage_provider::MEERKAT_LEVEL_REALM_ID.to_string()),
+            )?;
         }
         // One admission per runtime; the tool-plane dispatchers were built
         // before the mob (and thus the roster) existed, so their late-bound
@@ -11004,6 +11348,7 @@ impl MobRuntime {
             Self {
                 handle,
                 session_service: Some(session_service),
+                runtime_delivery: spec.runtime_delivery,
                 agent_mob_mcp_state,
                 implicit_delegate_retirement_overrides,
                 binary_blob_store,
@@ -11044,6 +11389,7 @@ impl MobRuntime {
                 crate::mob_composition_manifest::CompositionAuthority::Authoritative,
             handle,
             session_service: None,
+            runtime_delivery: None,
             agent_mob_mcp_state: None,
             implicit_delegate_retirement_overrides: None,
             binary_blob_store: None,
@@ -11071,6 +11417,10 @@ impl MobRuntime {
     #[must_use]
     pub fn speaks_for_composition(&self) -> bool {
         self.composition_authority.speaks_for_composition()
+    }
+
+    pub fn runtime_delivery(&self) -> Option<Arc<MobRuntimeDelivery>> {
+        self.runtime_delivery.clone()
     }
 
     pub fn handle(&self) -> MobHandle {
@@ -11281,6 +11631,26 @@ impl MobRuntime {
         .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))
     }
 
+    /// Read host-only observations from the exact native session owner.
+    /// These records supply display data, never permission for new tool IO.
+    pub async fn read_tool_application_observations(
+        &self,
+        session_id_str: &str,
+    ) -> Result<Vec<meerkat_core::ToolApplicationObservation>, MobRuntimeError> {
+        let service = self
+            .session_service
+            .as_ref()
+            .ok_or(MobRuntimeError::InvalidInput(
+                "tool application observations unavailable for this runtime",
+            ))?;
+        let session_id = meerkat_core::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        service
+            .read_tool_application_observations(&session_id)
+            .await
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))
+    }
+
     /// Observe whether an exact previous append attempt can still be applying.
     /// This projects existing runtime authority; it does not advance an input.
     pub(crate) async fn settled_notice_attempts(
@@ -11305,7 +11675,7 @@ impl MobRuntime {
         let adapter = self
             .session_service
             .as_ref()
-            .and_then(|service| service.runtime_adapter());
+            .and_then(|service| service.acquire_runtime_adapter(None).ok().flatten());
         for (run_id, input_id) in attempts {
             let Ok(input_uuid) = uuid::Uuid::parse_str(input_id) else {
                 continue;
@@ -11364,7 +11734,12 @@ impl MobRuntime {
     ///   a boundary commit holds until it lands, so a timeout usually means a
     ///   commit is in flight.
     pub async fn session_commit_pending(&self, session_id: &str) -> Option<bool> {
-        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let runtime_adapter = self
+            .session_service
+            .as_ref()?
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()?;
         let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
         bounded_commit_pending(
             runtime_adapter.session_has_uncommitted_run_input(&session_id),
@@ -11378,7 +11753,12 @@ impl MobRuntime {
     /// `None` when the runtime adapter does not answer within the bound
     /// (inconclusive, never a guessed `false`).
     pub async fn session_has_active_inputs(&self, session_id: &str) -> Option<bool> {
-        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let runtime_adapter = self
+            .session_service
+            .as_ref()?
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()?;
         let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
         bounded_commit_pending(
             async {
@@ -11414,7 +11794,7 @@ impl MobRuntime {
         let Some(runtime_adapter) = self
             .session_service
             .as_ref()
-            .and_then(|service| service.runtime_adapter())
+            .and_then(|service| service.acquire_runtime_adapter(None).ok().flatten())
         else {
             return SessionDrainRead::Stalled;
         };
@@ -11486,7 +11866,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11537,7 +11920,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11566,7 +11952,10 @@ impl MobRuntime {
         let Some(session_service) = self.session_service.as_ref() else {
             return Ok(None);
         };
-        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        let Some(runtime_adapter) = session_service
+            .acquire_runtime_adapter(None)
+            .map_err(|error| MobRuntimeError::Mob(MobError::Internal(error.to_string())))?
+        else {
             return Ok(None);
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
@@ -11849,7 +12238,10 @@ pub async fn model_routing_status_for_session(
     let Some(session_service) = session_service else {
         return Err(RoutingStatusUnavailable::RuntimeUnsupported);
     };
-    let Some(runtime_adapter) = session_service.runtime_adapter() else {
+    let Some(runtime_adapter) = session_service
+        .acquire_runtime_adapter(None)
+        .map_err(classify_routing_status_read_error)?
+    else {
         return Err(RoutingStatusUnavailable::RuntimeUnsupported);
     };
     let routing =
@@ -12665,6 +13057,7 @@ mod tests {
                     .into_iter()
                     .map(|name| {
                         Arc::new(meerkat_core::types::ToolDef {
+                            audience: Default::default(),
                             name: name.into(),
                             description: String::new(),
                             input_schema: serde_json::json!({"type": "object", "properties": {}}),
@@ -15123,7 +15516,11 @@ realm_profile = "worker-v2"
             "persistent_with_hook must provide a runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .ok()
+                .flatten()
+                .is_some(),
             "session service must own a runtime_store so archive/retire don't \
              hit the store-only-projection rejection in meerkat-session"
         );
@@ -15634,6 +16031,7 @@ realm_profile = "worker-v2"
                 known_base_names: self.catalog_names.clone(),
                 visible_names: self.catalog_names.clone(),
                 capability_base_filter: meerkat_core::ToolFilter::All,
+                policy_base_filter: meerkat_core::ToolFilter::All,
                 base_filter: meerkat_core::ToolFilter::All,
                 active_external_filter: meerkat_core::ToolFilter::All,
                 active_turn_allow: None,
@@ -16232,8 +16630,12 @@ comms = true
             true
         }
 
-        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-            Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))
+        fn acquire_runtime_adapter(
+            &self,
+            explicit: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+        ) -> Result<Option<Arc<meerkat_runtime::MeerkatMachine>>, meerkat_runtime::RuntimeDriverError>
+        {
+            Ok(explicit.or_else(|| Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))))
         }
 
         async fn cancel_after_boundary_with_machine_authority(
@@ -16430,6 +16832,7 @@ comms = true
                     system_prompt: Some("unchanged system prompt".to_string()),
                     event_tx: None,
                     runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                        work_authorization: None,
                         input_identity: None,
                         handling_mode: meerkat_core::types::HandlingMode::Steer,
                         turn_tool_overlay: None,
@@ -17009,7 +17412,9 @@ comms = true
             &session_id,
             &run_id,
             wrapped
-                .runtime_adapter()
+                .acquire_runtime_adapter(None)
+                .ok()
+                .flatten()
                 .expect("wrapper should expose runtime adapter")
                 .session_control_authority(),
         )
@@ -17143,7 +17548,9 @@ comms = true
                 &session_id,
                 &run_id,
                 wrapped
-                    .runtime_adapter()
+                    .acquire_runtime_adapter(None)
+                    .ok()
+                    .flatten()
                     .expect("wrapper should expose runtime adapter")
                     .session_control_authority(),
             )
@@ -17157,7 +17564,9 @@ comms = true
             &session_id,
             &run_id,
             wrapped
-                .runtime_adapter()
+                .acquire_runtime_adapter(None)
+                .ok()
+                .flatten()
                 .expect("wrapper should expose runtime adapter")
                 .session_control_authority(),
         )
@@ -21010,7 +21419,11 @@ comms = true
             "persistent bootstrap must expose the same committed runtime store for notice observations"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .ok()
+                .flatten()
+                .is_some(),
             "session service must own a runtime_store so archive/retire don't \
              hit the store-only-projection rejection"
         );
@@ -21330,6 +21743,7 @@ comms = true
                 None,
                 provider,
             )
+            .expect("runtime-backed session owner")
         }
     }
 
@@ -21588,8 +22002,8 @@ comms = true
         );
     }
 
-    /// H1: the ephemeral-by-design mode records its declaration; H2 is not
-    /// applicable without a persistent session service.
+    /// The memory-backed mode records its ephemeral declaration. There is no
+    /// caller-owned durable session store for the H2 probe.
     #[test]
     fn ephemeral_runtime_backed_spec_reports_declared_ephemeral() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -21610,7 +22024,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
         assert_eq!(summary.blob_durability, BlobDurability::DeclaredEphemeral);
         assert_eq!(summary.session_store_incremental, None);
@@ -21659,7 +22074,9 @@ comms = true
             .unwrap_or_else(|| panic!("persistent spec carries its runtime machine"));
         let served = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()
             .unwrap_or_else(|| panic!("persistent session service exposes a runtime machine"));
         assert!(
             Arc::ptr_eq(&served, &runtime),
@@ -21691,13 +22108,18 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         assert!(
             spec.runtime_adapter.is_some(),
             "ephemeral_runtime_backed_inner must expose the shared runtime authority"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
+            spec.session_service
+                .acquire_runtime_adapter(None)
+                .ok()
+                .flatten()
+                .is_some(),
             "session service must still expose a runtime adapter so autonomous-host comms can wire"
         );
         assert_notice_store_observes_machine_admission(&spec).await;
@@ -21812,7 +22234,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         let state = spec
             .agent_mob_mcp_state
             .expect("agent mob MCP state should be installed");
@@ -21867,7 +22290,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         // `TestClient::default()` DOES synthesize accounting under 0.8.22, but
         // under `Provider::Other` - and every profile in these tests is
         // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the spawn
@@ -21938,7 +22362,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
             meerkat_core::Provider::OpenAI,
         )));
@@ -22003,7 +22428,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
             meerkat_core::Provider::OpenAI,
         )));
@@ -22087,7 +22513,8 @@ comms = true
             CapabilityFlags::default(),
             None,
             None,
-        );
+        )
+        .expect("runtime-backed session owner");
         restarted_spec.options.default_llm_client = Some(Arc::new(
             meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
         ));
@@ -22164,7 +22591,9 @@ comms = true
             .unwrap_or_else(|| panic!("public ephemeral builds must retain their runtime adapter"));
         let service_adapter = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()
             .unwrap_or_else(|| panic!("session service must expose the retained runtime adapter"));
         assert!(
             Arc::ptr_eq(spec_adapter, &service_adapter),
@@ -22561,7 +22990,9 @@ image_generation = true
             .expect("image-generation ephemeral builds must expose a runtime adapter");
         let service_adapter = spec
             .session_service
-            .runtime_adapter()
+            .acquire_runtime_adapter(None)
+            .ok()
+            .flatten()
             .expect("session service must expose the same runtime adapter");
         assert!(
             spec_adapter.shares_runtime_persistence_with(&service_adapter),
@@ -22579,6 +23010,7 @@ image_generation = true
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                work_authorization: None,
                 input_identity: None,
                 handling_mode: meerkat_core::types::HandlingMode::Steer,
                 turn_tool_overlay: None,

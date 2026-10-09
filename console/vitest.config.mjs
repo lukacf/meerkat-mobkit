@@ -70,6 +70,9 @@ export default defineConfig({
     include: [
       "console/src/lib/custom-panels.test.tsx",
       "console/src/mcp-apps/host.test.tsx",
+      "console/src/mcp-apps/native-host.test.ts",
+      "console/src/mcp-apps/projection.test.ts",
+      "console/src/mcp-apps/stock-host.test.tsx",
       "packages/console-components/src/custom-panels.test.tsx",
       "packages/console-components/src/copy-button.test.tsx",
       "packages/console-core/src/send-attempt.test.ts",
