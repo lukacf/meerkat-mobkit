@@ -357,13 +357,11 @@ and does not alter general tool admission or provider-native tool capabilities.
 A canceled publication returns authority unavailable. Existing historical
 bindings remain readable while a replacement is pending or fails.
 
-Review snapshots declare exact Meerkat versions and use a workspace
-`[patch.crates-io]` table pinned to one upstream Git commit. Patches are not
-transitive: an application consuming the Git candidate must copy that table
-into its workspace root. These are stacked development dependencies, not a
-claim that the required API was released or permission to publish. The final
-PR records its upstream dependency and released-version follow-up. Additional child tool bundles are propagated into
-native delegated mob composition so the same per-call resolver works there.
+The native integration uses the published Meerkat 0.8.52 crate family with
+exact registry requirements and a committed lockfile. Applications consuming
+MobKit through Git pin the reviewed revision and resolve the same registry
+family. Additional child tool bundles are propagated into native delegated
+mob composition so the same per-call resolver works there.
 
 A failed stable-identity materialization reserves its exact host target until a
 successful host retry publishes the actual session binding. It remains
