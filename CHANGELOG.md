@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- Custom specs that install agent mob tools must explicitly provide
+  `MobRuntimeDelivery` with `with_runtime_delivery` before `with_agent_mob_tools`.
+  Use the session service's exact runtime-store facade and the agent builder's
+  detached-job store. Stock constructors supply this composition themselves.
+  `StorageResolutionError`, `MobRuntimeError` and `UnifiedRuntimeBuilderError`
+  gain typed delivery errors. `MobRuntimeError::DeliveryStartup` retains the
+  stop report if owner arming fails after a mob handle was acquired.
+- Gateway job health now exposes `detached_jobs.runtime_delivery_pass` from
+  the native delivery owner. Row-level `blocked_deliveries` is `null` with
+  `blocked_deliveries_reading: "unavailable"`; the native owner exposes blocked
+  sessions, runtimes and failures, but does not expose row identities. The
+  separate `runtime_inbox_backlog` remains an exact store census.
+
+- Meerkat's fallible runtime acquisition (Meerkat 0.8.52) reaches MobKit's
+  composition. Building a runtime machine can now refuse, and so can the
+  agent mob tools' runtime adapter:
+  - `MobBootstrapSpec::ephemeral` and `ephemeral_with_hook` return
+    `Result<Self, StorageResolutionError>`. `with_agent_mob_tools` returns
+    `Result<Self, MobRuntimeDeliveryError>`, preserving native acquisition
+    and continuation-binding errors. `with_session_runtime_adapter` returns
+    `Result<Self, RuntimeDriverError>`.
+  - `StorageResolutionError`, `MobRuntimeError` and
+    `UnifiedRuntimeBuilderError` each gain `Runtime(RuntimeDriverError)`.
+    Exhaustive matches must add the arm.
+  - Session-service wrappers replace `runtime_adapter()` with
+    `acquire_runtime_adapter(explicit)` and preserve the inner service's
+    `Some`, `None` or error result. MobKit's wrapper supplies the explicit
+    owner when provided, otherwise its configured override; supplying an
+    owner does not turn the inner service's `None` into an acquired
+    adapter.
 - `GatingDecideError` gains `IdsUnavailable(GatingIdUnavailable)`, and
   `GatingStateSnapshot` gains `owner_epoch: Option<String>` (see Fixed).
   Exhaustive matches and struct literals must handle the new variant and
@@ -195,6 +225,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Process-local launches now run a native delivery owner over persistent
+  composition. Both gateways' default process-local launches and the library
+  `MobBootstrapSpec::ephemeral_runtime_backed*` path use a
+  `PersistentSessionService` over an in-memory `MemoryStore` instead of
+  `EphemeralSessionService`, so their storage-health session label reads
+  `MemoryStore` instead of `EphemeralSessionService`.
+- The session-service wrapper no longer absorbs the ephemeral service's
+  `Unsupported` refusal of a boundary acknowledgement; the refusal reaches the
+  caller.
+- Image-generation ephemeral specs build their machine with
+  `MeerkatMachine::ephemeral()`.
+- Ephemeral launches now install the agent mob tools with an in-memory
+  detached-job store, so their members can create child mobs, delegate and run
+  detached jobs.
+- The persistent `mobkit_gateway` opens the canonical `jobs.sqlite3` detached-job
+  store.
+- A restored classic mob resumes through a deferred activation that runs only
+  after its address resolver has its handle and the delivery owner is armed.
+- Runtime shutdown and teardown stop the native delivery owner explicitly
+  after the mob stops, instead of when the last runtime clone drops.
+  Undelivered rows stay pending in the durable inbox.
 - The published crate no longer includes in-repo forensic test captures.
 - The memory steward's quarantine `release` and `tombstone` verdicts run the
   operator review's store transaction (`StewardStore::review_quarantined`,
@@ -558,6 +609,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `MobRuntimeDelivery` (`new`, `inbox`, `last_pass`, `is_running`) composes a
+  host's native job and continuation delivery owner, and
+  `MobRuntime::runtime_delivery_pass` and `MobRuntime::stop_runtime_delivery`
+  observe and stop it.
 - Operators can decide quarantined agent memory from the console:
   `mobkit/memory/quarantine/decide` releases or tombstones one quarantined
   identity-scope record, without the memory steward or the gating flow.
@@ -1027,6 +1082,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Identity repair no longer destroys a member's queued inputs when the runtime
+  owner refuses to serve: a refused acquisition defers the repair disposal
+  instead of being read as an empty queue.
 - A conversation pane following the live edge no longer stops following
   when a tool opened at the end grows the transcript before the browser's
   own one-pixel scroll event arrives. The pane only leaves the live edge on
@@ -1089,6 +1147,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   panel opened in that gap (for example Access) was replaced. Both now land
   in a synchronous follow-up commit before paint, before any input can be
   handled.
+
+- The rpc_gateway's SDK callback builder hands a member's external tools to
+  the agent by ownership (`SessionAgentBuilder::build_agent_taking_tools`,
+  Meerkat 0.8.52). Before, an ops-capable external tool source (one that
+  binds to the session's ops registry, such as a detached-job tool bundle)
+  stayed shared with the build request. Meerkat 0.8.52 refuses to bind a
+  shared one, so that member's build failed with `SharedOwnership`.
+  - Both builder branches take the request's tool slot before any copy,
+    whether or not an SDK SessionBuilder is configured. The callback path
+    composes the SDK's tools over the drained source.
+  - `ComposedExternalTools` now forwards `capabilities()` and
+    `bind_ops_lifecycle`. An ops-capable dispatcher composed under other
+    tools is reported and bound instead of silently skipped. A composition
+    or an ops-capable half still held elsewhere refuses with
+    `SharedOwnership`, never running unbound.
 
 - Console: a downward wheel or End at the bottom of a transcript no longer
   stops following the live edge. Such a gesture can leave the scroll position

@@ -1249,6 +1249,7 @@ mod tests {
             tool_use_id: id.to_string(),
             content: vec![],
             is_error: false,
+            settlement_failures: Vec::new(),
         }]);
         (assistant, results)
     }
@@ -1597,8 +1598,12 @@ mod tests {
         /// runtime; a session-wide completion cursor can precede finalization.
         async fn run_exact_probe(&self, text: &str) {
             use meerkat_runtime::SessionServiceRuntimeExt;
-            let owner = meerkat_mob::MobSessionService::runtime_adapter(self.concrete.as_ref())
-                .expect("persistent completion owner");
+            let owner = meerkat_mob::MobSessionService::acquire_runtime_adapter(
+                self.concrete.as_ref(),
+                None,
+            )
+            .expect("acquire the operator fixture runtime owner")
+            .expect("persistent completion owner");
             let session = self
                 .identity_runtime
                 .status(&self.identity)
@@ -1814,10 +1819,13 @@ mod tests {
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
+        let adapter = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("acquire the operator fixture runtime machine"),
+        );
         let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
             inner_builder,
             16,
@@ -1851,6 +1859,7 @@ comms = true
             concrete.clone(),
         )
         .with_session_runtime_adapter(Arc::clone(&adapter))
+        .expect("acquire the fixture session runtime owner")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -2148,10 +2157,13 @@ comms = true
         use meerkat_runtime::SessionServiceRuntimeExt;
 
         let harness = operator_verb_harness("worker:main", "operator-exact-input").await;
-        let completion_runtime =
-            meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
-                .expect("persistent service runtime adapter");
-        assert!(!Arc::ptr_eq(&completion_runtime, &harness.adapter));
+        let completion_runtime = meerkat_mob::MobSessionService::acquire_runtime_adapter(
+            harness.concrete.as_ref(),
+            None,
+        )
+        .expect("acquire the operator fixture runtime owner")
+        .expect("persistent service runtime adapter");
+        assert!(completion_runtime.shares_runtime_execution_owner_with(&harness.adapter));
         let configured_observer = harness
             .runtime
             .mob_runtime()
@@ -2160,8 +2172,8 @@ comms = true
             .runtime_completion_observer()
             .expect("owner observer");
         assert!(
-            Arc::ptr_eq(&configured_observer, &completion_runtime),
-            "operator observer must use the concrete service, not the live-empty bootstrap override"
+            configured_observer.shares_runtime_execution_owner_with(&completion_runtime),
+            "operator observer must use the concrete service's acquired runtime owner"
         );
         let fat = "seeded transcript ballast ".repeat(160);
         for turn in 0..4 {
@@ -2575,8 +2587,12 @@ comms = true
         let admission = Arc::new(AdmissionReplyLost {
             calls: std::sync::atomic::AtomicUsize::new(0),
         });
-        let observer = meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
-            .expect("persistent owner");
+        let observer = meerkat_mob::MobSessionService::acquire_runtime_adapter(
+            harness.concrete.as_ref(),
+            None,
+        )
+        .expect("acquire the operator fixture runtime owner")
+        .expect("persistent owner");
         let operation_id = meerkat_core::SessionId::new().to_string();
         let key = format!("mobkit-compact:{operation_id}");
         let operation = CompactOperation {
@@ -2660,8 +2676,12 @@ comms = true
             ctx,
             identity: harness.identity.clone(),
             expected_alias: None,
-            observer: meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
-                .expect("observer"),
+            observer: meerkat_mob::MobSessionService::acquire_runtime_adapter(
+                harness.concrete.as_ref(),
+                None,
+            )
+            .expect("acquire the operator fixture runtime owner")
+            .expect("observer"),
             admission: Arc::new(IdentityCompactionAdmission),
             floors: harness.floors.clone(),
             floor: NonZeroU64::new(256).expect("floor"),
@@ -2710,8 +2730,12 @@ comms = true
     async fn compact_member_observation_error_retains_original_input_and_cleanup_owner() {
         let harness = held_compaction_harness("operator-read-error").await;
         let observer = Arc::new(FailingCompletionObserver {
-            inner: meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
-                .expect("persistent owner"),
+            inner: meerkat_mob::MobSessionService::acquire_runtime_adapter(
+                harness.concrete.as_ref(),
+                None,
+            )
+            .expect("acquire the operator fixture runtime owner")
+            .expect("persistent owner"),
             failing: AtomicBool::new(true),
         });
         let operation = CompactOperation {

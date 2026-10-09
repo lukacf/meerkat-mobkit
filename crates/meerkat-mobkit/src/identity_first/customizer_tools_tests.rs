@@ -54,6 +54,7 @@ impl AgentToolDispatcher for Scope {
                 text: format!("{}:{}", self.scope, call.name),
             }],
             is_error: false,
+            settlement_failures: Vec::new(),
         }
         .into())
     }

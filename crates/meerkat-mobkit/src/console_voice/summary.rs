@@ -124,6 +124,12 @@ async fn collect_summary(
             LlmEvent::ToolCallDelta { .. }
             | LlmEvent::ToolCallComplete { .. }
             | LlmEvent::ServerToolContent { .. } => return Err(SummaryError::NonTextOutput),
+            LlmEvent::OperationObservationFailed {
+                operation_id,
+                phase,
+            } => {
+                tracing::warn!(%operation_id, ?phase, "LLM operation observation failed");
+            }
             LlmEvent::ReasoningDelta { .. }
             | LlmEvent::ReasoningComplete { .. }
             | LlmEvent::UsageUpdate { .. }
@@ -291,6 +297,27 @@ mod tests {
     fn done(stop_reason: meerkat_core::StopReason) -> LlmEvent {
         LlmEvent::Done {
             outcome: LlmDoneOutcome::Success { stop_reason },
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_failure_preserves_physical_completion_without_retry() {
+        use crate::test_diagnostics::{
+            CompletionCase, ObservationClient, PHYSICAL_TEXT, capture_warnings,
+        };
+
+        for case in CompletionCase::ALL {
+            let client = ObservationClient::new(case);
+            let (result, log) =
+                capture_warnings(summarize_context(&client, "test-summary-model", &[], 1024)).await;
+            match case {
+                CompletionCase::Success => assert_eq!(result, Ok(PHYSICAL_TEXT.into())),
+                CompletionCase::TerminalError | CompletionCase::StreamError => {
+                    assert_eq!(result, Err(SummaryError::Provider));
+                }
+                CompletionCase::Truncated => assert_eq!(result, Err(SummaryError::Incomplete)),
+            }
+            client.assert_observed_once_without_retry(&log);
         }
     }
 

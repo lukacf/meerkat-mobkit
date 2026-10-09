@@ -187,6 +187,7 @@ fn messages(include_transient: bool) -> Vec<Message> {
                 text: "untrusted source".to_string(),
             }],
             is_error: false,
+            settlement_failures: Vec::new(),
         }]),
     ]
 }

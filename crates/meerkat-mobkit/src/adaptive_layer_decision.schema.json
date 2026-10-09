@@ -631,6 +631,17 @@
             "null"
           ]
         },
+        "oauth_account_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpOAuthAccountSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Account binding when no `oauth_account` is named: `discover` binds the\nprovider-verified account at the first login, `unverified` is an\nexplicit opt-in to resource-bound access with no account evidence.\nOnly host configuration sets it; it conflicts with `oauth_account`."
+        },
         "transport": {
           "anyOf": [
             {
@@ -660,6 +671,21 @@
         "sse"
       ],
       "type": "string"
+    },
+    "McpOAuthAccountSelection": {
+      "description": "Account binding of an OAuth-protected MCP server that names no account.",
+      "oneOf": [
+        {
+          "const": "discover",
+          "description": "Bind the account the provider verifies at the first login; later\nlogins must prove that same account.",
+          "type": "string"
+        },
+        {
+          "const": "unverified",
+          "description": "Resource-bound access without account evidence. The credential never\nestablishes, verifies or represents an account.",
+          "type": "string"
+        }
+      ]
     },
     "McpServerConfig": {
       "anyOf": [

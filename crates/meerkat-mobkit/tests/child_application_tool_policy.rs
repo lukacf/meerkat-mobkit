@@ -9,8 +9,11 @@
 //! configuration.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::sync::Arc;
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use meerkat_core::service::MobToolAuthorityContext;
 use meerkat_core::types::{SessionId, ToolCallView};
@@ -93,6 +96,14 @@ model = "gpt-5.5"
 
 [profiles.worker.tools]
 comms = true
+
+[profiles.delegator]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.delegator.tools]
+comms = true
+mob = true
 "#,
         std::process::id(),
         NEXT_MOB.fetch_add(1, Ordering::SeqCst)
@@ -101,15 +112,27 @@ comms = true
 }
 
 fn options() -> MobBootstrapOptions {
+    options_with(Arc::new(meerkat_client::TestClient::default()))
+}
+
+fn options_with(model: Arc<dyn meerkat_client::LlmClient>) -> MobBootstrapOptions {
     MobBootstrapOptions {
         allow_ephemeral_sessions: true,
         notify_orchestrator_on_resume: true,
-        default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        default_llm_client: Some(model),
     }
 }
 
 async fn boot(
     dir: &tempfile::TempDir,
+    configure: impl FnOnce(MobBootstrapSpec) -> MobBootstrapSpec,
+) -> MobRuntime {
+    boot_with(dir, options(), configure).await
+}
+
+async fn boot_with(
+    dir: &tempfile::TempDir,
+    options: MobBootstrapOptions,
     configure: impl FnOnce(MobBootstrapSpec) -> MobBootstrapSpec,
 ) -> MobRuntime {
     // The ephemeral constructor installs the agent mob tools before
@@ -121,7 +144,8 @@ async fn boot(
         4,
         None,
     )
-    .with_options(options());
+    .expect("build the child application tool policy ephemeral spec")
+    .with_options(options);
     MobRuntime::bootstrap(configure(spec))
         .await
         .expect("bootstrap the mob runtime")
@@ -213,8 +237,12 @@ fn agent_mob_tools(runtime: &MobRuntime) -> Arc<MobMcpState> {
         .expect("the agent mob tools are installed")
 }
 
-/// A member's `delegate` call through the agent mob tools of `runtime`.
-async fn delegate(runtime: &MobRuntime) -> Result<ToolDispatchOutcome, ToolError> {
+/// A `delegate` call straight through the agent mob tools of `runtime`, with
+/// no parent agent: enough to reach the child-policy admission, which
+/// refuses before any tooling is resolved.
+async fn delegate_through_a_bare_surface(
+    runtime: &MobRuntime,
+) -> Result<ToolDispatchOutcome, ToolError> {
     let surface = agent_surface(
         agent_mob_tools(runtime),
         SessionId::new(),
@@ -241,8 +269,138 @@ async fn delegate(runtime: &MobRuntime) -> Result<ToolDispatchOutcome, ToolError
     .await
 }
 
-fn assert_delegate_completed(outcome: &ToolDispatchOutcome) {
-    let result: Value = serde_json::from_str(&outcome.result.text_content()).expect("json result");
+const DELEGATE_PROBE: &str = "CHILD-POLICY-DELEGATE";
+
+/// The delegator's probe turn calls `delegate` with profile tooling and records
+/// the result it sees; every other turn, the helper's included, answers.
+#[derive(Clone, Default)]
+struct DelegatingModel {
+    delegated: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl meerkat_client::LlmClient for DelegatingModel {
+    fn project_replay_messages(
+        &self,
+        messages: &[meerkat_core::Message],
+    ) -> Result<Vec<meerkat_core::Message>, meerkat_client::LlmError> {
+        Ok(messages.to_vec())
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: &'a meerkat_client::LlmRequest,
+    ) -> meerkat_client::types::LlmStream<'a> {
+        // The probe reaches the member wrapped as its runtime delivers it, so
+        // look for it anywhere in the transcript.
+        let probe_turn = serde_json::to_string(&request.messages)
+            .is_ok_and(|messages| messages.contains(DELEGATE_PROBE));
+        let delegate_result = request
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                meerkat_core::Message::ToolResults { results, .. } => Some(results),
+                _ => None,
+            })
+            .flatten()
+            .find(|result| result.tool_use_id == "call-delegate")
+            .map(meerkat_core::ToolResult::text_content);
+        let call_delegate = probe_turn && delegate_result.is_none();
+        if let Some(result) = delegate_result.filter(|_| probe_turn) {
+            *self.delegated.lock().unwrap() = Some(result);
+        }
+        let stop = if call_delegate {
+            meerkat_core::StopReason::ToolUse
+        } else {
+            meerkat_core::StopReason::EndTurn
+        };
+        let [usage, done] =
+            llm_usage::usage_then_done(request, meerkat_core::Provider::OpenAI, stop);
+        let lead = if call_delegate {
+            meerkat_client::LlmEvent::ToolCallComplete {
+                id: "call-delegate".to_string(),
+                name: "delegate".to_string(),
+                args: json!({
+                    "task": "summarize the household calendar",
+                    "member_id": "helper",
+                    "result_label": "helper_result",
+                    "max_text_bytes": 4096,
+                    "tooling": {
+                        "mode": "profile",
+                        "source": {
+                            "type": "inline",
+                            "model": "gpt-5.5",
+                            "tools": { "comms": true }
+                        }
+                    }
+                }),
+                meta: None,
+            }
+        } else {
+            meerkat_client::LlmEvent::TextDelta {
+                delta: "done".to_string(),
+                meta: None,
+            }
+        };
+        Box::pin(futures::stream::iter(vec![Ok(lead), Ok(usage), Ok(done)]))
+    }
+
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::OpenAI
+    }
+
+    async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+        Ok(())
+    }
+}
+
+/// A member delegates from its own model turn, the way production reaches
+/// `delegate`: through the agent its tools were built for, which owns the
+/// parent tool scope that profile tooling is capped by. Returns the delegate
+/// result the member saw.
+async fn delegate_from_a_member_turn(
+    configure: impl FnOnce(MobBootstrapSpec) -> MobBootstrapSpec,
+) -> Value {
+    let dir = tempfile::tempdir().unwrap();
+    let model = DelegatingModel::default();
+    let runtime = boot_with(&dir, options_with(Arc::new(model.clone())), configure).await;
+    let delegator = meerkat_mob::AgentIdentity::from("delegator");
+    let handle = runtime.handle();
+    handle
+        .ensure_member(meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("delegator"),
+            delegator.clone(),
+        ))
+        .await
+        .expect("seat the delegating member");
+    let spec = meerkat_mob::BoundedResultSpec::new("turn", 4096).expect("bounded result spec");
+    let work = handle
+        .start_work_for_identity_bounded(
+            delegator,
+            meerkat_mob::WorkSpec::new(
+                meerkat_core::types::ContentInput::Text(DELEGATE_PROBE.to_string()),
+                meerkat_mob::WorkOrigin::Internal,
+            ),
+            meerkat_core::types::HandlingMode::Queue,
+            spec.clone(),
+        )
+        .await
+        .expect("start the delegating turn");
+    tokio::time::timeout(std::time::Duration::from_mins(1), work.wait_bounded(spec))
+        .await
+        .expect("the delegating turn completes within the failure bound")
+        .expect("the delegating turn succeeds");
+    let delegated = model
+        .delegated
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the delegator saw its delegate result");
+    let _ = handle.shutdown().await;
+    serde_json::from_str(&delegated).expect("json delegate result")
+}
+
+fn assert_delegate_completed(result: &Value) {
     assert_eq!(result["agent_identity"], "helper", "{result}");
     assert_eq!(result["bounded_result"]["status"], "completed", "{result}");
 }
@@ -254,7 +412,7 @@ async fn delegate_is_refused_until_a_child_policy_is_configured() {
         spec.with_tool_consequence_policy_registry(registry())
     })
     .await;
-    let error = delegate(&runtime)
+    let error = delegate_through_a_bare_surface(&runtime)
         .await
         .expect_err("a managed host without a child policy refuses delegate");
     let ToolError::PolicyDenied { denial } = &error else {
@@ -278,41 +436,29 @@ async fn delegate_is_refused_until_a_child_policy_is_configured() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn delegate_runs_under_a_configured_provider_child_policy() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = boot(&dir, |spec| {
+    let result = delegate_from_a_member_turn(|spec| {
         spec.with_tool_consequence_policy_registry(registry())
             .with_child_application_tool_policy(household_policy())
     })
     .await;
-    let outcome = delegate(&runtime)
-        .await
-        .expect("delegate runs with a child policy configured");
-    assert_delegate_completed(&outcome);
+    assert_delegate_completed(&result);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn delegate_runs_once_the_host_explicitly_chooses_unmanaged_children() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = boot(&dir, |spec| {
+    let result = delegate_from_a_member_turn(|spec| {
         spec.with_tool_consequence_policy_registry(registry())
             .with_child_application_tool_policy(ApplicationToolPolicyBinding::Unmanaged)
     })
     .await;
-    let outcome = delegate(&runtime)
-        .await
-        .expect("delegate runs with an explicit unmanaged child policy");
-    assert_delegate_completed(&outcome);
+    assert_delegate_completed(&result);
 }
 
 /// A host without application tool policies keeps today's behaviour.
 #[tokio::test(flavor = "multi_thread")]
 async fn delegate_runs_on_a_host_without_tool_policies() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = boot(&dir, |spec| spec).await;
-    let outcome = delegate(&runtime)
-        .await
-        .expect("delegate runs on an unmanaged host");
-    assert_delegate_completed(&outcome);
+    let result = delegate_from_a_member_turn(|spec| spec).await;
+    assert_delegate_completed(&result);
 }
 
 /// Only child mobs are governed: on a managed host without a child policy,
