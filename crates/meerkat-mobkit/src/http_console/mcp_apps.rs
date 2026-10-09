@@ -99,7 +99,7 @@ impl ToolApplicationIngress for Ingress {
                     .map_or("", |registration| registration.namespace()),
             )
             .await
-            .map_err(|_| meerkat_core::OperationAuthorizationError::Unavailable)?;
+            .map_err(|()| meerkat_core::OperationAuthorizationError::Unavailable)?;
             self.revalidate()
         })
     }
@@ -198,18 +198,13 @@ async fn authorize_session_in_namespace(
                 return Ok(runtime.clone());
             }
         }
-        if let Some(alias) = alias {
-            if alias.session_id.as_deref() == Some(request.session_id.as_str())
-                && runtime_alias_visible_to_console(
-                    &handle,
-                    state.visibility_policy.as_ref(),
-                    &alias,
-                )
-                && (operation == Operation::Resolve
-                    || alias.member.status != meerkat_mob::MobMemberStatus::Retiring)
-            {
-                return Ok(runtime.clone());
-            }
+        if let Some(alias) = alias
+            && alias.session_id.as_deref() == Some(request.session_id.as_str())
+            && runtime_alias_visible_to_console(&handle, state.visibility_policy.as_ref(), &alias)
+            && (operation == Operation::Resolve
+                || alias.member.status != meerkat_mob::MobMemberStatus::Retiring)
+        {
+            return Ok(runtime.clone());
         }
     }
     let aliases = lookup_visible_member_alias_candidates_with_session(
@@ -487,6 +482,7 @@ pub(super) async fn call_tool(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -573,7 +569,7 @@ mod tests {
                 admins: vec!["admin@example.test".to_string()],
                 ..Default::default()
             })
-            .unwrap(),
+            .expect("valid test access controller"),
         );
         assert!(
             ingress(state, request, Operation::Resolve)
@@ -674,7 +670,7 @@ mod tests {
                 None,
                 ConsoleEventStore::new(),
                 Arc::new(crate::console_aggregator::AllowAllConsoleVisibilityPolicy),
-            )
+            );
         };
         register();
         let mut state = state(None);
@@ -684,7 +680,7 @@ mod tests {
         let public_identity = request.identity.clone();
         let (state, request, registration) = route(state, request, Operation::CallTool)
             .await
-            .map_err(|_| "route refused")?;
+            .map_err(|()| "route refused")?;
         assert_eq!(request.identity, "review:apps");
         let mut receipt = ingress(state, request, Operation::CallTool);
         receipt.public_identity = public_identity;
@@ -694,7 +690,7 @@ mod tests {
             .state
             .console_aggregator
             .as_ref()
-            .unwrap()
+            .expect("registered console aggregator")
             .register_runtime_handles_with_policy(
                 "runtime",
                 "project",
@@ -719,7 +715,10 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
-            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .expect("cache-control header"),
             "no-store"
         );
     }

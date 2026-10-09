@@ -18406,7 +18406,7 @@ comms = true
             json!({ "session_id": "session-a", "tool_call_id": "call-chart", "fallback": "Chart ready" })
         );
         assert_eq!(apps[0].source.kind, ConsoleFrameSourceKind::SessionHistory);
-        let projected = serde_json::to_string(&frames).unwrap();
+        let projected = serde_json::to_string(&frames).expect("history frames should serialize");
         assert!(!projected.contains("do-not-project"));
         assert!(!projected.contains("private resource"));
         assert!(!projected.contains("physical-1"));

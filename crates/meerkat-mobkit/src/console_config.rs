@@ -873,7 +873,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_apps_sandbox_rejects_invalid_urls_before_capability_bootstrap() {
+    fn mcp_apps_sandbox_rejects_invalid_urls_before_capability_bootstrap()
+    -> Result<(), Box<dyn std::error::Error>> {
         for value in [
             "/sandbox.html",
             "//apps.example.test/sandbox.html",
@@ -884,10 +885,13 @@ mod tests {
             "https://apps.example.test/sandbox.html#",
         ] {
             let source = format!("mcp_apps_sandbox_url = {}", serde_json::json!(value));
-            let error = load_console_ui_config_from_toml(&source).unwrap_err();
+            let error = load_console_ui_config_from_toml(&source)
+                .err()
+                .ok_or("invalid sandbox URL unexpectedly accepted")?;
             assert!(matches!(error, ConsoleConfigError::Invalid(_)));
             assert!(!error.to_string().contains("private"));
         }
+        Ok(())
     }
 
     #[test]

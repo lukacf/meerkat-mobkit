@@ -2427,6 +2427,15 @@ impl AgentMobChildPolicy {
     }
 }
 
+type InstalledAgentMobTools = (
+    Arc<meerkat_mob_mcp::MobMcpState>,
+    ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
+    SharedConsoleSpawnSinkSlot,
+    SharedIdentityRuntimeSlot,
+    AgentMobToolsInstall,
+);
+
 /// Install the agent mob tools with no child policy yet; the spec applies its
 /// final child policy at bootstrap (see `MobBootstrapSpec::apply_agent_mob_child_policy`).
 fn install_agent_mob_tools(
@@ -2436,17 +2445,7 @@ fn install_agent_mob_tools(
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
-) -> Result<
-    (
-        Arc<meerkat_mob_mcp::MobMcpState>,
-        ImplicitDelegateRetirementOverrides,
-        SharedDefaultLlmClientSlot,
-        SharedConsoleSpawnSinkSlot,
-        SharedIdentityRuntimeSlot,
-        AgentMobToolsInstall,
-    ),
-    meerkat_runtime::RuntimeDriverError,
-> {
+) -> Result<InstalledAgentMobTools, meerkat_runtime::RuntimeDriverError> {
     let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
         install_agent_mob_tools_with(
             definition,
@@ -9538,7 +9537,7 @@ impl MobBootstrapSpec {
         // A fresh ephemeral service cannot have a competing runtime owner.
         #[allow(clippy::expect_used)]
         let effective_runtime_adapter = session_service
-            .acquire_runtime_adapter(Some(runtime_adapter.clone()))
+            .acquire_runtime_adapter(Some(runtime_adapter))
             .expect("fresh session service accepts its canonical runtime owner");
         if let Some(adapter) = effective_runtime_adapter.as_ref() {
             session_llm_reconfigure_blueprint.install(adapter, reconfigure_service);
