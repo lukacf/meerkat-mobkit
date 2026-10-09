@@ -125,11 +125,10 @@ disabled or the extension feature compiled out, so a later re-enable can
 safely resolve ancestors. Disabling the factory does not remove stored
 documents, identity history or those triggers.
 
-This is an unreleased integration candidate. Building the Git candidate
-requires the exact Meerkat `[patch.crates-io]` table from this repository's
-workspace manifest in the consuming workspace root, because Cargo patches do
-not propagate through dependencies. Published release pins must replace this
-review patch before release.
+The extension integration requires the published Meerkat 0.8.52 crate family,
+with exact versions declared in the repository manifests. Applications using
+the MobKit Git dependency should pin the reviewed revision and resolve their
+committed lockfile against those registry packages.
 
 ## Bootstrap sequence
 
