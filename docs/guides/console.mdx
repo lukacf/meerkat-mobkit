@@ -163,8 +163,8 @@ external links or downloads. The sandbox denies undeclared network access and
 sensitive browser permissions. Serve it without Console cookies or application
 APIs; production hosts should use a dedicated HTTPS origin.
 
-Future generated interfaces can use an ordinary MCP App renderer with a
-versioned generated document in result data. The runtime does not impose a
+An ordinary MCP App can render a versioned generated document from its result
+data today. The app supplies the renderer; the runtime does not impose a
 component language. Keep generated content inside the app sandbox, separate
 from trusted developer panels, and route external actions through the same
 native admission path. Streaming updates and conversation handoff require their

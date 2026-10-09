@@ -110,10 +110,12 @@ is a reverse-engineering report, not an OpenAI interoperability contract. It
 motivates keeping generated descriptions, execution, data and admitted actions
 separate. This implementation does not add a generated UI language or compiler.
 
-A future MCP server can expose a predeclared renderer and return a versioned,
-opaque generated document with its data. The runtime should retain that data
-without interpreting a particular language or component catalog. Generated
-content must not enter the trusted custom-panel module loader.
+An MCP server can already expose a predeclared renderer and return a versioned,
+opaque generated document with its data. The app interprets that document; the
+host retains the result without imposing a language or component catalog. A
+bundled generated-UI renderer or incremental document protocol would be an
+additional feature. Generated content must not enter the trusted custom-panel
+module loader.
 
 Keep these boundaries when adding that feature:
 
