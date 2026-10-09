@@ -264,6 +264,8 @@ from .config import auth, event_log, memory, runtime_store, session_store
 # Rich tool-result content blocks for callback tool handlers.
 from .tool_content import (
     ToolResultContent,
+    console_widget_block,
+    structured_block,
     image_block,
     image_blob_block,
     text_block,
@@ -310,6 +312,8 @@ __all__ = [
     "image_blob_block",
     "tool_content",
     "ToolResultContent",
+    "console_widget_block",
+    "structured_block",
     # Data models
     "DiscoverySpec",
     "PreSpawnData",

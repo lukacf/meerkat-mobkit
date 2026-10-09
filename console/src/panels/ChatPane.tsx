@@ -1289,7 +1289,7 @@ function MessageRowBody({
         ) : null}
         <div data-quote-message-id={m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : undefined} data-quote-source={m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : undefined}>
         {m.widgetEntry?.widget ? (
-          <ConsoleChatWidgetView widget={m.widgetEntry.widget} identity={m.widgetEntry.identity} entryId={m.widgetEntry.id} />
+          <ConsoleChatWidgetView widget={m.widgetEntry.widget} identity={m.widgetEntry.identity} entryId={m.widgetEntry.id} toolStatus={m.widgetEntry.widgetToolStatus} />
         ) : m.kind === "workgraph" && m.workGraphEntry ? (
           <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
         ) : m.contextMessage ? <DeliveredContextMessage message={m.contextMessage} /> : m.blocks && m.blocks.length > 0 ? (

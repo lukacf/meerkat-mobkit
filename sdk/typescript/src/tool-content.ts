@@ -23,6 +23,34 @@
  */
 
 export type ContentBlock = Record<string, unknown>;
+export type JsonContentValue = null | boolean | number | string | JsonContentValue[] | { [key: string]: JsonContentValue };
+
+/** Application-owned data contract selected by widget type and version. */
+export interface ConsoleWidgetMetadata {
+  type: string;
+  version: number;
+  data: JsonContentValue;
+  fallback: string;
+}
+
+/** JSON content preserved as structured data by the runtime. */
+export function structuredBlock(data: JsonContentValue): ContentBlock {
+  const encoded = JSON.stringify(data, (_key, value) => {
+    if (value === undefined || typeof value === "function" || typeof value === "symbol"
+      || (typeof value === "number" && !Number.isFinite(value))) throw new Error("Content must be JSON data");
+    return value;
+  });
+  return { type: "structured", data: JSON.parse(encoded) };
+}
+
+/** Explicit console presentation metadata, with no execution or loading authority. */
+export function consoleWidgetBlock(widget: ConsoleWidgetMetadata): ContentBlock {
+  if (typeof widget.type !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(widget.type)
+    || widget.type.startsWith("mobkit/")) throw new Error("Widget type must be an application-owned namespaced name");
+  if (!Number.isSafeInteger(widget.version) || widget.version < 1) throw new Error("Widget version must be a positive JSON-safe integer");
+  if (typeof widget.fallback !== "string" || !widget.fallback.trim()) throw new Error("Widget fallback must be nonempty text");
+  return structuredBlock({ console_widget: { type: widget.type, version: widget.version, data: widget.data, fallback: widget.fallback } });
+}
 
 /** A text content block. */
 export function textBlock(text: string): ContentBlock {

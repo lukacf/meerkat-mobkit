@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Console widget tool-result metadata",
+  "description": "Application-owned presentation metadata inside a Meerkat structured content block. It does not confer execution authority.",
+  "type": "object",
+  "required": ["console_widget"],
+  "properties": {
+    "console_widget": {
+      "type": "object",
+      "required": ["type", "version", "data", "fallback"],
+      "properties": {
+        "type": { "type": "string", "pattern": "^(?!mobkit/)[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$" },
+        "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "data": {},
+        "fallback": { "type": "string", "pattern": "\\S" }
+      }
+    }
+  }
+}

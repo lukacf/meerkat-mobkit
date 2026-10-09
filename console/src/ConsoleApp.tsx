@@ -1,6 +1,6 @@
-import { useConsoleExtensions } from "./lib/extensions";
+import { useConsoleExtensions, createConsoleExtensionService, bindConsoleExtensionService } from "./lib/extensions";
 import { ConsoleExtensionsProvider, ConsoleExtensionPanel } from "@console-components";
-import { consoleExtensionPanelTarget, type ConsoleExtension, type ConsoleExtensionContext } from "@console-core";
+import { consoleExtensionPanelTarget, type ConsoleExtension, type ConsoleExtensionContext, type ConsoleExtensionService } from "@console-core";
 import { withConsoleSendStorageLock } from "./lib/send-storage-lock";
 import React from "react";
 import "@console-components/styles";
@@ -204,6 +204,7 @@ import { countRender } from "./lib/render-counts";
 
 export interface ConsoleAppProps {
   extensions?: readonly ConsoleExtension[];
+  extensionService?: ConsoleExtensionService;
   baseUrl: string;
   /** Opaque host scope covering authority/runtime, realm and authenticated principal. */
   storageNamespace?: string;
@@ -678,7 +679,7 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 export function ConsoleApp(props: ConsoleAppProps): React.JSX.Element {
   // All authorized state belongs to one host authority and transport lifetime.
   // A keyed instance clears it in the same commit as the host scope change.
-  const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace]);
+  const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace, props.extensionService]);
   return <ConsoleAppAuthority key={instanceKey} {...props} />;
 }
 
@@ -699,7 +700,7 @@ function ConsoleAppAuthority(props: ConsoleAppProps): React.JSX.Element {
   return <ConsoleAppInstance key={generation} {...props} observeScope={observeScope} />;
 }
 
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, extensions, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, extensions, extensionService, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
   countRender("ConsoleApp");
   const lifetimeRef = React.useRef({ active: true, generation: 0 });
   React.useLayoutEffect(() => {
@@ -4171,13 +4172,38 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const extensionPanels = React.useMemo(() => extensionState.extensions.flatMap(extension => extension.panels ?? []), [extensionState.extensions]);
   const extensionDockRef = React.useRef(dock.openTarget);
   extensionDockRef.current = dock.openTarget;
-  const openExtensionPanel = React.useCallback<ConsoleExtensionContext["openPanel"]>((id, intent) => {
+  const extensionSelectionRef = React.useRef<string | null>(null);
+  if (dock.focusedTarget?.kind === "agent-chat") extensionSelectionRef.current = dock.focusedTarget.identity;
+  const selectedExtensionIdentity = extensionSelectionRef.current;
+  const extensionSelection = React.useMemo(() => selectedExtensionIdentity
+    ? { scopeKey: sendScope, identity: selectedExtensionIdentity } : null, [sendScope, selectedExtensionIdentity]);
+  const extensionAuthority = React.useMemo(() => ({ key: sendScope, runtimeId: experience?.runtime_id }), [sendScope, experience?.runtime_id]);
+  const extensionLifetime = React.useMemo(() => ({ abort: new AbortController() }), [sendScope]);
+  React.useLayoutEffect(() => {
+    // React's development effect replay starts a fresh authority lifetime.
+    if (extensionLifetime.abort.signal.aborted) extensionLifetime.abort = new AbortController();
+    return () => extensionLifetime.abort.abort();
+  }, [extensionLifetime]);
+  const extensionHostService = React.useMemo<ConsoleExtensionService>(() => {
+    const service = extensionService ?? createConsoleExtensionService(baseUrl);
+    return (request, scope, signal) => bindConsoleExtensionService(service, extensionLifetime.abort.signal)(request, scope, signal);
+  }, [extensionService, baseUrl, extensionLifetime]);
+  const openExtensionPanel = React.useCallback<ConsoleExtensionContext["openPanel"]>((id, options) => {
     const panel = extensionPanels.find(panel => panel.id === id);
-    if (panel) extensionDockRef.current(consoleExtensionPanelTarget(panel), intent);
-  }, [extensionPanels]);
+    if (!panel) return;
+    const input = typeof options === "string" ? { intent: options } : options ?? {};
+    extensionDockRef.current(consoleExtensionPanelTarget(panel, {
+      ...input, conversation: input.conversation === undefined ? extensionSelection : input.conversation,
+    }), input.intent);
+  }, [extensionPanels, extensionSelection]);
   const extensionContext = React.useMemo<ConsoleExtensionContext>(() => ({
     baseUrl, readOnly: consoleReadOnly, experience, openPanel: openExtensionPanel,
-  }), [baseUrl, consoleReadOnly, experience, openExtensionPanel]);
+    authority: extensionAuthority, selection: extensionSelection, conversation: extensionSelection,
+    request: (request, signal, conversation) => extensionHostService(request, {
+      authority: extensionAuthority, conversation: conversation === undefined ? extensionSelection : conversation,
+      readOnly: consoleReadOnlyRef.current,
+    }, signal),
+  }), [baseUrl, consoleReadOnly, experience, openExtensionPanel, extensionAuthority, extensionSelection, extensionHostService]);
   const extensionProvider = React.useMemo(() => ({ extensions: extensionState.extensions, context: extensionContext }), [extensionState.extensions, extensionContext]);
 
   // =========================================================================
@@ -5043,7 +5069,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }) {
     const target = panel.target as MobKitDockTarget | null;
     if (!target) return <div className="console-panel">No panel target</div>;
-    if (target.kind === "extension/panel") return <ConsoleExtensionPanel id={target.payload?.panelId ?? target.id} />;
+    if (target.kind === "extension/panel") return <ConsoleExtensionPanel target={target} focused={dock.viewState.focusedPanelId === panel.id} />;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
@@ -5333,7 +5359,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             onResizeSplit={(id, ratio) => dock.resizeSplit(id, ratio)}
             onOpenTargetInPanel={(panelId, target) => {
               dock.focusPanel(panelId);
-              openDockTarget(target);
+              // Pane-picker registrations are unbound until the host supplies
+              // its current conversation context.
+              if (target.kind === "extension/panel") {
+                const definition = extensionPanels.find(panel => panel.id === target.payload.panelId);
+                if (definition) openDockTarget(consoleExtensionPanelTarget(definition, { conversation: extensionSelection }));
+              } else openDockTarget(target);
             }}
           />
           {dock.focusedTarget?.kind !== "agent-chat" ? voiceBar : null}

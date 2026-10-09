@@ -1536,6 +1536,38 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn callback_widget_and_image_survive_console_projection() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/console-widget-rich-result.json"
+        ))
+        .unwrap();
+        let blocks = callback_result_to_content(&fixture["callback"]);
+        assert_eq!(
+            serde_json::to_value(&blocks).unwrap(),
+            fixture["callback"]["content_blocks"]
+        );
+        let received = meerkat_core::AgentEvent::ToolResultReceived {
+            id: "example-call".into(),
+            name: "find_records".into(),
+            content: blocks.clone(),
+            is_error: false,
+        };
+        let completed = meerkat_core::AgentEvent::ToolExecutionCompleted {
+            id: "example-call".into(),
+            name: "find_records".into(),
+            content: blocks,
+            is_error: false,
+            duration_ms: 12,
+        };
+        // Qualify the SDK callback against the actual event serializer used by
+        // the live console and its replay log, including rich content siblings.
+        for (event, key) in [(received, "received"), (completed, "completed")] {
+            let payload = crate::mob_handle_runtime::console_agent_event_payload(&event);
+            assert_eq!(payload, fixture[key]);
+        }
+    }
+
+    #[test]
     fn callback_result_content_blocks_preserves_image() {
         // Opt-in rich content: a callback/bridge tool hands the model an image
         // via `content_blocks` — the gateway must NOT flatten it to text.

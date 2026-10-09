@@ -94,6 +94,7 @@ export interface ConversationRealtimeOrigin {
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
   kind: "message";
   widget?: ConsoleChatWidget;
+  widgetToolStatus?: import("./tool-completion").ToolCompletionOutcome;
   variant: "plain" | "rich" | "meta";
   text?: string;
   blocks?: ConversationRichBlock[];

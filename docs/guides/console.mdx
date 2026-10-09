@@ -54,7 +54,7 @@ modules; use versioned URLs to invalidate the browser module cache.
 
 Each module exports a default `ConsoleExtension` object. Embedded hosts can
 instead pass the same objects to `createConsoleApp(root, { baseUrl, extensions })`
-or `<ConsoleApp extensions={extensions} />`. Keep the array stable across renders.
+or `<ConsoleApp extensions={extensions} />`. Keep the array and injected service stable across renders.
 
 ```js
 export default {
@@ -82,12 +82,95 @@ export default {
 ```
 
 Panels appear in the sidebar and pane picker, and participate in tabs, splits,
-and saved layouts. `openPanel(id, intent)` accepts `replace_focused` (the default),
-`new_tab`, `split_right`, or `split_down`. A removed plugin leaves a readable
-unavailable view in restored panes.
+and saved layouts. `openPanel(id, options)` accepts an `intent` of
+`replace_focused` (the default), `new_tab`, `split_right`, or `split_down`.
+Passing the intent string alone is also supported. A removed plugin leaves a
+readable unavailable view in restored panes.
 
-To emit a chat widget, return explicit metadata from a tool as an object or a
-JSON string:
+To open independent instances, provide an `instanceKey` and JSON `params`:
+
+```js
+context.openPanel("application/results", {
+  instanceKey: `record:${recordId}`,
+  params: { recordId },
+  intent: "split_right",
+});
+```
+
+The panel registration must supply `validateParams(params)` when accepting
+non-null parameters. Validation runs before opening and again when restoring a
+layout. Read them from `context.panel.params`; `context.panel.instanceKey` and
+`context.panel.focused` describe the mounted instance. Persist only non-sensitive
+selectors in params and instance keys: they are layout preferences, not an
+appropriate place for credentials, private results, or live ownership claims.
+
+Panels pin to the source conversation by default. An old widget opens the
+conversation from its own runtime frame even after the user selects another
+chat. Set `followSelection: true` to follow the last focused chat instead, or
+`conversation: null` for an application-wide panel. A conversation target is
+`{ scopeKey, identity }`; it is a locator, not an authorization token. A change
+of followed conversation disposes the previous surface. Saved scoped targets
+restore only under the same opaque authority scope (`storageNamespace` or the
+runtime's `storage_scope`); without one they are transient.
+
+### Tool presentation contract
+
+Tools opt in by returning a structured content block whose `data` contains this
+metadata. The contract is defined by
+`packages/console-core/schemas/console-widget.schema.json` and
+`ConsoleChatWidget`. `type` and `version` select an exact registered renderer;
+`data` follows that renderer's application-defined schema. Breaking data changes
+need a new version. A nonempty `fallback` is always required.
+
+```json
+{
+  "type": "structured",
+  "data": {
+    "console_widget": {
+      "type": "application/result-count",
+      "version": 1,
+      "data": { "count": 7 },
+      "fallback": "Found seven matching records."
+    }
+  }
+}
+```
+
+The SDK helpers build this canonical block and can combine it with text and
+images in the same callback result:
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from meerkat_mobkit import console_widget_block, tool_content
+
+    def find_records(args):
+        return tool_content(console_widget_block(
+            "application/result-count",
+            version=1,
+            data={"count": 7},
+            fallback="Found seven matching records.",
+        ))
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import { consoleWidgetBlock, toolContent } from "@rkat/mobkit-sdk";
+
+    function findRecords(args) {
+      return toolContent(consoleWidgetBlock({
+        type: "application/result-count", version: 1,
+        data: { count: 7 }, fallback: "Found seven matching records.",
+      }));
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Rust tools use `ContentBlock::Structured` with the same data envelope. The
+metadata remains data through the runtime and history; it never changes tool
+execution, tool permissions, or the tool's input schema. Plain callback results
+can also return the envelope as an object or JSON string:
 
 ```json
 {
@@ -100,11 +183,20 @@ JSON string:
 }
 ```
 
-MCP-style results may carry this under `structuredContent.console_widget`.
-The console projects successful `tool_result_received` and
-`tool_execution_completed` frames and deduplicates completion twins by tool-call
-identity. It retains the ordinary tool row. Assistant prose cannot load a plugin
-or request execution of a module. The nonempty plain-text `fallback` supports
+When an integration preserves an MCP result object, it may carry the envelope
+under `structuredContent.console_widget`. Rich callbacks should use the helpers
+above so metadata travels in canonical structured content rather than extra
+keys that a content-block deserializer would discard.
+
+The console projects `tool_result_received` and `tool_execution_completed`
+frames and deduplicates completion twins by tool-call identity. One widget is
+selected per tool result, using the first valid envelope. It retains ordinary
+tool activity. `context.toolStatus` uses the canonical completion outcome:
+`success`, `error`, `cancelled`, `interrupted`, or `unknown` for these result
+frames. Error and unknown results may still have a widget; rendering never
+retries or re-executes the tool. Tool completion does not imply success of an
+application operation; put application-specific outcomes in `data`. Assistant prose cannot register a plugin or
+load a module. The plain-text `fallback` supports
 copying, missing plugins, unsupported versions, and failed rendering.
 
 The public types are exported from the console entry point and `@console-core`:
@@ -112,10 +204,11 @@ The public types are exported from the console entry point and `@console-core`:
 | Type | Contract |
 |------|----------|
 | `ConsoleExtension` | Unique `id`, optional `panels` and `widgets` arrays. |
-| `ConsolePanelDefinition` | Namespaced `id`, `title`, and `mount`. |
+| `ConsolePanelDefinition` | Namespaced `id`, `title`, `mount`, and optional `validateParams`. |
 | `ConsoleWidgetDefinition` | Namespaced `type`, positive integer `version`, and `mount`. |
-| `ConsoleExtensionContext` | `baseUrl`, `readOnly`, current `experience`, and `openPanel`. |
-| `ConsoleWidgetContext` | Extension context plus `widget`, source `identity`, and `entryId`. |
+| `ConsoleExtensionContext` | `baseUrl`, `readOnly`, `experience`, `authority`, `selection`, pinned `conversation`, `panel`, `request`, and `openPanel`. |
+| `ConsoleWidgetContext` | Extension context plus `widget`, source `identity`, `entryId`, and canonical `toolStatus`. |
+| `ConsoleExtensionService` | Injectable request service receiving authority, conversation, read-only state, and an abort signal. |
 | `ConsoleExtensionMount<T>` | Synchronous `(container, context, signal)` callback returning nothing or `{ update?, dispose }`. |
 
 Use application-owned names such as `application/results`; `mobkit/` is reserved.
@@ -124,13 +217,49 @@ Validate widget `data` in your renderer. `readOnly` and `experience` describe th
 current console view; they grant no runtime permissions. Application endpoints
 must enforce their own authorization.
 
+### Application services and lifecycle
+
+Use `context.request({ path, method?, body? }, signal)` for application endpoints.
+The default service makes same-origin JSON requests with same-origin cookies,
+rejects redirects and non-2xx responses, and never retries. It returns decoded
+JSON (or `null` for HTTP 204). Both default and injected services reject non-GET
+requests in a read-only console. This is a UI guard; the server remains the
+authority for every operation, including authorization and current ownership.
+
+Embedded hosts may pass `extensionService` to `ConsoleApp` or `createConsoleApp`:
+
+```ts
+const extensionService = async (request, scope, signal) => {
+  // Route through your application's authenticated service. The opaque scope
+  // and original conversation are locators for server-side validation.
+  return applicationService.request(request, scope, signal);
+};
+createConsoleApp(root, { extensions, extensionService });
+```
+
+A widget's request context stays bound to its originating conversation. A
+panel's requests use its pinned or followed conversation. The console aborts
+requests when authority changes and discards late results. Pass the mount
+signal to requests so closing or retargeting also cancels them. Handle failures
+and clear stale application data in the plugin; no result is automatically
+replayed. Keep credentials in your application's service path, outside chat
+messages and layout state.
+
+For revocable media, carry an application-owned receipt/reference in widget
+`data` and fetch it through an authorized endpoint. The plugin must clear its
+private UI on denial or revocation and release object URLs during disposal.
+Ordinary image content blocks remain transcript content; this API does not
+turn them into revocable attachments. Applications own that policy.
+
 Mounts own their container and may use the DOM or a bundled UI framework. The
 console calls `update(context)` when context changes. Without an update callback,
 it disposes and remounts the view. Closing, retargeting, or unmounting aborts the
 provided signal and calls `dispose`. Use that signal for asynchronous work and
-handle rejected promises in the plugin. Mount/update failures affect only that
+handle rejected promises in the plugin. Perform writes only in explicit user
+action handlers, never during mount or update. Mount/update failures affect only that
 surface. Dispose handlers must release event listeners, subscriptions, timers,
-and any framework root. Module-level code should declare registrations rather
+and any framework root. Use `context.panel.focused` and browser visibility
+events to pause polling when appropriate. Module-level code should declare registrations rather
 than start long-lived work.
 
 These modules are trusted application code with the page's privileges. Only

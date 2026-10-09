@@ -84,4 +84,10 @@ const extension: import("../src/index").ConsoleExtension = {
     element.onclick = () => context.openPanel("example/overview", "split_right");
   } }],
 };
-createConsoleApp(document.createElement("div"), { extensions: [extension] });
+createConsoleApp(document.createElement("div"), { extensions: [extension],
+  extensionService: async (request, scope, signal) => {
+    const original: string | undefined = scope.conversation?.identity;
+    signal.throwIfAborted();
+    return { original, method: request.method };
+  },
+});

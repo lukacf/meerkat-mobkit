@@ -125,7 +125,7 @@ export function ConversationMessageView({
   ].filter(Boolean).join(" ");
 
   if (entry.kind === "message" && entry.widget) {
-    return <ConsoleChatWidgetView widget={entry.widget} identity={entry.identity} entryId={entry.id} />;
+    return <ConsoleChatWidgetView widget={entry.widget} identity={entry.identity} entryId={entry.id} toolStatus={entry.widgetToolStatus} />;
   }
 
   if (entry.kind === "flow_run") {

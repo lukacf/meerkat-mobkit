@@ -6,6 +6,7 @@ import type { MarkdownUrlPolicy } from "@console-components";
 
 export interface CreateConsoleAppOptions {
   extensions?: readonly import("@console-core").ConsoleExtension[];
+  extensionService?: import("@console-core").ConsoleExtensionService;
   baseUrl?: string;
   /** Opaque host scope covering authority/runtime, realm and principal. */
   storageNamespace?: string;
@@ -23,7 +24,7 @@ export function createConsoleApp(
 
   const baseUrl = options.baseUrl || "";
   const root = createRoot(target);
-  root.render(<ConsoleApp extensions={options.extensions} baseUrl={baseUrl} storageNamespace={options.storageNamespace} markdownUrlPolicy={options.markdownUrlPolicy} />);
+  root.render(<ConsoleApp extensions={options.extensions} extensionService={options.extensionService} baseUrl={baseUrl} storageNamespace={options.storageNamespace} markdownUrlPolicy={options.markdownUrlPolicy} />);
 
   return {
     unmount() {
@@ -33,4 +34,4 @@ export function createConsoleApp(
 }
 
 export { ConsoleApp, parseSseFrames };
-export type { ConsoleExtension, ConsolePanelDefinition, ConsoleWidgetDefinition, ConsoleChatWidget, ConsoleExtensionContext, ConsoleWidgetContext, ConsoleExtensionMount } from "@console-core";
+export type { ConsoleExtension, ConsolePanelDefinition, ConsoleWidgetDefinition, ConsoleChatWidget, ConsoleExtensionContext, ConsoleWidgetContext, ConsoleExtensionMount, ConsolePanelOpenOptions, ConsoleConversationTarget, ConsoleExtensionService, ConsoleExtensionRequest, ConsoleJsonValue } from "@console-core";

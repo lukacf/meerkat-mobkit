@@ -373,9 +373,57 @@ var import_client = require("react-dom/client");
 // src/lib/extensions.ts
 var import_react = __toESM(require("react"));
 
+// ../packages/console-core/src/tool-completion.ts
+function unknownToolCompletion(toolCallId) {
+  return { outcome: "unknown", source: "unknown", toolCallId };
+}
+function toolCompletionFromFrame(frame, toolCallId) {
+  const data = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const id = typeof data?.tool_call_id === "string" ? data.tool_call_id : typeof data?.id === "string" ? data.id : "";
+  if (!id || id !== toolCallId) return unknownToolCompletion(toolCallId);
+  const source = frame.sourceKind === "session_history" ? "session-history" : "runtime-result";
+  const status = data?.status;
+  if (status === "cancelled" || status === "canceled") return { outcome: "cancelled", source, toolCallId };
+  if (status === "interrupted") return { outcome: "interrupted", source, toolCallId };
+  if (frame.event === "tool_execution_timed_out") return { outcome: "error", source, toolCallId };
+  if (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received") return unknownToolCompletion(toolCallId);
+  const result = data?.result ?? data?.content;
+  if (typeof data?.is_error !== "boolean" || result === void 0 || result === null) return unknownToolCompletion(toolCallId);
+  return { outcome: data.is_error ? "error" : "success", source, toolCallId };
+}
+
 // ../packages/console-core/src/extensions.ts
-function consoleExtensionPanelTarget(panel) {
-  return { id: `extension:${panel.id}`, kind: "extension/panel", title: panel.title, payloadVersion: 1, provenance: "host", payload: { panelId: panel.id } };
+function consoleExtensionPanelTarget(panel, options = {}) {
+  const instanceKey = options.instanceKey ?? "default";
+  if (typeof instanceKey !== "string" || !instanceKey.trim() || instanceKey.length > 512) throw new Error("Invalid panel instance key");
+  const params = options.params ?? null;
+  assertConsoleJson(params);
+  if (params !== null && (!panel.validateParams || !panel.validateParams(params))) throw new Error(`Invalid parameters for ${panel.id}`);
+  const conversation = options.conversation ?? null;
+  if (conversation && (typeof conversation.identity !== "string" || !conversation.identity.trim() || typeof conversation.scopeKey !== "string" || !conversation.scopeKey.trim())) throw new Error("Invalid conversation target");
+  return {
+    id: `extension:${panel.id}:${instanceKey}`,
+    kind: "extension/panel",
+    title: panel.title,
+    payloadVersion: 1,
+    provenance: "host",
+    payload: {
+      panelId: panel.id,
+      instanceKey,
+      params: JSON.parse(JSON.stringify(params)),
+      conversation: conversation ? { ...conversation } : null,
+      followSelection: options.followSelection === true
+    }
+  };
+}
+function assertConsoleJson(value, ancestors = /* @__PURE__ */ new Set()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) return;
+  if (typeof value !== "object" || ancestors.has(value) || !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error("Panel parameters must be plain JSON");
+  }
+  ancestors.add(value);
+  for (const item of Object.values(value)) assertConsoleJson(item, ancestors);
+  ancestors.delete(value);
 }
 var namespaced = (value) => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value) && !value.startsWith("mobkit/");
 var record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -387,7 +435,7 @@ function validateConsoleExtensions(extensions) {
     }
     ids.add(extension2.id);
     for (const panel of extension2.panels ?? []) {
-      if (!namespaced(panel.id) || panels.has(panel.id) || !panel.title?.trim() || typeof panel.mount !== "function") {
+      if (!namespaced(panel.id) || panels.has(panel.id) || !panel.title?.trim() || typeof panel.mount !== "function" || panel.validateParams !== void 0 && typeof panel.validateParams !== "function") {
         throw new Error(`Invalid or duplicate console panel: ${panel.id}`);
       }
       panels.add(panel.id);
@@ -410,37 +458,55 @@ function consoleExtensionModuleUrl(path2, baseUrl) {
 function parseConsoleChatWidget(value) {
   const raw = record(value);
   if (!raw || !namespaced(raw.type) || !Number.isSafeInteger(raw.version) || raw.version < 1 || typeof raw.fallback !== "string" || !raw.fallback.trim()) return null;
+  try {
+    assertConsoleJson(raw.data);
+  } catch {
+    return null;
+  }
   return { type: raw.type, version: raw.version, data: raw.data, fallback: raw.fallback };
 }
 function consoleWidgetEntryFromFrame(frame, identity) {
   if (frame.event !== "tool_result_received" && frame.event !== "tool_execution_completed") return null;
   const envelope = record(frame.data);
-  if (!envelope || envelope.is_error === true || envelope.isError === true || envelope.success === false) return null;
-  let result = envelope.result;
-  if (typeof result === "string") {
-    try {
-      result = JSON.parse(result);
-    } catch {
-      return null;
-    }
+  if (!envelope) return null;
+  const candidates = [];
+  for (const block of Array.isArray(envelope.content) ? envelope.content : []) {
+    const item = record(block);
+    if (item?.type === "structured") candidates.push(item.data);
+    else if (item?.type === "text") candidates.push(item.text);
   }
-  const payload = record(result);
-  if (!payload || payload.isError === true || payload.is_error === true) return null;
-  const widget = parseConsoleChatWidget(record(payload.structuredContent)?.console_widget ?? payload.console_widget);
+  candidates.push(envelope.result);
+  let widget = null;
+  for (let candidate of candidates) {
+    if (typeof candidate === "string") {
+      try {
+        candidate = JSON.parse(candidate);
+      } catch {
+        continue;
+      }
+    }
+    const payload = record(candidate);
+    if (!payload) continue;
+    widget = parseConsoleChatWidget(record(payload.structuredContent)?.console_widget ?? payload.console_widget);
+    if (widget) break;
+  }
   if (!widget) return null;
   const rawCallId = envelope.tool_call_id ?? envelope.id ?? envelope.call_id;
   const callId = typeof rawCallId === "string" && rawCallId.trim() ? rawCallId.trim() : frame.id;
+  const toolStatus = toolCompletionFromFrame(frame, callId).outcome;
+  const sourceIdentity = frame.identity?.trim() ? { ...identity, id: frame.identity } : identity;
   const renderKey = `widget:${JSON.stringify([frame.runtimeKey, frame.identity, callId, widget.type])}`;
   return {
     kind: "message",
     variant: "plain",
     id: frame.id,
     renderKey,
-    identity,
+    identity: sourceIdentity,
     interactionId: frame.interactionId,
     createdAt: Number.isFinite(frame.timestampMs) && Math.abs(frame.timestampMs) <= 864e13 ? new Date(frame.timestampMs).toISOString() : void 0,
     text: widget.fallback,
-    widget
+    widget,
+    widgetToolStatus: toolStatus
   };
 }
 
@@ -3821,25 +3887,6 @@ function reconcileRuntimeAppendFrames(frames) {
   return orderBySource(reconciled);
 }
 
-// ../packages/console-core/src/tool-completion.ts
-function unknownToolCompletion(toolCallId) {
-  return { outcome: "unknown", source: "unknown", toolCallId };
-}
-function toolCompletionFromFrame(frame, toolCallId) {
-  const data = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const id = typeof data?.tool_call_id === "string" ? data.tool_call_id : typeof data?.id === "string" ? data.id : "";
-  if (!id || id !== toolCallId) return unknownToolCompletion(toolCallId);
-  const source = frame.sourceKind === "session_history" ? "session-history" : "runtime-result";
-  const status = data?.status;
-  if (status === "cancelled" || status === "canceled") return { outcome: "cancelled", source, toolCallId };
-  if (status === "interrupted") return { outcome: "interrupted", source, toolCallId };
-  if (frame.event === "tool_execution_timed_out") return { outcome: "error", source, toolCallId };
-  if (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received") return unknownToolCompletion(toolCallId);
-  const result = data?.result ?? data?.content;
-  if (typeof data?.is_error !== "boolean" || result === void 0 || result === null) return unknownToolCompletion(toolCallId);
-  return { outcome: data.is_error ? "error" : "success", source, toolCallId };
-}
-
 // ../packages/console-core/src/context-record.ts
 var MAX_CONSOLE_CONTEXTS = 8;
 var MAX_CONSOLE_CONTEXT_BYTES = 64 * 1024;
@@ -5721,6 +5768,41 @@ function loadModule(url) {
     url
   );
 }
+function createConsoleExtensionService(baseUrl) {
+  return async (request, scope, signal) => {
+    const method = request.method ?? "GET";
+    if (scope.readOnly && method !== "GET") throw new Error("This console is view only");
+    const url = consoleExtensionModuleUrl(request.path, baseUrl);
+    const response = await fetch(url, {
+      method,
+      signal,
+      credentials: "same-origin",
+      redirect: "error",
+      ...request.body === void 0 ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.body) }
+    });
+    if (!response.ok) throw new Error(`Extension request failed (${response.status})`);
+    return response.status === 204 ? null : response.json();
+  };
+}
+function bindConsoleExtensionService(service, authoritySignal) {
+  return async (request, scope, signal) => {
+    if (scope.readOnly && (request.method ?? "GET") !== "GET") throw new Error("This console is view only");
+    const combined = new AbortController();
+    const abort = () => combined.abort();
+    authoritySignal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      if (authoritySignal.aborted || signal.aborted) combined.abort();
+      combined.signal.throwIfAborted();
+      const result = await service(request, scope, combined.signal);
+      combined.signal.throwIfAborted();
+      return result;
+    } finally {
+      authoritySignal.removeEventListener("abort", abort);
+      signal.removeEventListener("abort", abort);
+    }
+  };
+}
 
 // ../packages/console-components/src/extensions.tsx
 var import_react2 = __toESM(require("react"));
@@ -5745,6 +5827,7 @@ function ConsoleExtensionSurface({ mount, context, fallback }) {
     }
     container.current?.replaceChildren();
   }, []);
+  import_react2.default.useLayoutEffect(() => cleanup, [cleanup]);
   const start2 = import_react2.default.useCallback((value) => {
     abort.current = new AbortController();
     instance.current = mount(container.current, value, abort.current.signal);
@@ -5780,24 +5863,51 @@ function ConsoleExtensionSurface({ mount, context, fallback }) {
     failed ? fallback : null
   ] });
 }
-function ConsoleExtensionPanel({ id }) {
+function targetContext(base, conversation) {
+  return {
+    ...base,
+    conversation,
+    request: (request, signal) => base.request(request, signal, conversation),
+    openPanel: (id, options) => {
+      const input = typeof options === "string" ? { intent: options } : options ?? {};
+      base.openPanel(id, { ...input, conversation: input.conversation === void 0 ? conversation : input.conversation });
+    }
+  };
+}
+function ConsoleExtensionPanel({ target, focused }) {
   const state = import_react2.default.useContext(ExtensionContext);
-  const panel = state?.extensions.flatMap((extension2) => extension2.panels ?? []).find((panel2) => panel2.id === id);
+  const payload = target.payload;
+  const panel = state?.extensions.flatMap((extension2) => extension2.panels ?? []).find((panel2) => panel2.id === payload?.panelId);
+  const context = import_react2.default.useMemo(() => {
+    if (!panel || !state || target.payloadVersion !== 1 || typeof payload.instanceKey !== "string" || typeof payload.followSelection !== "boolean" || !("params" in payload) || !("conversation" in payload)) return null;
+    try {
+      consoleExtensionPanelTarget(panel, payload);
+    } catch {
+      return null;
+    }
+    if (payload.conversation && payload.conversation.scopeKey !== state.context.authority.key) return null;
+    const conversation = payload.followSelection ? state.context.selection : payload.conversation;
+    return { ...targetContext(state.context, conversation), panel: { instanceKey: payload.instanceKey, params: payload.params, focused } };
+  }, [panel, state?.context, payload, target.payloadVersion, focused]);
   const fallback = /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { role: "status", children: [
     "Custom panel unavailable: ",
-    panel?.title ?? id
+    panel?.title ?? payload?.panelId ?? target.id
   ] });
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "console-panel", "data-extension-panel": id, children: panel && state ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConsoleExtensionSurface, { mount: panel.mount, context: state.context, fallback }, id) : fallback });
+  const key = JSON.stringify([target.id, context?.authority.key, context?.conversation, context?.panel?.params]);
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "console-panel", "data-extension-panel": payload?.panelId, children: panel && context ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConsoleExtensionSurface, { mount: panel.mount, context, fallback }, key) : fallback });
 }
-function ConsoleChatWidgetView({ widget, identity, entryId }) {
+function ConsoleChatWidgetView({ widget, identity, entryId, toolStatus = "unknown" }) {
   const state = import_react2.default.useContext(ExtensionContext);
   const renderer = state?.extensions.flatMap((extension2) => extension2.widgets ?? []).find((renderer2) => renderer2.type === widget.type && renderer2.version === widget.version);
-  const context = import_react2.default.useMemo(
-    () => state ? { ...state.context, widget, identity, entryId } : null,
-    [state?.context, widget, identity, entryId]
-  );
+  const context = import_react2.default.useMemo(() => state ? {
+    ...targetContext(state.context, { scopeKey: state.context.authority.key, identity: identity.id }),
+    widget,
+    identity,
+    entryId,
+    toolStatus
+  } : null, [state?.context, widget, identity, entryId, toolStatus]);
   const fallback = /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-widget-fallback", children: widget.fallback });
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { "data-console-widget": widget.type, children: renderer && context ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConsoleExtensionSurface, { mount: renderer.mount, context, fallback }, `${widget.type}:${widget.version}`) : fallback });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { "data-console-widget": widget.type, children: renderer && context ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConsoleExtensionSurface, { mount: renderer.mount, context, fallback }, JSON.stringify([widget.type, widget.version, context.authority.key, context.conversation])) : fallback });
 }
 
 // node_modules/clsx/dist/clsx.mjs
@@ -39831,7 +39941,7 @@ function MessageRowBody({
         // by construction.
         /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(CouncilCard, { entry: m.councilEntry })
       ) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("div", { "data-quote-message-id": m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : void 0, "data-quote-source": m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : void 0, children: m.widgetEntry?.widget ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(ConsoleChatWidgetView, { widget: m.widgetEntry.widget, identity: m.widgetEntry.identity, entryId: m.widgetEntry.id }) : m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.contextMessage ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(DeliveredContextMessage, { message: m.contextMessage }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false, markdownUrlPolicy }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("span", { className: "msg__text", children: m.text }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("div", { "data-quote-message-id": m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : void 0, "data-quote-source": m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : void 0, children: m.widgetEntry?.widget ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(ConsoleChatWidgetView, { widget: m.widgetEntry.widget, identity: m.widgetEntry.identity, entryId: m.widgetEntry.id, toolStatus: m.widgetEntry.widgetToolStatus }) : m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.contextMessage ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(DeliveredContextMessage, { message: m.contextMessage }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false, markdownUrlPolicy }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("span", { className: "msg__text", children: m.text }) }),
       m.workedFor && !suppressWorked && /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("div", { className: "msg__worked", children: /* @__PURE__ */ (0, import_jsx_runtime54.jsxs)("span", { children: [
         "Worked for ",
         m.workedFor
@@ -43808,7 +43918,7 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp(props) {
-  const instanceKey = import_react47.default.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace]);
+  const instanceKey = import_react47.default.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace, props.extensionService]);
   return /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(ConsoleAppAuthority, { ...props }, instanceKey);
 }
 function ConsoleAppAuthority(props) {
@@ -43825,7 +43935,7 @@ function ConsoleAppAuthority(props) {
   }, []);
   return /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(ConsoleAppInstance, { ...props, observeScope }, generation);
 }
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, extensions, observeScope }) {
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, extensions, extensionService, observeScope }) {
   countRender("ConsoleApp");
   const lifetimeRef = import_react47.default.useRef({ active: true, generation: 0 });
   import_react47.default.useLayoutEffect(() => {
@@ -46488,16 +46598,43 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const extensionPanels = import_react47.default.useMemo(() => extensionState.extensions.flatMap((extension2) => extension2.panels ?? []), [extensionState.extensions]);
   const extensionDockRef = import_react47.default.useRef(dock.openTarget);
   extensionDockRef.current = dock.openTarget;
-  const openExtensionPanel = import_react47.default.useCallback((id, intent) => {
+  const extensionSelectionRef = import_react47.default.useRef(null);
+  if (dock.focusedTarget?.kind === "agent-chat") extensionSelectionRef.current = dock.focusedTarget.identity;
+  const selectedExtensionIdentity = extensionSelectionRef.current;
+  const extensionSelection = import_react47.default.useMemo(() => selectedExtensionIdentity ? { scopeKey: sendScope, identity: selectedExtensionIdentity } : null, [sendScope, selectedExtensionIdentity]);
+  const extensionAuthority = import_react47.default.useMemo(() => ({ key: sendScope, runtimeId: experience?.runtime_id }), [sendScope, experience?.runtime_id]);
+  const extensionLifetime = import_react47.default.useMemo(() => ({ abort: new AbortController() }), [sendScope]);
+  import_react47.default.useLayoutEffect(() => {
+    if (extensionLifetime.abort.signal.aborted) extensionLifetime.abort = new AbortController();
+    return () => extensionLifetime.abort.abort();
+  }, [extensionLifetime]);
+  const extensionHostService = import_react47.default.useMemo(() => {
+    const service = extensionService ?? createConsoleExtensionService(baseUrl);
+    return (request, scope, signal) => bindConsoleExtensionService(service, extensionLifetime.abort.signal)(request, scope, signal);
+  }, [extensionService, baseUrl, extensionLifetime]);
+  const openExtensionPanel = import_react47.default.useCallback((id, options) => {
     const panel = extensionPanels.find((panel2) => panel2.id === id);
-    if (panel) extensionDockRef.current(consoleExtensionPanelTarget(panel), intent);
-  }, [extensionPanels]);
+    if (!panel) return;
+    const input = typeof options === "string" ? { intent: options } : options ?? {};
+    extensionDockRef.current(consoleExtensionPanelTarget(panel, {
+      ...input,
+      conversation: input.conversation === void 0 ? extensionSelection : input.conversation
+    }), input.intent);
+  }, [extensionPanels, extensionSelection]);
   const extensionContext = import_react47.default.useMemo(() => ({
     baseUrl,
     readOnly: consoleReadOnly,
     experience,
-    openPanel: openExtensionPanel
-  }), [baseUrl, consoleReadOnly, experience, openExtensionPanel]);
+    openPanel: openExtensionPanel,
+    authority: extensionAuthority,
+    selection: extensionSelection,
+    conversation: extensionSelection,
+    request: (request, signal, conversation) => extensionHostService(request, {
+      authority: extensionAuthority,
+      conversation: conversation === void 0 ? extensionSelection : conversation,
+      readOnly: consoleReadOnlyRef.current
+    }, signal)
+  }), [baseUrl, consoleReadOnly, experience, openExtensionPanel, extensionAuthority, extensionSelection, extensionHostService]);
   const extensionProvider = import_react47.default.useMemo(() => ({ extensions: extensionState.extensions, context: extensionContext }), [extensionState.extensions, extensionContext]);
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
   const runWorkGraphCommand = import_react47.default.useCallback(
@@ -47127,7 +47264,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function renderPanelBody(panel) {
     const target = panel.target;
     if (!target) return /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("div", { className: "console-panel", children: "No panel target" });
-    if (target.kind === "extension/panel") return /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(ConsoleExtensionPanel, { id: target.payload?.panelId ?? target.id });
+    if (target.kind === "extension/panel") return /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(ConsoleExtensionPanel, { target, focused: dock.viewState.focusedPanelId === panel.id });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
@@ -47409,7 +47546,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
                     onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
                     onOpenTargetInPanel: (panelId, target) => {
                       dock.focusPanel(panelId);
-                      openDockTarget(target);
+                      if (target.kind === "extension/panel") {
+                        const definition3 = extensionPanels.find((panel) => panel.id === target.payload.panelId);
+                        if (definition3) openDockTarget(consoleExtensionPanelTarget(definition3, { conversation: extensionSelection }));
+                      } else openDockTarget(target);
                     }
                   }
                 ),
@@ -47455,7 +47595,7 @@ function createConsoleApp(target, options = {}) {
   }
   const baseUrl = options.baseUrl || "";
   const root4 = (0, import_client.createRoot)(target);
-  root4.render(/* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsoleApp, { extensions: options.extensions, baseUrl, storageNamespace: options.storageNamespace, markdownUrlPolicy: options.markdownUrlPolicy }));
+  root4.render(/* @__PURE__ */ (0, import_jsx_runtime58.jsx)(ConsoleApp, { extensions: options.extensions, extensionService: options.extensionService, baseUrl, storageNamespace: options.storageNamespace, markdownUrlPolicy: options.markdownUrlPolicy }));
   return {
     unmount() {
       root4.unmount();

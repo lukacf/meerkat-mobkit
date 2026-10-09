@@ -1,5 +1,5 @@
 import React from "react";
-import { consoleExtensionModuleUrl, validateConsoleExtensions, type ConsoleExtension } from "@console-core";
+import { consoleExtensionModuleUrl, validateConsoleExtensions, type ConsoleExtension, type ConsoleExtensionService } from "@console-core";
 
 const EMPTY_EXTENSIONS: readonly ConsoleExtension[] = [];
 
@@ -41,4 +41,38 @@ export function useConsoleExtensions(
 
 function loadModule(url: string): Promise<{ default: ConsoleExtension }> {
   return import(/* @vite-ignore */ url);
+}
+
+/** No credentials are handed to plugins, and requests are never replayed. */
+export function createConsoleExtensionService(baseUrl: string): ConsoleExtensionService {
+  return async (request, scope, signal) => {
+    const method = request.method ?? "GET";
+    if (scope.readOnly && method !== "GET") throw new Error("This console is view only");
+    const url = consoleExtensionModuleUrl(request.path, baseUrl);
+    const response = await fetch(url, { method, signal, credentials: "same-origin", redirect: "error",
+      ...(request.body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.body) }),
+    });
+    if (!response.ok) throw new Error(`Extension request failed (${response.status})`);
+    return response.status === 204 ? null : response.json();
+  };
+}
+
+export function bindConsoleExtensionService(service: ConsoleExtensionService, authoritySignal: AbortSignal): ConsoleExtensionService {
+  return async (request, scope, signal) => {
+    if (scope.readOnly && (request.method ?? "GET") !== "GET") throw new Error("This console is view only");
+    const combined = new AbortController();
+    const abort = () => combined.abort();
+    authoritySignal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      if (authoritySignal.aborted || signal.aborted) combined.abort();
+      combined.signal.throwIfAborted();
+      const result = await service(request, scope, combined.signal);
+      combined.signal.throwIfAborted();
+      return result;
+    } finally {
+      authoritySignal.removeEventListener("abort", abort);
+      signal.removeEventListener("abort", abort);
+    }
+  };
 }

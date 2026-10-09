@@ -1,0 +1,128 @@
+{
+  "callback": {
+    "content_blocks": [
+      {
+        "type": "text",
+        "text": "Search receipt"
+      },
+      {
+        "type": "image",
+        "media_type": "image/png",
+        "source": "inline",
+        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6q3sAAAAASUVORK5CYII="
+      },
+      {
+        "type": "structured",
+        "data": {
+          "console_widget": {
+            "type": "example/result-count",
+            "version": 1,
+            "data": {
+              "count": 7
+            },
+            "fallback": "Found seven matching records."
+          }
+        }
+      }
+    ]
+  },
+  "received": {
+    "type": "tool_result_received",
+    "id": "example-call",
+    "tool_call_id": "example-call",
+    "name": "find_records",
+    "content": [
+      {
+        "type": "text",
+        "text": "Search receipt"
+      },
+      {
+        "type": "image",
+        "media_type": "image/png",
+        "source": "inline",
+        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6q3sAAAAASUVORK5CYII="
+      },
+      {
+        "type": "structured",
+        "data": {
+          "console_widget": {
+            "type": "example/result-count",
+            "version": 1,
+            "data": {
+              "count": 7
+            },
+            "fallback": "Found seven matching records."
+          }
+        }
+      }
+    ],
+    "is_error": false
+  },
+  "completed": {
+    "type": "tool_execution_completed",
+    "id": "example-call",
+    "tool_call_id": "example-call",
+    "name": "find_records",
+    "content": [
+      {
+        "type": "text",
+        "text": "Search receipt"
+      },
+      {
+        "type": "image",
+        "media_type": "image/png",
+        "source": "inline",
+        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6q3sAAAAASUVORK5CYII="
+      },
+      {
+        "type": "structured",
+        "data": {
+          "console_widget": {
+            "type": "example/result-count",
+            "version": 1,
+            "data": {
+              "count": 7
+            },
+            "fallback": "Found seven matching records."
+          }
+        }
+      }
+    ],
+    "is_error": false,
+    "duration_ms": 12,
+    "result": "Search receipt\n[image: image/png]\n{\"console_widget\":{\"data\":{\"count\":7},\"fallback\":\"Found seven matching records.\",\"type\":\"example/result-count\",\"version\":1}}"
+  },
+  "history": {
+    "id": "example-call",
+    "tool_call_id": "example-call",
+    "result": "Search receipt\n[image: image/png]\n{\"console_widget\":{\"data\":{\"count\":7},\"fallback\":\"Found seven matching records.\",\"type\":\"example/result-count\",\"version\":1}}",
+    "content": [
+      {
+        "type": "text",
+        "text": "Search receipt"
+      },
+      {
+        "type": "image",
+        "media_type": "image/png",
+        "source": "inline",
+        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6q3sAAAAASUVORK5CYII="
+      },
+      {
+        "type": "structured",
+        "data": {
+          "console_widget": {
+            "type": "example/result-count",
+            "version": 1,
+            "data": {
+              "count": 7
+            },
+            "fallback": "Found seven matching records."
+          }
+        }
+      }
+    ],
+    "is_error": false,
+    "source_event_type": "session_history",
+    "type": "session_history"
+  }
+}

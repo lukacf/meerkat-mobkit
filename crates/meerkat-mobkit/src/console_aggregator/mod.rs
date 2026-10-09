@@ -18207,6 +18207,32 @@ comms = true
     }
 
     #[test]
+    fn session_history_widget_and_image_preserve_canonical_content() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/console-widget-rich-result.json"
+        ))
+        .unwrap();
+        let frames = frames_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            5,
+            json!({
+                "role": "tool_results",
+                "results": [{
+                    "tool_use_id": "example-call",
+                    "content": fixture["callback"]["content_blocks"],
+                    "is_error": false,
+                }],
+                "created_at": "1970-01-01T00:00:00.050Z",
+            }),
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].kind, "tool_execution_completed");
+        assert_eq!(frames[0].payload, fixture["history"]);
+    }
+
+    #[test]
     fn session_history_projection_preserves_tool_results() {
         let frames = frames_from_session_history_message(
             "runtime-a",
