@@ -24,22 +24,22 @@ def test_declaration_reaches_the_init_params():
     builder = MobKit.builder().role_migrations(
         [
             RoleMigrationDeclaration(
-                identity="domain:home-automation", from_role="domain"
+                identity="domain:automation", from_role="domain"
             )
         ]
     )
     params = _init_params(builder)
     assert params["role_migrations"] == [
-        {"identity": "domain:home-automation", "from_role": "domain"}
+        {"identity": "domain:automation", "from_role": "domain"}
     ]
 
 
 def test_a_plain_dict_is_accepted_and_still_validated():
     builder = MobKit.builder().role_migrations(
-        [{"identity": "domain:home-automation", "from_role": "domain"}]
+        [{"identity": "domain:automation", "from_role": "domain"}]
     )
     assert _init_params(builder)["role_migrations"] == [
-        {"identity": "domain:home-automation", "from_role": "domain"}
+        {"identity": "domain:automation", "from_role": "domain"}
     ]
 
     with pytest.raises(ValueError):
@@ -91,15 +91,15 @@ def test_conflicting_declarations_are_refused_and_repeats_are_not():
     with pytest.raises(ValueError, match="cannot be resolved by order"):
         MobKit.builder().role_migrations(
             [
-                {"identity": "domain:home-automation", "from_role": "domain"},
-                {"identity": "domain:home-automation", "from_role": "other"},
+                {"identity": "domain:automation", "from_role": "domain"},
+                {"identity": "domain:automation", "from_role": "other"},
             ]
         )
 
     repeated = MobKit.builder().role_migrations(
         [
-            {"identity": "domain:home-automation", "from_role": "domain"},
-            {"identity": "domain:home-automation", "from_role": "domain"},
+            {"identity": "domain:automation", "from_role": "domain"},
+            {"identity": "domain:automation", "from_role": "domain"},
         ]
     )
     assert len(_init_params(repeated)["role_migrations"]) == 2

@@ -117,7 +117,7 @@ only to the released corpora.
 - role_migrations_init_params.json - the hand-authored wire contract for
   boot-scoped member role migrations: one gateway init-params object
   carrying a top-level role_migrations array of {identity, from_role}
-  declarations (synthetic example values: identity domain:home-automation
+  declarations (synthetic example values: identity domain:automation
   migrating from role domain). Read by BOTH languages from this ONE file.
   Rust: identity_first::bridge::tests::
   the_committed_wire_fixture_deserializes_into_declarations include_str!s it
