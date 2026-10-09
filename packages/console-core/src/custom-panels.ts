@@ -115,4 +115,3 @@ export function consolePanelModuleUrl(path: string, baseUrl: string): string {
     || url.username || url.password || url.hash) throw new Error("Custom panel modules must use same-origin HTTP URLs");
   return url.href;
 }
-

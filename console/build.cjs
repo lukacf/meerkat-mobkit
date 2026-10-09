@@ -24,6 +24,13 @@ const alias = {
 // Shared packages import clsx etc. — resolve from console/node_modules
 const nodePaths = [path.resolve(__dirname, "node_modules")];
 
+const bundleSyntaxOptions = {
+  jsx: "automatic",
+  // Emit escaped strings so file-hygiene hooks cannot trim whitespace inside
+  // vendor template literals. Compiler lowering preserves their string values.
+  supported: { "template-literal": false },
+};
+
 function assetVersion(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 12);
 }
@@ -50,9 +57,6 @@ async function main() {
   await fs.mkdir(outDir, { recursive: true });
   await fs.mkdir(embeddedOutDir, { recursive: true });
 
-  // Shared components use JSX automatic runtime (react/jsx-runtime)
-  const jsxOptions = { jsx: "automatic" };
-
   // Library bundle (CJS) for JSDOM / smoke tests
   await build({
     absWorkingDir: __dirname,
@@ -67,7 +71,7 @@ async function main() {
     external: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"],
     alias,
     nodePaths,
-    ...jsxOptions,
+    ...bundleSyntaxOptions,
     minify: false,
   });
 
@@ -86,7 +90,7 @@ async function main() {
     },
     alias,
     nodePaths,
-    ...jsxOptions,
+    ...bundleSyntaxOptions,
     keepNames: true,
     minify: true,
   });
@@ -111,7 +115,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exit(1);
-});
+module.exports = { bundleSyntaxOptions };
+
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exit(1);
+  });
+}

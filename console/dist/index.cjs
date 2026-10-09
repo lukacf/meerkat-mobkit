@@ -999,12 +999,12 @@ function $constructor(name2, initializer3, params) {
 var $brand = Symbol("zod_brand");
 var $ZodAsyncError = class extends Error {
   constructor() {
-    super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
+    super("Encountered Promise during synchronous parse. Use .parseAsync() instead.");
   }
 };
 var $ZodEncodeError = class extends Error {
   constructor(name2) {
-    super(`Encountered unidirectional transform during encode: ${name2}`);
+    super("Encountered unidirectional transform during encode: ".concat(name2));
     this.name = "ZodEncodeError";
   }
 };
@@ -1308,7 +1308,7 @@ var getParsedType = (data) => {
       }
       return "object";
     default:
-      throw new Error(`Unknown data type: ${t}`);
+      throw new Error("Unknown data type: ".concat(t));
   }
 };
 var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
@@ -1375,8 +1375,8 @@ function stringifyPrimitive(value) {
   if (typeof value === "bigint")
     return value.toString() + "n";
   if (typeof value === "string")
-    return `"${value}"`;
-  return `${value}`;
+    return '"'.concat(value, '"');
+  return "".concat(value);
 }
 function optionalKeys(shape) {
   return Object.keys(shape).filter((k) => {
@@ -1406,7 +1406,7 @@ function pick(schema, mask) {
       const newShape = {};
       for (const key in mask) {
         if (!(key in currDef.shape)) {
-          throw new Error(`Unrecognized key: "${key}"`);
+          throw new Error('Unrecognized key: "'.concat(key, '"'));
         }
         if (!mask[key])
           continue;
@@ -1431,7 +1431,7 @@ function omit(schema, mask) {
       const newShape = { ...schema._zod.def.shape };
       for (const key in mask) {
         if (!(key in currDef.shape)) {
-          throw new Error(`Unrecognized key: "${key}"`);
+          throw new Error('Unrecognized key: "'.concat(key, '"'));
         }
         if (!mask[key])
           continue;
@@ -1509,7 +1509,7 @@ function partial(Class2, schema, mask) {
       if (mask) {
         for (const key in mask) {
           if (!(key in oldShape)) {
-            throw new Error(`Unrecognized key: "${key}"`);
+            throw new Error('Unrecognized key: "'.concat(key, '"'));
           }
           if (!mask[key])
             continue;
@@ -1541,7 +1541,7 @@ function required(Class2, schema, mask) {
       if (mask) {
         for (const key in mask) {
           if (!(key in shape)) {
-            throw new Error(`Unrecognized key: "${key}"`);
+            throw new Error('Unrecognized key: "'.concat(key, '"'));
           }
           if (!mask[key])
             continue;
@@ -1806,11 +1806,11 @@ function toDotPath(_path) {
   const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
   for (const seg of path2) {
     if (typeof seg === "number")
-      segs.push(`[${seg}]`);
+      segs.push("[".concat(seg, "]"));
     else if (typeof seg === "symbol")
-      segs.push(`[${JSON.stringify(String(seg))}]`);
+      segs.push("[".concat(JSON.stringify(String(seg)), "]"));
     else if (/[^\w$]/.test(seg))
-      segs.push(`[${JSON.stringify(seg)}]`);
+      segs.push("[".concat(JSON.stringify(seg), "]"));
     else {
       if (segs.length)
         segs.push(".");
@@ -1823,9 +1823,9 @@ function prettifyError(error48) {
   const lines = [];
   const issues = [...error48.issues].sort((a, b2) => (a.path ?? []).length - (b2.path ?? []).length);
   for (const issue2 of issues) {
-    lines.push(`\u2716 ${issue2.message}`);
+    lines.push("\u2716 ".concat(issue2.message));
     if (issue2.path?.length)
-      lines.push(`  \u2192 at ${toDotPath(issue2.path)}`);
+      lines.push("  \u2192 at ".concat(toDotPath(issue2.path)));
   }
   return lines.join("\n");
 }
@@ -1992,7 +1992,7 @@ var guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 var uuid = (version2) => {
   if (!version2)
     return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
-  return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version2}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
+  return new RegExp("^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-".concat(version2, "[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"));
 };
 var uuid4 = /* @__PURE__ */ uuid(4);
 var uuid6 = /* @__PURE__ */ uuid(6);
@@ -2003,7 +2003,7 @@ var rfc5322Email = /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+")
 var unicodeEmail = /^[^\s@"]{1,64}@[^\s@]{1,255}$/u;
 var idnEmail = unicodeEmail;
 var browserEmail = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-var _emoji = `^(\\p{Extended_Pictographic}|\\p{Emoji_Component})+$`;
+var _emoji = "^(\\p{Extended_Pictographic}|\\p{Emoji_Component})+$";
 function emoji() {
   return new RegExp(_emoji, "u");
 }
@@ -2011,7 +2011,7 @@ var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[
 var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
 var mac = (delimiter) => {
   const escapedDelim = escapeRegex(delimiter ?? ":");
-  return new RegExp(`^(?:[0-9A-F]{2}${escapedDelim}){5}[0-9A-F]{2}$|^(?:[0-9a-f]{2}${escapedDelim}){5}[0-9a-f]{2}$`);
+  return new RegExp("^(?:[0-9A-F]{2}".concat(escapedDelim, "){5}[0-9A-F]{2}$|^(?:[0-9a-f]{2}").concat(escapedDelim, "){5}[0-9a-f]{2}$"));
 };
 var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
 var cidrv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|::|([0-9a-fA-F]{1,4})?::([0-9a-fA-F]{1,4}:?){0,6})\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$/;
@@ -2020,15 +2020,15 @@ var base64url = /^[A-Za-z0-9_-]*$/;
 var hostname = /^(?=.{1,253}\.?$)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[-0-9a-zA-Z]{0,61}[0-9a-zA-Z])?)*\.?$/;
 var domain = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 var e164 = /^\+[1-9]\d{6,14}$/;
-var dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`;
-var date = /* @__PURE__ */ new RegExp(`^${dateSource}$`);
+var dateSource = "(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))";
+var date = /* @__PURE__ */ new RegExp("^".concat(dateSource, "$"));
 function timeSource(args) {
-  const hhmm = `(?:[01]\\d|2[0-3]):[0-5]\\d`;
-  const regex2 = typeof args.precision === "number" ? args.precision === -1 ? `${hhmm}` : args.precision === 0 ? `${hhmm}:[0-5]\\d` : `${hhmm}:[0-5]\\d\\.\\d{${args.precision}}` : `${hhmm}(?::[0-5]\\d(?:\\.\\d+)?)?`;
+  const hhmm = "(?:[01]\\d|2[0-3]):[0-5]\\d";
+  const regex2 = typeof args.precision === "number" ? args.precision === -1 ? "".concat(hhmm) : args.precision === 0 ? "".concat(hhmm, ":[0-5]\\d") : "".concat(hhmm, ":[0-5]\\d\\.\\d{").concat(args.precision, "}") : "".concat(hhmm, "(?::[0-5]\\d(?:\\.\\d+)?)?");
   return regex2;
 }
 function time(args) {
-  return new RegExp(`^${timeSource(args)}$`);
+  return new RegExp("^".concat(timeSource(args), "$"));
 }
 function datetime(args) {
   const time4 = timeSource({ precision: args.precision });
@@ -2036,13 +2036,13 @@ function datetime(args) {
   if (args.local)
     opts.push("");
   if (args.offset)
-    opts.push(`([+-](?:[01]\\d|2[0-3]):[0-5]\\d)`);
-  const timeRegex = `${time4}(?:${opts.join("|")})`;
-  return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
+    opts.push("([+-](?:[01]\\d|2[0-3]):[0-5]\\d)");
+  const timeRegex = "".concat(time4, "(?:").concat(opts.join("|"), ")");
+  return new RegExp("^".concat(dateSource, "T(?:").concat(timeRegex, ")$"));
 }
 var string = (params) => {
-  const regex2 = params ? `[\\s\\S]{${params?.minimum ?? 0},${params?.maximum ?? ""}}` : `[\\s\\S]*`;
-  return new RegExp(`^${regex2}$`);
+  const regex2 = params ? "[\\s\\S]{".concat(params?.minimum ?? 0, ",").concat(params?.maximum ?? "", "}") : "[\\s\\S]*";
+  return new RegExp("^".concat(regex2, "$"));
 };
 var bigint = /^-?\d+n?$/;
 var integer = /^-?\d+$/;
@@ -2054,10 +2054,10 @@ var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 var hex = /^[0-9a-fA-F]*$/;
 function fixedBase64(bodyLength, padding) {
-  return new RegExp(`^[A-Za-z0-9+/]{${bodyLength}}${padding}$`);
+  return new RegExp("^[A-Za-z0-9+/]{".concat(bodyLength, "}").concat(padding, "$"));
 }
 function fixedBase64url(length) {
-  return new RegExp(`^[A-Za-z0-9_-]{${length}}$`);
+  return new RegExp("^[A-Za-z0-9_-]{".concat(length, "}$"));
 }
 var md5_hex = /^[0-9a-fA-F]{32}$/;
 var md5_base64 = /* @__PURE__ */ fixedBase64(22, "==");
@@ -2512,7 +2512,7 @@ var $ZodCheckUpperCase = /* @__PURE__ */ $constructor("$ZodCheckUpperCase", (ins
 var $ZodCheckIncludes = /* @__PURE__ */ $constructor("$ZodCheckIncludes", (inst, def) => {
   $ZodCheck.init(inst, def);
   const escapedRegex = escapeRegex(def.includes);
-  const pattern = new RegExp(typeof def.position === "number" ? `^.{${def.position}}${escapedRegex}` : escapedRegex);
+  const pattern = new RegExp(typeof def.position === "number" ? "^.{".concat(def.position, "}").concat(escapedRegex) : escapedRegex);
   def.pattern = pattern;
   inst._zod.onattach.push((inst2) => {
     const bag = inst2._zod.bag;
@@ -2535,7 +2535,7 @@ var $ZodCheckIncludes = /* @__PURE__ */ $constructor("$ZodCheckIncludes", (inst,
 });
 var $ZodCheckStartsWith = /* @__PURE__ */ $constructor("$ZodCheckStartsWith", (inst, def) => {
   $ZodCheck.init(inst, def);
-  const pattern = new RegExp(`^${escapeRegex(def.prefix)}.*`);
+  const pattern = new RegExp("^".concat(escapeRegex(def.prefix), ".*"));
   def.pattern ?? (def.pattern = pattern);
   inst._zod.onattach.push((inst2) => {
     const bag = inst2._zod.bag;
@@ -2558,7 +2558,7 @@ var $ZodCheckStartsWith = /* @__PURE__ */ $constructor("$ZodCheckStartsWith", (i
 });
 var $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst, def) => {
   $ZodCheck.init(inst, def);
-  const pattern = new RegExp(`.*${escapeRegex(def.suffix)}$`);
+  const pattern = new RegExp(".*".concat(escapeRegex(def.suffix), "$"));
   def.pattern ?? (def.pattern = pattern);
   inst._zod.onattach.push((inst2) => {
     const bag = inst2._zod.bag;
@@ -2653,8 +2653,8 @@ var Doc = class {
   compile() {
     const F = Function;
     const args = this?.args;
-    const content3 = this?.content ?? [``];
-    const lines = [...content3.map((x) => `  ${x}`)];
+    const content3 = this?.content ?? [""];
+    const lines = [...content3.map((x) => "  ".concat(x))];
     return new F(...args, lines.join("\n"));
   }
 };
@@ -2818,7 +2818,7 @@ var $ZodUUID = /* @__PURE__ */ $constructor("$ZodUUID", (inst, def) => {
     };
     const v = versionMap[def.version];
     if (v === void 0)
-      throw new Error(`Invalid UUID version: "${def.version}"`);
+      throw new Error('Invalid UUID version: "'.concat(def.version, '"'));
     def.pattern ?? (def.pattern = uuid(v));
   } else
     def.pattern ?? (def.pattern = uuid());
@@ -2926,15 +2926,15 @@ var $ZodISODuration = /* @__PURE__ */ $constructor("$ZodISODuration", (inst, def
 var $ZodIPv4 = /* @__PURE__ */ $constructor("$ZodIPv4", (inst, def) => {
   def.pattern ?? (def.pattern = ipv4);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.format = `ipv4`;
+  inst._zod.bag.format = "ipv4";
 });
 var $ZodIPv6 = /* @__PURE__ */ $constructor("$ZodIPv6", (inst, def) => {
   def.pattern ?? (def.pattern = ipv6);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.format = `ipv6`;
+  inst._zod.bag.format = "ipv6";
   inst._zod.check = (payload) => {
     try {
-      new URL(`http://[${payload.value}]`);
+      new URL("http://[".concat(payload.value, "]"));
     } catch {
       payload.issues.push({
         code: "invalid_format",
@@ -2949,7 +2949,7 @@ var $ZodIPv6 = /* @__PURE__ */ $constructor("$ZodIPv6", (inst, def) => {
 var $ZodMAC = /* @__PURE__ */ $constructor("$ZodMAC", (inst, def) => {
   def.pattern ?? (def.pattern = mac(def.delimiter));
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.format = `mac`;
+  inst._zod.bag.format = "mac";
 });
 var $ZodCIDRv4 = /* @__PURE__ */ $constructor("$ZodCIDRv4", (inst, def) => {
   def.pattern ?? (def.pattern = cidrv4);
@@ -2967,11 +2967,11 @@ var $ZodCIDRv6 = /* @__PURE__ */ $constructor("$ZodCIDRv6", (inst, def) => {
       if (!prefix)
         throw new Error();
       const prefixNum = Number(prefix);
-      if (`${prefixNum}` !== prefix)
+      if ("".concat(prefixNum) !== prefix)
         throw new Error();
       if (prefixNum < 0 || prefixNum > 128)
         throw new Error();
-      new URL(`http://[${address}]`);
+      new URL("http://[".concat(address, "]"));
     } catch {
       payload.issues.push({
         code: "invalid_format",
@@ -3327,7 +3327,7 @@ function normalizeDef(def) {
   const keys2 = Object.keys(def.shape);
   for (const k of keys2) {
     if (!def.shape?.[k]?._zod?.traits?.has("$ZodType")) {
-      throw new Error(`Invalid element at key "${k}": expected a Zod schema`);
+      throw new Error('Invalid element at key "'.concat(k, '": expected a Zod schema'));
     }
   }
   const okeys = optionalKeys(def.shape);
@@ -3445,63 +3445,29 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     const normalized = _normalized.value;
     const parseStr = (key) => {
       const k = esc(key);
-      return `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
+      return "shape[".concat(k, "]._zod.run({ value: input[").concat(k, "], issues: [] }, ctx)");
     };
-    doc.write(`const input = payload.value;`);
+    doc.write("const input = payload.value;");
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
     for (const key of normalized.keys) {
-      ids[key] = `key_${counter++}`;
+      ids[key] = "key_".concat(counter++);
     }
-    doc.write(`const newResult = {};`);
+    doc.write("const newResult = {};");
     for (const key of normalized.keys) {
       const id = ids[key];
       const k = esc(key);
       const schema = shape[key];
       const isOptionalOut = schema?._zod?.optout === "optional";
-      doc.write(`const ${id} = ${parseStr(key)};`);
+      doc.write("const ".concat(id, " = ").concat(parseStr(key), ";"));
       if (isOptionalOut) {
-        doc.write(`
-        if (${id}.issues.length) {
-          if (${k} in input) {
-            payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
-              ...iss,
-              path: iss.path ? [${k}, ...iss.path] : [${k}]
-            })));
-          }
-        }
-        
-        if (${id}.value === undefined) {
-          if (${k} in input) {
-            newResult[${k}] = undefined;
-          }
-        } else {
-          newResult[${k}] = ${id}.value;
-        }
-        
-      `);
+        doc.write("\n        if (".concat(id, ".issues.length) {\n          if (").concat(k, " in input) {\n            payload.issues = payload.issues.concat(").concat(id, ".issues.map(iss => ({\n              ...iss,\n              path: iss.path ? [").concat(k, ", ...iss.path] : [").concat(k, "]\n            })));\n          }\n        }\n        \n        if (").concat(id, ".value === undefined) {\n          if (").concat(k, " in input) {\n            newResult[").concat(k, "] = undefined;\n          }\n        } else {\n          newResult[").concat(k, "] = ").concat(id, ".value;\n        }\n        \n      "));
       } else {
-        doc.write(`
-        if (${id}.issues.length) {
-          payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
-            ...iss,
-            path: iss.path ? [${k}, ...iss.path] : [${k}]
-          })));
-        }
-        
-        if (${id}.value === undefined) {
-          if (${k} in input) {
-            newResult[${k}] = undefined;
-          }
-        } else {
-          newResult[${k}] = ${id}.value;
-        }
-        
-      `);
+        doc.write("\n        if (".concat(id, ".issues.length) {\n          payload.issues = payload.issues.concat(").concat(id, ".issues.map(iss => ({\n            ...iss,\n            path: iss.path ? [").concat(k, ", ...iss.path] : [").concat(k, "]\n          })));\n        }\n        \n        if (").concat(id, ".value === undefined) {\n          if (").concat(k, " in input) {\n            newResult[").concat(k, "] = undefined;\n          }\n        } else {\n          newResult[").concat(k, "] = ").concat(id, ".value;\n        }\n        \n      "));
       }
     }
-    doc.write(`payload.value = newResult;`);
-    doc.write(`return payload;`);
+    doc.write("payload.value = newResult;");
+    doc.write("return payload;");
     const fn = doc.compile();
     return (payload, ctx) => fn(shape, payload, ctx);
   };
@@ -3568,7 +3534,7 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
   defineLazy(inst._zod, "pattern", () => {
     if (def.options.every((o) => o._zod.pattern)) {
       const patterns = def.options.map((o) => o._zod.pattern);
-      return new RegExp(`^(${patterns.map((p2) => cleanRegex(p2.source)).join("|")})$`);
+      return new RegExp("^(".concat(patterns.map((p2) => cleanRegex(p2.source)).join("|"), ")$"));
     }
     return void 0;
   });
@@ -3664,7 +3630,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
     for (const option of def.options) {
       const pv = option._zod.propValues;
       if (!pv || Object.keys(pv).length === 0)
-        throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(option)}"`);
+        throw new Error('Invalid discriminated union option at index "'.concat(def.options.indexOf(option), '"'));
       for (const [k, v] of Object.entries(pv)) {
         if (!propValues[k])
           propValues[k] = /* @__PURE__ */ new Set();
@@ -3681,10 +3647,10 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
     for (const o of opts) {
       const values = o._zod.propValues?.[def.discriminator];
       if (!values || values.size === 0)
-        throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(o)}"`);
+        throw new Error('Invalid discriminated union option at index "'.concat(def.options.indexOf(o), '"'));
       for (const v of values) {
         if (map4.has(v)) {
-          throw new Error(`Duplicate discriminator value "${String(v)}"`);
+          throw new Error('Duplicate discriminator value "'.concat(String(v), '"'));
         }
         map4.set(v, o);
       }
@@ -3814,7 +3780,7 @@ function handleIntersectionResults(result, left, right) {
     return result;
   const merged = mergeValues(left.value, right.value);
   if (!merged.valid) {
-    throw new Error(`Unmergable intersection. Error path: ${JSON.stringify(merged.mergeErrorPath)}`);
+    throw new Error("Unmergable intersection. Error path: " + "".concat(JSON.stringify(merged.mergeErrorPath)));
   }
   result.value = merged.data;
   return result;
@@ -4100,7 +4066,7 @@ var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   const values = getEnumValues(def.entries);
   const valuesSet = new Set(values);
   inst._zod.values = valuesSet;
-  inst._zod.pattern = new RegExp(`^(${values.filter((k) => propertyKeyTypes.has(typeof k)).map((o) => typeof o === "string" ? escapeRegex(o) : o.toString()).join("|")})$`);
+  inst._zod.pattern = new RegExp("^(".concat(values.filter((k) => propertyKeyTypes.has(typeof k)).map((o) => typeof o === "string" ? escapeRegex(o) : o.toString()).join("|"), ")$"));
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
     if (valuesSet.has(input)) {
@@ -4122,7 +4088,7 @@ var $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
   }
   const values = new Set(def.values);
   inst._zod.values = values;
-  inst._zod.pattern = new RegExp(`^(${def.values.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$`);
+  inst._zod.pattern = new RegExp("^(".concat(def.values.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|"), ")$"));
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
     if (values.has(input)) {
@@ -4188,7 +4154,7 @@ var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
   });
   defineLazy(inst._zod, "pattern", () => {
     const pattern = def.innerType._zod.pattern;
-    return pattern ? new RegExp(`^(${cleanRegex(pattern.source)})?$`) : void 0;
+    return pattern ? new RegExp("^(".concat(cleanRegex(pattern.source), ")?$")) : void 0;
   });
   inst._zod.parse = (payload, ctx) => {
     if (def.innerType._zod.optin === "optional") {
@@ -4217,7 +4183,7 @@ var $ZodNullable = /* @__PURE__ */ $constructor("$ZodNullable", (inst, def) => {
   defineLazy(inst._zod, "optout", () => def.innerType._zod.optout);
   defineLazy(inst._zod, "pattern", () => {
     const pattern = def.innerType._zod.pattern;
-    return pattern ? new RegExp(`^(${cleanRegex(pattern.source)}|null)$`) : void 0;
+    return pattern ? new RegExp("^(".concat(cleanRegex(pattern.source), "|null)$")) : void 0;
   });
   defineLazy(inst._zod, "values", () => {
     return def.innerType._zod.values ? /* @__PURE__ */ new Set([...def.innerType._zod.values, null]) : void 0;
@@ -4469,21 +4435,21 @@ var $ZodTemplateLiteral = /* @__PURE__ */ $constructor("$ZodTemplateLiteral", (i
   for (const part of def.parts) {
     if (typeof part === "object" && part !== null) {
       if (!part._zod.pattern) {
-        throw new Error(`Invalid template literal part, no pattern found: ${[...part._zod.traits].shift()}`);
+        throw new Error("Invalid template literal part, no pattern found: ".concat([...part._zod.traits].shift()));
       }
       const source = part._zod.pattern instanceof RegExp ? part._zod.pattern.source : part._zod.pattern;
       if (!source)
-        throw new Error(`Invalid template literal part: ${part._zod.traits}`);
+        throw new Error("Invalid template literal part: ".concat(part._zod.traits));
       const start2 = source.startsWith("^") ? 1 : 0;
       const end = source.endsWith("$") ? source.length - 1 : source.length;
       regexParts.push(source.slice(start2, end));
     } else if (part === null || primitiveTypes.has(typeof part)) {
-      regexParts.push(escapeRegex(`${part}`));
+      regexParts.push(escapeRegex("".concat(part)));
     } else {
-      throw new Error(`Invalid template literal part: ${part}`);
+      throw new Error("Invalid template literal part: ".concat(part));
     }
   }
-  inst._zod.pattern = new RegExp(`^${regexParts.join("")}$`);
+  inst._zod.pattern = new RegExp("^".concat(regexParts.join(""), "$"));
   inst._zod.parse = (payload, _ctx) => {
     if (typeof payload.value !== "string") {
       payload.issues.push({
@@ -4742,51 +4708,51 @@ var error = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 instanceof ${issue2.expected}\u060C \u0648\u0644\u0643\u0646 \u062A\u0645 \u0625\u062F\u062E\u0627\u0644 ${received}`;
+          return "\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 instanceof ".concat(issue2.expected, "\u060C \u0648\u0644\u0643\u0646 \u062A\u0645 \u0625\u062F\u062E\u0627\u0644 ").concat(received);
         }
-        return `\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 ${expected}\u060C \u0648\u0644\u0643\u0646 \u062A\u0645 \u0625\u062F\u062E\u0627\u0644 ${received}`;
+        return "\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 ".concat(expected, "\u060C \u0648\u0644\u0643\u0646 \u062A\u0645 \u0625\u062F\u062E\u0627\u0644 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u0627\u062E\u062A\u064A\u0627\u0631 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062A\u0648\u0642\u0639 \u0627\u0646\u062A\u0642\u0627\u0621 \u0623\u062D\u062F \u0647\u0630\u0647 \u0627\u0644\u062E\u064A\u0627\u0631\u0627\u062A: ${joinValues(issue2.values, "|")}`;
+          return "\u0645\u062F\u062E\u0644\u0627\u062A \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644\u0629: \u064A\u0641\u062A\u0631\u0636 \u0625\u062F\u062E\u0627\u0644 ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u0627\u062E\u062A\u064A\u0627\u0631 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062A\u0648\u0642\u0639 \u0627\u0646\u062A\u0642\u0627\u0621 \u0623\u062D\u062F \u0647\u0630\u0647 \u0627\u0644\u062E\u064A\u0627\u0631\u0627\u062A: ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return ` \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0623\u0646 \u062A\u0643\u0648\u0646 ${issue2.origin ?? "\u0627\u0644\u0642\u064A\u0645\u0629"} ${adj} ${issue2.maximum.toString()} ${sizing.unit ?? "\u0639\u0646\u0635\u0631"}`;
-        return `\u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0623\u0646 \u062A\u0643\u0648\u0646 ${issue2.origin ?? "\u0627\u0644\u0642\u064A\u0645\u0629"} ${adj} ${issue2.maximum.toString()}`;
+          return " \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0623\u0646 \u062A\u0643\u0648\u0646 ".concat(issue2.origin ?? "\u0627\u0644\u0642\u064A\u0645\u0629", " ").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0639\u0646\u0635\u0631");
+        return "\u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0623\u0646 \u062A\u0643\u0648\u0646 ".concat(issue2.origin ?? "\u0627\u0644\u0642\u064A\u0645\u0629", " ").concat(adj, " ").concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0623\u0635\u063A\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0644\u0640 ${issue2.origin} \u0623\u0646 \u064A\u0643\u0648\u0646 ${adj} ${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u0623\u0635\u063A\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0644\u0640 ".concat(issue2.origin, " \u0623\u0646 \u064A\u0643\u0648\u0646 ").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u0623\u0635\u063A\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0644\u0640 ${issue2.origin} \u0623\u0646 \u064A\u0643\u0648\u0646 ${adj} ${issue2.minimum.toString()}`;
+        return "\u0623\u0635\u063A\u0631 \u0645\u0646 \u0627\u0644\u0644\u0627\u0632\u0645: \u064A\u0641\u062A\u0631\u0636 \u0644\u0640 ".concat(issue2.origin, " \u0623\u0646 \u064A\u0643\u0648\u0646 ").concat(adj, " ").concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0628\u062F\u0623 \u0628\u0640 "${issue2.prefix}"`;
+          return '\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0628\u062F\u0623 \u0628\u0640 "'.concat(issue2.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0646\u062A\u0647\u064A \u0628\u0640 "${_issue.suffix}"`;
+          return '\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0646\u062A\u0647\u064A \u0628\u0640 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u062A\u0636\u0645\u0651\u064E\u0646 "${_issue.includes}"`;
+          return '\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u062A\u0636\u0645\u0651\u064E\u0646 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0637\u0627\u0628\u0642 \u0627\u0644\u0646\u0645\u0637 ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644`;
+          return "\u0646\u064E\u0635 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0637\u0627\u0628\u0642 \u0627\u0644\u0646\u0645\u0637 ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644");
       }
       case "not_multiple_of":
-        return `\u0631\u0642\u0645 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0643\u0648\u0646 \u0645\u0646 \u0645\u0636\u0627\u0639\u0641\u0627\u062A ${issue2.divisor}`;
+        return "\u0631\u0642\u0645 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644: \u064A\u062C\u0628 \u0623\u0646 \u064A\u0643\u0648\u0646 \u0645\u0646 \u0645\u0636\u0627\u0639\u0641\u0627\u062A ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u0645\u0639\u0631\u0641${issue2.keys.length > 1 ? "\u0627\u062A" : ""} \u063A\u0631\u064A\u0628${issue2.keys.length > 1 ? "\u0629" : ""}: ${joinValues(issue2.keys, "\u060C ")}`;
+        return "\u0645\u0639\u0631\u0641".concat(issue2.keys.length > 1 ? "\u0627\u062A" : "", " \u063A\u0631\u064A\u0628").concat(issue2.keys.length > 1 ? "\u0629" : "", ": ").concat(joinValues(issue2.keys, "\u060C "));
       case "invalid_key":
-        return `\u0645\u0639\u0631\u0641 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644 \u0641\u064A ${issue2.origin}`;
+        return "\u0645\u0639\u0631\u0641 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644 \u0641\u064A ".concat(issue2.origin);
       case "invalid_union":
         return "\u0645\u062F\u062E\u0644 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644";
       case "invalid_element":
-        return `\u0645\u062F\u062E\u0644 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644 \u0641\u064A ${issue2.origin}`;
+        return "\u0645\u062F\u062E\u0644 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644 \u0641\u064A ".concat(issue2.origin);
       default:
         return "\u0645\u062F\u062E\u0644 \u063A\u064A\u0631 \u0645\u0642\u0628\u0648\u0644";
     }
@@ -4849,52 +4815,52 @@ var error2 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n instanceof ${issue2.expected}, daxil olan ${received}`;
+          return "Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n instanceof ".concat(issue2.expected, ", daxil olan ").concat(received);
         }
-        return `Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n ${expected}, daxil olan ${received}`;
+        return "Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n ".concat(expected, ", daxil olan ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n ${stringifyPrimitive(issue2.values[0])}`;
-        return `Yanl\u0131\u015F se\xE7im: a\u015Fa\u011F\u0131dak\u0131lardan biri olmal\u0131d\u0131r: ${joinValues(issue2.values, "|")}`;
+          return "Yanl\u0131\u015F d\u0259y\u0259r: g\xF6zl\u0259nil\u0259n ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Yanl\u0131\u015F se\xE7im: a\u015Fa\u011F\u0131dak\u0131lardan biri olmal\u0131d\u0131r: ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\xC7ox b\xF6y\xFCk: g\xF6zl\u0259nil\u0259n ${issue2.origin ?? "d\u0259y\u0259r"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "element"}`;
-        return `\xC7ox b\xF6y\xFCk: g\xF6zl\u0259nil\u0259n ${issue2.origin ?? "d\u0259y\u0259r"} ${adj}${issue2.maximum.toString()}`;
+          return "\xC7ox b\xF6y\xFCk: g\xF6zl\u0259nil\u0259n ".concat(issue2.origin ?? "d\u0259y\u0259r", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "element");
+        return "\xC7ox b\xF6y\xFCk: g\xF6zl\u0259nil\u0259n ".concat(issue2.origin ?? "d\u0259y\u0259r", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\xC7ox ki\xE7ik: g\xF6zl\u0259nil\u0259n ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
-        return `\xC7ox ki\xE7ik: g\xF6zl\u0259nil\u0259n ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+          return "\xC7ox ki\xE7ik: g\xF6zl\u0259nil\u0259n ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
+        return "\xC7ox ki\xE7ik: g\xF6zl\u0259nil\u0259n ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Yanl\u0131\u015F m\u0259tn: "${_issue.prefix}" il\u0259 ba\u015Flamal\u0131d\u0131r`;
+          return 'Yanl\u0131\u015F m\u0259tn: "'.concat(_issue.prefix, '" il\u0259 ba\u015Flamal\u0131d\u0131r');
         if (_issue.format === "ends_with")
-          return `Yanl\u0131\u015F m\u0259tn: "${_issue.suffix}" il\u0259 bitm\u0259lidir`;
+          return 'Yanl\u0131\u015F m\u0259tn: "'.concat(_issue.suffix, '" il\u0259 bitm\u0259lidir');
         if (_issue.format === "includes")
-          return `Yanl\u0131\u015F m\u0259tn: "${_issue.includes}" daxil olmal\u0131d\u0131r`;
+          return 'Yanl\u0131\u015F m\u0259tn: "'.concat(_issue.includes, '" daxil olmal\u0131d\u0131r');
         if (_issue.format === "regex")
-          return `Yanl\u0131\u015F m\u0259tn: ${_issue.pattern} \u015Fablonuna uy\u011Fun olmal\u0131d\u0131r`;
-        return `Yanl\u0131\u015F ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Yanl\u0131\u015F m\u0259tn: ".concat(_issue.pattern, " \u015Fablonuna uy\u011Fun olmal\u0131d\u0131r");
+        return "Yanl\u0131\u015F ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Yanl\u0131\u015F \u0259d\u0259d: ${issue2.divisor} il\u0259 b\xF6l\xFCn\u0259 bil\u0259n olmal\u0131d\u0131r`;
+        return "Yanl\u0131\u015F \u0259d\u0259d: ".concat(issue2.divisor, " il\u0259 b\xF6l\xFCn\u0259 bil\u0259n olmal\u0131d\u0131r");
       case "unrecognized_keys":
-        return `Tan\u0131nmayan a\xE7ar${issue2.keys.length > 1 ? "lar" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Tan\u0131nmayan a\xE7ar".concat(issue2.keys.length > 1 ? "lar" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} daxilind\u0259 yanl\u0131\u015F a\xE7ar`;
+        return "".concat(issue2.origin, " daxilind\u0259 yanl\u0131\u015F a\xE7ar");
       case "invalid_union":
         return "Yanl\u0131\u015F d\u0259y\u0259r";
       case "invalid_element":
-        return `${issue2.origin} daxilind\u0259 yanl\u0131\u015F d\u0259y\u0259r`;
+        return "".concat(issue2.origin, " daxilind\u0259 yanl\u0131\u015F d\u0259y\u0259r");
       default:
-        return `Yanl\u0131\u015F d\u0259y\u0259r`;
+        return "Yanl\u0131\u015F d\u0259y\u0259r";
     }
   };
 };
@@ -5000,23 +4966,23 @@ var error3 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u045E\u0441\u044F instanceof ${issue2.expected}, \u0430\u0442\u0440\u044B\u043C\u0430\u043D\u0430 ${received}`;
+          return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u045E\u0441\u044F instanceof ".concat(issue2.expected, ", \u0430\u0442\u0440\u044B\u043C\u0430\u043D\u0430 ").concat(received);
         }
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u045E\u0441\u044F ${expected}, \u0430\u0442\u0440\u044B\u043C\u0430\u043D\u0430 ${received}`;
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u045E\u0441\u044F ".concat(expected, ", \u0430\u0442\u0440\u044B\u043C\u0430\u043D\u0430 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0432\u0430\u0440\u044B\u044F\u043D\u0442: \u0447\u0430\u043A\u0430\u045E\u0441\u044F \u0430\u0434\u0437\u0456\u043D \u0437 ${joinValues(issue2.values, "|")}`;
+          return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0432\u0430\u0440\u044B\u044F\u043D\u0442: \u0447\u0430\u043A\u0430\u045E\u0441\u044F \u0430\u0434\u0437\u0456\u043D \u0437 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
           const maxValue = Number(issue2.maximum);
           const unit = getBelarusianPlural(maxValue, sizing.unit.one, sizing.unit.few, sizing.unit.many);
-          return `\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u0432\u044F\u043B\u0456\u043A\u0456: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435"} \u043F\u0430\u0432\u0456\u043D\u043D\u0430 ${sizing.verb} ${adj}${issue2.maximum.toString()} ${unit}`;
+          return "\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u0432\u044F\u043B\u0456\u043A\u0456: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435", " \u043F\u0430\u0432\u0456\u043D\u043D\u0430 ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(unit);
         }
-        return `\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u0432\u044F\u043B\u0456\u043A\u0456: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435"} \u043F\u0430\u0432\u0456\u043D\u043D\u0430 \u0431\u044B\u0446\u044C ${adj}${issue2.maximum.toString()}`;
+        return "\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u0432\u044F\u043B\u0456\u043A\u0456: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435", " \u043F\u0430\u0432\u0456\u043D\u043D\u0430 \u0431\u044B\u0446\u044C ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
@@ -5024,34 +4990,34 @@ var error3 = () => {
         if (sizing) {
           const minValue = Number(issue2.minimum);
           const unit = getBelarusianPlural(minValue, sizing.unit.one, sizing.unit.few, sizing.unit.many);
-          return `\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u043C\u0430\u043B\u044B: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ${issue2.origin} \u043F\u0430\u0432\u0456\u043D\u043D\u0430 ${sizing.verb} ${adj}${issue2.minimum.toString()} ${unit}`;
+          return "\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u043C\u0430\u043B\u044B: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ".concat(issue2.origin, " \u043F\u0430\u0432\u0456\u043D\u043D\u0430 ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(unit);
         }
-        return `\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u043C\u0430\u043B\u044B: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ${issue2.origin} \u043F\u0430\u0432\u0456\u043D\u043D\u0430 \u0431\u044B\u0446\u044C ${adj}${issue2.minimum.toString()}`;
+        return "\u0417\u0430\u043D\u0430\u0434\u0442\u0430 \u043C\u0430\u043B\u044B: \u0447\u0430\u043A\u0430\u043B\u0430\u0441\u044F, \u0448\u0442\u043E ".concat(issue2.origin, " \u043F\u0430\u0432\u0456\u043D\u043D\u0430 \u0431\u044B\u0446\u044C ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u043F\u0430\u0447\u044B\u043D\u0430\u0446\u0446\u0430 \u0437 "${_issue.prefix}"`;
+          return '\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u043F\u0430\u0447\u044B\u043D\u0430\u0446\u0446\u0430 \u0437 "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0437\u0430\u043A\u0430\u043D\u0447\u0432\u0430\u0446\u0446\u0430 \u043D\u0430 "${_issue.suffix}"`;
+          return '\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0437\u0430\u043A\u0430\u043D\u0447\u0432\u0430\u0446\u0446\u0430 \u043D\u0430 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0437\u043C\u044F\u0448\u0447\u0430\u0446\u044C "${_issue.includes}"`;
+          return '\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0437\u043C\u044F\u0448\u0447\u0430\u0446\u044C "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0430\u0434\u043F\u0430\u0432\u044F\u0434\u0430\u0446\u044C \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ${_issue.pattern}`;
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u0440\u0430\u0434\u043E\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0430\u0434\u043F\u0430\u0432\u044F\u0434\u0430\u0446\u044C \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ".concat(_issue.pattern);
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u043B\u0456\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0431\u044B\u0446\u044C \u043A\u0440\u0430\u0442\u043D\u044B\u043C ${issue2.divisor}`;
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u043B\u0456\u043A: \u043F\u0430\u0432\u0456\u043D\u0435\u043D \u0431\u044B\u0446\u044C \u043A\u0440\u0430\u0442\u043D\u044B\u043C ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u041D\u0435\u0440\u0430\u0441\u043F\u0430\u0437\u043D\u0430\u043D\u044B ${issue2.keys.length > 1 ? "\u043A\u043B\u044E\u0447\u044B" : "\u043A\u043B\u044E\u0447"}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u041D\u0435\u0440\u0430\u0441\u043F\u0430\u0437\u043D\u0430\u043D\u044B ".concat(issue2.keys.length > 1 ? "\u043A\u043B\u044E\u0447\u044B" : "\u043A\u043B\u044E\u0447", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u043A\u043B\u044E\u0447 \u0443 ${issue2.origin}`;
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u043A\u043B\u044E\u0447 \u0443 ".concat(issue2.origin);
       case "invalid_union":
         return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434";
       case "invalid_element":
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u0430\u0435 \u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435 \u045E ${issue2.origin}`;
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u0430\u0435 \u0437\u043D\u0430\u0447\u044D\u043D\u043D\u0435 \u045E ".concat(issue2.origin);
       default:
-        return `\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434`;
+        return "\u041D\u044F\u043F\u0440\u0430\u0432\u0456\u043B\u044C\u043D\u044B \u045E\u0432\u043E\u0434";
     }
   };
 };
@@ -5114,40 +5080,40 @@ var error4 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D instanceof ${issue2.expected}, \u043F\u043E\u043B\u0443\u0447\u0435\u043D ${received}`;
+          return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D instanceof ".concat(issue2.expected, ", \u043F\u043E\u043B\u0443\u0447\u0435\u043D ").concat(received);
         }
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D ${expected}, \u043F\u043E\u043B\u0443\u0447\u0435\u043D ${received}`;
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D ".concat(expected, ", \u043F\u043E\u043B\u0443\u0447\u0435\u043D ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u0430 \u043E\u043F\u0446\u0438\u044F: \u043E\u0447\u0430\u043A\u0432\u0430\u043D\u043E \u0435\u0434\u043D\u043E \u043E\u0442 ${joinValues(issue2.values, "|")}`;
+          return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434: \u043E\u0447\u0430\u043A\u0432\u0430\u043D ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u0430 \u043E\u043F\u0446\u0438\u044F: \u043E\u0447\u0430\u043A\u0432\u0430\u043D\u043E \u0435\u0434\u043D\u043E \u043E\u0442 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u0422\u0432\u044A\u0440\u0434\u0435 \u0433\u043E\u043B\u044F\u043C\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ${issue2.origin ?? "\u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442"} \u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430 ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0430"}`;
-        return `\u0422\u0432\u044A\u0440\u0434\u0435 \u0433\u043E\u043B\u044F\u043C\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ${issue2.origin ?? "\u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442"} \u0434\u0430 \u0431\u044A\u0434\u0435 ${adj}${issue2.maximum.toString()}`;
+          return "\u0422\u0432\u044A\u0440\u0434\u0435 \u0433\u043E\u043B\u044F\u043C\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ".concat(issue2.origin ?? "\u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442", " \u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430 ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0430");
+        return "\u0422\u0432\u044A\u0440\u0434\u0435 \u0433\u043E\u043B\u044F\u043C\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ".concat(issue2.origin ?? "\u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442", " \u0434\u0430 \u0431\u044A\u0434\u0435 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0422\u0432\u044A\u0440\u0434\u0435 \u043C\u0430\u043B\u043A\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ${issue2.origin} \u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430 ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u0422\u0432\u044A\u0440\u0434\u0435 \u043C\u0430\u043B\u043A\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ".concat(issue2.origin, " \u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430 ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u0422\u0432\u044A\u0440\u0434\u0435 \u043C\u0430\u043B\u043A\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ${issue2.origin} \u0434\u0430 \u0431\u044A\u0434\u0435 ${adj}${issue2.minimum.toString()}`;
+        return "\u0422\u0432\u044A\u0440\u0434\u0435 \u043C\u0430\u043B\u043A\u043E: \u043E\u0447\u0430\u043A\u0432\u0430 \u0441\u0435 ".concat(issue2.origin, " \u0434\u0430 \u0431\u044A\u0434\u0435 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0437\u0430\u043F\u043E\u0447\u0432\u0430 \u0441 "${_issue.prefix}"`;
+          return '\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0437\u0430\u043F\u043E\u0447\u0432\u0430 \u0441 "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0437\u0430\u0432\u044A\u0440\u0448\u0432\u0430 \u0441 "${_issue.suffix}"`;
+          return '\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0437\u0430\u0432\u044A\u0440\u0448\u0432\u0430 \u0441 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0432\u043A\u043B\u044E\u0447\u0432\u0430 "${_issue.includes}"`;
+          return '\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0432\u043A\u043B\u044E\u0447\u0432\u0430 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0441\u044A\u0432\u043F\u0430\u0434\u0430 \u0441 ${_issue.pattern}`;
+          return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043D\u0438\u0437: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0441\u044A\u0432\u043F\u0430\u0434\u0430 \u0441 ".concat(_issue.pattern);
         let invalid_adj = "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D";
         if (_issue.format === "emoji")
           invalid_adj = "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u043E";
@@ -5159,20 +5125,20 @@ var error4 = () => {
           invalid_adj = "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u043E";
         if (_issue.format === "duration")
           invalid_adj = "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u0430";
-        return `${invalid_adj} ${FormatDictionary[_issue.format] ?? issue2.format}`;
+        return "".concat(invalid_adj, " ").concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u043E \u0447\u0438\u0441\u043B\u043E: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0431\u044A\u0434\u0435 \u043A\u0440\u0430\u0442\u043D\u043E \u043D\u0430 ${issue2.divisor}`;
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u043E \u0447\u0438\u0441\u043B\u043E: \u0442\u0440\u044F\u0431\u0432\u0430 \u0434\u0430 \u0431\u044A\u0434\u0435 \u043A\u0440\u0430\u0442\u043D\u043E \u043D\u0430 ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u041D\u0435\u0440\u0430\u0437\u043F\u043E\u0437\u043D\u0430\u0442${issue2.keys.length > 1 ? "\u0438" : ""} \u043A\u043B\u044E\u0447${issue2.keys.length > 1 ? "\u043E\u0432\u0435" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u041D\u0435\u0440\u0430\u0437\u043F\u043E\u0437\u043D\u0430\u0442".concat(issue2.keys.length > 1 ? "\u0438" : "", " \u043A\u043B\u044E\u0447").concat(issue2.keys.length > 1 ? "\u043E\u0432\u0435" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043A\u043B\u044E\u0447 \u0432 ${issue2.origin}`;
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u043A\u043B\u044E\u0447 \u0432 ".concat(issue2.origin);
       case "invalid_union":
         return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434";
       case "invalid_element":
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u0430 \u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442 \u0432 ${issue2.origin}`;
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u043D\u0430 \u0441\u0442\u043E\u0439\u043D\u043E\u0441\u0442 \u0432 ".concat(issue2.origin);
       default:
-        return `\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434`;
+        return "\u041D\u0435\u0432\u0430\u043B\u0438\u0434\u0435\u043D \u0432\u0445\u043E\u0434";
     }
   };
 };
@@ -5233,55 +5199,55 @@ var error5 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Tipus inv\xE0lid: s'esperava instanceof ${issue2.expected}, s'ha rebut ${received}`;
+          return "Tipus inv\xE0lid: s'esperava instanceof ".concat(issue2.expected, ", s'ha rebut ").concat(received);
         }
-        return `Tipus inv\xE0lid: s'esperava ${expected}, s'ha rebut ${received}`;
+        return "Tipus inv\xE0lid: s'esperava ".concat(expected, ", s'ha rebut ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Valor inv\xE0lid: s'esperava ${stringifyPrimitive(issue2.values[0])}`;
-        return `Opci\xF3 inv\xE0lida: s'esperava una de ${joinValues(issue2.values, " o ")}`;
+          return "Valor inv\xE0lid: s'esperava ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Opci\xF3 inv\xE0lida: s'esperava una de ".concat(joinValues(issue2.values, " o "));
       case "too_big": {
         const adj = issue2.inclusive ? "com a m\xE0xim" : "menys de";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Massa gran: s'esperava que ${issue2.origin ?? "el valor"} contingu\xE9s ${adj} ${issue2.maximum.toString()} ${sizing.unit ?? "elements"}`;
-        return `Massa gran: s'esperava que ${issue2.origin ?? "el valor"} fos ${adj} ${issue2.maximum.toString()}`;
+          return "Massa gran: s'esperava que ".concat(issue2.origin ?? "el valor", " contingu\xE9s ").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elements");
+        return "Massa gran: s'esperava que ".concat(issue2.origin ?? "el valor", " fos ").concat(adj, " ").concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? "com a m\xEDnim" : "m\xE9s de";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Massa petit: s'esperava que ${issue2.origin} contingu\xE9s ${adj} ${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Massa petit: s'esperava que ".concat(issue2.origin, " contingu\xE9s ").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Massa petit: s'esperava que ${issue2.origin} fos ${adj} ${issue2.minimum.toString()}`;
+        return "Massa petit: s'esperava que ".concat(issue2.origin, " fos ").concat(adj, " ").concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Format inv\xE0lid: ha de comen\xE7ar amb "${_issue.prefix}"`;
+          return 'Format inv\xE0lid: ha de comen\xE7ar amb "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Format inv\xE0lid: ha d'acabar amb "${_issue.suffix}"`;
+          return "Format inv\xE0lid: ha d'acabar amb \"".concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Format inv\xE0lid: ha d'incloure "${_issue.includes}"`;
+          return "Format inv\xE0lid: ha d'incloure \"".concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Format inv\xE0lid: ha de coincidir amb el patr\xF3 ${_issue.pattern}`;
-        return `Format inv\xE0lid per a ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Format inv\xE0lid: ha de coincidir amb el patr\xF3 ".concat(_issue.pattern);
+        return "Format inv\xE0lid per a ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `N\xFAmero inv\xE0lid: ha de ser m\xFAltiple de ${issue2.divisor}`;
+        return "N\xFAmero inv\xE0lid: ha de ser m\xFAltiple de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Clau${issue2.keys.length > 1 ? "s" : ""} no reconeguda${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Clau".concat(issue2.keys.length > 1 ? "s" : "", " no reconeguda").concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Clau inv\xE0lida a ${issue2.origin}`;
+        return "Clau inv\xE0lida a ".concat(issue2.origin);
       case "invalid_union":
         return "Entrada inv\xE0lida";
       // Could also be "Tipus d'unió invàlid" but "Entrada invàlida" is more general
       case "invalid_element":
-        return `Element inv\xE0lid a ${issue2.origin}`;
+        return "Element inv\xE0lid a ".concat(issue2.origin);
       default:
-        return `Entrada inv\xE0lida`;
+        return "Entrada inv\xE0lida";
     }
   };
 };
@@ -5346,54 +5312,54 @@ var error6 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no instanceof ${issue2.expected}, obdr\u017Eeno ${received}`;
+          return "Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no instanceof ".concat(issue2.expected, ", obdr\u017Eeno ").concat(received);
         }
-        return `Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no ${expected}, obdr\u017Eeno ${received}`;
+        return "Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no ".concat(expected, ", obdr\u017Eeno ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no ${stringifyPrimitive(issue2.values[0])}`;
-        return `Neplatn\xE1 mo\u017Enost: o\u010Dek\xE1v\xE1na jedna z hodnot ${joinValues(issue2.values, "|")}`;
+          return "Neplatn\xFD vstup: o\u010Dek\xE1v\xE1no ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Neplatn\xE1 mo\u017Enost: o\u010Dek\xE1v\xE1na jedna z hodnot ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Hodnota je p\u0159\xEDli\u0161 velk\xE1: ${issue2.origin ?? "hodnota"} mus\xED m\xEDt ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "prvk\u016F"}`;
+          return "Hodnota je p\u0159\xEDli\u0161 velk\xE1: ".concat(issue2.origin ?? "hodnota", " mus\xED m\xEDt ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "prvk\u016F");
         }
-        return `Hodnota je p\u0159\xEDli\u0161 velk\xE1: ${issue2.origin ?? "hodnota"} mus\xED b\xFDt ${adj}${issue2.maximum.toString()}`;
+        return "Hodnota je p\u0159\xEDli\u0161 velk\xE1: ".concat(issue2.origin ?? "hodnota", " mus\xED b\xFDt ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Hodnota je p\u0159\xEDli\u0161 mal\xE1: ${issue2.origin ?? "hodnota"} mus\xED m\xEDt ${adj}${issue2.minimum.toString()} ${sizing.unit ?? "prvk\u016F"}`;
+          return "Hodnota je p\u0159\xEDli\u0161 mal\xE1: ".concat(issue2.origin ?? "hodnota", " mus\xED m\xEDt ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit ?? "prvk\u016F");
         }
-        return `Hodnota je p\u0159\xEDli\u0161 mal\xE1: ${issue2.origin ?? "hodnota"} mus\xED b\xFDt ${adj}${issue2.minimum.toString()}`;
+        return "Hodnota je p\u0159\xEDli\u0161 mal\xE1: ".concat(issue2.origin ?? "hodnota", " mus\xED b\xFDt ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Neplatn\xFD \u0159et\u011Bzec: mus\xED za\u010D\xEDnat na "${_issue.prefix}"`;
+          return 'Neplatn\xFD \u0159et\u011Bzec: mus\xED za\u010D\xEDnat na "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Neplatn\xFD \u0159et\u011Bzec: mus\xED kon\u010Dit na "${_issue.suffix}"`;
+          return 'Neplatn\xFD \u0159et\u011Bzec: mus\xED kon\u010Dit na "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Neplatn\xFD \u0159et\u011Bzec: mus\xED obsahovat "${_issue.includes}"`;
+          return 'Neplatn\xFD \u0159et\u011Bzec: mus\xED obsahovat "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Neplatn\xFD \u0159et\u011Bzec: mus\xED odpov\xEDdat vzoru ${_issue.pattern}`;
-        return `Neplatn\xFD form\xE1t ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Neplatn\xFD \u0159et\u011Bzec: mus\xED odpov\xEDdat vzoru ".concat(_issue.pattern);
+        return "Neplatn\xFD form\xE1t ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Neplatn\xE9 \u010D\xEDslo: mus\xED b\xFDt n\xE1sobkem ${issue2.divisor}`;
+        return "Neplatn\xE9 \u010D\xEDslo: mus\xED b\xFDt n\xE1sobkem ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Nezn\xE1m\xE9 kl\xED\u010De: ${joinValues(issue2.keys, ", ")}`;
+        return "Nezn\xE1m\xE9 kl\xED\u010De: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Neplatn\xFD kl\xED\u010D v ${issue2.origin}`;
+        return "Neplatn\xFD kl\xED\u010D v ".concat(issue2.origin);
       case "invalid_union":
         return "Neplatn\xFD vstup";
       case "invalid_element":
-        return `Neplatn\xE1 hodnota v ${issue2.origin}`;
+        return "Neplatn\xE1 hodnota v ".concat(issue2.origin);
       default:
-        return `Neplatn\xFD vstup`;
+        return "Neplatn\xFD vstup";
     }
   };
 };
@@ -5461,55 +5427,55 @@ var error7 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ugyldigt input: forventede instanceof ${issue2.expected}, fik ${received}`;
+          return "Ugyldigt input: forventede instanceof ".concat(issue2.expected, ", fik ").concat(received);
         }
-        return `Ugyldigt input: forventede ${expected}, fik ${received}`;
+        return "Ugyldigt input: forventede ".concat(expected, ", fik ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ugyldig v\xE6rdi: forventede ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ugyldigt valg: forventede en af f\xF8lgende ${joinValues(issue2.values, "|")}`;
+          return "Ugyldig v\xE6rdi: forventede ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ugyldigt valg: forventede en af f\xF8lgende ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         if (sizing)
-          return `For stor: forventede ${origin ?? "value"} ${sizing.verb} ${adj} ${issue2.maximum.toString()} ${sizing.unit ?? "elementer"}`;
-        return `For stor: forventede ${origin ?? "value"} havde ${adj} ${issue2.maximum.toString()}`;
+          return "For stor: forventede ".concat(origin ?? "value", " ").concat(sizing.verb, " ").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementer");
+        return "For stor: forventede ".concat(origin ?? "value", " havde ").concat(adj, " ").concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         if (sizing) {
-          return `For lille: forventede ${origin} ${sizing.verb} ${adj} ${issue2.minimum.toString()} ${sizing.unit}`;
+          return "For lille: forventede ".concat(origin, " ").concat(sizing.verb, " ").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `For lille: forventede ${origin} havde ${adj} ${issue2.minimum.toString()}`;
+        return "For lille: forventede ".concat(origin, " havde ").concat(adj, " ").concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Ugyldig streng: skal starte med "${_issue.prefix}"`;
+          return 'Ugyldig streng: skal starte med "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Ugyldig streng: skal ende med "${_issue.suffix}"`;
+          return 'Ugyldig streng: skal ende med "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Ugyldig streng: skal indeholde "${_issue.includes}"`;
+          return 'Ugyldig streng: skal indeholde "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Ugyldig streng: skal matche m\xF8nsteret ${_issue.pattern}`;
-        return `Ugyldig ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Ugyldig streng: skal matche m\xF8nsteret ".concat(_issue.pattern);
+        return "Ugyldig ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ugyldigt tal: skal v\xE6re deleligt med ${issue2.divisor}`;
+        return "Ugyldigt tal: skal v\xE6re deleligt med ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "Ukendte n\xF8gler" : "Ukendt n\xF8gle"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "Ukendte n\xF8gler" : "Ukendt n\xF8gle", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Ugyldig n\xF8gle i ${issue2.origin}`;
+        return "Ugyldig n\xF8gle i ".concat(issue2.origin);
       case "invalid_union":
         return "Ugyldigt input: matcher ingen af de tilladte typer";
       case "invalid_element":
-        return `Ugyldig v\xE6rdi i ${issue2.origin}`;
+        return "Ugyldig v\xE6rdi i ".concat(issue2.origin);
       default:
-        return `Ugyldigt input`;
+        return "Ugyldigt input";
     }
   };
 };
@@ -5572,53 +5538,53 @@ var error8 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ung\xFCltige Eingabe: erwartet instanceof ${issue2.expected}, erhalten ${received}`;
+          return "Ung\xFCltige Eingabe: erwartet instanceof ".concat(issue2.expected, ", erhalten ").concat(received);
         }
-        return `Ung\xFCltige Eingabe: erwartet ${expected}, erhalten ${received}`;
+        return "Ung\xFCltige Eingabe: erwartet ".concat(expected, ", erhalten ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ung\xFCltige Eingabe: erwartet ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ung\xFCltige Option: erwartet eine von ${joinValues(issue2.values, "|")}`;
+          return "Ung\xFCltige Eingabe: erwartet ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ung\xFCltige Option: erwartet eine von ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Zu gro\xDF: erwartet, dass ${issue2.origin ?? "Wert"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "Elemente"} hat`;
-        return `Zu gro\xDF: erwartet, dass ${issue2.origin ?? "Wert"} ${adj}${issue2.maximum.toString()} ist`;
+          return "Zu gro\xDF: erwartet, dass ".concat(issue2.origin ?? "Wert", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "Elemente", " hat");
+        return "Zu gro\xDF: erwartet, dass ".concat(issue2.origin ?? "Wert", " ").concat(adj).concat(issue2.maximum.toString(), " ist");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Zu klein: erwartet, dass ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit} hat`;
+          return "Zu klein: erwartet, dass ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " hat");
         }
-        return `Zu klein: erwartet, dass ${issue2.origin} ${adj}${issue2.minimum.toString()} ist`;
+        return "Zu klein: erwartet, dass ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ist");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Ung\xFCltiger String: muss mit "${_issue.prefix}" beginnen`;
+          return 'Ung\xFCltiger String: muss mit "'.concat(_issue.prefix, '" beginnen');
         if (_issue.format === "ends_with")
-          return `Ung\xFCltiger String: muss mit "${_issue.suffix}" enden`;
+          return 'Ung\xFCltiger String: muss mit "'.concat(_issue.suffix, '" enden');
         if (_issue.format === "includes")
-          return `Ung\xFCltiger String: muss "${_issue.includes}" enthalten`;
+          return 'Ung\xFCltiger String: muss "'.concat(_issue.includes, '" enthalten');
         if (_issue.format === "regex")
-          return `Ung\xFCltiger String: muss dem Muster ${_issue.pattern} entsprechen`;
-        return `Ung\xFCltig: ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Ung\xFCltiger String: muss dem Muster ".concat(_issue.pattern, " entsprechen");
+        return "Ung\xFCltig: ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ung\xFCltige Zahl: muss ein Vielfaches von ${issue2.divisor} sein`;
+        return "Ung\xFCltige Zahl: muss ein Vielfaches von ".concat(issue2.divisor, " sein");
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "Unbekannte Schl\xFCssel" : "Unbekannter Schl\xFCssel"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "Unbekannte Schl\xFCssel" : "Unbekannter Schl\xFCssel", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Ung\xFCltiger Schl\xFCssel in ${issue2.origin}`;
+        return "Ung\xFCltiger Schl\xFCssel in ".concat(issue2.origin);
       case "invalid_union":
         return "Ung\xFCltige Eingabe";
       case "invalid_element":
-        return `Ung\xFCltiger Wert in ${issue2.origin}`;
+        return "Ung\xFCltiger Wert in ".concat(issue2.origin);
       default:
-        return `Ung\xFCltige Eingabe`;
+        return "Ung\xFCltige Eingabe";
     }
   };
 };
@@ -5682,52 +5648,52 @@ var error9 = () => {
         const expected = TypeDictionary[issue2.expected] ?? issue2.expected;
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
-        return `Invalid input: expected ${expected}, received ${received}`;
+        return "Invalid input: expected ".concat(expected, ", received ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Invalid input: expected ${stringifyPrimitive(issue2.values[0])}`;
-        return `Invalid option: expected one of ${joinValues(issue2.values, "|")}`;
+          return "Invalid input: expected ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Invalid option: expected one of ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Too big: expected ${issue2.origin ?? "value"} to have ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elements"}`;
-        return `Too big: expected ${issue2.origin ?? "value"} to be ${adj}${issue2.maximum.toString()}`;
+          return "Too big: expected ".concat(issue2.origin ?? "value", " to have ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elements");
+        return "Too big: expected ".concat(issue2.origin ?? "value", " to be ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Too small: expected ${issue2.origin} to have ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Too small: expected ".concat(issue2.origin, " to have ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Too small: expected ${issue2.origin} to be ${adj}${issue2.minimum.toString()}`;
+        return "Too small: expected ".concat(issue2.origin, " to be ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Invalid string: must start with "${_issue.prefix}"`;
+          return 'Invalid string: must start with "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Invalid string: must end with "${_issue.suffix}"`;
+          return 'Invalid string: must end with "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Invalid string: must include "${_issue.includes}"`;
+          return 'Invalid string: must include "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Invalid string: must match pattern ${_issue.pattern}`;
-        return `Invalid ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Invalid string: must match pattern ".concat(_issue.pattern);
+        return "Invalid ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Invalid number: must be a multiple of ${issue2.divisor}`;
+        return "Invalid number: must be a multiple of ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Unrecognized key${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Unrecognized key".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Invalid key in ${issue2.origin}`;
+        return "Invalid key in ".concat(issue2.origin);
       case "invalid_union":
         return "Invalid input";
       case "invalid_element":
-        return `Invalid value in ${issue2.origin}`;
+        return "Invalid value in ".concat(issue2.origin);
       default:
-        return `Invalid input`;
+        return "Invalid input";
     }
   };
 };
@@ -5791,53 +5757,53 @@ var error10 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Nevalida enigo: atendi\u011Dis instanceof ${issue2.expected}, ricevi\u011Dis ${received}`;
+          return "Nevalida enigo: atendi\u011Dis instanceof ".concat(issue2.expected, ", ricevi\u011Dis ").concat(received);
         }
-        return `Nevalida enigo: atendi\u011Dis ${expected}, ricevi\u011Dis ${received}`;
+        return "Nevalida enigo: atendi\u011Dis ".concat(expected, ", ricevi\u011Dis ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Nevalida enigo: atendi\u011Dis ${stringifyPrimitive(issue2.values[0])}`;
-        return `Nevalida opcio: atendi\u011Dis unu el ${joinValues(issue2.values, "|")}`;
+          return "Nevalida enigo: atendi\u011Dis ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Nevalida opcio: atendi\u011Dis unu el ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Tro granda: atendi\u011Dis ke ${issue2.origin ?? "valoro"} havu ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementojn"}`;
-        return `Tro granda: atendi\u011Dis ke ${issue2.origin ?? "valoro"} havu ${adj}${issue2.maximum.toString()}`;
+          return "Tro granda: atendi\u011Dis ke ".concat(issue2.origin ?? "valoro", " havu ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementojn");
+        return "Tro granda: atendi\u011Dis ke ".concat(issue2.origin ?? "valoro", " havu ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Tro malgranda: atendi\u011Dis ke ${issue2.origin} havu ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Tro malgranda: atendi\u011Dis ke ".concat(issue2.origin, " havu ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Tro malgranda: atendi\u011Dis ke ${issue2.origin} estu ${adj}${issue2.minimum.toString()}`;
+        return "Tro malgranda: atendi\u011Dis ke ".concat(issue2.origin, " estu ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Nevalida karaktraro: devas komenci\u011Di per "${_issue.prefix}"`;
+          return 'Nevalida karaktraro: devas komenci\u011Di per "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Nevalida karaktraro: devas fini\u011Di per "${_issue.suffix}"`;
+          return 'Nevalida karaktraro: devas fini\u011Di per "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Nevalida karaktraro: devas inkluzivi "${_issue.includes}"`;
+          return 'Nevalida karaktraro: devas inkluzivi "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Nevalida karaktraro: devas kongrui kun la modelo ${_issue.pattern}`;
-        return `Nevalida ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Nevalida karaktraro: devas kongrui kun la modelo ".concat(_issue.pattern);
+        return "Nevalida ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Nevalida nombro: devas esti oblo de ${issue2.divisor}`;
+        return "Nevalida nombro: devas esti oblo de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Nekonata${issue2.keys.length > 1 ? "j" : ""} \u015Dlosilo${issue2.keys.length > 1 ? "j" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Nekonata".concat(issue2.keys.length > 1 ? "j" : "", " \u015Dlosilo").concat(issue2.keys.length > 1 ? "j" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Nevalida \u015Dlosilo en ${issue2.origin}`;
+        return "Nevalida \u015Dlosilo en ".concat(issue2.origin);
       case "invalid_union":
         return "Nevalida enigo";
       case "invalid_element":
-        return `Nevalida valoro en ${issue2.origin}`;
+        return "Nevalida valoro en ".concat(issue2.origin);
       default:
-        return `Nevalida enigo`;
+        return "Nevalida enigo";
     }
   };
 };
@@ -5922,55 +5888,55 @@ var error11 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Entrada inv\xE1lida: se esperaba instanceof ${issue2.expected}, recibido ${received}`;
+          return "Entrada inv\xE1lida: se esperaba instanceof ".concat(issue2.expected, ", recibido ").concat(received);
         }
-        return `Entrada inv\xE1lida: se esperaba ${expected}, recibido ${received}`;
+        return "Entrada inv\xE1lida: se esperaba ".concat(expected, ", recibido ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Entrada inv\xE1lida: se esperaba ${stringifyPrimitive(issue2.values[0])}`;
-        return `Opci\xF3n inv\xE1lida: se esperaba una de ${joinValues(issue2.values, "|")}`;
+          return "Entrada inv\xE1lida: se esperaba ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Opci\xF3n inv\xE1lida: se esperaba una de ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         if (sizing)
-          return `Demasiado grande: se esperaba que ${origin ?? "valor"} tuviera ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementos"}`;
-        return `Demasiado grande: se esperaba que ${origin ?? "valor"} fuera ${adj}${issue2.maximum.toString()}`;
+          return "Demasiado grande: se esperaba que ".concat(origin ?? "valor", " tuviera ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementos");
+        return "Demasiado grande: se esperaba que ".concat(origin ?? "valor", " fuera ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         if (sizing) {
-          return `Demasiado peque\xF1o: se esperaba que ${origin} tuviera ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Demasiado peque\xF1o: se esperaba que ".concat(origin, " tuviera ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Demasiado peque\xF1o: se esperaba que ${origin} fuera ${adj}${issue2.minimum.toString()}`;
+        return "Demasiado peque\xF1o: se esperaba que ".concat(origin, " fuera ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Cadena inv\xE1lida: debe comenzar con "${_issue.prefix}"`;
+          return 'Cadena inv\xE1lida: debe comenzar con "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Cadena inv\xE1lida: debe terminar en "${_issue.suffix}"`;
+          return 'Cadena inv\xE1lida: debe terminar en "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Cadena inv\xE1lida: debe incluir "${_issue.includes}"`;
+          return 'Cadena inv\xE1lida: debe incluir "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Cadena inv\xE1lida: debe coincidir con el patr\xF3n ${_issue.pattern}`;
-        return `Inv\xE1lido ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Cadena inv\xE1lida: debe coincidir con el patr\xF3n ".concat(_issue.pattern);
+        return "Inv\xE1lido ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `N\xFAmero inv\xE1lido: debe ser m\xFAltiplo de ${issue2.divisor}`;
+        return "N\xFAmero inv\xE1lido: debe ser m\xFAltiplo de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Llave${issue2.keys.length > 1 ? "s" : ""} desconocida${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Llave".concat(issue2.keys.length > 1 ? "s" : "", " desconocida").concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Llave inv\xE1lida en ${TypeDictionary[issue2.origin] ?? issue2.origin}`;
+        return "Llave inv\xE1lida en ".concat(TypeDictionary[issue2.origin] ?? issue2.origin);
       case "invalid_union":
         return "Entrada inv\xE1lida";
       case "invalid_element":
-        return `Valor inv\xE1lido en ${TypeDictionary[issue2.origin] ?? issue2.origin}`;
+        return "Valor inv\xE1lido en ".concat(TypeDictionary[issue2.origin] ?? issue2.origin);
       default:
-        return `Entrada inv\xE1lida`;
+        return "Entrada inv\xE1lida";
     }
   };
 };
@@ -6033,59 +5999,59 @@ var error12 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A instanceof ${issue2.expected} \u0645\u06CC\u200C\u0628\u0648\u062F\u060C ${received} \u062F\u0631\u06CC\u0627\u0641\u062A \u0634\u062F`;
+          return "\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A instanceof ".concat(issue2.expected, " \u0645\u06CC\u200C\u0628\u0648\u062F\u060C ").concat(received, " \u062F\u0631\u06CC\u0627\u0641\u062A \u0634\u062F");
         }
-        return `\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A ${expected} \u0645\u06CC\u200C\u0628\u0648\u062F\u060C ${received} \u062F\u0631\u06CC\u0627\u0641\u062A \u0634\u062F`;
+        return "\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A ".concat(expected, " \u0645\u06CC\u200C\u0628\u0648\u062F\u060C ").concat(received, " \u062F\u0631\u06CC\u0627\u0641\u062A \u0634\u062F");
       }
       case "invalid_value":
         if (issue2.values.length === 1) {
-          return `\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A ${stringifyPrimitive(issue2.values[0])} \u0645\u06CC\u200C\u0628\u0648\u062F`;
+          return "\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A ".concat(stringifyPrimitive(issue2.values[0]), " \u0645\u06CC\u200C\u0628\u0648\u062F");
         }
-        return `\u06AF\u0632\u06CC\u0646\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A \u06CC\u06A9\u06CC \u0627\u0632 ${joinValues(issue2.values, "|")} \u0645\u06CC\u200C\u0628\u0648\u062F`;
+        return "\u06AF\u0632\u06CC\u0646\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0645\u06CC\u200C\u0628\u0627\u06CC\u0633\u062A \u06CC\u06A9\u06CC \u0627\u0632 ".concat(joinValues(issue2.values, "|"), " \u0645\u06CC\u200C\u0628\u0648\u062F");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u062E\u06CC\u0644\u06CC \u0628\u0632\u0631\u06AF: ${issue2.origin ?? "\u0645\u0642\u062F\u0627\u0631"} \u0628\u0627\u06CC\u062F ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0639\u0646\u0635\u0631"} \u0628\u0627\u0634\u062F`;
+          return "\u062E\u06CC\u0644\u06CC \u0628\u0632\u0631\u06AF: ".concat(issue2.origin ?? "\u0645\u0642\u062F\u0627\u0631", " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0639\u0646\u0635\u0631", " \u0628\u0627\u0634\u062F");
         }
-        return `\u062E\u06CC\u0644\u06CC \u0628\u0632\u0631\u06AF: ${issue2.origin ?? "\u0645\u0642\u062F\u0627\u0631"} \u0628\u0627\u06CC\u062F ${adj}${issue2.maximum.toString()} \u0628\u0627\u0634\u062F`;
+        return "\u062E\u06CC\u0644\u06CC \u0628\u0632\u0631\u06AF: ".concat(issue2.origin ?? "\u0645\u0642\u062F\u0627\u0631", " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.maximum.toString(), " \u0628\u0627\u0634\u062F");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u062E\u06CC\u0644\u06CC \u06A9\u0648\u0686\u06A9: ${issue2.origin} \u0628\u0627\u06CC\u062F ${adj}${issue2.minimum.toString()} ${sizing.unit} \u0628\u0627\u0634\u062F`;
+          return "\u062E\u06CC\u0644\u06CC \u06A9\u0648\u0686\u06A9: ".concat(issue2.origin, " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " \u0628\u0627\u0634\u062F");
         }
-        return `\u062E\u06CC\u0644\u06CC \u06A9\u0648\u0686\u06A9: ${issue2.origin} \u0628\u0627\u06CC\u062F ${adj}${issue2.minimum.toString()} \u0628\u0627\u0634\u062F`;
+        return "\u062E\u06CC\u0644\u06CC \u06A9\u0648\u0686\u06A9: ".concat(issue2.origin, " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.minimum.toString(), " \u0628\u0627\u0634\u062F");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 "${_issue.prefix}" \u0634\u0631\u0648\u0639 \u0634\u0648\u062F`;
+          return '\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 "'.concat(_issue.prefix, '" \u0634\u0631\u0648\u0639 \u0634\u0648\u062F');
         }
         if (_issue.format === "ends_with") {
-          return `\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 "${_issue.suffix}" \u062A\u0645\u0627\u0645 \u0634\u0648\u062F`;
+          return '\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 "'.concat(_issue.suffix, '" \u062A\u0645\u0627\u0645 \u0634\u0648\u062F');
         }
         if (_issue.format === "includes") {
-          return `\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0634\u0627\u0645\u0644 "${_issue.includes}" \u0628\u0627\u0634\u062F`;
+          return '\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0634\u0627\u0645\u0644 "'.concat(_issue.includes, '" \u0628\u0627\u0634\u062F');
         }
         if (_issue.format === "regex") {
-          return `\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 \u0627\u0644\u06AF\u0648\u06CC ${_issue.pattern} \u0645\u0637\u0627\u0628\u0642\u062A \u062F\u0627\u0634\u062A\u0647 \u0628\u0627\u0634\u062F`;
+          return "\u0631\u0634\u062A\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0628\u0627 \u0627\u0644\u06AF\u0648\u06CC ".concat(_issue.pattern, " \u0645\u0637\u0627\u0628\u0642\u062A \u062F\u0627\u0634\u062A\u0647 \u0628\u0627\u0634\u062F");
         }
-        return `${FormatDictionary[_issue.format] ?? issue2.format} \u0646\u0627\u0645\u0639\u062A\u0628\u0631`;
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " \u0646\u0627\u0645\u0639\u062A\u0628\u0631");
       }
       case "not_multiple_of":
-        return `\u0639\u062F\u062F \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0645\u0636\u0631\u0628 ${issue2.divisor} \u0628\u0627\u0634\u062F`;
+        return "\u0639\u062F\u062F \u0646\u0627\u0645\u0639\u062A\u0628\u0631: \u0628\u0627\u06CC\u062F \u0645\u0636\u0631\u0628 ".concat(issue2.divisor, " \u0628\u0627\u0634\u062F");
       case "unrecognized_keys":
-        return `\u06A9\u0644\u06CC\u062F${issue2.keys.length > 1 ? "\u0647\u0627\u06CC" : ""} \u0646\u0627\u0634\u0646\u0627\u0633: ${joinValues(issue2.keys, ", ")}`;
+        return "\u06A9\u0644\u06CC\u062F".concat(issue2.keys.length > 1 ? "\u0647\u0627\u06CC" : "", " \u0646\u0627\u0634\u0646\u0627\u0633: ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u06A9\u0644\u06CC\u062F \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631 ${issue2.origin}`;
+        return "\u06A9\u0644\u06CC\u062F \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631 ".concat(issue2.origin);
       case "invalid_union":
-        return `\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631`;
+        return "\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631";
       case "invalid_element":
-        return `\u0645\u0642\u062F\u0627\u0631 \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u062F\u0631 ${issue2.origin}`;
+        return "\u0645\u0642\u062F\u0627\u0631 \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u062F\u0631 ".concat(issue2.origin);
       default:
-        return `\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631`;
+        return "\u0648\u0631\u0648\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631";
     }
   };
 };
@@ -6150,47 +6116,47 @@ var error13 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Virheellinen tyyppi: odotettiin instanceof ${issue2.expected}, oli ${received}`;
+          return "Virheellinen tyyppi: odotettiin instanceof ".concat(issue2.expected, ", oli ").concat(received);
         }
-        return `Virheellinen tyyppi: odotettiin ${expected}, oli ${received}`;
+        return "Virheellinen tyyppi: odotettiin ".concat(expected, ", oli ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Virheellinen sy\xF6te: t\xE4ytyy olla ${stringifyPrimitive(issue2.values[0])}`;
-        return `Virheellinen valinta: t\xE4ytyy olla yksi seuraavista: ${joinValues(issue2.values, "|")}`;
+          return "Virheellinen sy\xF6te: t\xE4ytyy olla ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Virheellinen valinta: t\xE4ytyy olla yksi seuraavista: ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Liian suuri: ${sizing.subject} t\xE4ytyy olla ${adj}${issue2.maximum.toString()} ${sizing.unit}`.trim();
+          return "Liian suuri: ".concat(sizing.subject, " t\xE4ytyy olla ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit).trim();
         }
-        return `Liian suuri: arvon t\xE4ytyy olla ${adj}${issue2.maximum.toString()}`;
+        return "Liian suuri: arvon t\xE4ytyy olla ".concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Liian pieni: ${sizing.subject} t\xE4ytyy olla ${adj}${issue2.minimum.toString()} ${sizing.unit}`.trim();
+          return "Liian pieni: ".concat(sizing.subject, " t\xE4ytyy olla ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit).trim();
         }
-        return `Liian pieni: arvon t\xE4ytyy olla ${adj}${issue2.minimum.toString()}`;
+        return "Liian pieni: arvon t\xE4ytyy olla ".concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Virheellinen sy\xF6te: t\xE4ytyy alkaa "${_issue.prefix}"`;
+          return 'Virheellinen sy\xF6te: t\xE4ytyy alkaa "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Virheellinen sy\xF6te: t\xE4ytyy loppua "${_issue.suffix}"`;
+          return 'Virheellinen sy\xF6te: t\xE4ytyy loppua "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Virheellinen sy\xF6te: t\xE4ytyy sis\xE4lt\xE4\xE4 "${_issue.includes}"`;
+          return 'Virheellinen sy\xF6te: t\xE4ytyy sis\xE4lt\xE4\xE4 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex") {
-          return `Virheellinen sy\xF6te: t\xE4ytyy vastata s\xE4\xE4nn\xF6llist\xE4 lauseketta ${_issue.pattern}`;
+          return "Virheellinen sy\xF6te: t\xE4ytyy vastata s\xE4\xE4nn\xF6llist\xE4 lauseketta ".concat(_issue.pattern);
         }
-        return `Virheellinen ${FormatDictionary[_issue.format] ?? issue2.format}`;
+        return "Virheellinen ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Virheellinen luku: t\xE4ytyy olla luvun ${issue2.divisor} monikerta`;
+        return "Virheellinen luku: t\xE4ytyy olla luvun ".concat(issue2.divisor, " monikerta");
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "Tuntemattomat avaimet" : "Tuntematon avain"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "Tuntemattomat avaimet" : "Tuntematon avain", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
         return "Virheellinen avain tietueessa";
       case "invalid_union":
@@ -6198,7 +6164,7 @@ var error13 = () => {
       case "invalid_element":
         return "Virheellinen arvo joukossa";
       default:
-        return `Virheellinen sy\xF6te`;
+        return "Virheellinen sy\xF6te";
     }
   };
 };
@@ -6261,53 +6227,53 @@ var error14 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Entr\xE9e invalide : instanceof ${issue2.expected} attendu, ${received} re\xE7u`;
+          return "Entr\xE9e invalide : instanceof ".concat(issue2.expected, " attendu, ").concat(received, " re\xE7u");
         }
-        return `Entr\xE9e invalide : ${expected} attendu, ${received} re\xE7u`;
+        return "Entr\xE9e invalide : ".concat(expected, " attendu, ").concat(received, " re\xE7u");
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Entr\xE9e invalide : ${stringifyPrimitive(issue2.values[0])} attendu`;
-        return `Option invalide : une valeur parmi ${joinValues(issue2.values, "|")} attendue`;
+          return "Entr\xE9e invalide : ".concat(stringifyPrimitive(issue2.values[0]), " attendu");
+        return "Option invalide : une valeur parmi ".concat(joinValues(issue2.values, "|"), " attendue");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Trop grand : ${issue2.origin ?? "valeur"} doit ${sizing.verb} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\xE9l\xE9ment(s)"}`;
-        return `Trop grand : ${issue2.origin ?? "valeur"} doit \xEAtre ${adj}${issue2.maximum.toString()}`;
+          return "Trop grand : ".concat(issue2.origin ?? "valeur", " doit ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\xE9l\xE9ment(s)");
+        return "Trop grand : ".concat(issue2.origin ?? "valeur", " doit \xEAtre ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Trop petit : ${issue2.origin} doit ${sizing.verb} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Trop petit : ".concat(issue2.origin, " doit ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Trop petit : ${issue2.origin} doit \xEAtre ${adj}${issue2.minimum.toString()}`;
+        return "Trop petit : ".concat(issue2.origin, " doit \xEAtre ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Cha\xEEne invalide : doit commencer par "${_issue.prefix}"`;
+          return 'Cha\xEEne invalide : doit commencer par "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Cha\xEEne invalide : doit se terminer par "${_issue.suffix}"`;
+          return 'Cha\xEEne invalide : doit se terminer par "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Cha\xEEne invalide : doit inclure "${_issue.includes}"`;
+          return 'Cha\xEEne invalide : doit inclure "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Cha\xEEne invalide : doit correspondre au mod\xE8le ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} invalide`;
+          return "Cha\xEEne invalide : doit correspondre au mod\xE8le ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " invalide");
       }
       case "not_multiple_of":
-        return `Nombre invalide : doit \xEAtre un multiple de ${issue2.divisor}`;
+        return "Nombre invalide : doit \xEAtre un multiple de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Cl\xE9${issue2.keys.length > 1 ? "s" : ""} non reconnue${issue2.keys.length > 1 ? "s" : ""} : ${joinValues(issue2.keys, ", ")}`;
+        return "Cl\xE9".concat(issue2.keys.length > 1 ? "s" : "", " non reconnue").concat(issue2.keys.length > 1 ? "s" : "", " : ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Cl\xE9 invalide dans ${issue2.origin}`;
+        return "Cl\xE9 invalide dans ".concat(issue2.origin);
       case "invalid_union":
         return "Entr\xE9e invalide";
       case "invalid_element":
-        return `Valeur invalide dans ${issue2.origin}`;
+        return "Valeur invalide dans ".concat(issue2.origin);
       default:
-        return `Entr\xE9e invalide`;
+        return "Entr\xE9e invalide";
     }
   };
 };
@@ -6368,54 +6334,54 @@ var error15 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Entr\xE9e invalide : attendu instanceof ${issue2.expected}, re\xE7u ${received}`;
+          return "Entr\xE9e invalide : attendu instanceof ".concat(issue2.expected, ", re\xE7u ").concat(received);
         }
-        return `Entr\xE9e invalide : attendu ${expected}, re\xE7u ${received}`;
+        return "Entr\xE9e invalide : attendu ".concat(expected, ", re\xE7u ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Entr\xE9e invalide : attendu ${stringifyPrimitive(issue2.values[0])}`;
-        return `Option invalide : attendu l'une des valeurs suivantes ${joinValues(issue2.values, "|")}`;
+          return "Entr\xE9e invalide : attendu ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Option invalide : attendu l'une des valeurs suivantes ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "\u2264" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Trop grand : attendu que ${issue2.origin ?? "la valeur"} ait ${adj}${issue2.maximum.toString()} ${sizing.unit}`;
-        return `Trop grand : attendu que ${issue2.origin ?? "la valeur"} soit ${adj}${issue2.maximum.toString()}`;
+          return "Trop grand : attendu que ".concat(issue2.origin ?? "la valeur", " ait ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit);
+        return "Trop grand : attendu que ".concat(issue2.origin ?? "la valeur", " soit ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? "\u2265" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Trop petit : attendu que ${issue2.origin} ait ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Trop petit : attendu que ".concat(issue2.origin, " ait ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Trop petit : attendu que ${issue2.origin} soit ${adj}${issue2.minimum.toString()}`;
+        return "Trop petit : attendu que ".concat(issue2.origin, " soit ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Cha\xEEne invalide : doit commencer par "${_issue.prefix}"`;
+          return 'Cha\xEEne invalide : doit commencer par "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Cha\xEEne invalide : doit se terminer par "${_issue.suffix}"`;
+          return 'Cha\xEEne invalide : doit se terminer par "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Cha\xEEne invalide : doit inclure "${_issue.includes}"`;
+          return 'Cha\xEEne invalide : doit inclure "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Cha\xEEne invalide : doit correspondre au motif ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} invalide`;
+          return "Cha\xEEne invalide : doit correspondre au motif ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " invalide");
       }
       case "not_multiple_of":
-        return `Nombre invalide : doit \xEAtre un multiple de ${issue2.divisor}`;
+        return "Nombre invalide : doit \xEAtre un multiple de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Cl\xE9${issue2.keys.length > 1 ? "s" : ""} non reconnue${issue2.keys.length > 1 ? "s" : ""} : ${joinValues(issue2.keys, ", ")}`;
+        return "Cl\xE9".concat(issue2.keys.length > 1 ? "s" : "", " non reconnue").concat(issue2.keys.length > 1 ? "s" : "", " : ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Cl\xE9 invalide dans ${issue2.origin}`;
+        return "Cl\xE9 invalide dans ".concat(issue2.origin);
       case "invalid_union":
         return "Entr\xE9e invalide";
       case "invalid_element":
-        return `Valeur invalide dans ${issue2.origin}`;
+        return "Valeur invalide dans ".concat(issue2.origin);
       default:
-        return `Entr\xE9e invalide`;
+        return "Entr\xE9e invalide";
     }
   };
 };
@@ -6462,7 +6428,7 @@ var error16 = () => {
       return e.label;
     return t ?? TypeNames.unknown.label;
   };
-  const withDefinite = (t) => `\u05D4${typeLabel(t)}`;
+  const withDefinite = (t) => "\u05D4".concat(typeLabel(t));
   const verbFor = (t) => {
     const e = typeEntry(t);
     const gender = e?.gender ?? "m";
@@ -6516,101 +6482,101 @@ var error16 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? TypeNames[receivedType]?.label ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA instanceof ${issue2.expected}, \u05D4\u05EA\u05E7\u05D1\u05DC ${received}`;
+          return "\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA instanceof ".concat(issue2.expected, ", \u05D4\u05EA\u05E7\u05D1\u05DC ").concat(received);
         }
-        return `\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ${expected}, \u05D4\u05EA\u05E7\u05D1\u05DC ${received}`;
+        return "\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ".concat(expected, ", \u05D4\u05EA\u05E7\u05D1\u05DC ").concat(received);
       }
       case "invalid_value": {
         if (issue2.values.length === 1) {
-          return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05E2\u05E8\u05DA \u05D7\u05D9\u05D9\u05D1 \u05DC\u05D4\u05D9\u05D5\u05EA ${stringifyPrimitive(issue2.values[0])}`;
+          return "\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05E2\u05E8\u05DA \u05D7\u05D9\u05D9\u05D1 \u05DC\u05D4\u05D9\u05D5\u05EA ".concat(stringifyPrimitive(issue2.values[0]));
         }
         const stringified = issue2.values.map((v) => stringifyPrimitive(v));
         if (issue2.values.length === 2) {
-          return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05D0\u05E4\u05E9\u05E8\u05D5\u05D9\u05D5\u05EA \u05D4\u05DE\u05EA\u05D0\u05D9\u05DE\u05D5\u05EA \u05D4\u05DF ${stringified[0]} \u05D0\u05D5 ${stringified[1]}`;
+          return "\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05D0\u05E4\u05E9\u05E8\u05D5\u05D9\u05D5\u05EA \u05D4\u05DE\u05EA\u05D0\u05D9\u05DE\u05D5\u05EA \u05D4\u05DF ".concat(stringified[0], " \u05D0\u05D5 ").concat(stringified[1]);
         }
         const lastValue = stringified[stringified.length - 1];
         const restValues = stringified.slice(0, -1).join(", ");
-        return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05D0\u05E4\u05E9\u05E8\u05D5\u05D9\u05D5\u05EA \u05D4\u05DE\u05EA\u05D0\u05D9\u05DE\u05D5\u05EA \u05D4\u05DF ${restValues} \u05D0\u05D5 ${lastValue}`;
+        return "\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D4\u05D0\u05E4\u05E9\u05E8\u05D5\u05D9\u05D5\u05EA \u05D4\u05DE\u05EA\u05D0\u05D9\u05DE\u05D5\u05EA \u05D4\u05DF ".concat(restValues, " \u05D0\u05D5 ").concat(lastValue);
       }
       case "too_big": {
         const sizing = getSizing(issue2.origin);
         const subject = withDefinite(issue2.origin ?? "value");
         if (issue2.origin === "string") {
-          return `${sizing?.longLabel ?? "\u05D0\u05E8\u05D5\u05DA"} \u05DE\u05D3\u05D9: ${subject} \u05E6\u05E8\u05D9\u05DB\u05D4 \u05DC\u05D4\u05DB\u05D9\u05DC ${issue2.maximum.toString()} ${sizing?.unit ?? ""} ${issue2.inclusive ? "\u05D0\u05D5 \u05E4\u05D7\u05D5\u05EA" : "\u05DC\u05DB\u05DC \u05D4\u05D9\u05D5\u05EA\u05E8"}`.trim();
+          return "".concat(sizing?.longLabel ?? "\u05D0\u05E8\u05D5\u05DA", " \u05DE\u05D3\u05D9: ").concat(subject, " \u05E6\u05E8\u05D9\u05DB\u05D4 \u05DC\u05D4\u05DB\u05D9\u05DC ").concat(issue2.maximum.toString(), " ").concat(sizing?.unit ?? "", " ").concat(issue2.inclusive ? "\u05D0\u05D5 \u05E4\u05D7\u05D5\u05EA" : "\u05DC\u05DB\u05DC \u05D4\u05D9\u05D5\u05EA\u05E8").trim();
         }
         if (issue2.origin === "number") {
-          const comparison = issue2.inclusive ? `\u05E7\u05D8\u05DF \u05D0\u05D5 \u05E9\u05D5\u05D5\u05D4 \u05DC-${issue2.maximum}` : `\u05E7\u05D8\u05DF \u05DE-${issue2.maximum}`;
-          return `\u05D2\u05D3\u05D5\u05DC \u05DE\u05D3\u05D9: ${subject} \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ${comparison}`;
+          const comparison = issue2.inclusive ? "\u05E7\u05D8\u05DF \u05D0\u05D5 \u05E9\u05D5\u05D5\u05D4 \u05DC-".concat(issue2.maximum) : "\u05E7\u05D8\u05DF \u05DE-".concat(issue2.maximum);
+          return "\u05D2\u05D3\u05D5\u05DC \u05DE\u05D3\u05D9: ".concat(subject, " \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ").concat(comparison);
         }
         if (issue2.origin === "array" || issue2.origin === "set") {
           const verb = issue2.origin === "set" ? "\u05E6\u05E8\u05D9\u05DB\u05D4" : "\u05E6\u05E8\u05D9\u05DA";
-          const comparison = issue2.inclusive ? `${issue2.maximum} ${sizing?.unit ?? ""} \u05D0\u05D5 \u05E4\u05D7\u05D5\u05EA` : `\u05E4\u05D7\u05D5\u05EA \u05DE-${issue2.maximum} ${sizing?.unit ?? ""}`;
-          return `\u05D2\u05D3\u05D5\u05DC \u05DE\u05D3\u05D9: ${subject} ${verb} \u05DC\u05D4\u05DB\u05D9\u05DC ${comparison}`.trim();
+          const comparison = issue2.inclusive ? "".concat(issue2.maximum, " ").concat(sizing?.unit ?? "", " \u05D0\u05D5 \u05E4\u05D7\u05D5\u05EA") : "\u05E4\u05D7\u05D5\u05EA \u05DE-".concat(issue2.maximum, " ").concat(sizing?.unit ?? "");
+          return "\u05D2\u05D3\u05D5\u05DC \u05DE\u05D3\u05D9: ".concat(subject, " ").concat(verb, " \u05DC\u05D4\u05DB\u05D9\u05DC ").concat(comparison).trim();
         }
         const adj = issue2.inclusive ? "<=" : "<";
         const be = verbFor(issue2.origin ?? "value");
         if (sizing?.unit) {
-          return `${sizing.longLabel} \u05DE\u05D3\u05D9: ${subject} ${be} ${adj}${issue2.maximum.toString()} ${sizing.unit}`;
+          return "".concat(sizing.longLabel, " \u05DE\u05D3\u05D9: ").concat(subject, " ").concat(be, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit);
         }
-        return `${sizing?.longLabel ?? "\u05D2\u05D3\u05D5\u05DC"} \u05DE\u05D3\u05D9: ${subject} ${be} ${adj}${issue2.maximum.toString()}`;
+        return "".concat(sizing?.longLabel ?? "\u05D2\u05D3\u05D5\u05DC", " \u05DE\u05D3\u05D9: ").concat(subject, " ").concat(be, " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const sizing = getSizing(issue2.origin);
         const subject = withDefinite(issue2.origin ?? "value");
         if (issue2.origin === "string") {
-          return `${sizing?.shortLabel ?? "\u05E7\u05E6\u05E8"} \u05DE\u05D3\u05D9: ${subject} \u05E6\u05E8\u05D9\u05DB\u05D4 \u05DC\u05D4\u05DB\u05D9\u05DC ${issue2.minimum.toString()} ${sizing?.unit ?? ""} ${issue2.inclusive ? "\u05D0\u05D5 \u05D9\u05D5\u05EA\u05E8" : "\u05DC\u05E4\u05D7\u05D5\u05EA"}`.trim();
+          return "".concat(sizing?.shortLabel ?? "\u05E7\u05E6\u05E8", " \u05DE\u05D3\u05D9: ").concat(subject, " \u05E6\u05E8\u05D9\u05DB\u05D4 \u05DC\u05D4\u05DB\u05D9\u05DC ").concat(issue2.minimum.toString(), " ").concat(sizing?.unit ?? "", " ").concat(issue2.inclusive ? "\u05D0\u05D5 \u05D9\u05D5\u05EA\u05E8" : "\u05DC\u05E4\u05D7\u05D5\u05EA").trim();
         }
         if (issue2.origin === "number") {
-          const comparison = issue2.inclusive ? `\u05D2\u05D3\u05D5\u05DC \u05D0\u05D5 \u05E9\u05D5\u05D5\u05D4 \u05DC-${issue2.minimum}` : `\u05D2\u05D3\u05D5\u05DC \u05DE-${issue2.minimum}`;
-          return `\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ${subject} \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ${comparison}`;
+          const comparison = issue2.inclusive ? "\u05D2\u05D3\u05D5\u05DC \u05D0\u05D5 \u05E9\u05D5\u05D5\u05D4 \u05DC-".concat(issue2.minimum) : "\u05D2\u05D3\u05D5\u05DC \u05DE-".concat(issue2.minimum);
+          return "\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ".concat(subject, " \u05E6\u05E8\u05D9\u05DA \u05DC\u05D4\u05D9\u05D5\u05EA ").concat(comparison);
         }
         if (issue2.origin === "array" || issue2.origin === "set") {
           const verb = issue2.origin === "set" ? "\u05E6\u05E8\u05D9\u05DB\u05D4" : "\u05E6\u05E8\u05D9\u05DA";
           if (issue2.minimum === 1 && issue2.inclusive) {
             const singularPhrase = issue2.origin === "set" ? "\u05DC\u05E4\u05D7\u05D5\u05EA \u05E4\u05E8\u05D9\u05D8 \u05D0\u05D7\u05D3" : "\u05DC\u05E4\u05D7\u05D5\u05EA \u05E4\u05E8\u05D9\u05D8 \u05D0\u05D7\u05D3";
-            return `\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ${subject} ${verb} \u05DC\u05D4\u05DB\u05D9\u05DC ${singularPhrase}`;
+            return "\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ".concat(subject, " ").concat(verb, " \u05DC\u05D4\u05DB\u05D9\u05DC ").concat(singularPhrase);
           }
-          const comparison = issue2.inclusive ? `${issue2.minimum} ${sizing?.unit ?? ""} \u05D0\u05D5 \u05D9\u05D5\u05EA\u05E8` : `\u05D9\u05D5\u05EA\u05E8 \u05DE-${issue2.minimum} ${sizing?.unit ?? ""}`;
-          return `\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ${subject} ${verb} \u05DC\u05D4\u05DB\u05D9\u05DC ${comparison}`.trim();
+          const comparison = issue2.inclusive ? "".concat(issue2.minimum, " ").concat(sizing?.unit ?? "", " \u05D0\u05D5 \u05D9\u05D5\u05EA\u05E8") : "\u05D9\u05D5\u05EA\u05E8 \u05DE-".concat(issue2.minimum, " ").concat(sizing?.unit ?? "");
+          return "\u05E7\u05D8\u05DF \u05DE\u05D3\u05D9: ".concat(subject, " ").concat(verb, " \u05DC\u05D4\u05DB\u05D9\u05DC ").concat(comparison).trim();
         }
         const adj = issue2.inclusive ? ">=" : ">";
         const be = verbFor(issue2.origin ?? "value");
         if (sizing?.unit) {
-          return `${sizing.shortLabel} \u05DE\u05D3\u05D9: ${subject} ${be} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "".concat(sizing.shortLabel, " \u05DE\u05D3\u05D9: ").concat(subject, " ").concat(be, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `${sizing?.shortLabel ?? "\u05E7\u05D8\u05DF"} \u05DE\u05D3\u05D9: ${subject} ${be} ${adj}${issue2.minimum.toString()}`;
+        return "".concat(sizing?.shortLabel ?? "\u05E7\u05D8\u05DF", " \u05DE\u05D3\u05D9: ").concat(subject, " ").concat(be, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05EA\u05D7\u05D9\u05DC \u05D1 "${_issue.prefix}"`;
+          return '\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05EA\u05D7\u05D9\u05DC \u05D1 "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD \u05D1 "${_issue.suffix}"`;
+          return '\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD \u05D1 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05DB\u05DC\u05D5\u05DC "${_issue.includes}"`;
+          return '\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05DB\u05DC\u05D5\u05DC "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05EA\u05D0\u05D9\u05DD \u05DC\u05EA\u05D1\u05E0\u05D9\u05EA ${_issue.pattern}`;
+          return "\u05D4\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA \u05D7\u05D9\u05D9\u05D1\u05EA \u05DC\u05D4\u05EA\u05D0\u05D9\u05DD \u05DC\u05EA\u05D1\u05E0\u05D9\u05EA ".concat(_issue.pattern);
         const nounEntry = FormatDictionary[_issue.format];
         const noun = nounEntry?.label ?? _issue.format;
         const gender = nounEntry?.gender ?? "m";
         const adjective = gender === "f" ? "\u05EA\u05E7\u05D9\u05E0\u05D4" : "\u05EA\u05E7\u05D9\u05DF";
-        return `${noun} \u05DC\u05D0 ${adjective}`;
+        return "".concat(noun, " \u05DC\u05D0 ").concat(adjective);
       }
       case "not_multiple_of":
-        return `\u05DE\u05E1\u05E4\u05E8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D7\u05D9\u05D9\u05D1 \u05DC\u05D4\u05D9\u05D5\u05EA \u05DE\u05DB\u05E4\u05DC\u05D4 \u05E9\u05DC ${issue2.divisor}`;
+        return "\u05DE\u05E1\u05E4\u05E8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF: \u05D7\u05D9\u05D9\u05D1 \u05DC\u05D4\u05D9\u05D5\u05EA \u05DE\u05DB\u05E4\u05DC\u05D4 \u05E9\u05DC ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u05DE\u05E4\u05EA\u05D7${issue2.keys.length > 1 ? "\u05D5\u05EA" : ""} \u05DC\u05D0 \u05DE\u05D6\u05D5\u05D4${issue2.keys.length > 1 ? "\u05D9\u05DD" : "\u05D4"}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u05DE\u05E4\u05EA\u05D7".concat(issue2.keys.length > 1 ? "\u05D5\u05EA" : "", " \u05DC\u05D0 \u05DE\u05D6\u05D5\u05D4").concat(issue2.keys.length > 1 ? "\u05D9\u05DD" : "\u05D4", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key": {
-        return `\u05E9\u05D3\u05D4 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1\u05D0\u05D5\u05D1\u05D9\u05D9\u05E7\u05D8`;
+        return "\u05E9\u05D3\u05D4 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1\u05D0\u05D5\u05D1\u05D9\u05D9\u05E7\u05D8";
       }
       case "invalid_union":
         return "\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF";
       case "invalid_element": {
         const place = withDefinite(issue2.origin ?? "array");
-        return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1${place}`;
+        return "\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1".concat(place);
       }
       default:
-        return `\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF`;
+        return "\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF";
     }
   };
 };
@@ -6673,53 +6639,53 @@ var error17 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k instanceof ${issue2.expected}, a kapott \xE9rt\xE9k ${received}`;
+          return "\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k instanceof ".concat(issue2.expected, ", a kapott \xE9rt\xE9k ").concat(received);
         }
-        return `\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k ${expected}, a kapott \xE9rt\xE9k ${received}`;
+        return "\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k ".concat(expected, ", a kapott \xE9rt\xE9k ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k ${stringifyPrimitive(issue2.values[0])}`;
-        return `\xC9rv\xE9nytelen opci\xF3: valamelyik \xE9rt\xE9k v\xE1rt ${joinValues(issue2.values, "|")}`;
+          return "\xC9rv\xE9nytelen bemenet: a v\xE1rt \xE9rt\xE9k ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\xC9rv\xE9nytelen opci\xF3: valamelyik \xE9rt\xE9k v\xE1rt ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `T\xFAl nagy: ${issue2.origin ?? "\xE9rt\xE9k"} m\xE9rete t\xFAl nagy ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elem"}`;
-        return `T\xFAl nagy: a bemeneti \xE9rt\xE9k ${issue2.origin ?? "\xE9rt\xE9k"} t\xFAl nagy: ${adj}${issue2.maximum.toString()}`;
+          return "T\xFAl nagy: ".concat(issue2.origin ?? "\xE9rt\xE9k", " m\xE9rete t\xFAl nagy ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elem");
+        return "T\xFAl nagy: a bemeneti \xE9rt\xE9k ".concat(issue2.origin ?? "\xE9rt\xE9k", " t\xFAl nagy: ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `T\xFAl kicsi: a bemeneti \xE9rt\xE9k ${issue2.origin} m\xE9rete t\xFAl kicsi ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "T\xFAl kicsi: a bemeneti \xE9rt\xE9k ".concat(issue2.origin, " m\xE9rete t\xFAl kicsi ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `T\xFAl kicsi: a bemeneti \xE9rt\xE9k ${issue2.origin} t\xFAl kicsi ${adj}${issue2.minimum.toString()}`;
+        return "T\xFAl kicsi: a bemeneti \xE9rt\xE9k ".concat(issue2.origin, " t\xFAl kicsi ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\xC9rv\xE9nytelen string: "${_issue.prefix}" \xE9rt\xE9kkel kell kezd\u0151dnie`;
+          return '\xC9rv\xE9nytelen string: "'.concat(_issue.prefix, '" \xE9rt\xE9kkel kell kezd\u0151dnie');
         if (_issue.format === "ends_with")
-          return `\xC9rv\xE9nytelen string: "${_issue.suffix}" \xE9rt\xE9kkel kell v\xE9gz\u0151dnie`;
+          return '\xC9rv\xE9nytelen string: "'.concat(_issue.suffix, '" \xE9rt\xE9kkel kell v\xE9gz\u0151dnie');
         if (_issue.format === "includes")
-          return `\xC9rv\xE9nytelen string: "${_issue.includes}" \xE9rt\xE9ket kell tartalmaznia`;
+          return '\xC9rv\xE9nytelen string: "'.concat(_issue.includes, '" \xE9rt\xE9ket kell tartalmaznia');
         if (_issue.format === "regex")
-          return `\xC9rv\xE9nytelen string: ${_issue.pattern} mint\xE1nak kell megfelelnie`;
-        return `\xC9rv\xE9nytelen ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\xC9rv\xE9nytelen string: ".concat(_issue.pattern, " mint\xE1nak kell megfelelnie");
+        return "\xC9rv\xE9nytelen ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\xC9rv\xE9nytelen sz\xE1m: ${issue2.divisor} t\xF6bbsz\xF6r\xF6s\xE9nek kell lennie`;
+        return "\xC9rv\xE9nytelen sz\xE1m: ".concat(issue2.divisor, " t\xF6bbsz\xF6r\xF6s\xE9nek kell lennie");
       case "unrecognized_keys":
-        return `Ismeretlen kulcs${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Ismeretlen kulcs".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\xC9rv\xE9nytelen kulcs ${issue2.origin}`;
+        return "\xC9rv\xE9nytelen kulcs ".concat(issue2.origin);
       case "invalid_union":
         return "\xC9rv\xE9nytelen bemenet";
       case "invalid_element":
-        return `\xC9rv\xE9nytelen \xE9rt\xE9k: ${issue2.origin}`;
+        return "\xC9rv\xE9nytelen \xE9rt\xE9k: ".concat(issue2.origin);
       default:
-        return `\xC9rv\xE9nytelen bemenet`;
+        return "\xC9rv\xE9nytelen bemenet";
     }
   };
 };
@@ -6816,23 +6782,23 @@ var error18 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 instanceof ${issue2.expected}, \u057D\u057F\u0561\u0581\u057E\u0565\u056C \u0567 ${received}`;
+          return "\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 instanceof ".concat(issue2.expected, ", \u057D\u057F\u0561\u0581\u057E\u0565\u056C \u0567 ").concat(received);
         }
-        return `\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 ${expected}, \u057D\u057F\u0561\u0581\u057E\u0565\u056C \u0567 ${received}`;
+        return "\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 ".concat(expected, ", \u057D\u057F\u0561\u0581\u057E\u0565\u056C \u0567 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 ${stringifyPrimitive(issue2.values[1])}`;
-        return `\u054D\u056D\u0561\u056C \u057F\u0561\u0580\u0562\u0565\u0580\u0561\u056F\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 \u0570\u0565\u057F\u0587\u0575\u0561\u056C\u0576\u0565\u0580\u056B\u0581 \u0574\u0565\u056F\u0568\u055D ${joinValues(issue2.values, "|")}`;
+          return "\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 ".concat(stringifyPrimitive(issue2.values[1]));
+        return "\u054D\u056D\u0561\u056C \u057F\u0561\u0580\u0562\u0565\u0580\u0561\u056F\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567\u0580 \u0570\u0565\u057F\u0587\u0575\u0561\u056C\u0576\u0565\u0580\u056B\u0581 \u0574\u0565\u056F\u0568\u055D ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
           const maxValue = Number(issue2.maximum);
           const unit = getArmenianPlural(maxValue, sizing.unit.one, sizing.unit.many);
-          return `\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0574\u0565\u056E \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ${withDefiniteArticle(issue2.origin ?? "\u0561\u0580\u056A\u0565\u0584")} \u056F\u0578\u0582\u0576\u0565\u0576\u0561 ${adj}${issue2.maximum.toString()} ${unit}`;
+          return "\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0574\u0565\u056E \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ".concat(withDefiniteArticle(issue2.origin ?? "\u0561\u0580\u056A\u0565\u0584"), " \u056F\u0578\u0582\u0576\u0565\u0576\u0561 ").concat(adj).concat(issue2.maximum.toString(), " ").concat(unit);
         }
-        return `\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0574\u0565\u056E \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ${withDefiniteArticle(issue2.origin ?? "\u0561\u0580\u056A\u0565\u0584")} \u056C\u056B\u0576\u056B ${adj}${issue2.maximum.toString()}`;
+        return "\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0574\u0565\u056E \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ".concat(withDefiniteArticle(issue2.origin ?? "\u0561\u0580\u056A\u0565\u0584"), " \u056C\u056B\u0576\u056B ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
@@ -6840,34 +6806,34 @@ var error18 = () => {
         if (sizing) {
           const minValue = Number(issue2.minimum);
           const unit = getArmenianPlural(minValue, sizing.unit.one, sizing.unit.many);
-          return `\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0583\u0578\u0584\u0580 \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ${withDefiniteArticle(issue2.origin)} \u056F\u0578\u0582\u0576\u0565\u0576\u0561 ${adj}${issue2.minimum.toString()} ${unit}`;
+          return "\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0583\u0578\u0584\u0580 \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ".concat(withDefiniteArticle(issue2.origin), " \u056F\u0578\u0582\u0576\u0565\u0576\u0561 ").concat(adj).concat(issue2.minimum.toString(), " ").concat(unit);
         }
-        return `\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0583\u0578\u0584\u0580 \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ${withDefiniteArticle(issue2.origin)} \u056C\u056B\u0576\u056B ${adj}${issue2.minimum.toString()}`;
+        return "\u0549\u0561\u0583\u0561\u0566\u0561\u0576\u0581 \u0583\u0578\u0584\u0580 \u0561\u0580\u056A\u0565\u0584\u2024 \u057D\u057A\u0561\u057D\u057E\u0578\u0582\u0574 \u0567, \u0578\u0580 ".concat(withDefiniteArticle(issue2.origin), " \u056C\u056B\u0576\u056B ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u057D\u056F\u057D\u057E\u056B "${_issue.prefix}"-\u0578\u057E`;
+          return '\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u057D\u056F\u057D\u057E\u056B "'.concat(_issue.prefix, '"-\u0578\u057E');
         if (_issue.format === "ends_with")
-          return `\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0561\u057E\u0561\u0580\u057F\u057E\u056B "${_issue.suffix}"-\u0578\u057E`;
+          return '\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0561\u057E\u0561\u0580\u057F\u057E\u056B "'.concat(_issue.suffix, '"-\u0578\u057E');
         if (_issue.format === "includes")
-          return `\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u057A\u0561\u0580\u0578\u0582\u0576\u0561\u056F\u056B "${_issue.includes}"`;
+          return '\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u057A\u0561\u0580\u0578\u0582\u0576\u0561\u056F\u056B "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0570\u0561\u0574\u0561\u057A\u0561\u057F\u0561\u057D\u056D\u0561\u0576\u056B ${_issue.pattern} \u0571\u0587\u0561\u0579\u0561\u0583\u056B\u0576`;
-        return `\u054D\u056D\u0561\u056C ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u054D\u056D\u0561\u056C \u057F\u0578\u0572\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0570\u0561\u0574\u0561\u057A\u0561\u057F\u0561\u057D\u056D\u0561\u0576\u056B ".concat(_issue.pattern, " \u0571\u0587\u0561\u0579\u0561\u0583\u056B\u0576");
+        return "\u054D\u056D\u0561\u056C ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u054D\u056D\u0561\u056C \u0569\u056B\u057E\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0562\u0561\u0566\u0574\u0561\u057A\u0561\u057F\u056B\u056F \u056C\u056B\u0576\u056B ${issue2.divisor}-\u056B`;
+        return "\u054D\u056D\u0561\u056C \u0569\u056B\u057E\u2024 \u057A\u0565\u057F\u0584 \u0567 \u0562\u0561\u0566\u0574\u0561\u057A\u0561\u057F\u056B\u056F \u056C\u056B\u0576\u056B ".concat(issue2.divisor, "-\u056B");
       case "unrecognized_keys":
-        return `\u0549\u0573\u0561\u0576\u0561\u0579\u057E\u0561\u056E \u0562\u0561\u0576\u0561\u056C\u056B${issue2.keys.length > 1 ? "\u0576\u0565\u0580" : ""}. ${joinValues(issue2.keys, ", ")}`;
+        return "\u0549\u0573\u0561\u0576\u0561\u0579\u057E\u0561\u056E \u0562\u0561\u0576\u0561\u056C\u056B".concat(issue2.keys.length > 1 ? "\u0576\u0565\u0580" : "", ". ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u054D\u056D\u0561\u056C \u0562\u0561\u0576\u0561\u056C\u056B ${withDefiniteArticle(issue2.origin)}-\u0578\u0582\u0574`;
+        return "\u054D\u056D\u0561\u056C \u0562\u0561\u0576\u0561\u056C\u056B ".concat(withDefiniteArticle(issue2.origin), "-\u0578\u0582\u0574");
       case "invalid_union":
         return "\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574";
       case "invalid_element":
-        return `\u054D\u056D\u0561\u056C \u0561\u0580\u056A\u0565\u0584 ${withDefiniteArticle(issue2.origin)}-\u0578\u0582\u0574`;
+        return "\u054D\u056D\u0561\u056C \u0561\u0580\u056A\u0565\u0584 ".concat(withDefiniteArticle(issue2.origin), "-\u0578\u0582\u0574");
       default:
-        return `\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574`;
+        return "\u054D\u056D\u0561\u056C \u0574\u0578\u0582\u057F\u0584\u0561\u0563\u0580\u0578\u0582\u0574";
     }
   };
 };
@@ -6928,53 +6894,53 @@ var error19 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Input tidak valid: diharapkan instanceof ${issue2.expected}, diterima ${received}`;
+          return "Input tidak valid: diharapkan instanceof ".concat(issue2.expected, ", diterima ").concat(received);
         }
-        return `Input tidak valid: diharapkan ${expected}, diterima ${received}`;
+        return "Input tidak valid: diharapkan ".concat(expected, ", diterima ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Input tidak valid: diharapkan ${stringifyPrimitive(issue2.values[0])}`;
-        return `Pilihan tidak valid: diharapkan salah satu dari ${joinValues(issue2.values, "|")}`;
+          return "Input tidak valid: diharapkan ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Pilihan tidak valid: diharapkan salah satu dari ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Terlalu besar: diharapkan ${issue2.origin ?? "value"} memiliki ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elemen"}`;
-        return `Terlalu besar: diharapkan ${issue2.origin ?? "value"} menjadi ${adj}${issue2.maximum.toString()}`;
+          return "Terlalu besar: diharapkan ".concat(issue2.origin ?? "value", " memiliki ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elemen");
+        return "Terlalu besar: diharapkan ".concat(issue2.origin ?? "value", " menjadi ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Terlalu kecil: diharapkan ${issue2.origin} memiliki ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Terlalu kecil: diharapkan ".concat(issue2.origin, " memiliki ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Terlalu kecil: diharapkan ${issue2.origin} menjadi ${adj}${issue2.minimum.toString()}`;
+        return "Terlalu kecil: diharapkan ".concat(issue2.origin, " menjadi ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `String tidak valid: harus dimulai dengan "${_issue.prefix}"`;
+          return 'String tidak valid: harus dimulai dengan "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `String tidak valid: harus berakhir dengan "${_issue.suffix}"`;
+          return 'String tidak valid: harus berakhir dengan "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `String tidak valid: harus menyertakan "${_issue.includes}"`;
+          return 'String tidak valid: harus menyertakan "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `String tidak valid: harus sesuai pola ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} tidak valid`;
+          return "String tidak valid: harus sesuai pola ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " tidak valid");
       }
       case "not_multiple_of":
-        return `Angka tidak valid: harus kelipatan dari ${issue2.divisor}`;
+        return "Angka tidak valid: harus kelipatan dari ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Kunci tidak dikenali ${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Kunci tidak dikenali ".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Kunci tidak valid di ${issue2.origin}`;
+        return "Kunci tidak valid di ".concat(issue2.origin);
       case "invalid_union":
         return "Input tidak valid";
       case "invalid_element":
-        return `Nilai tidak valid di ${issue2.origin}`;
+        return "Nilai tidak valid di ".concat(issue2.origin);
       default:
-        return `Input tidak valid`;
+        return "Input tidak valid";
     }
   };
 };
@@ -7037,54 +7003,54 @@ var error20 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Rangt gildi: \xDE\xFA sl\xF3st inn ${received} \xFEar sem \xE1 a\xF0 vera instanceof ${issue2.expected}`;
+          return "Rangt gildi: \xDE\xFA sl\xF3st inn ".concat(received, " \xFEar sem \xE1 a\xF0 vera instanceof ").concat(issue2.expected);
         }
-        return `Rangt gildi: \xDE\xFA sl\xF3st inn ${received} \xFEar sem \xE1 a\xF0 vera ${expected}`;
+        return "Rangt gildi: \xDE\xFA sl\xF3st inn ".concat(received, " \xFEar sem \xE1 a\xF0 vera ").concat(expected);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Rangt gildi: gert r\xE1\xF0 fyrir ${stringifyPrimitive(issue2.values[0])}`;
-        return `\xD3gilt val: m\xE1 vera eitt af eftirfarandi ${joinValues(issue2.values, "|")}`;
+          return "Rangt gildi: gert r\xE1\xF0 fyrir ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\xD3gilt val: m\xE1 vera eitt af eftirfarandi ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Of st\xF3rt: gert er r\xE1\xF0 fyrir a\xF0 ${issue2.origin ?? "gildi"} hafi ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "hluti"}`;
-        return `Of st\xF3rt: gert er r\xE1\xF0 fyrir a\xF0 ${issue2.origin ?? "gildi"} s\xE9 ${adj}${issue2.maximum.toString()}`;
+          return "Of st\xF3rt: gert er r\xE1\xF0 fyrir a\xF0 ".concat(issue2.origin ?? "gildi", " hafi ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "hluti");
+        return "Of st\xF3rt: gert er r\xE1\xF0 fyrir a\xF0 ".concat(issue2.origin ?? "gildi", " s\xE9 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Of l\xEDti\xF0: gert er r\xE1\xF0 fyrir a\xF0 ${issue2.origin} hafi ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Of l\xEDti\xF0: gert er r\xE1\xF0 fyrir a\xF0 ".concat(issue2.origin, " hafi ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Of l\xEDti\xF0: gert er r\xE1\xF0 fyrir a\xF0 ${issue2.origin} s\xE9 ${adj}${issue2.minimum.toString()}`;
+        return "Of l\xEDti\xF0: gert er r\xE1\xF0 fyrir a\xF0 ".concat(issue2.origin, " s\xE9 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\xD3gildur strengur: ver\xF0ur a\xF0 byrja \xE1 "${_issue.prefix}"`;
+          return '\xD3gildur strengur: ver\xF0ur a\xF0 byrja \xE1 "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `\xD3gildur strengur: ver\xF0ur a\xF0 enda \xE1 "${_issue.suffix}"`;
+          return '\xD3gildur strengur: ver\xF0ur a\xF0 enda \xE1 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\xD3gildur strengur: ver\xF0ur a\xF0 innihalda "${_issue.includes}"`;
+          return '\xD3gildur strengur: ver\xF0ur a\xF0 innihalda "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\xD3gildur strengur: ver\xF0ur a\xF0 fylgja mynstri ${_issue.pattern}`;
-        return `Rangt ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\xD3gildur strengur: ver\xF0ur a\xF0 fylgja mynstri ".concat(_issue.pattern);
+        return "Rangt ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `R\xF6ng tala: ver\xF0ur a\xF0 vera margfeldi af ${issue2.divisor}`;
+        return "R\xF6ng tala: ver\xF0ur a\xF0 vera margfeldi af ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\xD3\xFEekkt ${issue2.keys.length > 1 ? "ir lyklar" : "ur lykill"}: ${joinValues(issue2.keys, ", ")}`;
+        return "\xD3\xFEekkt ".concat(issue2.keys.length > 1 ? "ir lyklar" : "ur lykill", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Rangur lykill \xED ${issue2.origin}`;
+        return "Rangur lykill \xED ".concat(issue2.origin);
       case "invalid_union":
         return "Rangt gildi";
       case "invalid_element":
-        return `Rangt gildi \xED ${issue2.origin}`;
+        return "Rangt gildi \xED ".concat(issue2.origin);
       default:
-        return `Rangt gildi`;
+        return "Rangt gildi";
     }
   };
 };
@@ -7147,53 +7113,53 @@ var error21 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Input non valido: atteso instanceof ${issue2.expected}, ricevuto ${received}`;
+          return "Input non valido: atteso instanceof ".concat(issue2.expected, ", ricevuto ").concat(received);
         }
-        return `Input non valido: atteso ${expected}, ricevuto ${received}`;
+        return "Input non valido: atteso ".concat(expected, ", ricevuto ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Input non valido: atteso ${stringifyPrimitive(issue2.values[0])}`;
-        return `Opzione non valida: atteso uno tra ${joinValues(issue2.values, "|")}`;
+          return "Input non valido: atteso ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Opzione non valida: atteso uno tra ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Troppo grande: ${issue2.origin ?? "valore"} deve avere ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementi"}`;
-        return `Troppo grande: ${issue2.origin ?? "valore"} deve essere ${adj}${issue2.maximum.toString()}`;
+          return "Troppo grande: ".concat(issue2.origin ?? "valore", " deve avere ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementi");
+        return "Troppo grande: ".concat(issue2.origin ?? "valore", " deve essere ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Troppo piccolo: ${issue2.origin} deve avere ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Troppo piccolo: ".concat(issue2.origin, " deve avere ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Troppo piccolo: ${issue2.origin} deve essere ${adj}${issue2.minimum.toString()}`;
+        return "Troppo piccolo: ".concat(issue2.origin, " deve essere ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Stringa non valida: deve iniziare con "${_issue.prefix}"`;
+          return 'Stringa non valida: deve iniziare con "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Stringa non valida: deve terminare con "${_issue.suffix}"`;
+          return 'Stringa non valida: deve terminare con "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Stringa non valida: deve includere "${_issue.includes}"`;
+          return 'Stringa non valida: deve includere "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Stringa non valida: deve corrispondere al pattern ${_issue.pattern}`;
-        return `Invalid ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Stringa non valida: deve corrispondere al pattern ".concat(_issue.pattern);
+        return "Invalid ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Numero non valido: deve essere un multiplo di ${issue2.divisor}`;
+        return "Numero non valido: deve essere un multiplo di ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Chiav${issue2.keys.length > 1 ? "i" : "e"} non riconosciut${issue2.keys.length > 1 ? "e" : "a"}: ${joinValues(issue2.keys, ", ")}`;
+        return "Chiav".concat(issue2.keys.length > 1 ? "i" : "e", " non riconosciut").concat(issue2.keys.length > 1 ? "e" : "a", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Chiave non valida in ${issue2.origin}`;
+        return "Chiave non valida in ".concat(issue2.origin);
       case "invalid_union":
         return "Input non valido";
       case "invalid_element":
-        return `Valore non valido in ${issue2.origin}`;
+        return "Valore non valido in ".concat(issue2.origin);
       default:
-        return `Input non valido`;
+        return "Input non valido";
     }
   };
 };
@@ -7256,52 +7222,52 @@ var error22 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u7121\u52B9\u306A\u5165\u529B: instanceof ${issue2.expected}\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F\u304C\u3001${received}\u304C\u5165\u529B\u3055\u308C\u307E\u3057\u305F`;
+          return "\u7121\u52B9\u306A\u5165\u529B: instanceof ".concat(issue2.expected, "\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F\u304C\u3001").concat(received, "\u304C\u5165\u529B\u3055\u308C\u307E\u3057\u305F");
         }
-        return `\u7121\u52B9\u306A\u5165\u529B: ${expected}\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F\u304C\u3001${received}\u304C\u5165\u529B\u3055\u308C\u307E\u3057\u305F`;
+        return "\u7121\u52B9\u306A\u5165\u529B: ".concat(expected, "\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F\u304C\u3001").concat(received, "\u304C\u5165\u529B\u3055\u308C\u307E\u3057\u305F");
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u7121\u52B9\u306A\u5165\u529B: ${stringifyPrimitive(issue2.values[0])}\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F`;
-        return `\u7121\u52B9\u306A\u9078\u629E: ${joinValues(issue2.values, "\u3001")}\u306E\u3044\u305A\u308C\u304B\u3067\u3042\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return "\u7121\u52B9\u306A\u5165\u529B: ".concat(stringifyPrimitive(issue2.values[0]), "\u304C\u671F\u5F85\u3055\u308C\u307E\u3057\u305F");
+        return "\u7121\u52B9\u306A\u9078\u629E: ".concat(joinValues(issue2.values, "\u3001"), "\u306E\u3044\u305A\u308C\u304B\u3067\u3042\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
       case "too_big": {
         const adj = issue2.inclusive ? "\u4EE5\u4E0B\u3067\u3042\u308B" : "\u3088\u308A\u5C0F\u3055\u3044";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u5927\u304D\u3059\u304E\u308B\u5024: ${issue2.origin ?? "\u5024"}\u306F${issue2.maximum.toString()}${sizing.unit ?? "\u8981\u7D20"}${adj}\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
-        return `\u5927\u304D\u3059\u304E\u308B\u5024: ${issue2.origin ?? "\u5024"}\u306F${issue2.maximum.toString()}${adj}\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return "\u5927\u304D\u3059\u304E\u308B\u5024: ".concat(issue2.origin ?? "\u5024", "\u306F").concat(issue2.maximum.toString()).concat(sizing.unit ?? "\u8981\u7D20").concat(adj, "\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
+        return "\u5927\u304D\u3059\u304E\u308B\u5024: ".concat(issue2.origin ?? "\u5024", "\u306F").concat(issue2.maximum.toString()).concat(adj, "\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
       }
       case "too_small": {
         const adj = issue2.inclusive ? "\u4EE5\u4E0A\u3067\u3042\u308B" : "\u3088\u308A\u5927\u304D\u3044";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u5C0F\u3055\u3059\u304E\u308B\u5024: ${issue2.origin}\u306F${issue2.minimum.toString()}${sizing.unit}${adj}\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
-        return `\u5C0F\u3055\u3059\u304E\u308B\u5024: ${issue2.origin}\u306F${issue2.minimum.toString()}${adj}\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return "\u5C0F\u3055\u3059\u304E\u308B\u5024: ".concat(issue2.origin, "\u306F").concat(issue2.minimum.toString()).concat(sizing.unit).concat(adj, "\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
+        return "\u5C0F\u3055\u3059\u304E\u308B\u5024: ".concat(issue2.origin, "\u306F").concat(issue2.minimum.toString()).concat(adj, "\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u7121\u52B9\u306A\u6587\u5B57\u5217: "${_issue.prefix}"\u3067\u59CB\u307E\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return '\u7121\u52B9\u306A\u6587\u5B57\u5217: "'.concat(_issue.prefix, '"\u3067\u59CB\u307E\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059');
         if (_issue.format === "ends_with")
-          return `\u7121\u52B9\u306A\u6587\u5B57\u5217: "${_issue.suffix}"\u3067\u7D42\u308F\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return '\u7121\u52B9\u306A\u6587\u5B57\u5217: "'.concat(_issue.suffix, '"\u3067\u7D42\u308F\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059');
         if (_issue.format === "includes")
-          return `\u7121\u52B9\u306A\u6587\u5B57\u5217: "${_issue.includes}"\u3092\u542B\u3080\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+          return '\u7121\u52B9\u306A\u6587\u5B57\u5217: "'.concat(_issue.includes, '"\u3092\u542B\u3080\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059');
         if (_issue.format === "regex")
-          return `\u7121\u52B9\u306A\u6587\u5B57\u5217: \u30D1\u30BF\u30FC\u30F3${_issue.pattern}\u306B\u4E00\u81F4\u3059\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
-        return `\u7121\u52B9\u306A${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u7121\u52B9\u306A\u6587\u5B57\u5217: \u30D1\u30BF\u30FC\u30F3".concat(_issue.pattern, "\u306B\u4E00\u81F4\u3059\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
+        return "\u7121\u52B9\u306A".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u7121\u52B9\u306A\u6570\u5024: ${issue2.divisor}\u306E\u500D\u6570\u3067\u3042\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059`;
+        return "\u7121\u52B9\u306A\u6570\u5024: ".concat(issue2.divisor, "\u306E\u500D\u6570\u3067\u3042\u308B\u5FC5\u8981\u304C\u3042\u308A\u307E\u3059");
       case "unrecognized_keys":
-        return `\u8A8D\u8B58\u3055\u308C\u3066\u3044\u306A\u3044\u30AD\u30FC${issue2.keys.length > 1 ? "\u7FA4" : ""}: ${joinValues(issue2.keys, "\u3001")}`;
+        return "\u8A8D\u8B58\u3055\u308C\u3066\u3044\u306A\u3044\u30AD\u30FC".concat(issue2.keys.length > 1 ? "\u7FA4" : "", ": ").concat(joinValues(issue2.keys, "\u3001"));
       case "invalid_key":
-        return `${issue2.origin}\u5185\u306E\u7121\u52B9\u306A\u30AD\u30FC`;
+        return "".concat(issue2.origin, "\u5185\u306E\u7121\u52B9\u306A\u30AD\u30FC");
       case "invalid_union":
         return "\u7121\u52B9\u306A\u5165\u529B";
       case "invalid_element":
-        return `${issue2.origin}\u5185\u306E\u7121\u52B9\u306A\u5024`;
+        return "".concat(issue2.origin, "\u5185\u306E\u7121\u52B9\u306A\u5024");
       default:
-        return `\u7121\u52B9\u306A\u5165\u529B`;
+        return "\u7121\u52B9\u306A\u5165\u529B";
     }
   };
 };
@@ -7367,54 +7333,54 @@ var error23 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 instanceof ${issue2.expected}, \u10DB\u10D8\u10E6\u10D4\u10D1\u10E3\u10DA\u10D8 ${received}`;
+          return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 instanceof ".concat(issue2.expected, ", \u10DB\u10D8\u10E6\u10D4\u10D1\u10E3\u10DA\u10D8 ").concat(received);
         }
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${expected}, \u10DB\u10D8\u10E6\u10D4\u10D1\u10E3\u10DA\u10D8 ${received}`;
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(expected, ", \u10DB\u10D8\u10E6\u10D4\u10D1\u10E3\u10DA\u10D8 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10D5\u10D0\u10E0\u10D8\u10D0\u10DC\u10E2\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8\u10D0 \u10D4\u10E0\u10D7-\u10D4\u10E0\u10D7\u10D8 ${joinValues(issue2.values, "|")}-\u10D3\u10D0\u10DC`;
+          return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10D5\u10D0\u10E0\u10D8\u10D0\u10DC\u10E2\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8\u10D0 \u10D4\u10E0\u10D7-\u10D4\u10E0\u10D7\u10D8 ".concat(joinValues(issue2.values, "|"), "-\u10D3\u10D0\u10DC");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10D3\u10D8\u10D3\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${issue2.origin ?? "\u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0"} ${sizing.verb} ${adj}${issue2.maximum.toString()} ${sizing.unit}`;
-        return `\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10D3\u10D8\u10D3\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${issue2.origin ?? "\u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0"} \u10D8\u10E7\u10DD\u10E1 ${adj}${issue2.maximum.toString()}`;
+          return "\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10D3\u10D8\u10D3\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(issue2.origin ?? "\u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0", " ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit);
+        return "\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10D3\u10D8\u10D3\u10D8: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(issue2.origin ?? "\u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0", " \u10D8\u10E7\u10DD\u10E1 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10DE\u10D0\u10E2\u10D0\u10E0\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${issue2.origin} ${sizing.verb} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10DE\u10D0\u10E2\u10D0\u10E0\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(issue2.origin, " ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10DE\u10D0\u10E2\u10D0\u10E0\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ${issue2.origin} \u10D8\u10E7\u10DD\u10E1 ${adj}${issue2.minimum.toString()}`;
+        return "\u10D6\u10D4\u10D3\u10DB\u10D4\u10E2\u10D0\u10D3 \u10DE\u10D0\u10E2\u10D0\u10E0\u10D0: \u10DB\u10DD\u10E1\u10D0\u10DA\u10DD\u10D3\u10DC\u10D4\u10DA\u10D8 ".concat(issue2.origin, " \u10D8\u10E7\u10DD\u10E1 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10D8\u10EC\u10E7\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 "${_issue.prefix}"-\u10D8\u10D7`;
+          return '\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10D8\u10EC\u10E7\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 "'.concat(_issue.prefix, '"-\u10D8\u10D7');
         }
         if (_issue.format === "ends_with")
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10DB\u10D7\u10D0\u10D5\u10E0\u10D3\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 "${_issue.suffix}"-\u10D8\u10D7`;
+          return '\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10DB\u10D7\u10D0\u10D5\u10E0\u10D3\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 "'.concat(_issue.suffix, '"-\u10D8\u10D7');
         if (_issue.format === "includes")
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D8\u10EA\u10D0\u10D5\u10D3\u10D4\u10E1 "${_issue.includes}"-\u10E1`;
+          return '\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D8\u10EA\u10D0\u10D5\u10D3\u10D4\u10E1 "'.concat(_issue.includes, '"-\u10E1');
         if (_issue.format === "regex")
-          return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D4\u10E1\u10D0\u10D1\u10D0\u10DB\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 \u10E8\u10D0\u10D1\u10DA\u10DD\u10DC\u10E1 ${_issue.pattern}`;
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E1\u10E2\u10E0\u10D8\u10DC\u10D2\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D4\u10E1\u10D0\u10D1\u10D0\u10DB\u10D4\u10D1\u10DD\u10D3\u10D4\u10E1 \u10E8\u10D0\u10D1\u10DA\u10DD\u10DC\u10E1 ".concat(_issue.pattern);
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E0\u10D8\u10EA\u10EE\u10D5\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10D8\u10E7\u10DD\u10E1 ${issue2.divisor}-\u10D8\u10E1 \u10EF\u10D4\u10E0\u10D0\u10D3\u10D8`;
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E0\u10D8\u10EA\u10EE\u10D5\u10D8: \u10E3\u10DC\u10D3\u10D0 \u10D8\u10E7\u10DD\u10E1 ".concat(issue2.divisor, "-\u10D8\u10E1 \u10EF\u10D4\u10E0\u10D0\u10D3\u10D8");
       case "unrecognized_keys":
-        return `\u10E3\u10EA\u10DC\u10DD\u10D1\u10D8 \u10D2\u10D0\u10E1\u10D0\u10E6\u10D4\u10D1${issue2.keys.length > 1 ? "\u10D4\u10D1\u10D8" : "\u10D8"}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u10E3\u10EA\u10DC\u10DD\u10D1\u10D8 \u10D2\u10D0\u10E1\u10D0\u10E6\u10D4\u10D1".concat(issue2.keys.length > 1 ? "\u10D4\u10D1\u10D8" : "\u10D8", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10D2\u10D0\u10E1\u10D0\u10E6\u10D4\u10D1\u10D8 ${issue2.origin}-\u10E8\u10D8`;
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10D2\u10D0\u10E1\u10D0\u10E6\u10D4\u10D1\u10D8 ".concat(issue2.origin, "-\u10E8\u10D8");
       case "invalid_union":
         return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0";
       case "invalid_element":
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0 ${issue2.origin}-\u10E8\u10D8`;
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10DB\u10DC\u10D8\u10E8\u10D5\u10DC\u10D4\u10DA\u10DD\u10D1\u10D0 ".concat(issue2.origin, "-\u10E8\u10D8");
       default:
-        return `\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0`;
+        return "\u10D0\u10E0\u10D0\u10E1\u10EC\u10DD\u10E0\u10D8 \u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0";
     }
   };
 };
@@ -7478,54 +7444,54 @@ var error24 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A instanceof ${issue2.expected} \u1794\u17C9\u17BB\u1793\u17D2\u178F\u17C2\u1791\u1791\u17BD\u179B\u1794\u17B6\u1793 ${received}`;
+          return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A instanceof ".concat(issue2.expected, " \u1794\u17C9\u17BB\u1793\u17D2\u178F\u17C2\u1791\u1791\u17BD\u179B\u1794\u17B6\u1793 ").concat(received);
         }
-        return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${expected} \u1794\u17C9\u17BB\u1793\u17D2\u178F\u17C2\u1791\u1791\u17BD\u179B\u1794\u17B6\u1793 ${received}`;
+        return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(expected, " \u1794\u17C9\u17BB\u1793\u17D2\u178F\u17C2\u1791\u1791\u17BD\u179B\u1794\u17B6\u1793 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u1787\u1798\u17D2\u179A\u17BE\u179F\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1787\u17B6\u1798\u17BD\u1799\u1780\u17D2\u1793\u17BB\u1784\u1785\u17C6\u178E\u17C4\u1798 ${joinValues(issue2.values, "|")}`;
+          return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u1787\u1798\u17D2\u179A\u17BE\u179F\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1787\u17B6\u1798\u17BD\u1799\u1780\u17D2\u1793\u17BB\u1784\u1785\u17C6\u178E\u17C4\u1798 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u1792\u17C6\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${issue2.origin ?? "\u178F\u1798\u17D2\u179B\u17C3"} ${adj} ${issue2.maximum.toString()} ${sizing.unit ?? "\u1792\u17B6\u178F\u17BB"}`;
-        return `\u1792\u17C6\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${issue2.origin ?? "\u178F\u1798\u17D2\u179B\u17C3"} ${adj} ${issue2.maximum.toString()}`;
+          return "\u1792\u17C6\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(issue2.origin ?? "\u178F\u1798\u17D2\u179B\u17C3", " ").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u1792\u17B6\u178F\u17BB");
+        return "\u1792\u17C6\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(issue2.origin ?? "\u178F\u1798\u17D2\u179B\u17C3", " ").concat(adj, " ").concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u178F\u17BC\u1785\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${issue2.origin} ${adj} ${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u178F\u17BC\u1785\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(issue2.origin, " ").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u178F\u17BC\u1785\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ${issue2.origin} ${adj} ${issue2.minimum.toString()}`;
+        return "\u178F\u17BC\u1785\u1796\u17C1\u1780\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1780\u17B6\u179A ".concat(issue2.origin, " ").concat(adj, " ").concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1785\u17B6\u1794\u17CB\u1795\u17D2\u178F\u17BE\u1798\u178A\u17C4\u1799 "${_issue.prefix}"`;
+          return '\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1785\u17B6\u1794\u17CB\u1795\u17D2\u178F\u17BE\u1798\u178A\u17C4\u1799 "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1794\u1789\u17D2\u1785\u1794\u17CB\u178A\u17C4\u1799 "${_issue.suffix}"`;
+          return '\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1794\u1789\u17D2\u1785\u1794\u17CB\u178A\u17C4\u1799 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1798\u17B6\u1793 "${_issue.includes}"`;
+          return '\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u1798\u17B6\u1793 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u178F\u17C2\u1795\u17D2\u1782\u17BC\u1795\u17D2\u1782\u1784\u1793\u17B9\u1784\u1791\u1798\u17D2\u179A\u1784\u17CB\u178A\u17C2\u179B\u1794\u17B6\u1793\u1780\u17C6\u178E\u178F\u17CB ${_issue.pattern}`;
-        return `\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u178F\u17C2\u1795\u17D2\u1782\u17BC\u1795\u17D2\u1782\u1784\u1793\u17B9\u1784\u1791\u1798\u17D2\u179A\u1784\u17CB\u178A\u17C2\u179B\u1794\u17B6\u1793\u1780\u17C6\u178E\u178F\u17CB ".concat(_issue.pattern);
+        return "\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u179B\u17C1\u1781\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u178F\u17C2\u1787\u17B6\u1796\u17A0\u17BB\u1782\u17BB\u178E\u1793\u17C3 ${issue2.divisor}`;
+        return "\u179B\u17C1\u1781\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u17D6 \u178F\u17D2\u179A\u17BC\u179C\u178F\u17C2\u1787\u17B6\u1796\u17A0\u17BB\u1782\u17BB\u178E\u1793\u17C3 ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u179A\u1780\u1783\u17BE\u1789\u179F\u17C4\u1798\u17B7\u1793\u179F\u17D2\u1782\u17B6\u179B\u17CB\u17D6 ${joinValues(issue2.keys, ", ")}`;
+        return "\u179A\u1780\u1783\u17BE\u1789\u179F\u17C4\u1798\u17B7\u1793\u179F\u17D2\u1782\u17B6\u179B\u17CB\u17D6 ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u179F\u17C4\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u1793\u17C5\u1780\u17D2\u1793\u17BB\u1784 ${issue2.origin}`;
+        return "\u179F\u17C4\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u1793\u17C5\u1780\u17D2\u1793\u17BB\u1784 ".concat(issue2.origin);
       case "invalid_union":
-        return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C`;
+        return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C";
       case "invalid_element":
-        return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u1793\u17C5\u1780\u17D2\u1793\u17BB\u1784 ${issue2.origin}`;
+        return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C\u1793\u17C5\u1780\u17D2\u1793\u17BB\u1784 ".concat(issue2.origin);
       default:
-        return `\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C`;
+        return "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1798\u17B7\u1793\u178F\u17D2\u179A\u17B9\u1798\u178F\u17D2\u179A\u17BC\u179C";
     }
   };
 };
@@ -7591,22 +7557,22 @@ var error25 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\uC798\uBABB\uB41C \uC785\uB825: \uC608\uC0C1 \uD0C0\uC785\uC740 instanceof ${issue2.expected}, \uBC1B\uC740 \uD0C0\uC785\uC740 ${received}\uC785\uB2C8\uB2E4`;
+          return "\uC798\uBABB\uB41C \uC785\uB825: \uC608\uC0C1 \uD0C0\uC785\uC740 instanceof ".concat(issue2.expected, ", \uBC1B\uC740 \uD0C0\uC785\uC740 ").concat(received, "\uC785\uB2C8\uB2E4");
         }
-        return `\uC798\uBABB\uB41C \uC785\uB825: \uC608\uC0C1 \uD0C0\uC785\uC740 ${expected}, \uBC1B\uC740 \uD0C0\uC785\uC740 ${received}\uC785\uB2C8\uB2E4`;
+        return "\uC798\uBABB\uB41C \uC785\uB825: \uC608\uC0C1 \uD0C0\uC785\uC740 ".concat(expected, ", \uBC1B\uC740 \uD0C0\uC785\uC740 ").concat(received, "\uC785\uB2C8\uB2E4");
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\uC798\uBABB\uB41C \uC785\uB825: \uAC12\uC740 ${stringifyPrimitive(issue2.values[0])} \uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4`;
-        return `\uC798\uBABB\uB41C \uC635\uC158: ${joinValues(issue2.values, "\uB610\uB294 ")} \uC911 \uD558\uB098\uC5EC\uC57C \uD569\uB2C8\uB2E4`;
+          return "\uC798\uBABB\uB41C \uC785\uB825: \uAC12\uC740 ".concat(stringifyPrimitive(issue2.values[0]), " \uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4");
+        return "\uC798\uBABB\uB41C \uC635\uC158: ".concat(joinValues(issue2.values, "\uB610\uB294 "), " \uC911 \uD558\uB098\uC5EC\uC57C \uD569\uB2C8\uB2E4");
       case "too_big": {
         const adj = issue2.inclusive ? "\uC774\uD558" : "\uBBF8\uB9CC";
         const suffix = adj === "\uBBF8\uB9CC" ? "\uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4" : "\uC5EC\uC57C \uD569\uB2C8\uB2E4";
         const sizing = getSizing(issue2.origin);
         const unit = sizing?.unit ?? "\uC694\uC18C";
         if (sizing)
-          return `${issue2.origin ?? "\uAC12"}\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4: ${issue2.maximum.toString()}${unit} ${adj}${suffix}`;
-        return `${issue2.origin ?? "\uAC12"}\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4: ${issue2.maximum.toString()} ${adj}${suffix}`;
+          return "".concat(issue2.origin ?? "\uAC12", "\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4: ").concat(issue2.maximum.toString()).concat(unit, " ").concat(adj).concat(suffix);
+        return "".concat(issue2.origin ?? "\uAC12", "\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4: ").concat(issue2.maximum.toString(), " ").concat(adj).concat(suffix);
       }
       case "too_small": {
         const adj = issue2.inclusive ? "\uC774\uC0C1" : "\uCD08\uACFC";
@@ -7614,35 +7580,35 @@ var error25 = () => {
         const sizing = getSizing(issue2.origin);
         const unit = sizing?.unit ?? "\uC694\uC18C";
         if (sizing) {
-          return `${issue2.origin ?? "\uAC12"}\uC774 \uB108\uBB34 \uC791\uC2B5\uB2C8\uB2E4: ${issue2.minimum.toString()}${unit} ${adj}${suffix}`;
+          return "".concat(issue2.origin ?? "\uAC12", "\uC774 \uB108\uBB34 \uC791\uC2B5\uB2C8\uB2E4: ").concat(issue2.minimum.toString()).concat(unit, " ").concat(adj).concat(suffix);
         }
-        return `${issue2.origin ?? "\uAC12"}\uC774 \uB108\uBB34 \uC791\uC2B5\uB2C8\uB2E4: ${issue2.minimum.toString()} ${adj}${suffix}`;
+        return "".concat(issue2.origin ?? "\uAC12", "\uC774 \uB108\uBB34 \uC791\uC2B5\uB2C8\uB2E4: ").concat(issue2.minimum.toString(), " ").concat(adj).concat(suffix);
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "${_issue.prefix}"(\uC73C)\uB85C \uC2DC\uC791\uD574\uC57C \uD569\uB2C8\uB2E4`;
+          return '\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "'.concat(_issue.prefix, '"(\uC73C)\uB85C \uC2DC\uC791\uD574\uC57C \uD569\uB2C8\uB2E4');
         }
         if (_issue.format === "ends_with")
-          return `\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "${_issue.suffix}"(\uC73C)\uB85C \uB05D\uB098\uC57C \uD569\uB2C8\uB2E4`;
+          return '\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "'.concat(_issue.suffix, '"(\uC73C)\uB85C \uB05D\uB098\uC57C \uD569\uB2C8\uB2E4');
         if (_issue.format === "includes")
-          return `\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "${_issue.includes}"\uC744(\uB97C) \uD3EC\uD568\uD574\uC57C \uD569\uB2C8\uB2E4`;
+          return '\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: "'.concat(_issue.includes, '"\uC744(\uB97C) \uD3EC\uD568\uD574\uC57C \uD569\uB2C8\uB2E4');
         if (_issue.format === "regex")
-          return `\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: \uC815\uADDC\uC2DD ${_issue.pattern} \uD328\uD134\uACFC \uC77C\uCE58\uD574\uC57C \uD569\uB2C8\uB2E4`;
-        return `\uC798\uBABB\uB41C ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\uC798\uBABB\uB41C \uBB38\uC790\uC5F4: \uC815\uADDC\uC2DD ".concat(_issue.pattern, " \uD328\uD134\uACFC \uC77C\uCE58\uD574\uC57C \uD569\uB2C8\uB2E4");
+        return "\uC798\uBABB\uB41C ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\uC798\uBABB\uB41C \uC22B\uC790: ${issue2.divisor}\uC758 \uBC30\uC218\uC5EC\uC57C \uD569\uB2C8\uB2E4`;
+        return "\uC798\uBABB\uB41C \uC22B\uC790: ".concat(issue2.divisor, "\uC758 \uBC30\uC218\uC5EC\uC57C \uD569\uB2C8\uB2E4");
       case "unrecognized_keys":
-        return `\uC778\uC2DD\uD560 \uC218 \uC5C6\uB294 \uD0A4: ${joinValues(issue2.keys, ", ")}`;
+        return "\uC778\uC2DD\uD560 \uC218 \uC5C6\uB294 \uD0A4: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\uC798\uBABB\uB41C \uD0A4: ${issue2.origin}`;
+        return "\uC798\uBABB\uB41C \uD0A4: ".concat(issue2.origin);
       case "invalid_union":
-        return `\uC798\uBABB\uB41C \uC785\uB825`;
+        return "\uC798\uBABB\uB41C \uC785\uB825";
       case "invalid_element":
-        return `\uC798\uBABB\uB41C \uAC12: ${issue2.origin}`;
+        return "\uC798\uBABB\uB41C \uAC12: ".concat(issue2.origin);
       default:
-        return `\uC798\uBABB\uB41C \uC785\uB825`;
+        return "\uC798\uBABB\uB41C \uC785\uB825";
     }
   };
 };
@@ -7796,54 +7762,54 @@ var error26 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Gautas tipas ${received}, o tik\u0117tasi - instanceof ${issue2.expected}`;
+          return "Gautas tipas ".concat(received, ", o tik\u0117tasi - instanceof ").concat(issue2.expected);
         }
-        return `Gautas tipas ${received}, o tik\u0117tasi - ${expected}`;
+        return "Gautas tipas ".concat(received, ", o tik\u0117tasi - ").concat(expected);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Privalo b\u016Bti ${stringifyPrimitive(issue2.values[0])}`;
-        return `Privalo b\u016Bti vienas i\u0161 ${joinValues(issue2.values, "|")} pasirinkim\u0173`;
+          return "Privalo b\u016Bti ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Privalo b\u016Bti vienas i\u0161 ".concat(joinValues(issue2.values, "|"), " pasirinkim\u0173");
       case "too_big": {
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         const sizing = getSizing(issue2.origin, getUnitTypeFromNumber(Number(issue2.maximum)), issue2.inclusive ?? false, "smaller");
         if (sizing?.verb)
-          return `${capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117")} ${sizing.verb} ${issue2.maximum.toString()} ${sizing.unit ?? "element\u0173"}`;
+          return "".concat(capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117"), " ").concat(sizing.verb, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "element\u0173");
         const adj = issue2.inclusive ? "ne didesnis kaip" : "ma\u017Eesnis kaip";
-        return `${capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117")} turi b\u016Bti ${adj} ${issue2.maximum.toString()} ${sizing?.unit}`;
+        return "".concat(capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117"), " turi b\u016Bti ").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing?.unit);
       }
       case "too_small": {
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
         const sizing = getSizing(issue2.origin, getUnitTypeFromNumber(Number(issue2.minimum)), issue2.inclusive ?? false, "bigger");
         if (sizing?.verb)
-          return `${capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117")} ${sizing.verb} ${issue2.minimum.toString()} ${sizing.unit ?? "element\u0173"}`;
+          return "".concat(capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117"), " ").concat(sizing.verb, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit ?? "element\u0173");
         const adj = issue2.inclusive ? "ne ma\u017Eesnis kaip" : "didesnis kaip";
-        return `${capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117")} turi b\u016Bti ${adj} ${issue2.minimum.toString()} ${sizing?.unit}`;
+        return "".concat(capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117"), " turi b\u016Bti ").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing?.unit);
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Eilut\u0117 privalo prasid\u0117ti "${_issue.prefix}"`;
+          return 'Eilut\u0117 privalo prasid\u0117ti "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Eilut\u0117 privalo pasibaigti "${_issue.suffix}"`;
+          return 'Eilut\u0117 privalo pasibaigti "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Eilut\u0117 privalo \u012Ftraukti "${_issue.includes}"`;
+          return 'Eilut\u0117 privalo \u012Ftraukti "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Eilut\u0117 privalo atitikti ${_issue.pattern}`;
-        return `Neteisingas ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Eilut\u0117 privalo atitikti ".concat(_issue.pattern);
+        return "Neteisingas ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Skai\u010Dius privalo b\u016Bti ${issue2.divisor} kartotinis.`;
+        return "Skai\u010Dius privalo b\u016Bti ".concat(issue2.divisor, " kartotinis.");
       case "unrecognized_keys":
-        return `Neatpa\u017Eint${issue2.keys.length > 1 ? "i" : "as"} rakt${issue2.keys.length > 1 ? "ai" : "as"}: ${joinValues(issue2.keys, ", ")}`;
+        return "Neatpa\u017Eint".concat(issue2.keys.length > 1 ? "i" : "as", " rakt").concat(issue2.keys.length > 1 ? "ai" : "as", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
         return "Rastas klaidingas raktas";
       case "invalid_union":
         return "Klaidinga \u012Fvestis";
       case "invalid_element": {
         const origin = TypeDictionary[issue2.origin] ?? issue2.origin;
-        return `${capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117")} turi klaiding\u0105 \u012Fvest\u012F`;
+        return "".concat(capitalizeFirstCharacter(origin ?? issue2.origin ?? "reik\u0161m\u0117"), " turi klaiding\u0105 \u012Fvest\u012F");
       }
       default:
         return "Klaidinga \u012Fvestis";
@@ -7909,54 +7875,54 @@ var error27 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 instanceof ${issue2.expected}, \u043F\u0440\u0438\u043C\u0435\u043D\u043E ${received}`;
+          return "\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 instanceof ".concat(issue2.expected, ", \u043F\u0440\u0438\u043C\u0435\u043D\u043E ").concat(received);
         }
-        return `\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ${expected}, \u043F\u0440\u0438\u043C\u0435\u043D\u043E ${received}`;
+        return "\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ".concat(expected, ", \u043F\u0440\u0438\u043C\u0435\u043D\u043E ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Invalid input: expected ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u0413\u0440\u0435\u0448\u0430\u043D\u0430 \u043E\u043F\u0446\u0438\u0458\u0430: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 \u0435\u0434\u043D\u0430 ${joinValues(issue2.values, "|")}`;
+          return "Invalid input: expected ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u0413\u0440\u0435\u0448\u0430\u043D\u0430 \u043E\u043F\u0446\u0438\u0458\u0430: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 \u0435\u0434\u043D\u0430 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u0433\u043E\u043B\u0435\u043C: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ${issue2.origin ?? "\u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442\u0430"} \u0434\u0430 \u0438\u043C\u0430 ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0438"}`;
-        return `\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u0433\u043E\u043B\u0435\u043C: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ${issue2.origin ?? "\u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442\u0430"} \u0434\u0430 \u0431\u0438\u0434\u0435 ${adj}${issue2.maximum.toString()}`;
+          return "\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u0433\u043E\u043B\u0435\u043C: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ".concat(issue2.origin ?? "\u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442\u0430", " \u0434\u0430 \u0438\u043C\u0430 ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0438");
+        return "\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u0433\u043E\u043B\u0435\u043C: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ".concat(issue2.origin ?? "\u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442\u0430", " \u0434\u0430 \u0431\u0438\u0434\u0435 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u043C\u0430\u043B: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ${issue2.origin} \u0434\u0430 \u0438\u043C\u0430 ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u043C\u0430\u043B: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ".concat(issue2.origin, " \u0434\u0430 \u0438\u043C\u0430 ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u043C\u0430\u043B: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ${issue2.origin} \u0434\u0430 \u0431\u0438\u0434\u0435 ${adj}${issue2.minimum.toString()}`;
+        return "\u041F\u0440\u0435\u043C\u043D\u043E\u0433\u0443 \u043C\u0430\u043B: \u0441\u0435 \u043E\u0447\u0435\u043A\u0443\u0432\u0430 ".concat(issue2.origin, " \u0434\u0430 \u0431\u0438\u0434\u0435 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0437\u0430\u043F\u043E\u0447\u043D\u0443\u0432\u0430 \u0441\u043E "${_issue.prefix}"`;
+          return '\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0437\u0430\u043F\u043E\u0447\u043D\u0443\u0432\u0430 \u0441\u043E "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0437\u0430\u0432\u0440\u0448\u0443\u0432\u0430 \u0441\u043E "${_issue.suffix}"`;
+          return '\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0437\u0430\u0432\u0440\u0448\u0443\u0432\u0430 \u0441\u043E "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0432\u043A\u043B\u0443\u0447\u0443\u0432\u0430 "${_issue.includes}"`;
+          return '\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0432\u043A\u043B\u0443\u0447\u0443\u0432\u0430 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u043E\u0434\u0433\u043E\u0430\u0440\u0430 \u043D\u0430 \u043F\u0430\u0442\u0435\u0440\u043D\u043E\u0442 ${_issue.pattern}`;
-        return `Invalid ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u041D\u0435\u0432\u0430\u0436\u0435\u0447\u043A\u0430 \u043D\u0438\u0437\u0430: \u043C\u043E\u0440\u0430 \u0434\u0430 \u043E\u0434\u0433\u043E\u0430\u0440\u0430 \u043D\u0430 \u043F\u0430\u0442\u0435\u0440\u043D\u043E\u0442 ".concat(_issue.pattern);
+        return "Invalid ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u0413\u0440\u0435\u0448\u0435\u043D \u0431\u0440\u043E\u0458: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0431\u0438\u0434\u0435 \u0434\u0435\u043B\u0438\u0432 \u0441\u043E ${issue2.divisor}`;
+        return "\u0413\u0440\u0435\u0448\u0435\u043D \u0431\u0440\u043E\u0458: \u043C\u043E\u0440\u0430 \u0434\u0430 \u0431\u0438\u0434\u0435 \u0434\u0435\u043B\u0438\u0432 \u0441\u043E ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "\u041D\u0435\u043F\u0440\u0435\u043F\u043E\u0437\u043D\u0430\u0435\u043D\u0438 \u043A\u043B\u0443\u0447\u0435\u0432\u0438" : "\u041D\u0435\u043F\u0440\u0435\u043F\u043E\u0437\u043D\u0430\u0435\u043D \u043A\u043B\u0443\u0447"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "\u041D\u0435\u043F\u0440\u0435\u043F\u043E\u0437\u043D\u0430\u0435\u043D\u0438 \u043A\u043B\u0443\u0447\u0435\u0432\u0438" : "\u041D\u0435\u043F\u0440\u0435\u043F\u043E\u0437\u043D\u0430\u0435\u043D \u043A\u043B\u0443\u0447", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u0413\u0440\u0435\u0448\u0435\u043D \u043A\u043B\u0443\u0447 \u0432\u043E ${issue2.origin}`;
+        return "\u0413\u0440\u0435\u0448\u0435\u043D \u043A\u043B\u0443\u0447 \u0432\u043E ".concat(issue2.origin);
       case "invalid_union":
         return "\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441";
       case "invalid_element":
-        return `\u0413\u0440\u0435\u0448\u043D\u0430 \u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442 \u0432\u043E ${issue2.origin}`;
+        return "\u0413\u0440\u0435\u0448\u043D\u0430 \u0432\u0440\u0435\u0434\u043D\u043E\u0441\u0442 \u0432\u043E ".concat(issue2.origin);
       default:
-        return `\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441`;
+        return "\u0413\u0440\u0435\u0448\u0435\u043D \u0432\u043D\u0435\u0441";
     }
   };
 };
@@ -8018,53 +7984,53 @@ var error28 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Input tidak sah: dijangka instanceof ${issue2.expected}, diterima ${received}`;
+          return "Input tidak sah: dijangka instanceof ".concat(issue2.expected, ", diterima ").concat(received);
         }
-        return `Input tidak sah: dijangka ${expected}, diterima ${received}`;
+        return "Input tidak sah: dijangka ".concat(expected, ", diterima ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Input tidak sah: dijangka ${stringifyPrimitive(issue2.values[0])}`;
-        return `Pilihan tidak sah: dijangka salah satu daripada ${joinValues(issue2.values, "|")}`;
+          return "Input tidak sah: dijangka ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Pilihan tidak sah: dijangka salah satu daripada ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Terlalu besar: dijangka ${issue2.origin ?? "nilai"} ${sizing.verb} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elemen"}`;
-        return `Terlalu besar: dijangka ${issue2.origin ?? "nilai"} adalah ${adj}${issue2.maximum.toString()}`;
+          return "Terlalu besar: dijangka ".concat(issue2.origin ?? "nilai", " ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elemen");
+        return "Terlalu besar: dijangka ".concat(issue2.origin ?? "nilai", " adalah ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Terlalu kecil: dijangka ${issue2.origin} ${sizing.verb} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Terlalu kecil: dijangka ".concat(issue2.origin, " ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Terlalu kecil: dijangka ${issue2.origin} adalah ${adj}${issue2.minimum.toString()}`;
+        return "Terlalu kecil: dijangka ".concat(issue2.origin, " adalah ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `String tidak sah: mesti bermula dengan "${_issue.prefix}"`;
+          return 'String tidak sah: mesti bermula dengan "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `String tidak sah: mesti berakhir dengan "${_issue.suffix}"`;
+          return 'String tidak sah: mesti berakhir dengan "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `String tidak sah: mesti mengandungi "${_issue.includes}"`;
+          return 'String tidak sah: mesti mengandungi "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `String tidak sah: mesti sepadan dengan corak ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} tidak sah`;
+          return "String tidak sah: mesti sepadan dengan corak ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " tidak sah");
       }
       case "not_multiple_of":
-        return `Nombor tidak sah: perlu gandaan ${issue2.divisor}`;
+        return "Nombor tidak sah: perlu gandaan ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Kunci tidak dikenali: ${joinValues(issue2.keys, ", ")}`;
+        return "Kunci tidak dikenali: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Kunci tidak sah dalam ${issue2.origin}`;
+        return "Kunci tidak sah dalam ".concat(issue2.origin);
       case "invalid_union":
         return "Input tidak sah";
       case "invalid_element":
-        return `Nilai tidak sah dalam ${issue2.origin}`;
+        return "Nilai tidak sah dalam ".concat(issue2.origin);
       default:
-        return `Input tidak sah`;
+        return "Input tidak sah";
     }
   };
 };
@@ -8126,56 +8092,56 @@ var error29 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ongeldige invoer: verwacht instanceof ${issue2.expected}, ontving ${received}`;
+          return "Ongeldige invoer: verwacht instanceof ".concat(issue2.expected, ", ontving ").concat(received);
         }
-        return `Ongeldige invoer: verwacht ${expected}, ontving ${received}`;
+        return "Ongeldige invoer: verwacht ".concat(expected, ", ontving ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ongeldige invoer: verwacht ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ongeldige optie: verwacht \xE9\xE9n van ${joinValues(issue2.values, "|")}`;
+          return "Ongeldige invoer: verwacht ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ongeldige optie: verwacht \xE9\xE9n van ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         const longName = issue2.origin === "date" ? "laat" : issue2.origin === "string" ? "lang" : "groot";
         if (sizing)
-          return `Te ${longName}: verwacht dat ${issue2.origin ?? "waarde"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementen"} ${sizing.verb}`;
-        return `Te ${longName}: verwacht dat ${issue2.origin ?? "waarde"} ${adj}${issue2.maximum.toString()} is`;
+          return "Te ".concat(longName, ": verwacht dat ").concat(issue2.origin ?? "waarde", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementen", " ").concat(sizing.verb);
+        return "Te ".concat(longName, ": verwacht dat ").concat(issue2.origin ?? "waarde", " ").concat(adj).concat(issue2.maximum.toString(), " is");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         const shortName = issue2.origin === "date" ? "vroeg" : issue2.origin === "string" ? "kort" : "klein";
         if (sizing) {
-          return `Te ${shortName}: verwacht dat ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit} ${sizing.verb}`;
+          return "Te ".concat(shortName, ": verwacht dat ").concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " ").concat(sizing.verb);
         }
-        return `Te ${shortName}: verwacht dat ${issue2.origin} ${adj}${issue2.minimum.toString()} is`;
+        return "Te ".concat(shortName, ": verwacht dat ").concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " is");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Ongeldige tekst: moet met "${_issue.prefix}" beginnen`;
+          return 'Ongeldige tekst: moet met "'.concat(_issue.prefix, '" beginnen');
         }
         if (_issue.format === "ends_with")
-          return `Ongeldige tekst: moet op "${_issue.suffix}" eindigen`;
+          return 'Ongeldige tekst: moet op "'.concat(_issue.suffix, '" eindigen');
         if (_issue.format === "includes")
-          return `Ongeldige tekst: moet "${_issue.includes}" bevatten`;
+          return 'Ongeldige tekst: moet "'.concat(_issue.includes, '" bevatten');
         if (_issue.format === "regex")
-          return `Ongeldige tekst: moet overeenkomen met patroon ${_issue.pattern}`;
-        return `Ongeldig: ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Ongeldige tekst: moet overeenkomen met patroon ".concat(_issue.pattern);
+        return "Ongeldig: ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ongeldig getal: moet een veelvoud van ${issue2.divisor} zijn`;
+        return "Ongeldig getal: moet een veelvoud van ".concat(issue2.divisor, " zijn");
       case "unrecognized_keys":
-        return `Onbekende key${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Onbekende key".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Ongeldige key in ${issue2.origin}`;
+        return "Ongeldige key in ".concat(issue2.origin);
       case "invalid_union":
         return "Ongeldige invoer";
       case "invalid_element":
-        return `Ongeldige waarde in ${issue2.origin}`;
+        return "Ongeldige waarde in ".concat(issue2.origin);
       default:
-        return `Ongeldige invoer`;
+        return "Ongeldige invoer";
     }
   };
 };
@@ -8238,53 +8204,53 @@ var error30 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ugyldig input: forventet instanceof ${issue2.expected}, fikk ${received}`;
+          return "Ugyldig input: forventet instanceof ".concat(issue2.expected, ", fikk ").concat(received);
         }
-        return `Ugyldig input: forventet ${expected}, fikk ${received}`;
+        return "Ugyldig input: forventet ".concat(expected, ", fikk ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ugyldig verdi: forventet ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ugyldig valg: forventet en av ${joinValues(issue2.values, "|")}`;
+          return "Ugyldig verdi: forventet ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ugyldig valg: forventet en av ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `For stor(t): forventet ${issue2.origin ?? "value"} til \xE5 ha ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementer"}`;
-        return `For stor(t): forventet ${issue2.origin ?? "value"} til \xE5 ha ${adj}${issue2.maximum.toString()}`;
+          return "For stor(t): forventet ".concat(issue2.origin ?? "value", " til \xE5 ha ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementer");
+        return "For stor(t): forventet ".concat(issue2.origin ?? "value", " til \xE5 ha ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `For lite(n): forventet ${issue2.origin} til \xE5 ha ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "For lite(n): forventet ".concat(issue2.origin, " til \xE5 ha ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `For lite(n): forventet ${issue2.origin} til \xE5 ha ${adj}${issue2.minimum.toString()}`;
+        return "For lite(n): forventet ".concat(issue2.origin, " til \xE5 ha ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Ugyldig streng: m\xE5 starte med "${_issue.prefix}"`;
+          return 'Ugyldig streng: m\xE5 starte med "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Ugyldig streng: m\xE5 ende med "${_issue.suffix}"`;
+          return 'Ugyldig streng: m\xE5 ende med "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Ugyldig streng: m\xE5 inneholde "${_issue.includes}"`;
+          return 'Ugyldig streng: m\xE5 inneholde "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Ugyldig streng: m\xE5 matche m\xF8nsteret ${_issue.pattern}`;
-        return `Ugyldig ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Ugyldig streng: m\xE5 matche m\xF8nsteret ".concat(_issue.pattern);
+        return "Ugyldig ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ugyldig tall: m\xE5 v\xE6re et multiplum av ${issue2.divisor}`;
+        return "Ugyldig tall: m\xE5 v\xE6re et multiplum av ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "Ukjente n\xF8kler" : "Ukjent n\xF8kkel"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "Ukjente n\xF8kler" : "Ukjent n\xF8kkel", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Ugyldig n\xF8kkel i ${issue2.origin}`;
+        return "Ugyldig n\xF8kkel i ".concat(issue2.origin);
       case "invalid_union":
         return "Ugyldig input";
       case "invalid_element":
-        return `Ugyldig verdi i ${issue2.origin}`;
+        return "Ugyldig verdi i ".concat(issue2.origin);
       default:
-        return `Ugyldig input`;
+        return "Ugyldig input";
     }
   };
 };
@@ -8348,53 +8314,53 @@ var error31 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `F\xE2sit giren: umulan instanceof ${issue2.expected}, al\u0131nan ${received}`;
+          return "F\xE2sit giren: umulan instanceof ".concat(issue2.expected, ", al\u0131nan ").concat(received);
         }
-        return `F\xE2sit giren: umulan ${expected}, al\u0131nan ${received}`;
+        return "F\xE2sit giren: umulan ".concat(expected, ", al\u0131nan ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `F\xE2sit giren: umulan ${stringifyPrimitive(issue2.values[0])}`;
-        return `F\xE2sit tercih: m\xFBteberler ${joinValues(issue2.values, "|")}`;
+          return "F\xE2sit giren: umulan ".concat(stringifyPrimitive(issue2.values[0]));
+        return "F\xE2sit tercih: m\xFBteberler ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Fazla b\xFCy\xFCk: ${issue2.origin ?? "value"}, ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elements"} sahip olmal\u0131yd\u0131.`;
-        return `Fazla b\xFCy\xFCk: ${issue2.origin ?? "value"}, ${adj}${issue2.maximum.toString()} olmal\u0131yd\u0131.`;
+          return "Fazla b\xFCy\xFCk: ".concat(issue2.origin ?? "value", ", ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elements", " sahip olmal\u0131yd\u0131.");
+        return "Fazla b\xFCy\xFCk: ".concat(issue2.origin ?? "value", ", ").concat(adj).concat(issue2.maximum.toString(), " olmal\u0131yd\u0131.");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Fazla k\xFC\xE7\xFCk: ${issue2.origin}, ${adj}${issue2.minimum.toString()} ${sizing.unit} sahip olmal\u0131yd\u0131.`;
+          return "Fazla k\xFC\xE7\xFCk: ".concat(issue2.origin, ", ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " sahip olmal\u0131yd\u0131.");
         }
-        return `Fazla k\xFC\xE7\xFCk: ${issue2.origin}, ${adj}${issue2.minimum.toString()} olmal\u0131yd\u0131.`;
+        return "Fazla k\xFC\xE7\xFCk: ".concat(issue2.origin, ", ").concat(adj).concat(issue2.minimum.toString(), " olmal\u0131yd\u0131.");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `F\xE2sit metin: "${_issue.prefix}" ile ba\u015Flamal\u0131.`;
+          return 'F\xE2sit metin: "'.concat(_issue.prefix, '" ile ba\u015Flamal\u0131.');
         if (_issue.format === "ends_with")
-          return `F\xE2sit metin: "${_issue.suffix}" ile bitmeli.`;
+          return 'F\xE2sit metin: "'.concat(_issue.suffix, '" ile bitmeli.');
         if (_issue.format === "includes")
-          return `F\xE2sit metin: "${_issue.includes}" ihtiv\xE2 etmeli.`;
+          return 'F\xE2sit metin: "'.concat(_issue.includes, '" ihtiv\xE2 etmeli.');
         if (_issue.format === "regex")
-          return `F\xE2sit metin: ${_issue.pattern} nak\u015F\u0131na uymal\u0131.`;
-        return `F\xE2sit ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "F\xE2sit metin: ".concat(_issue.pattern, " nak\u015F\u0131na uymal\u0131.");
+        return "F\xE2sit ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `F\xE2sit say\u0131: ${issue2.divisor} kat\u0131 olmal\u0131yd\u0131.`;
+        return "F\xE2sit say\u0131: ".concat(issue2.divisor, " kat\u0131 olmal\u0131yd\u0131.");
       case "unrecognized_keys":
-        return `Tan\u0131nmayan anahtar ${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Tan\u0131nmayan anahtar ".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} i\xE7in tan\u0131nmayan anahtar var.`;
+        return "".concat(issue2.origin, " i\xE7in tan\u0131nmayan anahtar var.");
       case "invalid_union":
         return "Giren tan\u0131namad\u0131.";
       case "invalid_element":
-        return `${issue2.origin} i\xE7in tan\u0131nmayan k\u0131ymet var.`;
+        return "".concat(issue2.origin, " i\xE7in tan\u0131nmayan k\u0131ymet var.");
       default:
-        return `K\u0131ymet tan\u0131namad\u0131.`;
+        return "K\u0131ymet tan\u0131namad\u0131.";
     }
   };
 };
@@ -8457,59 +8423,59 @@ var error32 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F instanceof ${issue2.expected} \u0648\u0627\u06CC, \u0645\u06AB\u0631 ${received} \u062A\u0631\u0644\u0627\u0633\u0647 \u0634\u0648`;
+          return "\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F instanceof ".concat(issue2.expected, " \u0648\u0627\u06CC, \u0645\u06AB\u0631 ").concat(received, " \u062A\u0631\u0644\u0627\u0633\u0647 \u0634\u0648");
         }
-        return `\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F ${expected} \u0648\u0627\u06CC, \u0645\u06AB\u0631 ${received} \u062A\u0631\u0644\u0627\u0633\u0647 \u0634\u0648`;
+        return "\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F ".concat(expected, " \u0648\u0627\u06CC, \u0645\u06AB\u0631 ").concat(received, " \u062A\u0631\u0644\u0627\u0633\u0647 \u0634\u0648");
       }
       case "invalid_value":
         if (issue2.values.length === 1) {
-          return `\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F ${stringifyPrimitive(issue2.values[0])} \u0648\u0627\u06CC`;
+          return "\u0646\u0627\u0633\u0645 \u0648\u0631\u0648\u062F\u064A: \u0628\u0627\u06CC\u062F ".concat(stringifyPrimitive(issue2.values[0]), " \u0648\u0627\u06CC");
         }
-        return `\u0646\u0627\u0633\u0645 \u0627\u0646\u062A\u062E\u0627\u0628: \u0628\u0627\u06CC\u062F \u06CC\u0648 \u0644\u0647 ${joinValues(issue2.values, "|")} \u0685\u062E\u0647 \u0648\u0627\u06CC`;
+        return "\u0646\u0627\u0633\u0645 \u0627\u0646\u062A\u062E\u0627\u0628: \u0628\u0627\u06CC\u062F \u06CC\u0648 \u0644\u0647 ".concat(joinValues(issue2.values, "|"), " \u0685\u062E\u0647 \u0648\u0627\u06CC");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0689\u06CC\u0631 \u0644\u0648\u06CC: ${issue2.origin ?? "\u0627\u0631\u0632\u069A\u062A"} \u0628\u0627\u06CC\u062F ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0639\u0646\u0635\u0631\u0648\u0646\u0647"} \u0648\u0644\u0631\u064A`;
+          return "\u0689\u06CC\u0631 \u0644\u0648\u06CC: ".concat(issue2.origin ?? "\u0627\u0631\u0632\u069A\u062A", " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0639\u0646\u0635\u0631\u0648\u0646\u0647", " \u0648\u0644\u0631\u064A");
         }
-        return `\u0689\u06CC\u0631 \u0644\u0648\u06CC: ${issue2.origin ?? "\u0627\u0631\u0632\u069A\u062A"} \u0628\u0627\u06CC\u062F ${adj}${issue2.maximum.toString()} \u0648\u064A`;
+        return "\u0689\u06CC\u0631 \u0644\u0648\u06CC: ".concat(issue2.origin ?? "\u0627\u0631\u0632\u069A\u062A", " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.maximum.toString(), " \u0648\u064A");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0689\u06CC\u0631 \u06A9\u0648\u0686\u0646\u06CC: ${issue2.origin} \u0628\u0627\u06CC\u062F ${adj}${issue2.minimum.toString()} ${sizing.unit} \u0648\u0644\u0631\u064A`;
+          return "\u0689\u06CC\u0631 \u06A9\u0648\u0686\u0646\u06CC: ".concat(issue2.origin, " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " \u0648\u0644\u0631\u064A");
         }
-        return `\u0689\u06CC\u0631 \u06A9\u0648\u0686\u0646\u06CC: ${issue2.origin} \u0628\u0627\u06CC\u062F ${adj}${issue2.minimum.toString()} \u0648\u064A`;
+        return "\u0689\u06CC\u0631 \u06A9\u0648\u0686\u0646\u06CC: ".concat(issue2.origin, " \u0628\u0627\u06CC\u062F ").concat(adj).concat(issue2.minimum.toString(), " \u0648\u064A");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F "${_issue.prefix}" \u0633\u0631\u0647 \u067E\u06CC\u0644 \u0634\u064A`;
+          return '\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F "'.concat(_issue.prefix, '" \u0633\u0631\u0647 \u067E\u06CC\u0644 \u0634\u064A');
         }
         if (_issue.format === "ends_with") {
-          return `\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F "${_issue.suffix}" \u0633\u0631\u0647 \u067E\u0627\u06CC \u062A\u0647 \u0648\u0631\u0633\u064A\u0696\u064A`;
+          return '\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F "'.concat(_issue.suffix, '" \u0633\u0631\u0647 \u067E\u0627\u06CC \u062A\u0647 \u0648\u0631\u0633\u064A\u0696\u064A');
         }
         if (_issue.format === "includes") {
-          return `\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F "${_issue.includes}" \u0648\u0644\u0631\u064A`;
+          return '\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F "'.concat(_issue.includes, '" \u0648\u0644\u0631\u064A');
         }
         if (_issue.format === "regex") {
-          return `\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F ${_issue.pattern} \u0633\u0631\u0647 \u0645\u0637\u0627\u0628\u0642\u062A \u0648\u0644\u0631\u064A`;
+          return "\u0646\u0627\u0633\u0645 \u0645\u062A\u0646: \u0628\u0627\u06CC\u062F \u062F ".concat(_issue.pattern, " \u0633\u0631\u0647 \u0645\u0637\u0627\u0628\u0642\u062A \u0648\u0644\u0631\u064A");
         }
-        return `${FormatDictionary[_issue.format] ?? issue2.format} \u0646\u0627\u0633\u0645 \u062F\u06CC`;
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " \u0646\u0627\u0633\u0645 \u062F\u06CC");
       }
       case "not_multiple_of":
-        return `\u0646\u0627\u0633\u0645 \u0639\u062F\u062F: \u0628\u0627\u06CC\u062F \u062F ${issue2.divisor} \u0645\u0636\u0631\u0628 \u0648\u064A`;
+        return "\u0646\u0627\u0633\u0645 \u0639\u062F\u062F: \u0628\u0627\u06CC\u062F \u062F ".concat(issue2.divisor, " \u0645\u0636\u0631\u0628 \u0648\u064A");
       case "unrecognized_keys":
-        return `\u0646\u0627\u0633\u0645 ${issue2.keys.length > 1 ? "\u06A9\u0644\u06CC\u0689\u0648\u0646\u0647" : "\u06A9\u0644\u06CC\u0689"}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u0646\u0627\u0633\u0645 ".concat(issue2.keys.length > 1 ? "\u06A9\u0644\u06CC\u0689\u0648\u0646\u0647" : "\u06A9\u0644\u06CC\u0689", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u0646\u0627\u0633\u0645 \u06A9\u0644\u06CC\u0689 \u067E\u0647 ${issue2.origin} \u06A9\u06D0`;
+        return "\u0646\u0627\u0633\u0645 \u06A9\u0644\u06CC\u0689 \u067E\u0647 ".concat(issue2.origin, " \u06A9\u06D0");
       case "invalid_union":
-        return `\u0646\u0627\u0633\u0645\u0647 \u0648\u0631\u0648\u062F\u064A`;
+        return "\u0646\u0627\u0633\u0645\u0647 \u0648\u0631\u0648\u062F\u064A";
       case "invalid_element":
-        return `\u0646\u0627\u0633\u0645 \u0639\u0646\u0635\u0631 \u067E\u0647 ${issue2.origin} \u06A9\u06D0`;
+        return "\u0646\u0627\u0633\u0645 \u0639\u0646\u0635\u0631 \u067E\u0647 ".concat(issue2.origin, " \u06A9\u06D0");
       default:
-        return `\u0646\u0627\u0633\u0645\u0647 \u0648\u0631\u0648\u062F\u064A`;
+        return "\u0646\u0627\u0633\u0645\u0647 \u0648\u0631\u0648\u062F\u064A";
     }
   };
 };
@@ -8572,54 +8538,54 @@ var error33 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano instanceof ${issue2.expected}, otrzymano ${received}`;
+          return "Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano instanceof ".concat(issue2.expected, ", otrzymano ").concat(received);
         }
-        return `Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano ${expected}, otrzymano ${received}`;
+        return "Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano ".concat(expected, ", otrzymano ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano ${stringifyPrimitive(issue2.values[0])}`;
-        return `Nieprawid\u0142owa opcja: oczekiwano jednej z warto\u015Bci ${joinValues(issue2.values, "|")}`;
+          return "Nieprawid\u0142owe dane wej\u015Bciowe: oczekiwano ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Nieprawid\u0142owa opcja: oczekiwano jednej z warto\u015Bci ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Za du\u017Ca warto\u015B\u0107: oczekiwano, \u017Ce ${issue2.origin ?? "warto\u015B\u0107"} b\u0119dzie mie\u0107 ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "element\xF3w"}`;
+          return "Za du\u017Ca warto\u015B\u0107: oczekiwano, \u017Ce ".concat(issue2.origin ?? "warto\u015B\u0107", " b\u0119dzie mie\u0107 ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "element\xF3w");
         }
-        return `Zbyt du\u017C(y/a/e): oczekiwano, \u017Ce ${issue2.origin ?? "warto\u015B\u0107"} b\u0119dzie wynosi\u0107 ${adj}${issue2.maximum.toString()}`;
+        return "Zbyt du\u017C(y/a/e): oczekiwano, \u017Ce ".concat(issue2.origin ?? "warto\u015B\u0107", " b\u0119dzie wynosi\u0107 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Za ma\u0142a warto\u015B\u0107: oczekiwano, \u017Ce ${issue2.origin ?? "warto\u015B\u0107"} b\u0119dzie mie\u0107 ${adj}${issue2.minimum.toString()} ${sizing.unit ?? "element\xF3w"}`;
+          return "Za ma\u0142a warto\u015B\u0107: oczekiwano, \u017Ce ".concat(issue2.origin ?? "warto\u015B\u0107", " b\u0119dzie mie\u0107 ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit ?? "element\xF3w");
         }
-        return `Zbyt ma\u0142(y/a/e): oczekiwano, \u017Ce ${issue2.origin ?? "warto\u015B\u0107"} b\u0119dzie wynosi\u0107 ${adj}${issue2.minimum.toString()}`;
+        return "Zbyt ma\u0142(y/a/e): oczekiwano, \u017Ce ".concat(issue2.origin ?? "warto\u015B\u0107", " b\u0119dzie wynosi\u0107 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Nieprawid\u0142owy ci\u0105g znak\xF3w: musi zaczyna\u0107 si\u0119 od "${_issue.prefix}"`;
+          return 'Nieprawid\u0142owy ci\u0105g znak\xF3w: musi zaczyna\u0107 si\u0119 od "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Nieprawid\u0142owy ci\u0105g znak\xF3w: musi ko\u0144czy\u0107 si\u0119 na "${_issue.suffix}"`;
+          return 'Nieprawid\u0142owy ci\u0105g znak\xF3w: musi ko\u0144czy\u0107 si\u0119 na "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Nieprawid\u0142owy ci\u0105g znak\xF3w: musi zawiera\u0107 "${_issue.includes}"`;
+          return 'Nieprawid\u0142owy ci\u0105g znak\xF3w: musi zawiera\u0107 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Nieprawid\u0142owy ci\u0105g znak\xF3w: musi odpowiada\u0107 wzorcowi ${_issue.pattern}`;
-        return `Nieprawid\u0142ow(y/a/e) ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Nieprawid\u0142owy ci\u0105g znak\xF3w: musi odpowiada\u0107 wzorcowi ".concat(_issue.pattern);
+        return "Nieprawid\u0142ow(y/a/e) ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Nieprawid\u0142owa liczba: musi by\u0107 wielokrotno\u015Bci\u0105 ${issue2.divisor}`;
+        return "Nieprawid\u0142owa liczba: musi by\u0107 wielokrotno\u015Bci\u0105 ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Nierozpoznane klucze${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Nierozpoznane klucze".concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Nieprawid\u0142owy klucz w ${issue2.origin}`;
+        return "Nieprawid\u0142owy klucz w ".concat(issue2.origin);
       case "invalid_union":
         return "Nieprawid\u0142owe dane wej\u015Bciowe";
       case "invalid_element":
-        return `Nieprawid\u0142owa warto\u015B\u0107 w ${issue2.origin}`;
+        return "Nieprawid\u0142owa warto\u015B\u0107 w ".concat(issue2.origin);
       default:
-        return `Nieprawid\u0142owe dane wej\u015Bciowe`;
+        return "Nieprawid\u0142owe dane wej\u015Bciowe";
     }
   };
 };
@@ -8682,53 +8648,53 @@ var error34 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Tipo inv\xE1lido: esperado instanceof ${issue2.expected}, recebido ${received}`;
+          return "Tipo inv\xE1lido: esperado instanceof ".concat(issue2.expected, ", recebido ").concat(received);
         }
-        return `Tipo inv\xE1lido: esperado ${expected}, recebido ${received}`;
+        return "Tipo inv\xE1lido: esperado ".concat(expected, ", recebido ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Entrada inv\xE1lida: esperado ${stringifyPrimitive(issue2.values[0])}`;
-        return `Op\xE7\xE3o inv\xE1lida: esperada uma das ${joinValues(issue2.values, "|")}`;
+          return "Entrada inv\xE1lida: esperado ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Op\xE7\xE3o inv\xE1lida: esperada uma das ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Muito grande: esperado que ${issue2.origin ?? "valor"} tivesse ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementos"}`;
-        return `Muito grande: esperado que ${issue2.origin ?? "valor"} fosse ${adj}${issue2.maximum.toString()}`;
+          return "Muito grande: esperado que ".concat(issue2.origin ?? "valor", " tivesse ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementos");
+        return "Muito grande: esperado que ".concat(issue2.origin ?? "valor", " fosse ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Muito pequeno: esperado que ${issue2.origin} tivesse ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Muito pequeno: esperado que ".concat(issue2.origin, " tivesse ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Muito pequeno: esperado que ${issue2.origin} fosse ${adj}${issue2.minimum.toString()}`;
+        return "Muito pequeno: esperado que ".concat(issue2.origin, " fosse ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Texto inv\xE1lido: deve come\xE7ar com "${_issue.prefix}"`;
+          return 'Texto inv\xE1lido: deve come\xE7ar com "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Texto inv\xE1lido: deve terminar com "${_issue.suffix}"`;
+          return 'Texto inv\xE1lido: deve terminar com "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Texto inv\xE1lido: deve incluir "${_issue.includes}"`;
+          return 'Texto inv\xE1lido: deve incluir "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Texto inv\xE1lido: deve corresponder ao padr\xE3o ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} inv\xE1lido`;
+          return "Texto inv\xE1lido: deve corresponder ao padr\xE3o ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " inv\xE1lido");
       }
       case "not_multiple_of":
-        return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
+        return "N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Chave${issue2.keys.length > 1 ? "s" : ""} desconhecida${issue2.keys.length > 1 ? "s" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Chave".concat(issue2.keys.length > 1 ? "s" : "", " desconhecida").concat(issue2.keys.length > 1 ? "s" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Chave inv\xE1lida em ${issue2.origin}`;
+        return "Chave inv\xE1lida em ".concat(issue2.origin);
       case "invalid_union":
         return "Entrada inv\xE1lida";
       case "invalid_element":
-        return `Valor inv\xE1lido em ${issue2.origin}`;
+        return "Valor inv\xE1lido em ".concat(issue2.origin);
       default:
-        return `Campo inv\xE1lido`;
+        return "Campo inv\xE1lido";
     }
   };
 };
@@ -8834,23 +8800,23 @@ var error35 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C instanceof ${issue2.expected}, \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u043E ${received}`;
+          return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C instanceof ".concat(issue2.expected, ", \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u043E ").concat(received);
         }
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C ${expected}, \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u043E ${received}`;
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C ".concat(expected, ", \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u043E ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0434\u043D\u043E \u0438\u0437 ${joinValues(issue2.values, "|")}`;
+          return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0432\u043E\u0434: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0434\u043D\u043E \u0438\u0437 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
           const maxValue = Number(issue2.maximum);
           const unit = getRussianPlural(maxValue, sizing.unit.one, sizing.unit.few, sizing.unit.many);
-          return `\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435"} \u0431\u0443\u0434\u0435\u0442 \u0438\u043C\u0435\u0442\u044C ${adj}${issue2.maximum.toString()} ${unit}`;
+          return "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435", " \u0431\u0443\u0434\u0435\u0442 \u0438\u043C\u0435\u0442\u044C ").concat(adj).concat(issue2.maximum.toString(), " ").concat(unit);
         }
-        return `\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435"} \u0431\u0443\u0434\u0435\u0442 ${adj}${issue2.maximum.toString()}`;
+        return "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435", " \u0431\u0443\u0434\u0435\u0442 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
@@ -8858,34 +8824,34 @@ var error35 = () => {
         if (sizing) {
           const minValue = Number(issue2.minimum);
           const unit = getRussianPlural(minValue, sizing.unit.one, sizing.unit.few, sizing.unit.many);
-          return `\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ${issue2.origin} \u0431\u0443\u0434\u0435\u0442 \u0438\u043C\u0435\u0442\u044C ${adj}${issue2.minimum.toString()} ${unit}`;
+          return "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ".concat(issue2.origin, " \u0431\u0443\u0434\u0435\u0442 \u0438\u043C\u0435\u0442\u044C ").concat(adj).concat(issue2.minimum.toString(), " ").concat(unit);
         }
-        return `\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ${issue2.origin} \u0431\u0443\u0434\u0435\u0442 ${adj}${issue2.minimum.toString()}`;
+        return "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435: \u043E\u0436\u0438\u0434\u0430\u043B\u043E\u0441\u044C, \u0447\u0442\u043E ".concat(issue2.origin, " \u0431\u0443\u0434\u0435\u0442 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u043D\u0430\u0447\u0438\u043D\u0430\u0442\u044C\u0441\u044F \u0441 "${_issue.prefix}"`;
+          return '\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u043D\u0430\u0447\u0438\u043D\u0430\u0442\u044C\u0441\u044F \u0441 "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0437\u0430\u043A\u0430\u043D\u0447\u0438\u0432\u0430\u0442\u044C\u0441\u044F \u043D\u0430 "${_issue.suffix}"`;
+          return '\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0437\u0430\u043A\u0430\u043D\u0447\u0438\u0432\u0430\u0442\u044C\u0441\u044F \u043D\u0430 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0441\u043E\u0434\u0435\u0440\u0436\u0430\u0442\u044C "${_issue.includes}"`;
+          return '\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0441\u043E\u0434\u0435\u0440\u0436\u0430\u0442\u044C "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0441\u043E\u043E\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ${_issue.pattern}`;
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u041D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430: \u0434\u043E\u043B\u0436\u043D\u0430 \u0441\u043E\u043E\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ".concat(_issue.pattern);
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u043E\u0435 \u0447\u0438\u0441\u043B\u043E: \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u043A\u0440\u0430\u0442\u043D\u044B\u043C ${issue2.divisor}`;
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u043E\u0435 \u0447\u0438\u0441\u043B\u043E: \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u043A\u0440\u0430\u0442\u043D\u044B\u043C ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u041D\u0435\u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u043D\u043D${issue2.keys.length > 1 ? "\u044B\u0435" : "\u044B\u0439"} \u043A\u043B\u044E\u0447${issue2.keys.length > 1 ? "\u0438" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u041D\u0435\u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u043D\u043D".concat(issue2.keys.length > 1 ? "\u044B\u0435" : "\u044B\u0439", " \u043A\u043B\u044E\u0447").concat(issue2.keys.length > 1 ? "\u0438" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043A\u043B\u044E\u0447 \u0432 ${issue2.origin}`;
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043A\u043B\u044E\u0447 \u0432 ".concat(issue2.origin);
       case "invalid_union":
         return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0435 \u0432\u0445\u043E\u0434\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435";
       case "invalid_element":
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435 \u0432 ${issue2.origin}`;
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u043E\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435 \u0432 ".concat(issue2.origin);
       default:
-        return `\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0435 \u0432\u0445\u043E\u0434\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435`;
+        return "\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0435 \u0432\u0445\u043E\u0434\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435";
     }
   };
 };
@@ -8948,52 +8914,52 @@ var error36 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Neveljaven vnos: pri\u010Dakovano instanceof ${issue2.expected}, prejeto ${received}`;
+          return "Neveljaven vnos: pri\u010Dakovano instanceof ".concat(issue2.expected, ", prejeto ").concat(received);
         }
-        return `Neveljaven vnos: pri\u010Dakovano ${expected}, prejeto ${received}`;
+        return "Neveljaven vnos: pri\u010Dakovano ".concat(expected, ", prejeto ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Neveljaven vnos: pri\u010Dakovano ${stringifyPrimitive(issue2.values[0])}`;
-        return `Neveljavna mo\u017Enost: pri\u010Dakovano eno izmed ${joinValues(issue2.values, "|")}`;
+          return "Neveljaven vnos: pri\u010Dakovano ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Neveljavna mo\u017Enost: pri\u010Dakovano eno izmed ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Preveliko: pri\u010Dakovano, da bo ${issue2.origin ?? "vrednost"} imelo ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "elementov"}`;
-        return `Preveliko: pri\u010Dakovano, da bo ${issue2.origin ?? "vrednost"} ${adj}${issue2.maximum.toString()}`;
+          return "Preveliko: pri\u010Dakovano, da bo ".concat(issue2.origin ?? "vrednost", " imelo ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "elementov");
+        return "Preveliko: pri\u010Dakovano, da bo ".concat(issue2.origin ?? "vrednost", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Premajhno: pri\u010Dakovano, da bo ${issue2.origin} imelo ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Premajhno: pri\u010Dakovano, da bo ".concat(issue2.origin, " imelo ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Premajhno: pri\u010Dakovano, da bo ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+        return "Premajhno: pri\u010Dakovano, da bo ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Neveljaven niz: mora se za\u010Deti z "${_issue.prefix}"`;
+          return 'Neveljaven niz: mora se za\u010Deti z "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Neveljaven niz: mora se kon\u010Dati z "${_issue.suffix}"`;
+          return 'Neveljaven niz: mora se kon\u010Dati z "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Neveljaven niz: mora vsebovati "${_issue.includes}"`;
+          return 'Neveljaven niz: mora vsebovati "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Neveljaven niz: mora ustrezati vzorcu ${_issue.pattern}`;
-        return `Neveljaven ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Neveljaven niz: mora ustrezati vzorcu ".concat(_issue.pattern);
+        return "Neveljaven ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Neveljavno \u0161tevilo: mora biti ve\u010Dkratnik ${issue2.divisor}`;
+        return "Neveljavno \u0161tevilo: mora biti ve\u010Dkratnik ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Neprepoznan${issue2.keys.length > 1 ? "i klju\u010Di" : " klju\u010D"}: ${joinValues(issue2.keys, ", ")}`;
+        return "Neprepoznan".concat(issue2.keys.length > 1 ? "i klju\u010Di" : " klju\u010D", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Neveljaven klju\u010D v ${issue2.origin}`;
+        return "Neveljaven klju\u010D v ".concat(issue2.origin);
       case "invalid_union":
         return "Neveljaven vnos";
       case "invalid_element":
-        return `Neveljavna vrednost v ${issue2.origin}`;
+        return "Neveljavna vrednost v ".concat(issue2.origin);
       default:
         return "Neveljaven vnos";
     }
@@ -9058,55 +9024,55 @@ var error37 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ogiltig inmatning: f\xF6rv\xE4ntat instanceof ${issue2.expected}, fick ${received}`;
+          return "Ogiltig inmatning: f\xF6rv\xE4ntat instanceof ".concat(issue2.expected, ", fick ").concat(received);
         }
-        return `Ogiltig inmatning: f\xF6rv\xE4ntat ${expected}, fick ${received}`;
+        return "Ogiltig inmatning: f\xF6rv\xE4ntat ".concat(expected, ", fick ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ogiltig inmatning: f\xF6rv\xE4ntat ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ogiltigt val: f\xF6rv\xE4ntade en av ${joinValues(issue2.values, "|")}`;
+          return "Ogiltig inmatning: f\xF6rv\xE4ntat ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ogiltigt val: f\xF6rv\xE4ntade en av ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `F\xF6r stor(t): f\xF6rv\xE4ntade ${issue2.origin ?? "v\xE4rdet"} att ha ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "element"}`;
+          return "F\xF6r stor(t): f\xF6rv\xE4ntade ".concat(issue2.origin ?? "v\xE4rdet", " att ha ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "element");
         }
-        return `F\xF6r stor(t): f\xF6rv\xE4ntat ${issue2.origin ?? "v\xE4rdet"} att ha ${adj}${issue2.maximum.toString()}`;
+        return "F\xF6r stor(t): f\xF6rv\xE4ntat ".concat(issue2.origin ?? "v\xE4rdet", " att ha ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `F\xF6r lite(t): f\xF6rv\xE4ntade ${issue2.origin ?? "v\xE4rdet"} att ha ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "F\xF6r lite(t): f\xF6rv\xE4ntade ".concat(issue2.origin ?? "v\xE4rdet", " att ha ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `F\xF6r lite(t): f\xF6rv\xE4ntade ${issue2.origin ?? "v\xE4rdet"} att ha ${adj}${issue2.minimum.toString()}`;
+        return "F\xF6r lite(t): f\xF6rv\xE4ntade ".concat(issue2.origin ?? "v\xE4rdet", " att ha ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `Ogiltig str\xE4ng: m\xE5ste b\xF6rja med "${_issue.prefix}"`;
+          return 'Ogiltig str\xE4ng: m\xE5ste b\xF6rja med "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `Ogiltig str\xE4ng: m\xE5ste sluta med "${_issue.suffix}"`;
+          return 'Ogiltig str\xE4ng: m\xE5ste sluta med "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Ogiltig str\xE4ng: m\xE5ste inneh\xE5lla "${_issue.includes}"`;
+          return 'Ogiltig str\xE4ng: m\xE5ste inneh\xE5lla "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Ogiltig str\xE4ng: m\xE5ste matcha m\xF6nstret "${_issue.pattern}"`;
-        return `Ogiltig(t) ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return 'Ogiltig str\xE4ng: m\xE5ste matcha m\xF6nstret "'.concat(_issue.pattern, '"');
+        return "Ogiltig(t) ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ogiltigt tal: m\xE5ste vara en multipel av ${issue2.divisor}`;
+        return "Ogiltigt tal: m\xE5ste vara en multipel av ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `${issue2.keys.length > 1 ? "Ok\xE4nda nycklar" : "Ok\xE4nd nyckel"}: ${joinValues(issue2.keys, ", ")}`;
+        return "".concat(issue2.keys.length > 1 ? "Ok\xE4nda nycklar" : "Ok\xE4nd nyckel", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Ogiltig nyckel i ${issue2.origin ?? "v\xE4rdet"}`;
+        return "Ogiltig nyckel i ".concat(issue2.origin ?? "v\xE4rdet");
       case "invalid_union":
         return "Ogiltig input";
       case "invalid_element":
-        return `Ogiltigt v\xE4rde i ${issue2.origin ?? "v\xE4rdet"}`;
+        return "Ogiltigt v\xE4rde i ".concat(issue2.origin ?? "v\xE4rdet");
       default:
-        return `Ogiltig input`;
+        return "Ogiltig input";
     }
   };
 };
@@ -9170,54 +9136,54 @@ var error38 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 instanceof ${issue2.expected}, \u0BAA\u0BC6\u0BB1\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${received}`;
+          return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 instanceof ".concat(issue2.expected, ", \u0BAA\u0BC6\u0BB1\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ").concat(received);
         }
-        return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${expected}, \u0BAA\u0BC6\u0BB1\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${received}`;
+        return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(expected, ", \u0BAA\u0BC6\u0BB1\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BB5\u0BBF\u0BB0\u0BC1\u0BAA\u0BCD\u0BAA\u0BAE\u0BCD: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${joinValues(issue2.values, "|")} \u0B87\u0BB2\u0BCD \u0B92\u0BA9\u0BCD\u0BB1\u0BC1`;
+          return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BB5\u0BBF\u0BB0\u0BC1\u0BAA\u0BCD\u0BAA\u0BAE\u0BCD: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(joinValues(issue2.values, "|"), " \u0B87\u0BB2\u0BCD \u0B92\u0BA9\u0BCD\u0BB1\u0BC1");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0BAE\u0BBF\u0B95 \u0BAA\u0BC6\u0BB0\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${issue2.origin ?? "\u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0B89\u0BB1\u0BC1\u0BAA\u0BCD\u0BAA\u0BC1\u0B95\u0BB3\u0BCD"} \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+          return "\u0BAE\u0BBF\u0B95 \u0BAA\u0BC6\u0BB0\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(issue2.origin ?? "\u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0B89\u0BB1\u0BC1\u0BAA\u0BCD\u0BAA\u0BC1\u0B95\u0BB3\u0BCD", " \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
         }
-        return `\u0BAE\u0BBF\u0B95 \u0BAA\u0BC6\u0BB0\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${issue2.origin ?? "\u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1"} ${adj}${issue2.maximum.toString()} \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+        return "\u0BAE\u0BBF\u0B95 \u0BAA\u0BC6\u0BB0\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(issue2.origin ?? "\u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1", " ").concat(adj).concat(issue2.maximum.toString(), " \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0BAE\u0BBF\u0B95\u0B9A\u0BCD \u0B9A\u0BBF\u0BB1\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit} \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+          return "\u0BAE\u0BBF\u0B95\u0B9A\u0BCD \u0B9A\u0BBF\u0BB1\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
         }
-        return `\u0BAE\u0BBF\u0B95\u0B9A\u0BCD \u0B9A\u0BBF\u0BB1\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ${issue2.origin} ${adj}${issue2.minimum.toString()} \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+        return "\u0BAE\u0BBF\u0B95\u0B9A\u0BCD \u0B9A\u0BBF\u0BB1\u0BBF\u0BAF\u0BA4\u0BC1: \u0B8E\u0BA4\u0BBF\u0BB0\u0BCD\u0BAA\u0BBE\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BAA\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F\u0BA4\u0BC1 ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " \u0B86\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "${_issue.prefix}" \u0B87\u0BB2\u0BCD \u0BA4\u0BCA\u0B9F\u0B99\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+          return '\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "'.concat(_issue.prefix, '" \u0B87\u0BB2\u0BCD \u0BA4\u0BCA\u0B9F\u0B99\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD');
         if (_issue.format === "ends_with")
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "${_issue.suffix}" \u0B87\u0BB2\u0BCD \u0BAE\u0BC1\u0B9F\u0BBF\u0BB5\u0B9F\u0BC8\u0BAF \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+          return '\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "'.concat(_issue.suffix, '" \u0B87\u0BB2\u0BCD \u0BAE\u0BC1\u0B9F\u0BBF\u0BB5\u0B9F\u0BC8\u0BAF \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD');
         if (_issue.format === "includes")
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "${_issue.includes}" \u0B90 \u0B89\u0BB3\u0BCD\u0BB3\u0B9F\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+          return '\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: "'.concat(_issue.includes, '" \u0B90 \u0B89\u0BB3\u0BCD\u0BB3\u0B9F\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD');
         if (_issue.format === "regex")
-          return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: ${_issue.pattern} \u0BAE\u0BC1\u0BB1\u0BC8\u0BAA\u0BBE\u0B9F\u0BCD\u0B9F\u0BC1\u0B9F\u0BA9\u0BCD \u0BAA\u0BCA\u0BB0\u0BC1\u0BA8\u0BCD\u0BA4 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
-        return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B9A\u0BB0\u0BAE\u0BCD: ".concat(_issue.pattern, " \u0BAE\u0BC1\u0BB1\u0BC8\u0BAA\u0BBE\u0B9F\u0BCD\u0B9F\u0BC1\u0B9F\u0BA9\u0BCD \u0BAA\u0BCA\u0BB0\u0BC1\u0BA8\u0BCD\u0BA4 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
+        return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B8E\u0BA3\u0BCD: ${issue2.divisor} \u0B87\u0BA9\u0BCD \u0BAA\u0BB2\u0BAE\u0BBE\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD`;
+        return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B8E\u0BA3\u0BCD: ".concat(issue2.divisor, " \u0B87\u0BA9\u0BCD \u0BAA\u0BB2\u0BAE\u0BBE\u0B95 \u0B87\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD");
       case "unrecognized_keys":
-        return `\u0B85\u0B9F\u0BC8\u0BAF\u0BBE\u0BB3\u0BAE\u0BCD \u0BA4\u0BC6\u0BB0\u0BBF\u0BAF\u0BBE\u0BA4 \u0BB5\u0BBF\u0B9A\u0BC8${issue2.keys.length > 1 ? "\u0B95\u0BB3\u0BCD" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u0B85\u0B9F\u0BC8\u0BAF\u0BBE\u0BB3\u0BAE\u0BCD \u0BA4\u0BC6\u0BB0\u0BBF\u0BAF\u0BBE\u0BA4 \u0BB5\u0BBF\u0B9A\u0BC8".concat(issue2.keys.length > 1 ? "\u0B95\u0BB3\u0BCD" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} \u0B87\u0BB2\u0BCD \u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BB5\u0BBF\u0B9A\u0BC8`;
+        return "".concat(issue2.origin, " \u0B87\u0BB2\u0BCD \u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BB5\u0BBF\u0B9A\u0BC8");
       case "invalid_union":
         return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1";
       case "invalid_element":
-        return `${issue2.origin} \u0B87\u0BB2\u0BCD \u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1`;
+        return "".concat(issue2.origin, " \u0B87\u0BB2\u0BCD \u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0BAE\u0BA4\u0BBF\u0BAA\u0BCD\u0BAA\u0BC1");
       default:
-        return `\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1`;
+        return "\u0BA4\u0BB5\u0BB1\u0BBE\u0BA9 \u0B89\u0BB3\u0BCD\u0BB3\u0BC0\u0B9F\u0BC1";
     }
   };
 };
@@ -9281,54 +9247,54 @@ var error39 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 instanceof ${issue2.expected} \u0E41\u0E15\u0E48\u0E44\u0E14\u0E49\u0E23\u0E31\u0E1A ${received}`;
+          return "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 instanceof ".concat(issue2.expected, " \u0E41\u0E15\u0E48\u0E44\u0E14\u0E49\u0E23\u0E31\u0E1A ").concat(received);
         }
-        return `\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 ${expected} \u0E41\u0E15\u0E48\u0E44\u0E14\u0E49\u0E23\u0E31\u0E1A ${received}`;
+        return "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 ".concat(expected, " \u0E41\u0E15\u0E48\u0E44\u0E14\u0E49\u0E23\u0E31\u0E1A ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u0E04\u0E48\u0E32\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u0E15\u0E31\u0E27\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19\u0E2B\u0E19\u0E36\u0E48\u0E07\u0E43\u0E19 ${joinValues(issue2.values, "|")}`;
+          return "\u0E04\u0E48\u0E32\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19 ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u0E15\u0E31\u0E27\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E04\u0E27\u0E23\u0E40\u0E1B\u0E47\u0E19\u0E2B\u0E19\u0E36\u0E48\u0E07\u0E43\u0E19 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "\u0E44\u0E21\u0E48\u0E40\u0E01\u0E34\u0E19" : "\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14: ${issue2.origin ?? "\u0E04\u0E48\u0E32"} \u0E04\u0E27\u0E23\u0E21\u0E35${adj} ${issue2.maximum.toString()} ${sizing.unit ?? "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23"}`;
-        return `\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14: ${issue2.origin ?? "\u0E04\u0E48\u0E32"} \u0E04\u0E27\u0E23\u0E21\u0E35${adj} ${issue2.maximum.toString()}`;
+          return "\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14: ".concat(issue2.origin ?? "\u0E04\u0E48\u0E32", " \u0E04\u0E27\u0E23\u0E21\u0E35").concat(adj, " ").concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23");
+        return "\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14: ".concat(issue2.origin ?? "\u0E04\u0E48\u0E32", " \u0E04\u0E27\u0E23\u0E21\u0E35").concat(adj, " ").concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? "\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22" : "\u0E21\u0E32\u0E01\u0E01\u0E27\u0E48\u0E32";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32\u0E01\u0E33\u0E2B\u0E19\u0E14: ${issue2.origin} \u0E04\u0E27\u0E23\u0E21\u0E35${adj} ${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32\u0E01\u0E33\u0E2B\u0E19\u0E14: ".concat(issue2.origin, " \u0E04\u0E27\u0E23\u0E21\u0E35").concat(adj, " ").concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32\u0E01\u0E33\u0E2B\u0E19\u0E14: ${issue2.origin} \u0E04\u0E27\u0E23\u0E21\u0E35${adj} ${issue2.minimum.toString()}`;
+        return "\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32\u0E01\u0E33\u0E2B\u0E19\u0E14: ".concat(issue2.origin, " \u0E04\u0E27\u0E23\u0E21\u0E35").concat(adj, " ").concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E02\u0E36\u0E49\u0E19\u0E15\u0E49\u0E19\u0E14\u0E49\u0E27\u0E22 "${_issue.prefix}"`;
+          return '\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E02\u0E36\u0E49\u0E19\u0E15\u0E49\u0E19\u0E14\u0E49\u0E27\u0E22 "'.concat(_issue.prefix, '"');
         }
         if (_issue.format === "ends_with")
-          return `\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E25\u0E07\u0E17\u0E49\u0E32\u0E22\u0E14\u0E49\u0E27\u0E22 "${_issue.suffix}"`;
+          return '\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E25\u0E07\u0E17\u0E49\u0E32\u0E22\u0E14\u0E49\u0E27\u0E22 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E35 "${_issue.includes}" \u0E2D\u0E22\u0E39\u0E48\u0E43\u0E19\u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21`;
+          return '\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E35 "'.concat(_issue.includes, '" \u0E2D\u0E22\u0E39\u0E48\u0E43\u0E19\u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21');
         if (_issue.format === "regex")
-          return `\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E15\u0E49\u0E2D\u0E07\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E17\u0E35\u0E48\u0E01\u0E33\u0E2B\u0E19\u0E14 ${_issue.pattern}`;
-        return `\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E15\u0E49\u0E2D\u0E07\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E17\u0E35\u0E48\u0E01\u0E33\u0E2B\u0E19\u0E14 ".concat(_issue.pattern);
+        return "\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E15\u0E49\u0E2D\u0E07\u0E40\u0E1B\u0E47\u0E19\u0E08\u0E33\u0E19\u0E27\u0E19\u0E17\u0E35\u0E48\u0E2B\u0E32\u0E23\u0E14\u0E49\u0E27\u0E22 ${issue2.divisor} \u0E44\u0E14\u0E49\u0E25\u0E07\u0E15\u0E31\u0E27`;
+        return "\u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E15\u0E49\u0E2D\u0E07\u0E40\u0E1B\u0E47\u0E19\u0E08\u0E33\u0E19\u0E27\u0E19\u0E17\u0E35\u0E48\u0E2B\u0E32\u0E23\u0E14\u0E49\u0E27\u0E22 ".concat(issue2.divisor, " \u0E44\u0E14\u0E49\u0E25\u0E07\u0E15\u0E31\u0E27");
       case "unrecognized_keys":
-        return `\u0E1E\u0E1A\u0E04\u0E35\u0E22\u0E4C\u0E17\u0E35\u0E48\u0E44\u0E21\u0E48\u0E23\u0E39\u0E49\u0E08\u0E31\u0E01: ${joinValues(issue2.keys, ", ")}`;
+        return "\u0E1E\u0E1A\u0E04\u0E35\u0E22\u0E4C\u0E17\u0E35\u0E48\u0E44\u0E21\u0E48\u0E23\u0E39\u0E49\u0E08\u0E31\u0E01: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u0E04\u0E35\u0E22\u0E4C\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E19 ${issue2.origin}`;
+        return "\u0E04\u0E35\u0E22\u0E4C\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E19 ".concat(issue2.origin);
       case "invalid_union":
         return "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07: \u0E44\u0E21\u0E48\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E22\u0E39\u0E40\u0E19\u0E35\u0E22\u0E19\u0E17\u0E35\u0E48\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E44\u0E27\u0E49";
       case "invalid_element":
-        return `\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E19 ${issue2.origin}`;
+        return "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E19 ".concat(issue2.origin);
       default:
-        return `\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07`;
+        return "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07";
     }
   };
 };
@@ -9389,52 +9355,52 @@ var error40 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Ge\xE7ersiz de\u011Fer: beklenen instanceof ${issue2.expected}, al\u0131nan ${received}`;
+          return "Ge\xE7ersiz de\u011Fer: beklenen instanceof ".concat(issue2.expected, ", al\u0131nan ").concat(received);
         }
-        return `Ge\xE7ersiz de\u011Fer: beklenen ${expected}, al\u0131nan ${received}`;
+        return "Ge\xE7ersiz de\u011Fer: beklenen ".concat(expected, ", al\u0131nan ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Ge\xE7ersiz de\u011Fer: beklenen ${stringifyPrimitive(issue2.values[0])}`;
-        return `Ge\xE7ersiz se\xE7enek: a\u015Fa\u011F\u0131dakilerden biri olmal\u0131: ${joinValues(issue2.values, "|")}`;
+          return "Ge\xE7ersiz de\u011Fer: beklenen ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Ge\xE7ersiz se\xE7enek: a\u015Fa\u011F\u0131dakilerden biri olmal\u0131: ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\xC7ok b\xFCy\xFCk: beklenen ${issue2.origin ?? "de\u011Fer"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\xF6\u011Fe"}`;
-        return `\xC7ok b\xFCy\xFCk: beklenen ${issue2.origin ?? "de\u011Fer"} ${adj}${issue2.maximum.toString()}`;
+          return "\xC7ok b\xFCy\xFCk: beklenen ".concat(issue2.origin ?? "de\u011Fer", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\xF6\u011Fe");
+        return "\xC7ok b\xFCy\xFCk: beklenen ".concat(issue2.origin ?? "de\u011Fer", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\xC7ok k\xFC\xE7\xFCk: beklenen ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
-        return `\xC7ok k\xFC\xE7\xFCk: beklenen ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+          return "\xC7ok k\xFC\xE7\xFCk: beklenen ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
+        return "\xC7ok k\xFC\xE7\xFCk: beklenen ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Ge\xE7ersiz metin: "${_issue.prefix}" ile ba\u015Flamal\u0131`;
+          return 'Ge\xE7ersiz metin: "'.concat(_issue.prefix, '" ile ba\u015Flamal\u0131');
         if (_issue.format === "ends_with")
-          return `Ge\xE7ersiz metin: "${_issue.suffix}" ile bitmeli`;
+          return 'Ge\xE7ersiz metin: "'.concat(_issue.suffix, '" ile bitmeli');
         if (_issue.format === "includes")
-          return `Ge\xE7ersiz metin: "${_issue.includes}" i\xE7ermeli`;
+          return 'Ge\xE7ersiz metin: "'.concat(_issue.includes, '" i\xE7ermeli');
         if (_issue.format === "regex")
-          return `Ge\xE7ersiz metin: ${_issue.pattern} desenine uymal\u0131`;
-        return `Ge\xE7ersiz ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Ge\xE7ersiz metin: ".concat(_issue.pattern, " desenine uymal\u0131");
+        return "Ge\xE7ersiz ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Ge\xE7ersiz say\u0131: ${issue2.divisor} ile tam b\xF6l\xFCnebilmeli`;
+        return "Ge\xE7ersiz say\u0131: ".concat(issue2.divisor, " ile tam b\xF6l\xFCnebilmeli");
       case "unrecognized_keys":
-        return `Tan\u0131nmayan anahtar${issue2.keys.length > 1 ? "lar" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Tan\u0131nmayan anahtar".concat(issue2.keys.length > 1 ? "lar" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} i\xE7inde ge\xE7ersiz anahtar`;
+        return "".concat(issue2.origin, " i\xE7inde ge\xE7ersiz anahtar");
       case "invalid_union":
         return "Ge\xE7ersiz de\u011Fer";
       case "invalid_element":
-        return `${issue2.origin} i\xE7inde ge\xE7ersiz de\u011Fer`;
+        return "".concat(issue2.origin, " i\xE7inde ge\xE7ersiz de\u011Fer");
       default:
-        return `Ge\xE7ersiz de\u011Fer`;
+        return "Ge\xE7ersiz de\u011Fer";
     }
   };
 };
@@ -9497,53 +9463,53 @@ var error41 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F instanceof ${issue2.expected}, \u043E\u0442\u0440\u0438\u043C\u0430\u043D\u043E ${received}`;
+          return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F instanceof ".concat(issue2.expected, ", \u043E\u0442\u0440\u0438\u043C\u0430\u043D\u043E ").concat(received);
         }
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F ${expected}, \u043E\u0442\u0440\u0438\u043C\u0430\u043D\u043E ${received}`;
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F ".concat(expected, ", \u043E\u0442\u0440\u0438\u043C\u0430\u043D\u043E ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0430 \u043E\u043F\u0446\u0456\u044F: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F \u043E\u0434\u043D\u0435 \u0437 ${joinValues(issue2.values, "|")}`;
+          return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0430 \u043E\u043F\u0446\u0456\u044F: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F \u043E\u0434\u043D\u0435 \u0437 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u0432\u0435\u043B\u0438\u043A\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F"} ${sizing.verb} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0456\u0432"}`;
-        return `\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u0432\u0435\u043B\u0438\u043A\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ${issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F"} \u0431\u0443\u0434\u0435 ${adj}${issue2.maximum.toString()}`;
+          return "\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u0432\u0435\u043B\u0438\u043A\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F", " ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0435\u043B\u0435\u043C\u0435\u043D\u0442\u0456\u0432");
+        return "\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u0432\u0435\u043B\u0438\u043A\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ".concat(issue2.origin ?? "\u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F", " \u0431\u0443\u0434\u0435 ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u043C\u0430\u043B\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ${issue2.origin} ${sizing.verb} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u043C\u0430\u043B\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ".concat(issue2.origin, " ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u043C\u0430\u043B\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ${issue2.origin} \u0431\u0443\u0434\u0435 ${adj}${issue2.minimum.toString()}`;
+        return "\u0417\u0430\u043D\u0430\u0434\u0442\u043E \u043C\u0430\u043B\u0435: \u043E\u0447\u0456\u043A\u0443\u0454\u0442\u044C\u0441\u044F, \u0449\u043E ".concat(issue2.origin, " \u0431\u0443\u0434\u0435 ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u043F\u043E\u0447\u0438\u043D\u0430\u0442\u0438\u0441\u044F \u0437 "${_issue.prefix}"`;
+          return '\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u043F\u043E\u0447\u0438\u043D\u0430\u0442\u0438\u0441\u044F \u0437 "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u0437\u0430\u043A\u0456\u043D\u0447\u0443\u0432\u0430\u0442\u0438\u0441\u044F \u043D\u0430 "${_issue.suffix}"`;
+          return '\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u0437\u0430\u043A\u0456\u043D\u0447\u0443\u0432\u0430\u0442\u0438\u0441\u044F \u043D\u0430 "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u043C\u0456\u0441\u0442\u0438\u0442\u0438 "${_issue.includes}"`;
+          return '\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u043C\u0456\u0441\u0442\u0438\u0442\u0438 "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0430\u0442\u0438 \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ${_issue.pattern}`;
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u0440\u044F\u0434\u043E\u043A: \u043F\u043E\u0432\u0438\u043D\u0435\u043D \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0430\u0442\u0438 \u0448\u0430\u0431\u043B\u043E\u043D\u0443 ".concat(_issue.pattern);
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0435 \u0447\u0438\u0441\u043B\u043E: \u043F\u043E\u0432\u0438\u043D\u043D\u043E \u0431\u0443\u0442\u0438 \u043A\u0440\u0430\u0442\u043D\u0438\u043C ${issue2.divisor}`;
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0435 \u0447\u0438\u0441\u043B\u043E: \u043F\u043E\u0432\u0438\u043D\u043D\u043E \u0431\u0443\u0442\u0438 \u043A\u0440\u0430\u0442\u043D\u0438\u043C ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `\u041D\u0435\u0440\u043E\u0437\u043F\u0456\u0437\u043D\u0430\u043D\u0438\u0439 \u043A\u043B\u044E\u0447${issue2.keys.length > 1 ? "\u0456" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "\u041D\u0435\u0440\u043E\u0437\u043F\u0456\u0437\u043D\u0430\u043D\u0438\u0439 \u043A\u043B\u044E\u0447".concat(issue2.keys.length > 1 ? "\u0456" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u043A\u043B\u044E\u0447 \u0443 ${issue2.origin}`;
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0439 \u043A\u043B\u044E\u0447 \u0443 ".concat(issue2.origin);
       case "invalid_union":
         return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456";
       case "invalid_element":
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F \u0443 ${issue2.origin}`;
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u043D\u044F \u0443 ".concat(issue2.origin);
       default:
-        return `\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456`;
+        return "\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0456 \u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456";
     }
   };
 };
@@ -9612,54 +9578,54 @@ var error42 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: instanceof ${issue2.expected} \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627\u060C ${received} \u0645\u0648\u0635\u0648\u0644 \u06C1\u0648\u0627`;
+          return "\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: instanceof ".concat(issue2.expected, " \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627\u060C ").concat(received, " \u0645\u0648\u0635\u0648\u0644 \u06C1\u0648\u0627");
         }
-        return `\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: ${expected} \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627\u060C ${received} \u0645\u0648\u0635\u0648\u0644 \u06C1\u0648\u0627`;
+        return "\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: ".concat(expected, " \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627\u060C ").concat(received, " \u0645\u0648\u0635\u0648\u0644 \u06C1\u0648\u0627");
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: ${stringifyPrimitive(issue2.values[0])} \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627`;
-        return `\u063A\u0644\u0637 \u0622\u067E\u0634\u0646: ${joinValues(issue2.values, "|")} \u0645\u06CC\u06BA \u0633\u06D2 \u0627\u06CC\u06A9 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627`;
+          return "\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679: ".concat(stringifyPrimitive(issue2.values[0]), " \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627");
+        return "\u063A\u0644\u0637 \u0622\u067E\u0634\u0646: ".concat(joinValues(issue2.values, "|"), " \u0645\u06CC\u06BA \u0633\u06D2 \u0627\u06CC\u06A9 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627");
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u0628\u06C1\u062A \u0628\u0691\u0627: ${issue2.origin ?? "\u0648\u06CC\u0644\u06CC\u0648"} \u06A9\u06D2 ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u0639\u0646\u0627\u0635\u0631"} \u06C1\u0648\u0646\u06D2 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u06D2`;
-        return `\u0628\u06C1\u062A \u0628\u0691\u0627: ${issue2.origin ?? "\u0648\u06CC\u0644\u06CC\u0648"} \u06A9\u0627 ${adj}${issue2.maximum.toString()} \u06C1\u0648\u0646\u0627 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627`;
+          return "\u0628\u06C1\u062A \u0628\u0691\u0627: ".concat(issue2.origin ?? "\u0648\u06CC\u0644\u06CC\u0648", " \u06A9\u06D2 ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u0639\u0646\u0627\u0635\u0631", " \u06C1\u0648\u0646\u06D2 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u06D2");
+        return "\u0628\u06C1\u062A \u0628\u0691\u0627: ".concat(issue2.origin ?? "\u0648\u06CC\u0644\u06CC\u0648", " \u06A9\u0627 ").concat(adj).concat(issue2.maximum.toString(), " \u06C1\u0648\u0646\u0627 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627");
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u0628\u06C1\u062A \u0686\u06BE\u0648\u0679\u0627: ${issue2.origin} \u06A9\u06D2 ${adj}${issue2.minimum.toString()} ${sizing.unit} \u06C1\u0648\u0646\u06D2 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u06D2`;
+          return "\u0628\u06C1\u062A \u0686\u06BE\u0648\u0679\u0627: ".concat(issue2.origin, " \u06A9\u06D2 ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " \u06C1\u0648\u0646\u06D2 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u06D2");
         }
-        return `\u0628\u06C1\u062A \u0686\u06BE\u0648\u0679\u0627: ${issue2.origin} \u06A9\u0627 ${adj}${issue2.minimum.toString()} \u06C1\u0648\u0646\u0627 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627`;
+        return "\u0628\u06C1\u062A \u0686\u06BE\u0648\u0679\u0627: ".concat(issue2.origin, " \u06A9\u0627 ").concat(adj).concat(issue2.minimum.toString(), " \u06C1\u0648\u0646\u0627 \u0645\u062A\u0648\u0642\u0639 \u062A\u06BE\u0627");
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "${_issue.prefix}" \u0633\u06D2 \u0634\u0631\u0648\u0639 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2`;
+          return '\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "'.concat(_issue.prefix, '" \u0633\u06D2 \u0634\u0631\u0648\u0639 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2');
         }
         if (_issue.format === "ends_with")
-          return `\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "${_issue.suffix}" \u067E\u0631 \u062E\u062A\u0645 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2`;
+          return '\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "'.concat(_issue.suffix, '" \u067E\u0631 \u062E\u062A\u0645 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2');
         if (_issue.format === "includes")
-          return `\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "${_issue.includes}" \u0634\u0627\u0645\u0644 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2`;
+          return '\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: "'.concat(_issue.includes, '" \u0634\u0627\u0645\u0644 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2');
         if (_issue.format === "regex")
-          return `\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: \u067E\u06CC\u0679\u0631\u0646 ${_issue.pattern} \u0633\u06D2 \u0645\u06CC\u0686 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2`;
-        return `\u063A\u0644\u0637 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u063A\u0644\u0637 \u0633\u0679\u0631\u0646\u06AF: \u067E\u06CC\u0679\u0631\u0646 ".concat(_issue.pattern, " \u0633\u06D2 \u0645\u06CC\u0686 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2");
+        return "\u063A\u0644\u0637 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u063A\u0644\u0637 \u0646\u0645\u0628\u0631: ${issue2.divisor} \u06A9\u0627 \u0645\u0636\u0627\u0639\u0641 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2`;
+        return "\u063A\u0644\u0637 \u0646\u0645\u0628\u0631: ".concat(issue2.divisor, " \u06A9\u0627 \u0645\u0636\u0627\u0639\u0641 \u06C1\u0648\u0646\u0627 \u0686\u0627\u06C1\u06CC\u06D2");
       case "unrecognized_keys":
-        return `\u063A\u06CC\u0631 \u062A\u0633\u0644\u06CC\u0645 \u0634\u062F\u06C1 \u06A9\u06CC${issue2.keys.length > 1 ? "\u0632" : ""}: ${joinValues(issue2.keys, "\u060C ")}`;
+        return "\u063A\u06CC\u0631 \u062A\u0633\u0644\u06CC\u0645 \u0634\u062F\u06C1 \u06A9\u06CC".concat(issue2.keys.length > 1 ? "\u0632" : "", ": ").concat(joinValues(issue2.keys, "\u060C "));
       case "invalid_key":
-        return `${issue2.origin} \u0645\u06CC\u06BA \u063A\u0644\u0637 \u06A9\u06CC`;
+        return "".concat(issue2.origin, " \u0645\u06CC\u06BA \u063A\u0644\u0637 \u06A9\u06CC");
       case "invalid_union":
         return "\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679";
       case "invalid_element":
-        return `${issue2.origin} \u0645\u06CC\u06BA \u063A\u0644\u0637 \u0648\u06CC\u0644\u06CC\u0648`;
+        return "".concat(issue2.origin, " \u0645\u06CC\u06BA \u063A\u0644\u0637 \u0648\u06CC\u0644\u06CC\u0648");
       default:
-        return `\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679`;
+        return "\u063A\u0644\u0637 \u0627\u0646 \u067E\u0679";
     }
   };
 };
@@ -9723,53 +9689,53 @@ var error43 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `Noto\u2018g\u2018ri kirish: kutilgan instanceof ${issue2.expected}, qabul qilingan ${received}`;
+          return "Noto\u2018g\u2018ri kirish: kutilgan instanceof ".concat(issue2.expected, ", qabul qilingan ").concat(received);
         }
-        return `Noto\u2018g\u2018ri kirish: kutilgan ${expected}, qabul qilingan ${received}`;
+        return "Noto\u2018g\u2018ri kirish: kutilgan ".concat(expected, ", qabul qilingan ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `Noto\u2018g\u2018ri kirish: kutilgan ${stringifyPrimitive(issue2.values[0])}`;
-        return `Noto\u2018g\u2018ri variant: quyidagilardan biri kutilgan ${joinValues(issue2.values, "|")}`;
+          return "Noto\u2018g\u2018ri kirish: kutilgan ".concat(stringifyPrimitive(issue2.values[0]));
+        return "Noto\u2018g\u2018ri variant: quyidagilardan biri kutilgan ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Juda katta: kutilgan ${issue2.origin ?? "qiymat"} ${adj}${issue2.maximum.toString()} ${sizing.unit} ${sizing.verb}`;
-        return `Juda katta: kutilgan ${issue2.origin ?? "qiymat"} ${adj}${issue2.maximum.toString()}`;
+          return "Juda katta: kutilgan ".concat(issue2.origin ?? "qiymat", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit, " ").concat(sizing.verb);
+        return "Juda katta: kutilgan ".concat(issue2.origin ?? "qiymat", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Juda kichik: kutilgan ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit} ${sizing.verb}`;
+          return "Juda kichik: kutilgan ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit, " ").concat(sizing.verb);
         }
-        return `Juda kichik: kutilgan ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+        return "Juda kichik: kutilgan ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Noto\u2018g\u2018ri satr: "${_issue.prefix}" bilan boshlanishi kerak`;
+          return 'Noto\u2018g\u2018ri satr: "'.concat(_issue.prefix, '" bilan boshlanishi kerak');
         if (_issue.format === "ends_with")
-          return `Noto\u2018g\u2018ri satr: "${_issue.suffix}" bilan tugashi kerak`;
+          return 'Noto\u2018g\u2018ri satr: "'.concat(_issue.suffix, '" bilan tugashi kerak');
         if (_issue.format === "includes")
-          return `Noto\u2018g\u2018ri satr: "${_issue.includes}" ni o\u2018z ichiga olishi kerak`;
+          return 'Noto\u2018g\u2018ri satr: "'.concat(_issue.includes, '" ni o\u2018z ichiga olishi kerak');
         if (_issue.format === "regex")
-          return `Noto\u2018g\u2018ri satr: ${_issue.pattern} shabloniga mos kelishi kerak`;
-        return `Noto\u2018g\u2018ri ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "Noto\u2018g\u2018ri satr: ".concat(_issue.pattern, " shabloniga mos kelishi kerak");
+        return "Noto\u2018g\u2018ri ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `Noto\u2018g\u2018ri raqam: ${issue2.divisor} ning karralisi bo\u2018lishi kerak`;
+        return "Noto\u2018g\u2018ri raqam: ".concat(issue2.divisor, " ning karralisi bo\u2018lishi kerak");
       case "unrecognized_keys":
-        return `Noma\u2019lum kalit${issue2.keys.length > 1 ? "lar" : ""}: ${joinValues(issue2.keys, ", ")}`;
+        return "Noma\u2019lum kalit".concat(issue2.keys.length > 1 ? "lar" : "", ": ").concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} dagi kalit noto\u2018g\u2018ri`;
+        return "".concat(issue2.origin, " dagi kalit noto\u2018g\u2018ri");
       case "invalid_union":
         return "Noto\u2018g\u2018ri kirish";
       case "invalid_element":
-        return `${issue2.origin} da noto\u2018g\u2018ri qiymat`;
+        return "".concat(issue2.origin, " da noto\u2018g\u2018ri qiymat");
       default:
-        return `Noto\u2018g\u2018ri kirish`;
+        return "Noto\u2018g\u2018ri kirish";
     }
   };
 };
@@ -9832,53 +9798,53 @@ var error44 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i instanceof ${issue2.expected}, nh\u1EADn \u0111\u01B0\u1EE3c ${received}`;
+          return "\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i instanceof ".concat(issue2.expected, ", nh\u1EADn \u0111\u01B0\u1EE3c ").concat(received);
         }
-        return `\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i ${expected}, nh\u1EADn \u0111\u01B0\u1EE3c ${received}`;
+        return "\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i ".concat(expected, ", nh\u1EADn \u0111\u01B0\u1EE3c ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i ${stringifyPrimitive(issue2.values[0])}`;
-        return `T\xF9y ch\u1ECDn kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i m\u1ED9t trong c\xE1c gi\xE1 tr\u1ECB ${joinValues(issue2.values, "|")}`;
+          return "\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i ".concat(stringifyPrimitive(issue2.values[0]));
+        return "T\xF9y ch\u1ECDn kh\xF4ng h\u1EE3p l\u1EC7: mong \u0111\u1EE3i m\u1ED9t trong c\xE1c gi\xE1 tr\u1ECB ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `Qu\xE1 l\u1EDBn: mong \u0111\u1EE3i ${issue2.origin ?? "gi\xE1 tr\u1ECB"} ${sizing.verb} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "ph\u1EA7n t\u1EED"}`;
-        return `Qu\xE1 l\u1EDBn: mong \u0111\u1EE3i ${issue2.origin ?? "gi\xE1 tr\u1ECB"} ${adj}${issue2.maximum.toString()}`;
+          return "Qu\xE1 l\u1EDBn: mong \u0111\u1EE3i ".concat(issue2.origin ?? "gi\xE1 tr\u1ECB", " ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "ph\u1EA7n t\u1EED");
+        return "Qu\xE1 l\u1EDBn: mong \u0111\u1EE3i ".concat(issue2.origin ?? "gi\xE1 tr\u1ECB", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `Qu\xE1 nh\u1ECF: mong \u0111\u1EE3i ${issue2.origin} ${sizing.verb} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "Qu\xE1 nh\u1ECF: mong \u0111\u1EE3i ".concat(issue2.origin, " ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `Qu\xE1 nh\u1ECF: mong \u0111\u1EE3i ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+        return "Qu\xE1 nh\u1ECF: mong \u0111\u1EE3i ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i b\u1EAFt \u0111\u1EA7u b\u1EB1ng "${_issue.prefix}"`;
+          return 'Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i b\u1EAFt \u0111\u1EA7u b\u1EB1ng "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i k\u1EBFt th\xFAc b\u1EB1ng "${_issue.suffix}"`;
+          return 'Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i k\u1EBFt th\xFAc b\u1EB1ng "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i bao g\u1ED3m "${_issue.includes}"`;
+          return 'Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i bao g\u1ED3m "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i kh\u1EDBp v\u1EDBi m\u1EABu ${_issue.pattern}`;
-        return `${FormatDictionary[_issue.format] ?? issue2.format} kh\xF4ng h\u1EE3p l\u1EC7`;
+          return "Chu\u1ED7i kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i kh\u1EDBp v\u1EDBi m\u1EABu ".concat(_issue.pattern);
+        return "".concat(FormatDictionary[_issue.format] ?? issue2.format, " kh\xF4ng h\u1EE3p l\u1EC7");
       }
       case "not_multiple_of":
-        return `S\u1ED1 kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i l\xE0 b\u1ED9i s\u1ED1 c\u1EE7a ${issue2.divisor}`;
+        return "S\u1ED1 kh\xF4ng h\u1EE3p l\u1EC7: ph\u1EA3i l\xE0 b\u1ED9i s\u1ED1 c\u1EE7a ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `Kh\xF3a kh\xF4ng \u0111\u01B0\u1EE3c nh\u1EADn d\u1EA1ng: ${joinValues(issue2.keys, ", ")}`;
+        return "Kh\xF3a kh\xF4ng \u0111\u01B0\u1EE3c nh\u1EADn d\u1EA1ng: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `Kh\xF3a kh\xF4ng h\u1EE3p l\u1EC7 trong ${issue2.origin}`;
+        return "Kh\xF3a kh\xF4ng h\u1EE3p l\u1EC7 trong ".concat(issue2.origin);
       case "invalid_union":
         return "\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7";
       case "invalid_element":
-        return `Gi\xE1 tr\u1ECB kh\xF4ng h\u1EE3p l\u1EC7 trong ${issue2.origin}`;
+        return "Gi\xE1 tr\u1ECB kh\xF4ng h\u1EE3p l\u1EC7 trong ".concat(issue2.origin);
       default:
-        return `\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7`;
+        return "\u0110\u1EA7u v\xE0o kh\xF4ng h\u1EE3p l\u1EC7";
     }
   };
 };
@@ -9942,53 +9908,53 @@ var error45 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B instanceof ${issue2.expected}\uFF0C\u5B9E\u9645\u63A5\u6536 ${received}`;
+          return "\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B instanceof ".concat(issue2.expected, "\uFF0C\u5B9E\u9645\u63A5\u6536 ").concat(received);
         }
-        return `\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B ${expected}\uFF0C\u5B9E\u9645\u63A5\u6536 ${received}`;
+        return "\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B ".concat(expected, "\uFF0C\u5B9E\u9645\u63A5\u6536 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u65E0\u6548\u9009\u9879\uFF1A\u671F\u671B\u4EE5\u4E0B\u4E4B\u4E00 ${joinValues(issue2.values, "|")}`;
+          return "\u65E0\u6548\u8F93\u5165\uFF1A\u671F\u671B ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u65E0\u6548\u9009\u9879\uFF1A\u671F\u671B\u4EE5\u4E0B\u4E4B\u4E00 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u6570\u503C\u8FC7\u5927\uFF1A\u671F\u671B ${issue2.origin ?? "\u503C"} ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u4E2A\u5143\u7D20"}`;
-        return `\u6570\u503C\u8FC7\u5927\uFF1A\u671F\u671B ${issue2.origin ?? "\u503C"} ${adj}${issue2.maximum.toString()}`;
+          return "\u6570\u503C\u8FC7\u5927\uFF1A\u671F\u671B ".concat(issue2.origin ?? "\u503C", " ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u4E2A\u5143\u7D20");
+        return "\u6570\u503C\u8FC7\u5927\uFF1A\u671F\u671B ".concat(issue2.origin ?? "\u503C", " ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u6570\u503C\u8FC7\u5C0F\uFF1A\u671F\u671B ${issue2.origin} ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u6570\u503C\u8FC7\u5C0F\uFF1A\u671F\u671B ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u6570\u503C\u8FC7\u5C0F\uFF1A\u671F\u671B ${issue2.origin} ${adj}${issue2.minimum.toString()}`;
+        return "\u6570\u503C\u8FC7\u5C0F\uFF1A\u671F\u671B ".concat(issue2.origin, " ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u4EE5 "${_issue.prefix}" \u5F00\u5934`;
+          return '\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u4EE5 "'.concat(_issue.prefix, '" \u5F00\u5934');
         if (_issue.format === "ends_with")
-          return `\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u4EE5 "${_issue.suffix}" \u7ED3\u5C3E`;
+          return '\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u4EE5 "'.concat(_issue.suffix, '" \u7ED3\u5C3E');
         if (_issue.format === "includes")
-          return `\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u5305\u542B "${_issue.includes}"`;
+          return '\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u5305\u542B "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u6EE1\u8DB3\u6B63\u5219\u8868\u8FBE\u5F0F ${_issue.pattern}`;
-        return `\u65E0\u6548${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u65E0\u6548\u5B57\u7B26\u4E32\uFF1A\u5FC5\u987B\u6EE1\u8DB3\u6B63\u5219\u8868\u8FBE\u5F0F ".concat(_issue.pattern);
+        return "\u65E0\u6548".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u65E0\u6548\u6570\u5B57\uFF1A\u5FC5\u987B\u662F ${issue2.divisor} \u7684\u500D\u6570`;
+        return "\u65E0\u6548\u6570\u5B57\uFF1A\u5FC5\u987B\u662F ".concat(issue2.divisor, " \u7684\u500D\u6570");
       case "unrecognized_keys":
-        return `\u51FA\u73B0\u672A\u77E5\u7684\u952E(key): ${joinValues(issue2.keys, ", ")}`;
+        return "\u51FA\u73B0\u672A\u77E5\u7684\u952E(key): ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `${issue2.origin} \u4E2D\u7684\u952E(key)\u65E0\u6548`;
+        return "".concat(issue2.origin, " \u4E2D\u7684\u952E(key)\u65E0\u6548");
       case "invalid_union":
         return "\u65E0\u6548\u8F93\u5165";
       case "invalid_element":
-        return `${issue2.origin} \u4E2D\u5305\u542B\u65E0\u6548\u503C(value)`;
+        return "".concat(issue2.origin, " \u4E2D\u5305\u542B\u65E0\u6548\u503C(value)");
       default:
-        return `\u65E0\u6548\u8F93\u5165`;
+        return "\u65E0\u6548\u8F93\u5165";
     }
   };
 };
@@ -10049,54 +10015,54 @@ var error46 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA instanceof ${issue2.expected}\uFF0C\u4F46\u6536\u5230 ${received}`;
+          return "\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA instanceof ".concat(issue2.expected, "\uFF0C\u4F46\u6536\u5230 ").concat(received);
         }
-        return `\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA ${expected}\uFF0C\u4F46\u6536\u5230 ${received}`;
+        return "\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA ".concat(expected, "\uFF0C\u4F46\u6536\u5230 ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA ${stringifyPrimitive(issue2.values[0])}`;
-        return `\u7121\u6548\u7684\u9078\u9805\uFF1A\u9810\u671F\u70BA\u4EE5\u4E0B\u5176\u4E2D\u4E4B\u4E00 ${joinValues(issue2.values, "|")}`;
+          return "\u7121\u6548\u7684\u8F38\u5165\u503C\uFF1A\u9810\u671F\u70BA ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\u7121\u6548\u7684\u9078\u9805\uFF1A\u9810\u671F\u70BA\u4EE5\u4E0B\u5176\u4E2D\u4E4B\u4E00 ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `\u6578\u503C\u904E\u5927\uFF1A\u9810\u671F ${issue2.origin ?? "\u503C"} \u61C9\u70BA ${adj}${issue2.maximum.toString()} ${sizing.unit ?? "\u500B\u5143\u7D20"}`;
-        return `\u6578\u503C\u904E\u5927\uFF1A\u9810\u671F ${issue2.origin ?? "\u503C"} \u61C9\u70BA ${adj}${issue2.maximum.toString()}`;
+          return "\u6578\u503C\u904E\u5927\uFF1A\u9810\u671F ".concat(issue2.origin ?? "\u503C", " \u61C9\u70BA ").concat(adj).concat(issue2.maximum.toString(), " ").concat(sizing.unit ?? "\u500B\u5143\u7D20");
+        return "\u6578\u503C\u904E\u5927\uFF1A\u9810\u671F ".concat(issue2.origin ?? "\u503C", " \u61C9\u70BA ").concat(adj).concat(issue2.maximum.toString());
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing) {
-          return `\u6578\u503C\u904E\u5C0F\uFF1A\u9810\u671F ${issue2.origin} \u61C9\u70BA ${adj}${issue2.minimum.toString()} ${sizing.unit}`;
+          return "\u6578\u503C\u904E\u5C0F\uFF1A\u9810\u671F ".concat(issue2.origin, " \u61C9\u70BA ").concat(adj).concat(issue2.minimum.toString(), " ").concat(sizing.unit);
         }
-        return `\u6578\u503C\u904E\u5C0F\uFF1A\u9810\u671F ${issue2.origin} \u61C9\u70BA ${adj}${issue2.minimum.toString()}`;
+        return "\u6578\u503C\u904E\u5C0F\uFF1A\u9810\u671F ".concat(issue2.origin, " \u61C9\u70BA ").concat(adj).concat(issue2.minimum.toString());
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with") {
-          return `\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u4EE5 "${_issue.prefix}" \u958B\u982D`;
+          return '\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u4EE5 "'.concat(_issue.prefix, '" \u958B\u982D');
         }
         if (_issue.format === "ends_with")
-          return `\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u4EE5 "${_issue.suffix}" \u7D50\u5C3E`;
+          return '\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u4EE5 "'.concat(_issue.suffix, '" \u7D50\u5C3E');
         if (_issue.format === "includes")
-          return `\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u5305\u542B "${_issue.includes}"`;
+          return '\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u5305\u542B "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u7B26\u5408\u683C\u5F0F ${_issue.pattern}`;
-        return `\u7121\u6548\u7684 ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u7121\u6548\u7684\u5B57\u4E32\uFF1A\u5FC5\u9808\u7B26\u5408\u683C\u5F0F ".concat(_issue.pattern);
+        return "\u7121\u6548\u7684 ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `\u7121\u6548\u7684\u6578\u5B57\uFF1A\u5FC5\u9808\u70BA ${issue2.divisor} \u7684\u500D\u6578`;
+        return "\u7121\u6548\u7684\u6578\u5B57\uFF1A\u5FC5\u9808\u70BA ".concat(issue2.divisor, " \u7684\u500D\u6578");
       case "unrecognized_keys":
-        return `\u7121\u6CD5\u8B58\u5225\u7684\u9375\u503C${issue2.keys.length > 1 ? "\u5011" : ""}\uFF1A${joinValues(issue2.keys, "\u3001")}`;
+        return "\u7121\u6CD5\u8B58\u5225\u7684\u9375\u503C".concat(issue2.keys.length > 1 ? "\u5011" : "", "\uFF1A").concat(joinValues(issue2.keys, "\u3001"));
       case "invalid_key":
-        return `${issue2.origin} \u4E2D\u6709\u7121\u6548\u7684\u9375\u503C`;
+        return "".concat(issue2.origin, " \u4E2D\u6709\u7121\u6548\u7684\u9375\u503C");
       case "invalid_union":
         return "\u7121\u6548\u7684\u8F38\u5165\u503C";
       case "invalid_element":
-        return `${issue2.origin} \u4E2D\u6709\u7121\u6548\u7684\u503C`;
+        return "".concat(issue2.origin, " \u4E2D\u6709\u7121\u6548\u7684\u503C");
       default:
-        return `\u7121\u6548\u7684\u8F38\u5165\u503C`;
+        return "\u7121\u6548\u7684\u8F38\u5165\u503C";
     }
   };
 };
@@ -10159,50 +10125,50 @@ var error47 = () => {
         const receivedType = parsedType(issue2.input);
         const received = TypeDictionary[receivedType] ?? receivedType;
         if (/^[A-Z]/.test(issue2.expected)) {
-          return `\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi instanceof ${issue2.expected}, \xE0m\u1ECD\u0300 a r\xED ${received}`;
+          return "\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi instanceof ".concat(issue2.expected, ", \xE0m\u1ECD\u0300 a r\xED ").concat(received);
         }
-        return `\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi ${expected}, \xE0m\u1ECD\u0300 a r\xED ${received}`;
+        return "\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi ".concat(expected, ", \xE0m\u1ECD\u0300 a r\xED ").concat(received);
       }
       case "invalid_value":
         if (issue2.values.length === 1)
-          return `\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi ${stringifyPrimitive(issue2.values[0])}`;
-        return `\xC0\u1E63\xE0y\xE0n a\u1E63\xEC\u1E63e: yan \u1ECD\u0300kan l\xE1ra ${joinValues(issue2.values, "|")}`;
+          return "\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e: a n\xED l\xE1ti fi ".concat(stringifyPrimitive(issue2.values[0]));
+        return "\xC0\u1E63\xE0y\xE0n a\u1E63\xEC\u1E63e: yan \u1ECD\u0300kan l\xE1ra ".concat(joinValues(issue2.values, "|"));
       case "too_big": {
         const adj = issue2.inclusive ? "<=" : "<";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `T\xF3 p\u1ECD\u0300 j\xF9: a n\xED l\xE1ti j\u1EB9\u0301 p\xE9 ${issue2.origin ?? "iye"} ${sizing.verb} ${adj}${issue2.maximum} ${sizing.unit}`;
-        return `T\xF3 p\u1ECD\u0300 j\xF9: a n\xED l\xE1ti j\u1EB9\u0301 ${adj}${issue2.maximum}`;
+          return "T\xF3 p\u1ECD\u0300 j\xF9: a n\xED l\xE1ti j\u1EB9\u0301 p\xE9 ".concat(issue2.origin ?? "iye", " ").concat(sizing.verb, " ").concat(adj).concat(issue2.maximum, " ").concat(sizing.unit);
+        return "T\xF3 p\u1ECD\u0300 j\xF9: a n\xED l\xE1ti j\u1EB9\u0301 ".concat(adj).concat(issue2.maximum);
       }
       case "too_small": {
         const adj = issue2.inclusive ? ">=" : ">";
         const sizing = getSizing(issue2.origin);
         if (sizing)
-          return `K\xE9r\xE9 ju: a n\xED l\xE1ti j\u1EB9\u0301 p\xE9 ${issue2.origin} ${sizing.verb} ${adj}${issue2.minimum} ${sizing.unit}`;
-        return `K\xE9r\xE9 ju: a n\xED l\xE1ti j\u1EB9\u0301 ${adj}${issue2.minimum}`;
+          return "K\xE9r\xE9 ju: a n\xED l\xE1ti j\u1EB9\u0301 p\xE9 ".concat(issue2.origin, " ").concat(sizing.verb, " ").concat(adj).concat(issue2.minimum, " ").concat(sizing.unit);
+        return "K\xE9r\xE9 ju: a n\xED l\xE1ti j\u1EB9\u0301 ".concat(adj).concat(issue2.minimum);
       }
       case "invalid_format": {
         const _issue = issue2;
         if (_issue.format === "starts_with")
-          return `\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 b\u1EB9\u0300r\u1EB9\u0300 p\u1EB9\u0300l\xFA "${_issue.prefix}"`;
+          return '\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 b\u1EB9\u0300r\u1EB9\u0300 p\u1EB9\u0300l\xFA "'.concat(_issue.prefix, '"');
         if (_issue.format === "ends_with")
-          return `\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 par\xED p\u1EB9\u0300l\xFA "${_issue.suffix}"`;
+          return '\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 par\xED p\u1EB9\u0300l\xFA "'.concat(_issue.suffix, '"');
         if (_issue.format === "includes")
-          return `\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 n\xED "${_issue.includes}"`;
+          return '\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 n\xED "'.concat(_issue.includes, '"');
         if (_issue.format === "regex")
-          return `\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 b\xE1 \xE0p\u1EB9\u1EB9r\u1EB9 mu ${_issue.pattern}`;
-        return `A\u1E63\xEC\u1E63e: ${FormatDictionary[_issue.format] ?? issue2.format}`;
+          return "\u1ECC\u0300r\u1ECD\u0300 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 b\xE1 \xE0p\u1EB9\u1EB9r\u1EB9 mu ".concat(_issue.pattern);
+        return "A\u1E63\xEC\u1E63e: ".concat(FormatDictionary[_issue.format] ?? issue2.format);
       }
       case "not_multiple_of":
-        return `N\u1ECD\u0301mb\xE0 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 j\u1EB9\u0301 \xE8y\xE0 p\xEDp\xEDn ti ${issue2.divisor}`;
+        return "N\u1ECD\u0301mb\xE0 a\u1E63\xEC\u1E63e: gb\u1ECD\u0301d\u1ECD\u0300 j\u1EB9\u0301 \xE8y\xE0 p\xEDp\xEDn ti ".concat(issue2.divisor);
       case "unrecognized_keys":
-        return `B\u1ECDt\xECn\xEC \xE0\xECm\u1ECD\u0300: ${joinValues(issue2.keys, ", ")}`;
+        return "B\u1ECDt\xECn\xEC \xE0\xECm\u1ECD\u0300: ".concat(joinValues(issue2.keys, ", "));
       case "invalid_key":
-        return `B\u1ECDt\xECn\xEC a\u1E63\xEC\u1E63e n\xEDn\xFA ${issue2.origin}`;
+        return "B\u1ECDt\xECn\xEC a\u1E63\xEC\u1E63e n\xEDn\xFA ".concat(issue2.origin);
       case "invalid_union":
         return "\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e";
       case "invalid_element":
-        return `Iye a\u1E63\xEC\u1E63e n\xEDn\xFA ${issue2.origin}`;
+        return "Iye a\u1E63\xEC\u1E63e n\xEDn\xFA ".concat(issue2.origin);
       default:
         return "\xCCb\xE1w\u1ECDl\xE9 a\u1E63\xEC\u1E63e";
     }
@@ -11354,7 +11320,7 @@ function process(schema, ctx, _params = { path: [], schemaPath: [] }) {
       const _json = result.schema;
       const processor = ctx.processors[def.type];
       if (!processor) {
-        throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
+        throw new Error("[toJSONSchema]: Non-representable type encountered: ".concat(def.type));
       }
       processor(schema, ctx, _json, params);
     }
@@ -11389,7 +11355,7 @@ function extractDefs(ctx, schema) {
     if (id) {
       const existing = idToSchema.get(id);
       if (existing && existing !== entry[0]) {
-        throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
+        throw new Error('Duplicate schema id "'.concat(id, '" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.'));
       }
       idToSchema.set(id, entry[0]);
     }
@@ -11402,16 +11368,16 @@ function extractDefs(ctx, schema) {
       if (externalId) {
         return { ref: uriGenerator(externalId) };
       }
-      const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
+      const id = entry[1].defId ?? entry[1].schema.id ?? "schema".concat(ctx.counter++);
       entry[1].defId = id;
-      return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id}` };
+      return { defId: id, ref: "".concat(uriGenerator("__shared"), "#/").concat(defsSegment, "/").concat(id) };
     }
     if (entry[1] === root4) {
       return { ref: "#" };
     }
-    const uriPrefix = `#`;
-    const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
-    const defId = entry[1].schema.id ?? `__schema${ctx.counter++}`;
+    const uriPrefix = "#";
+    const defUriPrefix = "".concat(uriPrefix, "/").concat(defsSegment, "/");
+    const defId = entry[1].schema.id ?? "__schema".concat(ctx.counter++);
     return { defId, ref: defUriPrefix + defId };
   };
   const extractToDef = (entry) => {
@@ -11433,9 +11399,7 @@ function extractDefs(ctx, schema) {
     for (const entry of ctx.seen.entries()) {
       const seen = entry[1];
       if (seen.cycle) {
-        throw new Error(`Cycle detected: #/${seen.cycle?.join("/")}/<root>
-
-Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.`);
+        throw new Error("Cycle detected: " + "#/".concat(seen.cycle?.join("/"), "/<root>") + '\n\nSet the `cycles` parameter to `"ref"` to resolve cyclical schemas with defs.');
       }
     }
   }
@@ -12899,10 +12863,10 @@ function hex2(_params) {
 }
 function hash(alg, params) {
   const enc = params?.enc ?? "hex";
-  const format2 = `${alg}_${enc}`;
+  const format2 = "".concat(alg, "_").concat(enc);
   const regex2 = regexes_exports[format2];
   if (!regex2)
-    throw new Error(`Unrecognized hash format: ${format2}`);
+    throw new Error("Unrecognized hash format: ".concat(format2));
   return _stringFormat(ZodCustomStringFormat, format2, regex2, params);
 }
 var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
@@ -13285,7 +13249,7 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
       if (keys2.has(value)) {
         newEntries[value] = def.entries[value];
       } else
-        throw new Error(`Key ${value} not found in enum`);
+        throw new Error("Key ".concat(value, " not found in enum"));
     }
     return new ZodEnum({
       ...def,
@@ -13300,7 +13264,7 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
       if (keys2.has(value)) {
         delete newEntries[value];
       } else
-        throw new Error(`Key ${value} not found in enum`);
+        throw new Error("Key ".concat(value, " not found in enum"));
     }
     return new ZodEnum({
       ...def,
@@ -13789,11 +13753,11 @@ function resolveRef(ref, ctx) {
   if (path2[0] === defsKey) {
     const key = path2[1];
     if (!key || !ctx.defs[key]) {
-      throw new Error(`Reference not found: ${ref}`);
+      throw new Error("Reference not found: ".concat(ref));
     }
     return ctx.defs[key];
   }
-  throw new Error(`Reference not found: ${ref}`);
+  throw new Error("Reference not found: ".concat(ref));
 }
 function convertBaseSchema(schema, ctx) {
   if (schema.not !== void 0) {
@@ -13822,7 +13786,7 @@ function convertBaseSchema(schema, ctx) {
     if (ctx.processing.has(refPath)) {
       return z.lazy(() => {
         if (!ctx.refs.has(refPath)) {
-          throw new Error(`Circular reference not resolved: ${refPath}`);
+          throw new Error("Circular reference not resolved: ".concat(refPath));
         }
         return ctx.refs.get(refPath);
       });
@@ -14077,7 +14041,7 @@ function convertBaseSchema(schema, ctx) {
       break;
     }
     default:
-      throw new Error(`Unsupported type: ${type}`);
+      throw new Error("Unsupported type: ".concat(type));
   }
   if (schema.description) {
     zodSchema = zodSchema.describe(schema.description);
@@ -16154,7 +16118,7 @@ function build$1() {
       for (const key of TOOL_RESULT_FOREIGN_FAMILY_KEYS) if (key in value) {
         ctx.addIssue({
           code: "custom",
-          message: `content is required when the body carries '${key}' \u2014 another result family cannot default into an empty tools/call success`
+          message: "content is required when the body carries '".concat(key, "' \u2014 another result family cannot default into an empty tools/call success")
         });
         return;
       }
@@ -16201,7 +16165,7 @@ function wrapOutputSchemaForLegacy(natural) {
     const out = {};
     let convertedRecursion = false;
     for (const [k, v] of Object.entries(node2)) if (parentIsNameMap) out[k] = rewriteRefs(v, false);
-    else if ((k === "$ref" || k === "$dynamicRef") && typeof v === "string") out[k] = v === "#" ? "#/properties/result" : v.startsWith("#/") ? `#/properties/result${v.slice(1)}` : v;
+    else if ((k === "$ref" || k === "$dynamicRef") && typeof v === "string") out[k] = v === "#" ? "#/properties/result" : v.startsWith("#/") ? "#/properties/result".concat(v.slice(1)) : v;
     else if (k === "$recursiveRef" && v === "#" && convertRecursiveRefs) convertedRecursion = true;
     else if (REF_REWRITE_DATA_POSITION_KEYS.has(k)) out[k] = v;
     else if (REF_REWRITE_NAME_MAP_KEYS.has(k)) out[k] = rewriteRefs(v, true);
@@ -17398,7 +17362,7 @@ var ProtocolError = (_a5 = class extends Error {
 }, Object.defineProperty(_a5, "mcpBrand", { value: "mcp.ProtocolError" }), _a5);
 var _a6;
 var ResourceNotFoundError = (_a6 = class extends ProtocolError {
-  constructor(uri2, message = `Resource not found: ${uri2}`) {
+  constructor(uri2, message = "Resource not found: ".concat(uri2)) {
     super(ProtocolErrorCode.InvalidParams, message, { uri: uri2 });
   }
   /** The URI that was requested and not found. */
@@ -17408,7 +17372,7 @@ var ResourceNotFoundError = (_a6 = class extends ProtocolError {
 }, Object.defineProperty(_a6, "mcpBrand", { value: "mcp.ResourceNotFoundError" }), _a6);
 var _a7;
 var UrlElicitationRequiredError = (_a7 = class extends ProtocolError {
-  constructor(elicitations, message = `URL elicitation${elicitations.length > 1 ? "s" : ""} required`) {
+  constructor(elicitations, message = "URL elicitation".concat(elicitations.length > 1 ? "s" : "", " required")) {
     super(ProtocolErrorCode.UrlElicitationRequired, message, { elicitations });
   }
   get elicitations() {
@@ -17417,7 +17381,7 @@ var UrlElicitationRequiredError = (_a7 = class extends ProtocolError {
 }, Object.defineProperty(_a7, "mcpBrand", { value: "mcp.UrlElicitationRequiredError" }), _a7);
 var _a8;
 var UnsupportedProtocolVersionError = (_a8 = class extends ProtocolError {
-  constructor(data, message = `Unsupported protocol version: ${data.requested}`) {
+  constructor(data, message = "Unsupported protocol version: ".concat(data.requested)) {
     super(ProtocolErrorCode.UnsupportedProtocolVersion, message, data);
   }
   /**
@@ -17435,7 +17399,7 @@ var UnsupportedProtocolVersionError = (_a8 = class extends ProtocolError {
 }, Object.defineProperty(_a8, "mcpBrand", { value: "mcp.UnsupportedProtocolVersionError" }), _a8);
 var _a9;
 var MissingRequiredClientCapabilityError = (_a9 = class extends ProtocolError {
-  constructor(data, message = `Missing required client capabilities: ${Object.keys(data.requiredCapabilities).join(", ")}`) {
+  constructor(data, message = "Missing required client capabilities: ".concat(Object.keys(data.requiredCapabilities).join(", "))) {
     super(ProtocolErrorCode.MissingRequiredClientCapability, message, data);
   }
   /**
@@ -17461,7 +17425,7 @@ function stampResultType(method, result) {
   };
   if (provided === "complete") return result;
   if (EXTENDED_RESULT_TYPE_METHODS.includes(method)) return result;
-  throw new ProtocolError(ProtocolErrorCode.InternalError, `Handler for ${method} returned resultType '${String(provided)}', but results of ${method} only support 'complete' on protocol revision 2026-07-28`);
+  throw new ProtocolError(ProtocolErrorCode.InternalError, "Handler for ".concat(method, " returned resultType '").concat(String(provided), "', but results of ").concat(method, " only support 'complete' on protocol revision 2026-07-28"));
 }
 function fillCacheFields(method, result) {
   const fallback = cacheHintFallbackOf(result);
@@ -17681,19 +17645,19 @@ var rev2026Codec = {
   decodeResult(method, raw) {
     if (!isPlainObject$2(raw)) return {
       kind: "invalid",
-      error: new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${method}: not an object`, { method })
+      error: new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(method, ": not an object"), { method })
     };
     const rawResultType = raw["resultType"];
     if (rawResultType === void 0) return {
       kind: "invalid",
-      error: new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${method}: missing required resultType \u2014 servers implementing protocol revision 2026-07-28 MUST include it (the absent-means-complete bridge applies only to earlier-revision servers)`, {
+      error: new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(method, ": missing required resultType \u2014 servers implementing protocol revision 2026-07-28 MUST include it (the absent-means-complete bridge applies only to earlier-revision servers)"), {
         method,
         violation: "missing-resultType"
       })
     };
     if (typeof rawResultType !== "string") return {
       kind: "invalid",
-      error: new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${method}: non-string resultType`, {
+      error: new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(method, ": non-string resultType"), {
         method,
         resultType: rawResultType
       })
@@ -17704,7 +17668,7 @@ var rev2026Codec = {
       const requestState = raw["requestState"];
       if (Object.keys(inputRequests).length === 0 && typeof requestState !== "string") return {
         kind: "invalid",
-        error: new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${method}: input_required carries neither inputRequests nor requestState (every input_required result must include at least one of the two)`, {
+        error: new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(method, ": input_required carries neither inputRequests nor requestState (every input_required result must include at least one of the two)"), {
           method,
           violation: "input-required-missing-both"
         })
@@ -17717,7 +17681,7 @@ var rev2026Codec = {
     }
     if (rawResultType !== "complete") return {
       kind: "invalid",
-      error: new SdkError(SdkErrorCode.UnsupportedResultType, `Unsupported result type '${rawResultType}' for ${method}`, {
+      error: new SdkError(SdkErrorCode.UnsupportedResultType, "Unsupported result type '".concat(rawResultType, "' for ").concat(method), {
         resultType: rawResultType,
         method
       })
@@ -17728,7 +17692,7 @@ var rev2026Codec = {
       const parsed = wireSchema.safeParse(raw);
       if (!parsed.success) return {
         kind: "invalid",
-        error: new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${method}: ${parsed.error}`, { method })
+        error: new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(method, ": ").concat(parsed.error), { method })
       };
     }
     const lifted = { ...raw };
@@ -17745,7 +17709,7 @@ var rev2026Codec = {
   checkInboundEnvelope(material) {
     if (material.envelope === void 0) return "Request is missing the required _meta envelope for protocol revision 2026-07-28 (io.modelcontextprotocol/protocolVersion, io.modelcontextprotocol/clientCapabilities)";
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(material.envelope);
-    if (!parsed.success) return `Invalid _meta envelope for protocol revision 2026-07-28: ${parsed.error.issues.map((issue2) => issue2.message).join("; ")}`;
+    if (!parsed.success) return "Invalid _meta envelope for protocol revision 2026-07-28: ".concat(parsed.error.issues.map((issue2) => issue2.message).join("; "));
   }
 };
 var wireResultSchemasMemo;
@@ -18068,7 +18032,7 @@ function standardSchemaToJsonSchema(schema, io = "input") {
       target: JSON_SCHEMA_CONVERSION_TARGET,
       io
     });
-  } else throw new Error(`Schema library "${std.vendor}" does not implement StandardJSONSchemaV1 (\`~standard.jsonSchema\`). Upgrade to a version that does, or wrap your JSON Schema with fromJsonSchema().`);
+  } else throw new Error('Schema library "'.concat(std.vendor, '" does not implement StandardJSONSchemaV1 (`~standard.jsonSchema`). Upgrade to a version that does, or wrap your JSON Schema with fromJsonSchema().'));
   if (io === "output") {
     if (result.type !== void 0) return result;
     return isProvablyObjectShapedRoot(result) ? {
@@ -18076,7 +18040,7 @@ function standardSchemaToJsonSchema(schema, io = "input") {
       ...result
     } : result;
   }
-  if (result.type !== void 0 && result.type !== "object") throw new Error(`MCP tool and prompt schemas must describe objects (got type: ${JSON.stringify(result.type)}). Wrap your schema in z.object({...}) or equivalent.`);
+  if (result.type !== void 0 && result.type !== "object") throw new Error("MCP tool and prompt schemas must describe objects (got type: ".concat(JSON.stringify(result.type), "). Wrap your schema in z.object({...}) or equivalent."));
   return {
     type: "object",
     ...result
@@ -18096,7 +18060,7 @@ function isProvablyObjectShapedRoot(schema) {
 }
 function formatIssue(issue2) {
   if (!issue2.path?.length) return issue2.message;
-  return `${issue2.path.map((p2) => String(typeof p2 === "object" ? p2.key : p2)).join(".")}: ${issue2.message}`;
+  return "".concat(issue2.path.map((p2) => String(typeof p2 === "object" ? p2.key : p2)).join("."), ": ").concat(issue2.message);
 }
 async function validateStandardSchema(schema, data) {
   const result = await schema["~standard"].validate(data);
@@ -18161,7 +18125,7 @@ function convertStandardElicitationSchema(schema) {
     return standardSchemaToJsonSchema(schema, "input");
   } catch (error48) {
     const detail = error48 instanceof Error ? error48.message : String(error48);
-    throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Elicitation requestedSchema must describe an object with flat primitive properties: ${detail}`);
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Elicitation requestedSchema must describe an object with flat primitive properties: ".concat(detail));
   }
 }
 var ANNOTATION_ONLY_JSON_SCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
@@ -18198,29 +18162,29 @@ function walkProperty(node2, path2, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path2}.${key}`);
-  } else unsupported.push(`${path2}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push("".concat(path2, ".").concat(key));
+  } else unsupported.push("".concat(path2, ".").concat(key));
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
   const pruned = {};
   const unsupported = [];
-  for (const [key, value] of Object.entries(converted)) if (key === "properties" && isJsonObject(value)) pruned[key] = Object.fromEntries(Object.entries(value).map(([name2, node2]) => [name2, walkProperty(node2, `properties.${name2}`, vendor, unsupported)]));
+  for (const [key, value] of Object.entries(converted)) if (key === "properties" && isJsonObject(value)) pruned[key] = Object.fromEntries(Object.entries(value).map(([name2, node2]) => [name2, walkProperty(node2, "properties.".concat(name2), vendor, unsupported)]));
   else if (ROOT_KEYS.has(key)) pruned[key] = value;
   else if (!isAnnotationOnlyJsonSchemaKeyword(key)) unsupported.push(key);
-  if (unsupported.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Elicitation requestedSchema contains unsupported JSON Schema constraint(s) after Standard Schema conversion: ${unsupported.join(", ")}`);
+  if (unsupported.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Elicitation requestedSchema contains unsupported JSON Schema constraint(s) after Standard Schema conversion: ".concat(unsupported.join(", ")));
   return pruned;
 }
 function describeUnsupportedProperties(pruned, fallback) {
   if (!isJsonObject(pruned.properties)) return fallback;
-  const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name2]) => `properties.${name2}`);
+  const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name2]) => "properties.".concat(name2));
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
 function findDroppedConstraintPaths(original, parsed, path2 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index2) => findDroppedConstraintPaths(item, parsed[index2], `${path2}[${index2}]`));
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index2) => findDroppedConstraintPaths(item, parsed[index2], "".concat(path2, "[").concat(index2, "]")));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path2 ? `${path2}.${key}` : key;
+    const childPath = path2 ? "".concat(path2, ".").concat(key) : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -18234,11 +18198,11 @@ function normalizeElicitInputParams(input) {
   const vendor = input.requestedSchema["~standard"].vendor;
   const pruned = walkRequestedSchema(convertStandardElicitationSchema(input.requestedSchema), vendor);
   const parsed = parseSchema(ElicitRequestFormParamsSchema.shape.requestedSchema, pruned);
-  if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Elicitation requestedSchema only supports flat primitive properties (string, number, integer, boolean, and string enums): ${describeUnsupportedProperties(pruned, parsed.error.message)}`);
+  if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Elicitation requestedSchema only supports flat primitive properties (string, number, integer, boolean, and string enums): ".concat(describeUnsupportedProperties(pruned, parsed.error.message)));
   const droppedConstraints = findDroppedConstraintPaths(pruned, parsed.data);
-  if (droppedConstraints.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Elicitation requestedSchema contains unsupported JSON Schema constraint(s) after Standard Schema conversion: ${droppedConstraints.join(", ")}`);
+  if (droppedConstraints.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Elicitation requestedSchema contains unsupported JSON Schema constraint(s) after Standard Schema conversion: ".concat(droppedConstraints.join(", ")));
   const danglingRequired = (parsed.data.required ?? []).filter((key) => !Object.prototype.hasOwnProperty.call(parsed.data.properties, key));
-  if (danglingRequired.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Elicitation requestedSchema lists required properties that are not defined in properties: ${danglingRequired.join(", ")}`);
+  if (danglingRequired.length > 0) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Elicitation requestedSchema lists required properties that are not defined in properties: ".concat(danglingRequired.join(", ")));
   return {
     ...input,
     mode: "form",
@@ -18540,7 +18504,7 @@ function codecResultValidator(codec2, method) {
     validate(value) {
       const outcome = codec2.validateResult(method, value);
       if (outcome.ok) return { value: outcome.value };
-      return { issues: [{ message: outcome.reason === "invalid" ? outcome.message : `not-in-era: ${method}` }] };
+      return { issues: [{ message: outcome.reason === "invalid" ? outcome.message : "not-in-era: ".concat(method) }] };
     }
   } };
 }
@@ -18670,7 +18634,7 @@ var Protocol = (_a10 = class {
   * outbound legs and leave the base behavior in place.
   */
   _resolveNonCompleteResult(decoded, flow3) {
-    return Promise.reject(new SdkError(SdkErrorCode.UnsupportedResultType, `Unsupported result type '${decoded.kind}' for ${flow3.request.method}`, {
+    return Promise.reject(new SdkError(SdkErrorCode.UnsupportedResultType, "Unsupported result type '".concat(decoded.kind, "' for ").concat(flow3.request.method), {
       resultType: decoded.kind,
       method: flow3.request.method
     }));
@@ -18746,7 +18710,7 @@ var Protocol = (_a10 = class {
       if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) this._onresponse(message);
       else if (isJSONRPCRequest(message)) this._onrequest(message, extra);
       else if (isJSONRPCNotification(message)) this._onnotification(message, extra);
-      else this._onerror(/* @__PURE__ */ new Error(`Unknown message type: ${JSON.stringify(message)}`));
+      else this._onerror(/* @__PURE__ */ new Error("Unknown message type: ".concat(JSON.stringify(message))));
     };
     transport.setSupportedProtocolVersions?.(this._supportedProtocolVersions);
     await this._transport.start();
@@ -18790,7 +18754,7 @@ var Protocol = (_a10 = class {
     if (extra?.classification !== void 0) {
       const classified = classifiedWireEra(extra.classification);
       if (classified !== codec2.era) {
-        this._onerror(/* @__PURE__ */ new Error(`Era mismatch on inbound notification '${notification.method}': classified as ${classified} but this instance serves ${codec2.era}`));
+        this._onerror(/* @__PURE__ */ new Error("Era mismatch on inbound notification '".concat(notification.method, "': classified as ").concat(classified, " but this instance serves ").concat(codec2.era)));
         return;
       }
     }
@@ -18798,13 +18762,13 @@ var Protocol = (_a10 = class {
     const handler = this._notificationHandlers.get(notification.method);
     const fallback = this.fallbackNotificationHandler;
     if (handler === void 0 && fallback === void 0) return;
-    Promise.resolve().then(() => handler === void 0 ? fallback(notification) : handler(notification, codec2)).catch((error48) => this._onerror(/* @__PURE__ */ new Error(`Uncaught error in notification handler: ${error48}`)));
+    Promise.resolve().then(() => handler === void 0 ? fallback(notification) : handler(notification, codec2)).catch((error48) => this._onerror(/* @__PURE__ */ new Error("Uncaught error in notification handler: ".concat(error48))));
   }
   _onrequest(rawRequest, extra) {
     const { message: request, lifted } = liftWireOnlyMaterial(rawRequest, "request");
     const codec2 = this._negotiatedWireCodec();
     if (extra?.classification === void 0 && this._shouldDropInbound(rawRequest) === "drop") {
-      this._onerror(/* @__PURE__ */ new Error(`Dropped inbound request '${rawRequest.method}': not servable on this connection's protocol era`));
+      this._onerror(/* @__PURE__ */ new Error("Dropped inbound request '".concat(rawRequest.method, "': not servable on this connection's protocol era")));
       return;
     }
     const capturedTransport = this._transport;
@@ -18818,14 +18782,14 @@ var Protocol = (_a10 = class {
           ...data !== void 0 && { data }
         }
       };
-      capturedTransport?.send(errorResponse).catch((error48) => this._onerror(/* @__PURE__ */ new Error(`Failed to send an error response: ${error48}`)));
+      capturedTransport?.send(errorResponse).catch((error48) => this._onerror(/* @__PURE__ */ new Error("Failed to send an error response: ".concat(error48))));
     };
     if (extra?.classification !== void 0) {
       const classified = classifiedWireEra(extra.classification);
       if (classified !== codec2.era) {
-        this._onerror(/* @__PURE__ */ new Error(`Era mismatch on inbound request '${request.method}': classified as ${classified} but this instance serves ${codec2.era}`));
+        this._onerror(/* @__PURE__ */ new Error("Era mismatch on inbound request '".concat(request.method, "': classified as ").concat(classified, " but this instance serves ").concat(codec2.era)));
         const requested = extra.classification.revision ?? classified;
-        sendErrorResponse(ProtocolErrorCode.UnsupportedProtocolVersion, `Unsupported protocol version: ${requested}`, {
+        sendErrorResponse(ProtocolErrorCode.UnsupportedProtocolVersion, "Unsupported protocol version: ".concat(requested), {
           supported: this._supportedProtocolVersions,
           requested
         });
@@ -18873,7 +18837,7 @@ var Protocol = (_a10 = class {
           this._assertOutboundRequestInEra(sendCodec, r2.method);
           if (isStandardSchema(schemaOrOptions)) return sendRequest(r2, schemaOrOptions, maybeOptions);
           const validate = codecResultValidator(sendCodec, r2.method);
-          if (validate === void 0) throw new TypeError(`'${r2.method}' is not a spec method; pass a result schema as the second argument to ctx.mcpReq.send().`);
+          if (validate === void 0) throw new TypeError("'".concat(r2.method, "' is not a spec method; pass a result schema as the second argument to ctx.mcpReq.send()."));
           return sendRequest(r2, validate, schemaOrOptions);
         }),
         notify: sendNotification
@@ -18887,7 +18851,7 @@ var Protocol = (_a10 = class {
       try {
         encoded = codec2.encodeResult(request.method, result, this._outboundServerInfo());
       } catch (error48) {
-        this._onerror(/* @__PURE__ */ new Error(`Failed to encode result for ${request.method}: ${error48}`));
+        this._onerror(/* @__PURE__ */ new Error("Failed to encode result for ".concat(request.method, ": ").concat(error48)));
         sendErrorResponse(ProtocolErrorCode.InternalError, "Internal error");
         return;
       }
@@ -18910,7 +18874,7 @@ var Protocol = (_a10 = class {
         }
       };
       await capturedTransport?.send(errorResponse);
-    }).catch((error48) => this._onerror(/* @__PURE__ */ new Error(`Failed to send response: ${error48}`))).finally(() => {
+    }).catch((error48) => this._onerror(/* @__PURE__ */ new Error("Failed to send response: ".concat(error48)))).finally(() => {
       if (this._requestHandlerAbortControllers.get(request.id) === abortController) this._requestHandlerAbortControllers.delete(request.id);
     });
   }
@@ -18919,7 +18883,7 @@ var Protocol = (_a10 = class {
     const messageId = Number(progressToken);
     const handler = this._progressHandlers.get(messageId);
     if (!handler) {
-      this._onerror(/* @__PURE__ */ new Error(`Received a progress notification for an unknown token: ${JSON.stringify(notification)}`));
+      this._onerror(/* @__PURE__ */ new Error("Received a progress notification for an unknown token: ".concat(JSON.stringify(notification))));
       return;
     }
     const responseHandler = this._responseHandlers.get(messageId);
@@ -18945,7 +18909,7 @@ var Protocol = (_a10 = class {
     const messageId = Number(response.id);
     const handler = this._responseHandlers.get(messageId);
     if (handler === void 0) {
-      this._onerror(/* @__PURE__ */ new Error(`Received a response for an unknown message ID: ${JSON.stringify(response)}`));
+      this._onerror(/* @__PURE__ */ new Error("Received a response for an unknown message ID: ".concat(JSON.stringify(response))));
       return;
     }
     this._responseHandlers.delete(messageId);
@@ -18968,7 +18932,7 @@ var Protocol = (_a10 = class {
     this._assertOutboundRequestInEra(codec2, request.method);
     if (isStandardSchema(schemaOrOptions)) return this._requestWithSchemaViaCodec(codec2, request, schemaOrOptions, maybeOptions);
     const validate = codecResultValidator(codec2, request.method);
-    if (validate === void 0) throw new TypeError(`'${request.method}' is not a spec method; pass a result schema as the second argument to request().`);
+    if (validate === void 0) throw new TypeError("'".concat(request.method, "' is not a spec method; pass a result schema as the second argument to request()."));
     return this._requestWithSchemaViaCodec(codec2, request, validate, schemaOrOptions);
   }
   /**
@@ -19012,7 +18976,7 @@ var Protocol = (_a10 = class {
   * and stay era-blind.
   */
   _assertOutboundRequestInEra(codec2, method) {
-    if (isSpecRequestMethod(method) && !codec2.hasRequestMethod(method)) throw new SdkError(SdkErrorCode.MethodNotSupportedByProtocolVersion, `Method '${method}' is not supported by the negotiated protocol version (wire era ${codec2.era})`, {
+    if (isSpecRequestMethod(method) && !codec2.hasRequestMethod(method)) throw new SdkError(SdkErrorCode.MethodNotSupportedByProtocolVersion, "Method '".concat(method, "' is not supported by the negotiated protocol version (wire era ").concat(codec2.era, ")"), {
       method,
       era: codec2.era
     });
@@ -19095,7 +19059,7 @@ var Protocol = (_a10 = class {
           relatedRequestId,
           resumptionToken,
           onresumptiontoken
-        }).catch((error48) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error48}`)));
+        }).catch((error48) => this._onerror(/* @__PURE__ */ new Error("Failed to send cancellation: ".concat(error48))));
         else requestAbort.abort();
         reject(reason instanceof SdkError ? reason : new SdkError(SdkErrorCode.RequestTimeout, String(reason)));
       };
@@ -19128,7 +19092,7 @@ var Protocol = (_a10 = class {
         const result = decoded.result;
         validateStandardSchema(resultSchema, result).then((parseResult) => {
           if (parseResult.success) resolve(parseResult.data);
-          else reject(new SdkError(SdkErrorCode.InvalidResult, `Invalid result for ${request.method}: ${parseResult.error}`));
+          else reject(new SdkError(SdkErrorCode.InvalidResult, "Invalid result for ".concat(request.method, ": ").concat(parseResult.error)));
         }, reject);
       });
       onAbort = () => cancel(options?.signal?.reason);
@@ -19167,7 +19131,7 @@ var Protocol = (_a10 = class {
   */
   async _notificationViaCodec(codec2, notification, options) {
     if (!this._transport) throw new SdkError(SdkErrorCode.NotConnected, "Not connected");
-    if (isSpecNotificationMethod(notification.method) && !codec2.hasNotificationMethod(notification.method)) throw new SdkError(SdkErrorCode.MethodNotSupportedByProtocolVersion, `Notification '${notification.method}' is not supported by the negotiated protocol version (wire era ${codec2.era})`, {
+    if (isSpecNotificationMethod(notification.method) && !codec2.hasNotificationMethod(notification.method)) throw new SdkError(SdkErrorCode.MethodNotSupportedByProtocolVersion, "Notification '".concat(notification.method, "' is not supported by the negotiated protocol version (wire era ").concat(codec2.era, ")"), {
       method: notification.method,
       era: codec2.era
     });
@@ -19192,20 +19156,20 @@ var Protocol = (_a10 = class {
     this.assertRequestHandlerCapability(method);
     let stored;
     if (typeof schemasOrHandler === "function") {
-      if (!isSpecRequestMethod(method)) throw new TypeError(`'${method}' is not a spec request method; pass schemas as the second argument to setRequestHandler().`);
+      if (!isSpecRequestMethod(method)) throw new TypeError("'".concat(method, "' is not a spec request method; pass schemas as the second argument to setRequestHandler()."));
       stored = (request, ctx) => {
         const dispatchCodec = this._negotiatedWireCodec();
         let outcome = dispatchCodec.validateRequest(method, request);
         if (!outcome.ok && outcome.reason === "not-in-era") outcome = dispatchCodec.validateInputRequest(method, request);
         if (!outcome.ok) {
-          if (outcome.reason === "not-in-era") throw new ProtocolError(ProtocolErrorCode.InternalError, `No wire schema for ${method} in the resolved era`);
+          if (outcome.reason === "not-in-era") throw new ProtocolError(ProtocolErrorCode.InternalError, "No wire schema for ".concat(method, " in the resolved era"));
           throw new Error(outcome.message);
         }
         return Promise.resolve(schemasOrHandler(outcome.value, ctx));
       };
     } else if (maybeHandler) stored = async (request, ctx) => {
       const parsed = await validateStandardSchema(schemasOrHandler.params, { ...request.params });
-      if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid params for ${method}: ${parsed.error}`);
+      if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Invalid params for ".concat(method, ": ").concat(parsed.error));
       return maybeHandler(parsed.data, ctx);
     };
     else throw new TypeError("setRequestHandler: handler is required");
@@ -19243,15 +19207,15 @@ var Protocol = (_a10 = class {
   * Asserts that a request handler has not already been set for the given method, in preparation for a new one being automatically installed.
   */
   assertCanSetRequestHandler(method) {
-    if (this._requestHandlers.has(method)) throw new Error(`A request handler for ${method} already exists, which would be overridden`);
+    if (this._requestHandlers.has(method)) throw new Error("A request handler for ".concat(method, " already exists, which would be overridden"));
   }
   setNotificationHandler(method, schemasOrHandler, maybeHandler) {
     if (typeof schemasOrHandler === "function") {
-      if (!isSpecNotificationMethod(method)) throw new TypeError(`'${method}' is not a spec notification method; pass schemas as the second argument to setNotificationHandler().`);
+      if (!isSpecNotificationMethod(method)) throw new TypeError("'".concat(method, "' is not a spec notification method; pass schemas as the second argument to setNotificationHandler()."));
       this._notificationHandlers.set(method, (notification, codec2) => {
         const outcome = codec2.validateNotification(method, notification);
         if (!outcome.ok) {
-          if (outcome.reason === "not-in-era") throw new ProtocolError(ProtocolErrorCode.InternalError, `No wire schema for ${method} in the resolved era`);
+          if (outcome.reason === "not-in-era") throw new ProtocolError(ProtocolErrorCode.InternalError, "No wire schema for ".concat(method, " in the resolved era"));
           throw new Error(outcome.message);
         }
         return Promise.resolve(schemasOrHandler(outcome.value));
@@ -19261,7 +19225,7 @@ var Protocol = (_a10 = class {
     if (!maybeHandler) throw new TypeError("setNotificationHandler: handler is required");
     this._notificationHandlers.set(method, async (notification) => {
       const parsed = await validateStandardSchema(schemasOrHandler.params, { ...notification.params });
-      if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid params for notification ${method}: ${parsed.error}`);
+      if (!parsed.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Invalid params for notification ".concat(method, ": ").concat(parsed.error));
       await maybeHandler(parsed.data, notification);
     });
   }
@@ -19487,7 +19451,7 @@ var OAuthClientFlowError = (_a11 = class extends Error {
 var _a12;
 var IssuerMismatchError = (_a12 = class extends OAuthClientFlowError {
   constructor(kind, expected, received) {
-    super(`Issuer mismatch in ${kind === "metadata" ? "authorization server metadata (RFC 8414 \xA73.3)" : "authorization response (RFC 9207)"}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(received)}`);
+    super("Issuer mismatch in ".concat(kind === "metadata" ? "authorization server metadata (RFC 8414 \xA73.3)" : "authorization response (RFC 9207)", ": expected ").concat(JSON.stringify(expected), ", received ").concat(JSON.stringify(received)));
     /** Which check failed — metadata echo (RFC 8414 §3.3) or authorization-response `iss` (RFC 9207). */
     __publicField(this, "kind");
     /** The issuer the client expected (from validated metadata / discovery input). */
@@ -19502,7 +19466,7 @@ var IssuerMismatchError = (_a12 = class extends OAuthClientFlowError {
 var _a13;
 var RegistrationRejectedError = (_a13 = class extends OAuthClientFlowError {
   constructor(args) {
-    super(`Dynamic Client Registration rejected (HTTP ${args.status}): ${args.body}`);
+    super("Dynamic Client Registration rejected (HTTP ".concat(args.status, "): ").concat(args.body));
     /** HTTP status code returned by the registration endpoint. */
     __publicField(this, "status");
     /** Raw response body text (typically an RFC 7591 error JSON document). */
@@ -19517,7 +19481,7 @@ var RegistrationRejectedError = (_a13 = class extends OAuthClientFlowError {
 var _a14;
 var InsecureTokenEndpointError = (_a14 = class extends OAuthClientFlowError {
   constructor(tokenEndpoint) {
-    super(`Refusing to send credentials to non-https token endpoint '${tokenEndpoint}'. OAuth token requests MUST use TLS (localhost / 127.0.0.1 / ::1 are exempt).`);
+    super("Refusing to send credentials to non-https token endpoint '".concat(tokenEndpoint, "'. OAuth token requests MUST use TLS (localhost / 127.0.0.1 / ::1 are exempt)."));
     /** The token endpoint URL that was rejected. */
     __publicField(this, "tokenEndpoint");
     this.tokenEndpoint = tokenEndpoint;
@@ -19526,7 +19490,7 @@ var InsecureTokenEndpointError = (_a14 = class extends OAuthClientFlowError {
 var _a15;
 var AuthorizationServerMismatchError = (_a15 = class extends OAuthClientFlowError {
   constructor(recordedIssuer, currentIssuer) {
-    super(`Authorization server changed between redirect and callback (redirected to ${JSON.stringify(recordedIssuer)}, callback resolved ${JSON.stringify(currentIssuer)}); refusing to send authorization_code/code_verifier to a different token endpoint`);
+    super("Authorization server changed between redirect and callback (redirected to ".concat(JSON.stringify(recordedIssuer), ", callback resolved ").concat(JSON.stringify(currentIssuer), "); refusing to send authorization_code/code_verifier to a different token endpoint"));
     this.recordedIssuer = recordedIssuer;
     this.currentIssuer = currentIssuer;
   }
@@ -19534,7 +19498,7 @@ var AuthorizationServerMismatchError = (_a15 = class extends OAuthClientFlowErro
 var _a16;
 var InsufficientScopeError = (_a16 = class extends OAuthClientFlowError {
   constructor(init) {
-    super(`Insufficient scope${init.requiredScope ? `: required "${init.requiredScope}"` : ""}`);
+    super("Insufficient scope".concat(init.requiredScope ? ': required "'.concat(init.requiredScope, '"') : ""));
     /** The `scope` value from the `WWW-Authenticate` challenge — the scopes the resource server says are required. */
     __publicField(this, "requiredScope");
     /** The `resource_metadata` URL from the `WWW-Authenticate` challenge, if present. */
@@ -19590,7 +19554,7 @@ var SseError = (_a18 = class extends Error {
     return brandedHasInstance(this, value);
   }
   constructor(code4, message, event) {
-    super(`SSE error: ${message}`);
+    super("SSE error: ".concat(message));
     this.code = code4;
     this.event = event;
     stampErrorBrands(this, new.target);
@@ -19604,7 +19568,7 @@ var D = class {
   }
   setHandler(G, Q) {
     let W = this._ensureEventSlot(G);
-    if (W.onHandler && Q) console.warn(`[MCP Apps] on${String(G)} handler replaced. Use addEventListener("${String(G)}", \u2026) to add multiple listeners without replacing.`);
+    if (W.onHandler && Q) console.warn("[MCP Apps] on".concat(String(G), ' handler replaced. Use addEventListener("').concat(String(G), '", \u2026) to add multiple listeners without replacing.'));
     W.onHandler = Q;
   }
   getHandler(G) {
@@ -19636,7 +19600,7 @@ var O = class {
     __publicField(this, "_methods", /* @__PURE__ */ new Set());
   }
   claim(G, Q) {
-    if (this._methods.has(G)) throw Error(`Handler for "${G}" already registered (via ${Q}). Use addEventListener() to attach multiple listeners, or the on* setter for replace semantics.`);
+    if (this._methods.has(G)) throw Error('Handler for "'.concat(G, '" already registered (via ').concat(Q, "). Use addEventListener() to attach multiple listeners, or the on* setter for replace semantics."));
     this._methods.add(G);
   }
   replace(G) {
@@ -19654,7 +19618,7 @@ function E(G, Q) {
   let [W, X] = Q, Y = W?.shape;
   if (typeof Y?.method?.value !== "string") return;
   let Z = Y.method.value, z2 = G === "request" ? "setRequestHandler" : "setNotificationHandler";
-  if (!b.has(z2)) b.add(z2), console.warn(`[ext-apps] ${z2}(Schema, handler) is deprecated; use ${z2}("${Z}", { params: Schema.shape.params }, handler).`);
+  if (!b.has(z2)) b.add(z2), console.warn("[ext-apps] ".concat(z2, "(Schema, handler) is deprecated; use ").concat(z2, '("').concat(Z, '", { params: Schema.shape.params }, handler).'));
   let k = X;
   return [Z, { params: Y.params }, G === "request" ? (B, o) => k({ method: Z, params: B }, l(o)) : (B) => k({ method: Z, params: B })];
 }
@@ -19665,34 +19629,13 @@ var J = "2026-01-26";
 var d = external_exports.union([external_exports.literal("light"), external_exports.literal("dark")]).describe("Color theme preference for the host environment.");
 var $ = external_exports.union([external_exports.literal("inline"), external_exports.literal("fullscreen"), external_exports.literal("pip")]).describe("Display mode for UI presentation.");
 var DF = external_exports.union([external_exports.literal("--color-background-primary"), external_exports.literal("--color-background-secondary"), external_exports.literal("--color-background-tertiary"), external_exports.literal("--color-background-inverse"), external_exports.literal("--color-background-ghost"), external_exports.literal("--color-background-info"), external_exports.literal("--color-background-danger"), external_exports.literal("--color-background-success"), external_exports.literal("--color-background-warning"), external_exports.literal("--color-background-disabled"), external_exports.literal("--color-text-primary"), external_exports.literal("--color-text-secondary"), external_exports.literal("--color-text-tertiary"), external_exports.literal("--color-text-inverse"), external_exports.literal("--color-text-ghost"), external_exports.literal("--color-text-info"), external_exports.literal("--color-text-danger"), external_exports.literal("--color-text-success"), external_exports.literal("--color-text-warning"), external_exports.literal("--color-text-disabled"), external_exports.literal("--color-border-primary"), external_exports.literal("--color-border-secondary"), external_exports.literal("--color-border-tertiary"), external_exports.literal("--color-border-inverse"), external_exports.literal("--color-border-ghost"), external_exports.literal("--color-border-info"), external_exports.literal("--color-border-danger"), external_exports.literal("--color-border-success"), external_exports.literal("--color-border-warning"), external_exports.literal("--color-border-disabled"), external_exports.literal("--color-ring-primary"), external_exports.literal("--color-ring-secondary"), external_exports.literal("--color-ring-inverse"), external_exports.literal("--color-ring-info"), external_exports.literal("--color-ring-danger"), external_exports.literal("--color-ring-success"), external_exports.literal("--color-ring-warning"), external_exports.literal("--font-sans"), external_exports.literal("--font-mono"), external_exports.literal("--font-weight-normal"), external_exports.literal("--font-weight-medium"), external_exports.literal("--font-weight-semibold"), external_exports.literal("--font-weight-bold"), external_exports.literal("--font-text-xs-size"), external_exports.literal("--font-text-sm-size"), external_exports.literal("--font-text-md-size"), external_exports.literal("--font-text-lg-size"), external_exports.literal("--font-heading-xs-size"), external_exports.literal("--font-heading-sm-size"), external_exports.literal("--font-heading-md-size"), external_exports.literal("--font-heading-lg-size"), external_exports.literal("--font-heading-xl-size"), external_exports.literal("--font-heading-2xl-size"), external_exports.literal("--font-heading-3xl-size"), external_exports.literal("--font-text-xs-line-height"), external_exports.literal("--font-text-sm-line-height"), external_exports.literal("--font-text-md-line-height"), external_exports.literal("--font-text-lg-line-height"), external_exports.literal("--font-heading-xs-line-height"), external_exports.literal("--font-heading-sm-line-height"), external_exports.literal("--font-heading-md-line-height"), external_exports.literal("--font-heading-lg-line-height"), external_exports.literal("--font-heading-xl-line-height"), external_exports.literal("--font-heading-2xl-line-height"), external_exports.literal("--font-heading-3xl-line-height"), external_exports.literal("--border-radius-xs"), external_exports.literal("--border-radius-sm"), external_exports.literal("--border-radius-md"), external_exports.literal("--border-radius-lg"), external_exports.literal("--border-radius-xl"), external_exports.literal("--border-radius-full"), external_exports.literal("--border-width-regular"), external_exports.literal("--shadow-hairline"), external_exports.literal("--shadow-sm"), external_exports.literal("--shadow-md"), external_exports.literal("--shadow-lg")]).describe("CSS variable keys available to MCP apps for theming.");
-var OF = external_exports.record(DF.describe(`Style variables for theming MCP apps.
-
-Individual style keys are optional - hosts may provide any subset of these values.
-Values are strings containing CSS values (colors, sizes, font stacks, etc.).
-
-Note: This type uses \`Record<K, string | undefined>\` rather than \`Partial<Record<K, string>>\`
-for compatibility with Zod schema generation. Both are functionally equivalent for validation.`), external_exports.union([external_exports.string(), external_exports.undefined()]).describe(`Style variables for theming MCP apps.
-
-Individual style keys are optional - hosts may provide any subset of these values.
-Values are strings containing CSS values (colors, sizes, font stacks, etc.).
-
-Note: This type uses \`Record<K, string | undefined>\` rather than \`Partial<Record<K, string>>\`
-for compatibility with Zod schema generation. Both are functionally equivalent for validation.`)).describe(`Style variables for theming MCP apps.
-
-Individual style keys are optional - hosts may provide any subset of these values.
-Values are strings containing CSS values (colors, sizes, font stacks, etc.).
-
-Note: This type uses \`Record<K, string | undefined>\` rather than \`Partial<Record<K, string>>\`
-for compatibility with Zod schema generation. Both are functionally equivalent for validation.`);
+var OF = external_exports.record(DF.describe("Style variables for theming MCP apps.\n\nIndividual style keys are optional - hosts may provide any subset of these values.\nValues are strings containing CSS values (colors, sizes, font stacks, etc.).\n\nNote: This type uses `Record<K, string | undefined>` rather than `Partial<Record<K, string>>`\nfor compatibility with Zod schema generation. Both are functionally equivalent for validation."), external_exports.union([external_exports.string(), external_exports.undefined()]).describe("Style variables for theming MCP apps.\n\nIndividual style keys are optional - hosts may provide any subset of these values.\nValues are strings containing CSS values (colors, sizes, font stacks, etc.).\n\nNote: This type uses `Record<K, string | undefined>` rather than `Partial<Record<K, string>>`\nfor compatibility with Zod schema generation. Both are functionally equivalent for validation.")).describe("Style variables for theming MCP apps.\n\nIndividual style keys are optional - hosts may provide any subset of these values.\nValues are strings containing CSS values (colors, sizes, font stacks, etc.).\n\nNote: This type uses `Record<K, string | undefined>` rather than `Partial<Record<K, string>>`\nfor compatibility with Zod schema generation. Both are functionally equivalent for validation.");
 var L = external_exports.object({ method: external_exports.literal("ui/open-link"), params: external_exports.object({ url: external_exports.string().describe("URL to open in the host's browser") }) });
 var A = external_exports.object({ isError: external_exports.boolean().optional().describe("True if the host failed to open the URL (e.g., due to security policy).") }).passthrough();
 var P = external_exports.object({ isError: external_exports.boolean().optional().describe("True if the download failed (e.g., user cancelled or host denied).") }).passthrough();
 var I = external_exports.object({ isError: external_exports.boolean().optional().describe("True if the host rejected or failed to deliver the message.") }).passthrough();
 var T = external_exports.object({ method: external_exports.literal("ui/notifications/sandbox-proxy-ready"), params: external_exports.object({}) });
-var K = external_exports.object({ connectDomains: external_exports.array(external_exports.string()).optional().describe(`Origins for network requests (fetch/XHR/WebSocket).
-
-- Maps to CSP \`connect-src\` directive
-- Empty or omitted \u2192 no network connections (secure default)`), resourceDomains: external_exports.array(external_exports.string()).optional().describe("Origins for static resources (images, scripts, stylesheets, fonts, media).\n\n- Maps to CSP `img-src`, `script-src`, `style-src`, `font-src`, `media-src` directives\n- Wildcard subdomains supported: `https://*.example.com`\n- Empty or omitted \u2192 no network resources (secure default)"), frameDomains: external_exports.array(external_exports.string()).optional().describe("Origins for nested iframes.\n\n- Maps to CSP `frame-src` directive\n- Empty or omitted \u2192 no nested iframes allowed (`frame-src 'none'`)"), baseUriDomains: external_exports.array(external_exports.string()).optional().describe("Allowed base URIs for the document.\n\n- Maps to CSP `base-uri` directive\n- Empty or omitted \u2192 only same origin allowed (`base-uri 'self'`)") });
+var K = external_exports.object({ connectDomains: external_exports.array(external_exports.string()).optional().describe("Origins for network requests (fetch/XHR/WebSocket).\n\n- Maps to CSP `connect-src` directive\n- Empty or omitted \u2192 no network connections (secure default)"), resourceDomains: external_exports.array(external_exports.string()).optional().describe("Origins for static resources (images, scripts, stylesheets, fonts, media).\n\n- Maps to CSP `img-src`, `script-src`, `style-src`, `font-src`, `media-src` directives\n- Wildcard subdomains supported: `https://*.example.com`\n- Empty or omitted \u2192 no network resources (secure default)"), frameDomains: external_exports.array(external_exports.string()).optional().describe("Origins for nested iframes.\n\n- Maps to CSP `frame-src` directive\n- Empty or omitted \u2192 no nested iframes allowed (`frame-src 'none'`)"), baseUriDomains: external_exports.array(external_exports.string()).optional().describe("Allowed base URIs for the document.\n\n- Maps to CSP `base-uri` directive\n- Empty or omitted \u2192 only same origin allowed (`base-uri 'self'`)") });
 var N = external_exports.object({ camera: external_exports.object({}).optional().describe("Request camera access.\n\nMaps to Permission Policy `camera` feature."), microphone: external_exports.object({}).optional().describe("Request microphone access.\n\nMaps to Permission Policy `microphone` feature."), geolocation: external_exports.object({}).optional().describe("Request geolocation access.\n\nMaps to Permission Policy `geolocation` feature."), clipboardWrite: external_exports.object({}).optional().describe("Request clipboard write access.\n\nMaps to Permission Policy `clipboard-write` feature.") });
 var w = external_exports.object({ method: external_exports.literal("ui/notifications/size-changed"), params: external_exports.object({ width: external_exports.number().optional().describe("New width in pixels."), height: external_exports.number().optional().describe("New height in pixels.") }) });
 var EF = external_exports.object({ method: external_exports.literal("ui/notifications/tool-input"), params: external_exports.object({ arguments: external_exports.record(external_exports.string(), external_exports.unknown().describe("Complete tool call arguments as key-value pairs.")).optional().describe("Complete tool call arguments as key-value pairs.") }) });
@@ -19707,34 +19650,17 @@ var f = external_exports.object({ method: external_exports.literal("ui/notificat
 var p = external_exports.object({ experimental: external_exports.record(external_exports.string(), external_exports.record(external_exports.string(), external_exports.any()).describe("Experimental features keyed by identifier.")).optional().describe("Experimental features keyed by identifier."), openLinks: external_exports.object({}).optional().describe("Host supports opening external URLs."), downloadFile: external_exports.object({}).optional().describe("Host supports file downloads via ui/download-file."), serverTools: external_exports.object({ listChanged: external_exports.boolean().optional().describe("Host supports tools/list_changed notifications.") }).optional().describe("Host can proxy tool calls to the MCP server."), serverResources: external_exports.object({ listChanged: external_exports.boolean().optional().describe("Host supports resources/list_changed notifications.") }).optional().describe("Host can proxy resource reads to the MCP server."), logging: external_exports.object({}).optional().describe("Host accepts log messages."), sandbox: external_exports.object({ permissions: N.optional().describe("Permissions granted by the host (camera, microphone, geolocation)."), csp: K.optional().describe("CSP domains approved by the host.") }).optional().describe("Sandbox configuration applied by the host."), updateModelContext: V.optional().describe("Host accepts context updates (ui/update-model-context) to be included in the model's context for future turns."), message: V.optional().describe("Host supports receiving content messages (ui/message) from the view."), sampling: external_exports.object({ tools: external_exports.object({}).optional().describe("Host supports tool use via `tools` and `toolChoice` parameters.") }).optional().describe("Host supports LLM sampling (sampling/createMessage) from the view.\nMirrors the MCP `ClientCapabilities.sampling` shape so hosts can pass it through.") });
 var i = external_exports.object({ experimental: external_exports.record(external_exports.string(), external_exports.record(external_exports.string(), external_exports.any()).describe("Experimental features keyed by identifier.")).optional().describe("Experimental features keyed by identifier."), tools: external_exports.object({ listChanged: external_exports.boolean().optional().describe("App supports tools/list_changed notifications.") }).optional().describe("App exposes MCP-style tools that the host can call."), availableDisplayModes: external_exports.array($).optional().describe("Display modes the app supports.") });
 var U = external_exports.object({ method: external_exports.literal("ui/notifications/initialized"), params: external_exports.object({}).optional() });
-var AF = external_exports.object({ csp: K.optional().describe("Content Security Policy configuration for UI resources."), permissions: N.optional().describe("Sandbox permissions requested by the UI resource."), domain: external_exports.string().optional().describe(`Dedicated origin for view sandbox.
-
-Useful when views need stable, dedicated origins for OAuth callbacks, CORS policies, or API key allowlists.
-
-**Host-dependent:** The format and validation rules for this field are determined by each host. Servers MUST consult host-specific documentation for the expected domain format. Common patterns include:
-- Hash-based subdomains (e.g., \`{hash}.claudemcpcontent.com\`)
-- URL-derived subdomains (e.g., \`www-example-com.oaiusercontent.com\`)
-
-If omitted, host uses default sandbox origin (typically per-conversation).`), prefersBorder: external_exports.boolean().optional().describe(`Visual boundary preference - true if view prefers a visible border.
-
-Boolean requesting whether a visible border and background is provided by the host. Specifying an explicit value for this is recommended because hosts' defaults may vary.
-
-- \`true\`: request visible border + background
-- \`false\`: request no visible border + background
-- omitted: host decides border`) });
+var AF = external_exports.object({ csp: K.optional().describe("Content Security Policy configuration for UI resources."), permissions: N.optional().describe("Sandbox permissions requested by the UI resource."), domain: external_exports.string().optional().describe("Dedicated origin for view sandbox.\n\nUseful when views need stable, dedicated origins for OAuth callbacks, CORS policies, or API key allowlists.\n\n**Host-dependent:** The format and validation rules for this field are determined by each host. Servers MUST consult host-specific documentation for the expected domain format. Common patterns include:\n- Hash-based subdomains (e.g., `{hash}.claudemcpcontent.com`)\n- URL-derived subdomains (e.g., `www-example-com.oaiusercontent.com`)\n\nIf omitted, host uses default sandbox origin (typically per-conversation)."), prefersBorder: external_exports.boolean().optional().describe("Visual boundary preference - true if view prefers a visible border.\n\nBoolean requesting whether a visible border and background is provided by the host. Specifying an explicit value for this is recommended because hosts' defaults may vary.\n\n- `true`: request visible border + background\n- `false`: request no visible border + background\n- omitted: host decides border") });
 var j = external_exports.object({ method: external_exports.literal("ui/request-display-mode"), params: external_exports.object({ mode: $.describe("The display mode being requested.") }) });
 var _ = external_exports.object({ mode: $.describe("The display mode that was actually set. May differ from requested if not supported.") }).passthrough();
 var n = external_exports.union([external_exports.literal("model"), external_exports.literal("app")]).describe("Tool visibility scope - who can access the tool.");
-var PF = external_exports.object({ resourceUri: external_exports.string().optional(), visibility: external_exports.array(n).optional().describe(`Who can access this tool. Default: ["model", "app"]
-- "model": Tool visible to and callable by the agent
-- "app": Tool callable by the app from this server only`), csp: external_exports.never().optional(), permissions: external_exports.never().optional() });
+var PF = external_exports.object({ resourceUri: external_exports.string().optional(), visibility: external_exports.array(n).optional().describe('Who can access this tool. Default: ["model", "app"]\n- "model": Tool visible to and callable by the agent\n- "app": Tool callable by the app from this server only'), csp: external_exports.never().optional(), permissions: external_exports.never().optional() });
 var vF = external_exports.object({ mimeTypes: external_exports.array(external_exports.string()).optional().describe('Array of supported MIME types for UI resources.\nMust include `"text/html;profile=mcp-app"` for MCP Apps support.') });
 var q = external_exports.object({ method: external_exports.literal("ui/download-file"), params: external_exports.object({ contents: external_exports.array(external_exports.union([EmbeddedResourceSchema, ResourceLinkSchema])).describe("Resource contents to download \u2014 embedded (inline data) or linked (host fetches). Uses standard MCP resource types.") }) });
 var y = external_exports.object({ method: external_exports.literal("ui/message"), params: external_exports.object({ role: external_exports.literal("user").describe('Message role, currently only "user" is supported.'), content: external_exports.array(ContentBlockSchema).describe("Message content blocks (text, image, etc.).") }) });
 var IF = external_exports.object({ method: external_exports.literal("ui/notifications/sandbox-resource-ready"), params: external_exports.object({ html: external_exports.string().describe("HTML content to load into the inner iframe."), sandbox: external_exports.string().optional().describe("Optional override for the inner iframe's sandbox attribute."), csp: K.optional().describe("CSP configuration from resource metadata."), permissions: N.optional().describe("Sandbox permissions from resource metadata.") }) });
 var TF = external_exports.object({ method: external_exports.literal("ui/notifications/tool-result"), params: CallToolResultSchema.describe("Standard MCP tool execution result.") });
-var C = external_exports.object({ toolInfo: external_exports.object({ id: RequestIdSchema.optional().describe("JSON-RPC id of the tools/call request."), tool: ToolSchema.describe("Tool definition including name, inputSchema, etc.") }).optional().describe("Metadata of the tool call that instantiated this App."), theme: d.optional().describe("Current color theme preference."), styles: m.optional().describe("Style configuration for theming the app."), displayMode: $.optional().describe("How the UI is currently displayed."), availableDisplayModes: external_exports.array($).optional().describe("Display modes the host supports."), containerDimensions: external_exports.union([external_exports.object({ height: external_exports.number().describe("Fixed container height in pixels.") }), external_exports.object({ maxHeight: external_exports.union([external_exports.number(), external_exports.undefined()]).optional().describe("Maximum container height in pixels.") })]).and(external_exports.union([external_exports.object({ width: external_exports.number().describe("Fixed container width in pixels.") }), external_exports.object({ maxWidth: external_exports.union([external_exports.number(), external_exports.undefined()]).optional().describe("Maximum container width in pixels.") })])).optional().describe(`Container dimensions. Represents the dimensions of the iframe or other
-container holding the app. Specify either width or maxWidth, and either height or maxHeight.`), locale: external_exports.string().optional().describe("User's language and region preference in BCP 47 format."), timeZone: external_exports.string().optional().describe("User's timezone in IANA format."), userAgent: external_exports.string().optional().describe("Host application identifier."), platform: external_exports.union([external_exports.literal("web"), external_exports.literal("desktop"), external_exports.literal("mobile")]).optional().describe("Platform type for responsive design decisions."), deviceCapabilities: external_exports.object({ touch: external_exports.boolean().optional().describe("Whether the device supports touch input."), hover: external_exports.boolean().optional().describe("Whether the device supports hover interactions.") }).optional().describe("Device input capabilities."), safeAreaInsets: external_exports.object({ top: external_exports.number().describe("Top safe area inset in pixels."), right: external_exports.number().describe("Right safe area inset in pixels."), bottom: external_exports.number().describe("Bottom safe area inset in pixels."), left: external_exports.number().describe("Left safe area inset in pixels.") }).optional().describe("Mobile safe area boundaries in pixels.") }).passthrough();
+var C = external_exports.object({ toolInfo: external_exports.object({ id: RequestIdSchema.optional().describe("JSON-RPC id of the tools/call request."), tool: ToolSchema.describe("Tool definition including name, inputSchema, etc.") }).optional().describe("Metadata of the tool call that instantiated this App."), theme: d.optional().describe("Current color theme preference."), styles: m.optional().describe("Style configuration for theming the app."), displayMode: $.optional().describe("How the UI is currently displayed."), availableDisplayModes: external_exports.array($).optional().describe("Display modes the host supports."), containerDimensions: external_exports.union([external_exports.object({ height: external_exports.number().describe("Fixed container height in pixels.") }), external_exports.object({ maxHeight: external_exports.union([external_exports.number(), external_exports.undefined()]).optional().describe("Maximum container height in pixels.") })]).and(external_exports.union([external_exports.object({ width: external_exports.number().describe("Fixed container width in pixels.") }), external_exports.object({ maxWidth: external_exports.union([external_exports.number(), external_exports.undefined()]).optional().describe("Maximum container width in pixels.") })])).optional().describe("Container dimensions. Represents the dimensions of the iframe or other\ncontainer holding the app. Specify either width or maxWidth, and either height or maxHeight."), locale: external_exports.string().optional().describe("User's language and region preference in BCP 47 format."), timeZone: external_exports.string().optional().describe("User's timezone in IANA format."), userAgent: external_exports.string().optional().describe("Host application identifier."), platform: external_exports.union([external_exports.literal("web"), external_exports.literal("desktop"), external_exports.literal("mobile")]).optional().describe("Platform type for responsive design decisions."), deviceCapabilities: external_exports.object({ touch: external_exports.boolean().optional().describe("Whether the device supports touch input."), hover: external_exports.boolean().optional().describe("Whether the device supports hover interactions.") }).optional().describe("Device input capabilities."), safeAreaInsets: external_exports.object({ top: external_exports.number().describe("Top safe area inset in pixels."), right: external_exports.number().describe("Right safe area inset in pixels."), bottom: external_exports.number().describe("Bottom safe area inset in pixels."), left: external_exports.number().describe("Left safe area inset in pixels.") }).optional().describe("Mobile safe area boundaries in pixels.") }).passthrough();
 var wF = external_exports.object({ method: external_exports.literal("ui/notifications/host-context-changed"), params: C.describe("Partial context update containing only changed fields.") });
 var M = external_exports.object({ method: external_exports.literal("ui/update-model-context"), params: external_exports.object({ content: external_exports.array(ContentBlockSchema).optional().describe("Context content blocks (text, image, etc.)."), structuredContent: external_exports.record(external_exports.string(), external_exports.unknown().describe("Structured content for machine-readable context data.")).optional().describe("Structured content for machine-readable context data.") }) });
 var S = external_exports.object({ method: external_exports.literal("ui/initialize"), params: external_exports.object({ appInfo: ImplementationSchema.describe("App identification (name and version)."), appCapabilities: i.describe("Features and capabilities this app provides."), protocolVersion: external_exports.string().describe("Protocol version this app supports.") }) });
@@ -19745,7 +19671,7 @@ function AG(G) {
   let W = G._meta?.ui?.resourceUri;
   if (W === void 0) W = G._meta?.[u];
   if (typeof W === "string" && W.startsWith("ui://")) return W;
-  else if (W !== void 0) throw Error(`Invalid UI resource URI: ${JSON.stringify(W)}`);
+  else if (W !== void 0) throw Error("Invalid UI resource URI: ".concat(JSON.stringify(W)));
   return;
 }
 var CF = [J];
@@ -19806,7 +19732,7 @@ var MF = class extends Protocol {
     let W = super._wrapHandler(G, Q);
     if (G === "ui/initialize" || G === "ping") return W;
     return async (X, Y) => {
-      if (!this._initializedReceived) console.warn(`[ext-apps] AppBridge received '${G}' before ui/notifications/initialized. The View is calling host methods before completing the handshake; it should await app.connect() first.`);
+      if (!this._initializedReceived) console.warn("[ext-apps] AppBridge received '".concat(G, "' before ui/notifications/initialized. The View is calling host methods before completing the handshake; it should await app.connect() first."));
       return W(X, Y);
     };
   }
@@ -19825,7 +19751,7 @@ var MF = class extends Protocol {
   _ensureEventSlot(G) {
     if (this._registeredEvents.has(G)) return;
     let Q = this.eventSchemas[G];
-    if (!Q) throw Error(`Unknown event: ${String(G)}`);
+    if (!Q) throw Error("Unknown event: ".concat(String(G)));
     let W = (X) => {
       if (G === "initialized") this._initializedReceived = true;
       this._events.dispatch(G, X);
@@ -19837,7 +19763,7 @@ var MF = class extends Protocol {
     this._registeredEvents.add(G);
   }
   warnIfRequestHandlerReplaced(G, Q, W) {
-    if (Q && W) console.warn(`[MCP Apps] ${G} handler replaced. Previous handler will no longer be called.`);
+    if (Q && W) console.warn("[MCP Apps] ".concat(G, " handler replaced. Previous handler will no longer be called."));
   }
   buildContext(G) {
     return G;
@@ -20235,7 +20161,7 @@ function ConsoleMcpAppView({ locator, fallback }) {
       };
       bridge.onsizechange = ({ height }) => {
         if (controller.signal.aborted) return;
-        if (typeof height === "number" && Number.isFinite(height)) frame.style.height = `${Math.min(1200, Math.max(80, height))}px`;
+        if (typeof height === "number" && Number.isFinite(height)) frame.style.height = "".concat(Math.min(1200, Math.max(80, height)), "px");
       };
       bridge.oninitialized = () => {
         if (initialized || controller.signal.aborted) return;
@@ -20284,11 +20210,11 @@ function consoleCustomPanelTarget(panel, options = {}) {
   if (typeof instanceKey !== "string" || !instanceKey.trim() || instanceKey.length > 512) throw new Error("Invalid panel instance key");
   const params = options.params ?? null;
   assertConsoleJson(params);
-  if (params !== null && (!panel.validateParams || !panel.validateParams(params))) throw new Error(`Invalid parameters for ${panel.id}`);
+  if (params !== null && (!panel.validateParams || !panel.validateParams(params))) throw new Error("Invalid parameters for ".concat(panel.id));
   const conversation = options.conversation ?? null;
   if (conversation && (typeof conversation.identity !== "string" || !conversation.identity.trim() || typeof conversation.scopeKey !== "string" || !conversation.scopeKey.trim())) throw new Error("Invalid conversation target");
   return {
-    id: `custom-panel:${panel.id}:${instanceKey}`,
+    id: "custom-panel:".concat(panel.id, ":").concat(instanceKey),
     kind: "custom/panel",
     title: panel.title,
     payloadVersion: 1,
@@ -20317,14 +20243,14 @@ function validateConsolePanels(panels) {
   const ids = /* @__PURE__ */ new Set();
   for (const panel of panels) {
     if (!panel || !namespaced(panel.id) || ids.has(panel.id) || !panel.title?.trim() || typeof panel.mount !== "function" || panel.validateParams !== void 0 && typeof panel.validateParams !== "function") {
-      throw new Error(`Invalid or duplicate custom panel: ${panel?.id}`);
+      throw new Error("Invalid or duplicate custom panel: ".concat(panel?.id));
     }
     ids.add(panel.id);
   }
 }
 function consolePanelModuleUrl(path2, baseUrl) {
   const base = new URL(baseUrl || "/", globalThis.location?.href ?? "http://localhost/");
-  const url2 = new URL(path2, `${base.href.replace(/\/$/, "")}/`);
+  const url2 = new URL(path2, "".concat(base.href.replace(/\/$/, ""), "/"));
   if (!path2.trim() || !["http:", "https:"].includes(url2.protocol) || url2.origin !== base.origin || url2.username || url2.password || url2.hash) throw new Error("Custom panel modules must use same-origin HTTP URLs");
   return url2.href;
 }
@@ -20441,7 +20367,7 @@ function assistantPresenter(occurrenceKeys, sourceFrames, ownership, from) {
       const key = JSON.stringify([...scope, block.toolCallId]);
       if ((canonicalOwners.get(key)?.size ?? 0) > 1) return void 0;
       const owned = source && (ownedToolIds.has(block.toolCallId) || source.sourceKind !== "session_history" && ownedToolIds.size > 0 && scopedLiveTools.has(key));
-      return owned ? `tool:${key}` : void 0;
+      return owned ? "tool:".concat(key) : void 0;
     };
     if (!occurrence && !entry.blocks?.some((block) => toolKey(block))) return entry;
     const counters = countersFor(occurrence ?? entry.id);
@@ -20449,7 +20375,7 @@ function assistantPresenter(occurrenceKeys, sourceFrames, ownership, from) {
       const ordinal2 = counters.get(lane) ?? 0;
       counters.set(lane, ordinal2 + 1);
       const owner = occurrence ?? entry.renderKey ?? entry.id;
-      return lane === "text" ? ordinal2 === 0 ? owner : `${owner}:part:${ordinal2}` : `${owner}:${lane}:${ordinal2}`;
+      return lane === "text" ? ordinal2 === 0 ? owner : "".concat(owner, ":part:").concat(ordinal2) : "".concat(owner, ":").concat(lane, ":").concat(ordinal2);
     };
     if (!entry.blocks?.length) return { ...entry, assistantOccurrenceKey: occurrence, renderKey: nextKey("text") };
     const segments = [];
@@ -20465,7 +20391,7 @@ function assistantPresenter(occurrenceKeys, sourceFrames, ownership, from) {
     const presentationRows = segments.map((segment) => {
       const renderKey = toolKey(segment.blocks[0]) ?? nextKey(segment.lane);
       let textIndex = 0;
-      return { renderKey, blocks: segment.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${renderKey}:text:${textIndex++}` } : block) };
+      return { renderKey, blocks: segment.blocks.map((block) => block.type === "markdown" ? { ...block, id: "".concat(renderKey, ":text:").concat(textIndex++) } : block) };
     });
     const onlyScopedTools = segments.every((segment) => segment.lane === "tool" && segment.blocks.every((block) => toolKey(block)));
     return {
@@ -20512,7 +20438,7 @@ function assistantMessageKey(frame) {
 }
 function assistantMessageRenderKey(frame) {
   const key = assistantMessageKey(frame);
-  return key === void 0 ? void 0 : `assistant:${JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, key])}`;
+  return key === void 0 ? void 0 : "assistant:".concat(JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, key]));
 }
 function assistantMessageCursorSequence(value) {
   if (typeof value !== "string" || /^console:[0-9]+$/.exec(value)?.[0] !== value) return void 0;
@@ -20986,13 +20912,13 @@ function renderConversationInlineMarkdown(text9, options = {}) {
   const tokenSuffix = "\uE001";
   const source = displayNormalization ? normalizeConversationDisplayText(text9 || "") : String(text9 || "");
   const escaped = escapeHtml(source).replace(/`([^`]+)`/g, (_match, code4) => {
-    const index2 = codeTokens.push(`<code class="cc-rich-inline-code">${code4}</code>`) - 1;
-    return `${tokenPrefix}${index2}${tokenSuffix}`;
+    const index2 = codeTokens.push('<code class="cc-rich-inline-code">'.concat(code4, "</code>")) - 1;
+    return "".concat(tokenPrefix).concat(index2).concat(tokenSuffix);
   }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>").replace(/(^|[^\w_])_([^_\n]+)_(?![\w_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
     const safeHref = safeConsoleHref(href);
-    return safeHref ? `<a href="${safeHref}" rel="noreferrer">${label}</a>` : label;
+    return safeHref ? '<a href="'.concat(safeHref, '" rel="noreferrer">').concat(label, "</a>") : label;
   }).replace(/\n/g, "<br />");
-  return escaped.replace(new RegExp(`${tokenPrefix}(\\d+)${tokenSuffix}`, "g"), (_match, index2) => codeTokens[Number(index2)] || "");
+  return escaped.replace(new RegExp("".concat(tokenPrefix, "(\\d+)").concat(tokenSuffix), "g"), (_match, index2) => codeTokens[Number(index2)] || "");
 }
 function normalizeLegacyInlineCodePlaceholders(text9) {
   const source = String(text9 || "");
@@ -21025,27 +20951,27 @@ function normalizePeerSteeringPrompt(text9) {
   const splitSendRequest = source.match(/^Call peers, then send\b.*\bsend_request\b.*?\bto the peered\s+(.+?)\s+thread\b/i);
   if (splitSendRequest) {
     const projectLabel = normalizeProjectDisplayLabel(splitSendRequest[1]) || splitSendRequest[1].trim();
-    return `Requested a peer response from ${projectLabel} thread.`;
+    return "Requested a peer response from ".concat(projectLabel, " thread.");
   }
   const splitExactMessage = source.match(/^Send this exact message body to the peered\s+(.+?)\s+thread\b/i);
   if (splitExactMessage) {
     const projectLabel = normalizeProjectDisplayLabel(splitExactMessage[1]) || splitExactMessage[1].trim();
     if (/\bPlease reply with acknowledgement\b/i.test(source)) {
-      return `Requested an acknowledgement from ${projectLabel} thread.`;
+      return "Requested an acknowledgement from ".concat(projectLabel, " thread.");
     }
-    return `Sent a peer message to ${projectLabel} thread.`;
+    return "Sent a peer message to ".concat(projectLabel, " thread.");
   }
   const standalonePeerInstruction = source.match(/^Use your MobKit peer tools only\b[\s\S]*?\bto the peered\s+(.+?)\s+thread\b/i);
   if (standalonePeerInstruction) {
     const projectLabel = normalizeProjectDisplayLabel(standalonePeerInstruction[1]) || standalonePeerInstruction[1].trim();
-    const peerLabel = `${projectLabel} thread`;
+    const peerLabel = "".concat(projectLabel, " thread");
     if (/\bsend_request\b/i.test(source) || /\bsend_response\b/i.test(source)) {
-      return `Requested a peer response from ${peerLabel}.`;
+      return "Requested a peer response from ".concat(peerLabel, ".");
     }
     if (/\bPlease reply with acknowledgement\b/i.test(source)) {
-      return `Requested an acknowledgement from ${peerLabel}.`;
+      return "Requested an acknowledgement from ".concat(peerLabel, ".");
     }
-    return `Sent a peer message to ${peerLabel}.`;
+    return "Sent a peer message to ".concat(peerLabel, ".");
   }
   if (/^Use your MobKit peer tools only\b/i.test(source)) {
     return "";
@@ -21057,18 +20983,18 @@ function normalizePeerSteeringPrompt(text9) {
   if (connectedMatch && (/\bUse your MobKit peer tools only\b/i.test(source) || legacyTrustedPeerInstruction)) {
     const peerLabel = normalizeConversationDisplayLabel(connectedMatch[1]) || connectedMatch[1].trim();
     if (legacyTrustedPeerInstruction) {
-      const action2 = /\bplease reply\b/i.test(source) ? `Requested a peer reply from ${peerLabel}.` : `Sent a peer message to ${peerLabel}.`;
-      return [`Connected to ${peerLabel}.`, action2].join("\n");
+      const action2 = /\bplease reply\b/i.test(source) ? "Requested a peer reply from ".concat(peerLabel, ".") : "Sent a peer message to ".concat(peerLabel, ".");
+      return ["Connected to ".concat(peerLabel, "."), action2].join("\n");
     }
     if (/\bCall peers, then send\b.*\bsend_request\b/i.test(source) || /\bask it to send_response\b/i.test(source)) {
-      return [`Connected to ${peerLabel}.`, `Requested a peer response from ${peerLabel}.`].join("\n");
+      return ["Connected to ".concat(peerLabel, "."), "Requested a peer response from ".concat(peerLabel, ".")].join("\n");
     }
     if (!/\bSend this exact message body\b/i.test(source)) {
       return source;
     }
     const requestedAcknowledgement = /\bPlease reply with acknowledgement\b/i.test(source);
-    const action = requestedAcknowledgement ? `Requested an acknowledgement from ${peerLabel}.` : `Sent a peer message to ${peerLabel}.`;
-    return [`Connected to ${peerLabel}.`, action].join("\n");
+    const action = requestedAcknowledgement ? "Requested an acknowledgement from ".concat(peerLabel, ".") : "Sent a peer message to ".concat(peerLabel, ".");
+    return ["Connected to ".concat(peerLabel, "."), action].join("\n");
   }
   if (legacyTrustedPeerInstruction) {
     return /\bplease reply\b/i.test(source) ? "Requested a peer reply." : "Sent a peer message.";
@@ -21110,7 +21036,7 @@ function normalizeConversationDisplayLabel(label) {
   }
   const livePeer = withoutToken.match(/^Peer\s+live\s+(.+)$/i);
   if (livePeer) {
-    return `${normalizeProjectDisplayLabel(livePeer[1])} peer thread`;
+    return "".concat(normalizeProjectDisplayLabel(livePeer[1]), " peer thread");
   }
   return withoutToken.replace(/\bpeer\s+(?:source|target)\b/i, "peer thread").replace(/\brequest\s+source\b/i, "request thread").replace(/\bresponse\s+target\b/i, "response thread").replace(/\bmerged\s+request\b/i, "peer request").replace(/\bmerged\s+response\b/i, "peer response").trim();
 }
@@ -21138,8 +21064,8 @@ function conversationRichBlockCopyText(block) {
         block.before || "",
         block.name,
         block.after || "",
-        `+${block.plus}`,
-        `-${block.minus}`
+        "+".concat(block.plus),
+        "-".concat(block.minus)
       ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     case "table":
       return [
@@ -21164,16 +21090,16 @@ function conversationRichBlockCopyText(block) {
         const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
         const images = (block.peerImages || []).map((image3) => [image3.alt || "image", image3.blobId || image3.src].filter(Boolean).join(" ")).filter(Boolean).join(" ");
         return [
-          `${dir} ${block.peerIdentity || block.peerTarget || "Unknown peer"}`,
+          "".concat(dir, " ").concat(block.peerIdentity || block.peerTarget || "Unknown peer"),
           conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
           peerBody,
           images,
           block.result
         ].filter(Boolean).join(": ").trim();
       }
-      const parts = [`$ ${block.name}`];
-      if (block.arguments) parts.push(`Input: ${block.arguments}`);
-      if (block.result) parts.push(`Result: ${block.result}`);
+      const parts = ["$ ".concat(block.name)];
+      if (block.arguments) parts.push("Input: ".concat(block.arguments));
+      if (block.result) parts.push("Result: ".concat(block.result));
       return parts.join("\n");
     }
     default:
@@ -21327,16 +21253,14 @@ var PARAGRAPH_BREAK_SENTINEL_ESCAPED = PARAGRAPH_BREAK_SENTINEL.replace(
   "\\$&"
 );
 var PARAGRAPH_BREAK_SENTINEL_RUN = new RegExp(
-  `[ \\t]*(?:${PARAGRAPH_BREAK_SENTINEL_ESCAPED}[ \\t]*(?:\\r?\\n)?[ \\t]*)+`,
+  "[ \\t]*(?:".concat(PARAGRAPH_BREAK_SENTINEL_ESCAPED, "[ \\t]*(?:\\r?\\n)?[ \\t]*)+"),
   "gu"
 );
 function normalizeConversationTextForParsing(fragment) {
   const raw = String(fragment || "").replace(PARAGRAPH_BREAK_SENTINEL_RUN, " ");
   const protectedFragment = raw.replace(
     /\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/gu,
-    `
-${PARAGRAPH_BREAK_SENTINEL}
-`
+    "\n".concat(PARAGRAPH_BREAK_SENTINEL, "\n")
   );
   return normalizeConversationDisplayText(protectedFragment).replace(
     PARAGRAPH_BREAK_SENTINEL_RUN,
@@ -21576,33 +21500,33 @@ function parseConversationCommandBlock(section) {
 // ../packages/console-core/src/conversation.ts
 function conversationEntryText(entry) {
   if (entry.kind === "summary") {
-    const fileLines = entry.files.map((file2) => `${file2.name} +${file2.plus} -${file2.minus}`).join("\n");
+    const fileLines = entry.files.map((file2) => "".concat(file2.name, " +").concat(file2.plus, " -").concat(file2.minus)).join("\n");
     return [entry.title, fileLines].filter(Boolean).join("\n");
   }
   if (entry.kind === "flow_run") {
-    const rowLines = entry.rows.map((row) => `${row.label}: ${row.caption}`);
+    const rowLines = entry.rows.map((row) => "".concat(row.label, ": ").concat(row.caption));
     return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""].filter(Boolean).join("\n");
   }
   if (entry.kind === "council") {
-    const participantLines = entry.participants.map((row) => `${row.role}: ${row.targetIdentity}${row.seated ? "" : " (never seated)"}`);
-    const exchangeLines = entry.exchanges.map((row) => `r${row.round + 1} ${row.targetIdentity} \u2014 ${row.status}${row.text ? `: ${row.text}` : ""}`);
+    const participantLines = entry.participants.map((row) => "".concat(row.role, ": ").concat(row.targetIdentity).concat(row.seated ? "" : " (never seated)"));
+    const exchangeLines = entry.exchanges.map((row) => "r".concat(row.round + 1, " ").concat(row.targetIdentity, " \u2014 ").concat(row.status).concat(row.text ? ": ".concat(row.text) : ""));
     return [
-      `${entry.topic} (${entry.exitReason}, ${entry.roundsCompleted} rounds)`,
+      "".concat(entry.topic, " (").concat(entry.exitReason, ", ").concat(entry.roundsCompleted, " rounds)"),
       entry.exitDetail || "",
       entry.mergeText || "",
       ...participantLines,
       ...exchangeLines,
-      ...entry.exchangeOverflowCount ? [`+${entry.exchangeOverflowCount} more exchanges`] : [],
+      ...entry.exchangeOverflowCount ? ["+".concat(entry.exchangeOverflowCount, " more exchanges")] : [],
       // Claims stay marked as claims in copied text too: pasting a bare uri
       // into a ticket is exactly how an unverified claim becomes a fact.
-      ...(entry.artifactClaims || []).map((row) => `claimed artifact: ${row.uri}`)
+      ...(entry.artifactClaims || []).map((row) => "claimed artifact: ".concat(row.uri))
     ].filter(Boolean).join("\n");
   }
   if (entry.kind === "workgraph") {
-    const itemLines = entry.items.map((item) => `${"  ".repeat(item.depth)}${item.title} \u2014 ${item.status.replace(/_/g, " ")}`);
-    const attentionLines = entry.attention.map((row) => `${row.mode}: ${row.statusLabel}${row.targetLabel ? ` \u2192 ${row.targetLabel}` : ""}`);
+    const itemLines = entry.items.map((item) => "".concat("  ".repeat(item.depth)).concat(item.title, " \u2014 ").concat(item.status.replace(/_/g, " ")));
+    const attentionLines = entry.attention.map((row) => "".concat(row.mode, ": ").concat(row.statusLabel).concat(row.targetLabel ? " \u2192 ".concat(row.targetLabel) : ""));
     return [
-      `${entry.title} (${entry.progress.completed}/${entry.progress.total})`,
+      "".concat(entry.title, " (").concat(entry.progress.completed, "/").concat(entry.progress.total, ")"),
       entry.objective || "",
       ...itemLines,
       ...attentionLines
@@ -21696,7 +21620,7 @@ function describePeer(peer, options = {}) {
 function humanizeRuntimeEventType(eventType) {
   const words = eventType.replace(/[._-]+/gu, " ").trim();
   if (!words) return "Runtime event";
-  return `${words[0].toUpperCase()}${words.slice(1)}`;
+  return "".concat(words[0].toUpperCase()).concat(words.slice(1));
 }
 function recordOf(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -21739,7 +21663,7 @@ function runtimeEventText(event, options = {}) {
   const record8 = recordOf(event.payload);
   const detail = trimmedString(record8?.message) || trimmedString(record8?.error) || trimmedString(record8?.reason) || trimmedString(record8?.text) || trimmedString(record8?.result) || trimmedString(record8?.delta);
   const title = humanizeRuntimeEventType(event.eventType);
-  return detail ? `${title}: ${detail}` : `${title}.`;
+  return detail ? "".concat(title, ": ").concat(detail) : "".concat(title, ".");
 }
 function describeRuntimeEvent(event, entryText, options) {
   const untrusted = event.senderTaint === "tainted";
@@ -21748,9 +21672,9 @@ function describeRuntimeEvent(event, entryText, options) {
     const noun = event.kind && PEER_CONTENT_NOUNS[event.kind] || "content";
     return {
       kind: "peer_message",
-      label: `Message from ${peer.name}`,
-      detail: peer.mobId ? `${peer.mobId} mob` : null,
-      sentence: `Received ${noun} from ${peer.name}${peer.mobId ? ` (${peer.mobId} mob)` : ""}.`,
+      label: "Message from ".concat(peer.name),
+      detail: peer.mobId ? "".concat(peer.mobId, " mob") : null,
+      sentence: "Received ".concat(noun, " from ").concat(peer.name).concat(peer.mobId ? " (".concat(peer.mobId, " mob)") : "", "."),
       untrusted
     };
   }
@@ -21776,7 +21700,7 @@ function describeUserOrigin(origin) {
   if (byKind) {
     return {
       ...byKind,
-      detail: byKind.kind === "operator" && fromThisConsole ? "sent from the console" : sendOrigin && !fromThisConsole ? `via ${sendOrigin}` : null,
+      detail: byKind.kind === "operator" && fromThisConsole ? "sent from the console" : sendOrigin && !fromThisConsole ? "via ".concat(sendOrigin) : null,
       sentence: null,
       untrusted: false
     };
@@ -21785,7 +21709,7 @@ function describeUserOrigin(origin) {
     if (fromThisConsole) {
       return { kind: "operator", label: "Operator", detail: "sent from the console", sentence: null, untrusted: false };
     }
-    return { kind: "user", label: "User message", detail: `via ${sendOrigin}`, sentence: null, untrusted: false };
+    return { kind: "user", label: "User message", detail: "via ".concat(sendOrigin), sentence: null, untrusted: false };
   }
   return { kind: "user", label: "User message", detail: null, sentence: null, untrusted: false };
 }
@@ -21842,7 +21766,7 @@ function transcriptDayKey(iso) {
   const y2 = date6.getFullYear();
   const m2 = String(date6.getMonth() + 1).padStart(2, "0");
   const d2 = String(date6.getDate()).padStart(2, "0");
-  return `${y2}-${m2}-${d2}`;
+  return "".concat(y2, "-").concat(m2, "-").concat(d2);
 }
 function transcriptDayLabel(dayKey, now = /* @__PURE__ */ new Date()) {
   const today = transcriptDayKey(now.toISOString());
@@ -21867,7 +21791,7 @@ function formatDayKey(dayKey) {
   const date6 = new Date(y2, m2 - 1, d2, 12);
   const weekday = date6.toLocaleDateString("en-GB", { weekday: "long" });
   const month = date6.toLocaleDateString("en-GB", { month: "long" });
-  return `${weekday}, ${d2} ${month} ${y2}`;
+  return "".concat(weekday, ", ").concat(d2, " ").concat(month, " ").concat(y2);
 }
 
 // ../packages/console-core/src/topology.ts
@@ -22670,7 +22594,7 @@ function buildConsoleDockViewState(state, options = {}) {
         title: resolved.title || firstTarget?.title || preset.label,
         subtitle: resolved.subtitle ?? firstTarget?.subtitle ?? preset.description,
         iconName: resolved.iconName ?? firstTarget?.iconName ?? preset.iconName,
-        badgeLabel: resolved.badgeLabel ?? (panelStates.length > 1 ? `x${panelStates.length}` : null),
+        badgeLabel: resolved.badgeLabel ?? (panelStates.length > 1 ? "x".concat(panelStates.length) : null),
         closable: resolved.closable ?? true,
         dirty: resolved.dirty ?? false,
         layout: tab2.layout
@@ -22818,9 +22742,9 @@ function insertNode(nodes, targetId, position3, nodeToInsert) {
 }
 function navigationMoveAnnouncement(moved, target, position3) {
   if (position3 === "inside") {
-    return `Moved ${moved.label} into ${target.label}.`;
+    return "Moved ".concat(moved.label, " into ").concat(target.label, ".");
   }
-  return `Moved ${moved.label} ${position3} ${target.label}.`;
+  return "Moved ".concat(moved.label, " ").concat(position3, " ").concat(target.label, ".");
 }
 function normalizeConsoleNavigationModel(model) {
   const seen = /* @__PURE__ */ new Set();
@@ -22917,7 +22841,7 @@ var SIDEBAR_STORAGE_PREFIXES = [
   SUBGROUP_COLLAPSE_STORAGE_PREFIX
 ];
 function sidebarStorageKey(prefix, namespace) {
-  return `${prefix}:${namespace?.trim() || "default"}`;
+  return "".concat(prefix, ":").concat(namespace?.trim() || "default");
 }
 function readSidebarStringSet(storage, key) {
   if (!storage) return null;
@@ -22977,12 +22901,12 @@ function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
   if (!storage) return;
   try {
     const scopePrefix = encodeURIComponent(scope.trim());
-    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => "".concat(prefix, ":").concat(activeNamespace)));
     const stale = [];
     for (let i2 = 0; i2 < storage.length; i2 += 1) {
       const key = storage.key(i2);
       if (!key || activeKeys.has(key)) continue;
-      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith("".concat(prefix, ":").concat(scopePrefix, ":")))) {
         stale.push(key);
       }
     }
@@ -23044,7 +22968,7 @@ function confinementFeedback(value, toolCallId) {
   return {
     kind: "confinement-refused",
     title: "Action could not start",
-    detail: `${confinementDetails[refusal]} This action did not run. The agent can continue with other work.`,
+    detail: "".concat(confinementDetails[refusal], " This action did not run. The agent can continue with other work."),
     toolCallId,
     confinementRefusal: refusal
   };
@@ -23106,7 +23030,7 @@ function operationFeedbackFromFrame(frame) {
         return {
           kind: "hook-denied",
           title: "Action blocked by hook",
-          detail: `A hook denied this action (${hookReasons[hookReasonCode]}). The agent can continue with other work.`,
+          detail: "A hook denied this action (".concat(hookReasons[hookReasonCode], "). The agent can continue with other work."),
           toolCallId,
           hookId,
           hookReasonCode
@@ -23147,22 +23071,22 @@ function userMessageRenderKey(frame) {
   if (frame.event !== "user_input" && frame.event !== "interaction_started" && frame.event !== "run_started") return void 0;
   if (isRealtimeHistoryMessage(frame)) {
     const origin = realtimeMessageOrigin(frame);
-    return origin ? `user-realtime:${JSON.stringify([
+    return origin ? "user-realtime:".concat(JSON.stringify([
       frame.runtimeKey ?? null,
       frame.identity ?? null,
       origin.sessionId,
       origin.channelId,
       origin.canonicalRowSequence
-    ])}` : void 0;
+    ])) : void 0;
   }
   const interaction = frame.interactionId;
   if (typeof frame.sessionId !== "string" || !frame.sessionId.trim() || typeof interaction !== "string" || interaction.length !== 36 || !UUID_FORM.test(interaction)) return void 0;
-  return `user:${JSON.stringify([
+  return "user:".concat(JSON.stringify([
     frame.runtimeKey ?? null,
     frame.identity ?? null,
     frame.sessionId,
     interaction.toLowerCase()
-  ])}`;
+  ]));
 }
 
 // ../packages/console-core/src/assistant-message-projection.ts
@@ -23442,13 +23366,13 @@ function sequenceScopeOf(frame) {
   return scope && identifier3(epoch) ? JSON.stringify([frame.runtimeKey, frame.sessionId, epoch]) : scope;
 }
 function logicalKey(frame, origin) {
-  return `runtime-notice:${JSON.stringify([
+  return "runtime-notice:".concat(JSON.stringify([
     frame.runtimeKey,
     frame.sessionId,
     origin.session_id,
     origin.input_id,
     origin.append_ordinal
-  ])}`;
+  ]));
 }
 function runtimeAppendNoticeKey(frame) {
   if (frame.event !== "system_notice" || !scopeOf(frame)) return null;
@@ -23590,7 +23514,7 @@ function reconcileAssistantHistoryPositions(frames) {
   });
 }
 function positionFromCursor(sessionId, sourceCursor) {
-  if (!string4(sourceCursor) || !sourceCursor.startsWith(`${sessionId}:`)) return void 0;
+  if (!string4(sourceCursor) || !sourceCursor.startsWith("".concat(sessionId, ":"))) return void 0;
   const parts = sourceCursor.slice(sessionId.length + 1).split(":");
   if (!/^\d+$/.test(parts[0]) || !ordinal(Number(parts[0]))) return void 0;
   if (parts.some((part) => /^\d+$/.test(part) ? !ordinal(Number(part)) : !/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(part))) return void 0;
@@ -23808,7 +23732,7 @@ function reconcileRuntimeAppendFrames(frames) {
         event: "system_notice",
         id: logicalKey(snapshot.frame, origin),
         runId: origin.run_id,
-        sourceCursor: `${snapshot.frame.sessionId}:${offset}`,
+        sourceCursor: "".concat(snapshot.frame.sessionId, ":").concat(offset),
         timestampMs: Date.parse(String(message.created_at)),
         data: { message }
       };
@@ -23971,10 +23895,9 @@ function ownerContextsConflict(left, right) {
 function formatServerToolAnnotations(annotations) {
   return annotations.map((annotation, index2) => {
     const record8 = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record8?.title === "string" && record8.title.trim() ? record8.title.trim() : typeof record8?.text === "string" && record8.text.trim() ? record8.text.trim() : `Source ${index2 + 1}`;
+    const title = typeof record8?.title === "string" && record8.title.trim() ? record8.title.trim() : typeof record8?.text === "string" && record8.text.trim() ? record8.text.trim() : "Source ".concat(index2 + 1);
     const url2 = typeof record8?.url === "string" && record8.url.trim() ? record8.url.trim() : "";
-    return url2 ? `${index2 + 1}. ${title}
-${url2}` : `${index2 + 1}. ${title}`;
+    return url2 ? "".concat(index2 + 1, ". ").concat(title, "\n").concat(url2) : "".concat(index2 + 1, ". ").concat(title);
   }).join("\n\n").trim();
 }
 function serverToolContentSummary(frame) {
@@ -24948,12 +24871,12 @@ async function subscribeTimelineWithRecovery(transport, input, onFrame, onReplay
 }
 function timelineDedupKey(frame) {
   const id = frame.id?.trim();
-  if (id) return `id:${id}:${frame.event || ""}:${frame.frameVersion ?? ""}:${frame.updatedAtMs ?? ""}`;
+  if (id) return "id:".concat(id, ":").concat(frame.event || "", ":").concat(frame.frameVersion ?? "", ":").concat(frame.updatedAtMs ?? "");
   const cursor = frame.cursor?.trim();
-  if (cursor) return `cursor:${cursor}`;
+  if (cursor) return "cursor:".concat(cursor);
   const timestamp = frame.timestampMs;
   if (typeof timestamp === "number") {
-    return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
+    return "timestamp:".concat(frame.event || "", ":").concat(frame.identity || "", ":").concat(timestamp, ":").concat(stableDedupText(frame.data));
   }
   return null;
 }
@@ -25690,7 +25613,7 @@ function classifyConsoleSendFailure(error48) {
     return {
       state: "definitely-rejected",
       kind: "access_denied",
-      message: `Not allowed to send to this agent (403)${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.`
+      message: "Not allowed to send to this agent (403)".concat(rpcMessage ? ": ".concat(rpcMessage) : "", ". Nothing was sent.")
     };
   }
   if (rpcKind === "read_only") {
@@ -25704,7 +25627,7 @@ function classifyConsoleSendFailure(error48) {
     return {
       state: "definitely-rejected",
       kind: "rejected",
-      message: `Send rejected: ${rpcMessage ?? detail ?? "invalid request"}. Nothing was sent.`
+      message: "Send rejected: ".concat(rpcMessage ?? detail ?? "invalid request", ". Nothing was sent.")
     };
   }
   if (typed.name === "AbortError" && typed.transportFailure === void 0) {
@@ -25715,39 +25638,39 @@ function classifyConsoleSendFailure(error48) {
     };
   }
   if (typed.transportFailure === "timeout") {
-    const seconds = typeof typed.timeoutMs === "number" ? ` within ${Math.round(typed.timeoutMs / 1e3)} s` : "";
+    const seconds = typeof typed.timeoutMs === "number" ? " within ".concat(Math.round(typed.timeoutMs / 1e3), " s") : "";
     return {
       state: "outcome-unknown",
       kind: "timeout",
-      message: `No response from the gateway${seconds}. It may still have accepted the message: check acceptance before retrying.`
+      message: "No response from the gateway".concat(seconds, ". It may still have accepted the message: check acceptance before retrying.")
     };
   }
   if (typed.transportFailure === "connection_failed") {
     return {
       state: "outcome-unknown",
       kind: "connection_failed",
-      message: `The connection failed before the gateway answered${detail ? ` (${detail})` : ""}. The message may already have been accepted: check acceptance before retrying.`
+      message: "The connection failed before the gateway answered".concat(detail ? " (".concat(detail, ")") : "", ". The message may already have been accepted: check acceptance before retrying.")
     };
   }
   if (typed.transportFailure === "invalid_response") {
     return {
       state: "outcome-unknown",
       kind: "invalid_response",
-      message: `${detail ?? "The gateway returned an unreadable response"}. Something between the console and the gateway answered instead of it: check acceptance before retrying.`
+      message: "".concat(detail ?? "The gateway returned an unreadable response", ". Something between the console and the gateway answered instead of it: check acceptance before retrying.")
     };
   }
   if (status !== void 0 && PRE_INGRESS_REFUSAL_STATUSES.has(status)) {
     return {
       state: "definitely-rejected",
       kind: "rejected",
-      message: `Send rejected by the gateway (HTTP ${status})${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.`
+      message: "Send rejected by the gateway (HTTP ".concat(status, ")").concat(rpcMessage ? ": ".concat(rpcMessage) : "", ". Nothing was sent.")
     };
   }
   if (typed.rpcError && (rpcMessage || detail)) {
     return {
       state: "outcome-unknown",
       kind: "refused",
-      message: `Send failed: ${rpcMessage ?? detail}. The gateway may have recorded this attempt: check acceptance before retrying.`
+      message: "Send failed: ".concat(rpcMessage ?? detail, ". The gateway may have recorded this attempt: check acceptance before retrying.")
     };
   }
   if (status === 429) {
@@ -25761,13 +25684,13 @@ function classifyConsoleSendFailure(error48) {
     return {
       state: "outcome-unknown",
       kind: "gateway_error",
-      message: `Gateway error (HTTP ${status}). The console could not confirm acceptance: check acceptance before retrying.`
+      message: "Gateway error (HTTP ".concat(status, "). The console could not confirm acceptance: check acceptance before retrying.")
     };
   }
   return {
     state: "outcome-unknown",
     kind: "unknown",
-    message: `The console could not confirm acceptance${detail ? `: ${detail}` : ""}. Check acceptance before retrying.`
+    message: "The console could not confirm acceptance".concat(detail ? ": ".concat(detail) : "", ". Check acceptance before retrying.")
   };
 }
 function sameFrozenContent(actual, expected) {
@@ -25791,13 +25714,13 @@ function capitalize(text9) {
   return text9.charAt(0).toUpperCase() + text9.slice(1);
 }
 function consoleCannotReachHost(names) {
-  return `Couldn't reach ${hostOf(names)} (offline or signed out).`;
+  return "Couldn't reach ".concat(hostOf(names), " (offline or signed out).");
 }
 function describeConsolePendingRow(attempt, names) {
   const host = hostOf(names);
   if (attempt.state === "draft") return { label: "Queued" };
   if (attempt.state === "attempting") {
-    return { label: "Sending", title: "Sending...", detail: `Waiting for ${host} to confirm.` };
+    return { label: "Sending", title: "Sending...", detail: "Waiting for ".concat(host, " to confirm.") };
   }
   if (attempt.state === "accepted") return { label: "Delivered" };
   if (attempt.state === "definitely-rejected") {
@@ -25806,45 +25729,45 @@ function describeConsolePendingRow(attempt, names) {
         case "unauthenticated":
           return "You were signed out, or this network isn't allowed.";
         case "access_denied":
-          return `You don't have permission to message ${names.agent}.`;
+          return "You don't have permission to message ".concat(names.agent, ".");
         case "read_only":
           return "This console is read-only.";
         case "capability_unavailable":
           return "Sending isn't available here.";
         default:
-          return `${capitalize(host)} refused it.`;
+          return "".concat(capitalize(host), " refused it.");
       }
     })();
-    return { label: "Not sent", title: `Not sent: this message never reached ${names.agent}.`, detail: detail2 };
+    return { label: "Not sent", title: "Not sent: this message never reached ".concat(names.agent, "."), detail: detail2 };
   }
   const detail = (() => {
     switch (attempt.failureKind) {
       case "connection_failed":
         return consoleCannotReachHost(names);
       case "timeout":
-        return `${capitalize(host)} didn't answer in time.`;
+        return "".concat(capitalize(host), " didn't answer in time.");
       case "invalid_response":
-        return `Got an unreadable answer from ${host}.`;
+        return "Got an unreadable answer from ".concat(host, ".");
       case "gateway_error":
-        return `${capitalize(host)} had a problem.`;
+        return "".concat(capitalize(host), " had a problem.");
       case "rate_limited":
-        return `${names.agent} was busy.`;
+        return "".concat(names.agent, " was busy.");
       case "refused":
-        return `${capitalize(host)} reported a problem with this message.`;
+        return "".concat(capitalize(host), " reported a problem with this message.");
       case "interrupted":
         return "The page was reloaded while sending.";
       default:
         return "It may or may not have arrived.";
     }
   })();
-  return { label: "Not confirmed", title: `We couldn't confirm ${names.agent} got this.`, detail };
+  return { label: "Not confirmed", title: "We couldn't confirm ".concat(names.agent, " got this."), detail };
 }
 function consoleCheckNotFound(names) {
-  return `Not found in ${names.agent}'s recent messages.`;
+  return "Not found in ".concat(names.agent, "'s recent messages.");
 }
 function consoleCheckDelivered(timestampMs) {
   if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return "Delivered.";
-  return `Delivered at ${new Date(timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+  return "Delivered at ".concat(new Date(timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), ".");
 }
 function describeConsoleCheckFailure(error48, names) {
   const host = hostOf(names);
@@ -25853,22 +25776,22 @@ function describeConsoleCheckFailure(error48, names) {
   const reason = (() => {
     switch (kind) {
       case "connection_failed":
-        return `couldn't reach ${host} (offline or signed out).`;
+        return "couldn't reach ".concat(host, " (offline or signed out).");
       case "unauthenticated":
         return "you were signed out. Sign in and check again.";
       case "access_denied":
-        return `you don't have access to ${names.agent}'s messages.`;
+        return "you don't have access to ".concat(names.agent, "'s messages.");
       case "timeout":
-        return `${host} didn't answer in time.`;
+        return "".concat(host, " didn't answer in time.");
       case "gateway_error":
-        return `${host} had a problem.`;
+        return "".concat(host, " had a problem.");
       case "invalid_response":
-        return `got an unreadable answer from ${host}.`;
+        return "got an unreadable answer from ".concat(host, ".");
       default:
-        return `${host} couldn't look up ${names.agent}'s messages.`;
+        return "".concat(host, " couldn't look up ").concat(names.agent, "'s messages.");
     }
   })();
-  return `Couldn't check: ${reason}`;
+  return "Couldn't check: ".concat(reason);
 }
 
 // ../packages/console-core/src/context-edit.ts
@@ -26370,7 +26293,7 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
   const submitting = decision?.phase === "submitting";
   const stale = resourceStatus !== "ready";
   const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
-  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": `gating-pending:${request.pendingId}`, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": "gating-pending:".concat(request.pendingId), children: [
     /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("header", { className: "cc-approval__header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("strong", { children: request.action }),
       /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-approval__status", role: "status", children: state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved" })
@@ -26390,7 +26313,7 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
         /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("time", { dateTime: new Date(request.deadlineAtMs).toISOString(), children: new Date(request.deadlineAtMs).toLocaleString() }) })
       ] }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(RowDetails, { part: `approval-details:${request.pendingId}`, className: "cc-approval__details", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(RowDetails, { part: "approval-details:".concat(request.pendingId), className: "cc-approval__details", children: [
       /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("summary", { children: "Complete request details" }),
       /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("dl", { className: "cc-approval__scope", children: [
         /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("dt", { children: "Request" }),
@@ -26407,7 +26330,7 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
     ] }) : null,
     readOnly ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { children: "Read-only access" }) : null,
     resourceStatus === "forbidden" ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { children: "Approval access denied" }) : null,
-    pending ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": `gating-action:${request.pendingId}:${action}`, onClick: () => {
+    pending ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": "gating-action:".concat(request.pendingId, ":").concat(action), onClick: () => {
       void onDecide(request.pendingId, action);
     }, children: labels[action] }, action)) }) : null
   ] });
@@ -26416,14 +26339,14 @@ function ApprovalAttention({ snapshot, onOpen }) {
   if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
   const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
   const ready = snapshot.status === "ready";
-  const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  const status = ready ? "".concat(requests.length, " pending approval").concat(requests.length === 1 ? "" : "s") : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", "data-state": snapshot.status, "data-pending": ready && requests.length > 0, children: [
     /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
       "button",
       {
         className: "cc-approval-attention__open",
         type: "button",
-        "aria-label": `Needs you, ${status}`,
+        "aria-label": "Needs you, ".concat(status),
         title: status,
         onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingId : void 0),
         children: [
@@ -26553,7 +26476,7 @@ function rowGeometryOf(viewport, ids) {
   const top = viewport.getBoundingClientRect().top + viewport.clientTop;
   const rows = [];
   for (const id of ids) {
-    const row = viewport.querySelector(`[data-conversation-row-id="${id.replace(/["\\]/g, "\\$&")}"]`);
+    const row = viewport.querySelector('[data-conversation-row-id="'.concat(id.replace(/["\\]/g, "\\$&"), '"]'));
     if (!row || row.closest("details:not([open])")) continue;
     const rect = row.getBoundingClientRect();
     rows.push({ id, top: rect.top - top, bottom: rect.bottom - top });
@@ -37216,7 +37139,7 @@ function code2(node2, _2, state, info) {
   const exit3 = state.enter("codeFenced");
   let value = tracker.move(sequence);
   if (node2.lang) {
-    const subexit = state.enter(`codeFencedLang${suffix}`);
+    const subexit = state.enter("codeFencedLang".concat(suffix));
     value += tracker.move(
       state.safe(node2.lang, {
         before: value,
@@ -37228,7 +37151,7 @@ function code2(node2, _2, state, info) {
     subexit();
   }
   if (node2.lang && node2.meta) {
-    const subexit = state.enter(`codeFencedMeta${suffix}`);
+    const subexit = state.enter("codeFencedMeta".concat(suffix));
     value += tracker.move(" ");
     value += tracker.move(
       state.safe(node2.meta, {
@@ -37303,7 +37226,7 @@ function definition2(node2, _2, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state.enter("title".concat(suffix));
     value += tracker.move(" " + quote);
     value += tracker.move(
       state.safe(node2.title, {
@@ -37519,7 +37442,7 @@ function image2(node2, _2, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state.enter("title".concat(suffix));
     value += tracker.move(" " + quote);
     value += tracker.move(
       state.safe(node2.title, {
@@ -37684,7 +37607,7 @@ function link2(node2, _2, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state.enter("title".concat(suffix));
     value += tracker.move(" " + quote);
     value += tracker.move(
       state.safe(node2.title, {
@@ -39728,7 +39651,7 @@ var ConversationMarkdown = (0, import_react8.memo)(function ConversationMarkdown
   if (isJsonDocument(block.source)) {
     content3 = /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("pre", { className: "cc-rich-code-body", "data-source-start": 0, "data-source-end": block.source.length, children: /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("code", { className: "language-json", children: block.source }) });
   } else {
-    const clobberPrefix = `markdown-${encodeURIComponent(block.id)}-`;
+    const clobberPrefix = "markdown-".concat(encodeURIComponent(block.id), "-");
     if (streamed.current && (block.streaming || chunksMatchWhole(block.source))) {
       content3 = splitMarkdownChunks(block.source).map((chunk, index2) => /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(import_react8.Fragment, { children: [
         index2 > 0 ? "\n" : null,
@@ -39782,16 +39705,16 @@ function fileChangeCopyText(block) {
     block.before || "",
     block.name,
     block.after || "",
-    `+${block.plus}`,
-    `-${block.minus}`
+    "+".concat(block.plus),
+    "-".concat(block.minus)
   ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 function alignmentAttr(alignment) {
   return alignment || "left";
 }
 function ThinkingBlock({ block, index: index2, displayNormalization = true }) {
-  const [initiallyOpen] = useRowState(`thinking-initial:${index2}`, () => !(block.final && block.persisted));
-  const [open, setOpen] = useRowState(`thinking:${index2}`, () => initiallyOpen);
+  const [initiallyOpen] = useRowState("thinking-initial:".concat(index2), () => !(block.final && block.persisted));
+  const [open, setOpen] = useRowState("thinking:".concat(index2), () => initiallyOpen);
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
@@ -39846,7 +39769,7 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
         ] })
       ] }),
       block.detail ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-background-job__detail", children: block.detail }) : null
-    ] }, `background-job-${index2}`);
+    ] }, "background-job-".concat(index2));
   }
   if (block.type === "member-kickoff") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)(
@@ -39869,20 +39792,20 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
           ] })
         ]
       },
-      `member-kickoff-${index2}`
+      "member-kickoff-".concat(index2)
     );
   }
   if (block.type === "paragraph") {
-    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text, displayNormalization) }, `paragraph-${index2}`);
+    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text, displayNormalization) }, "paragraph-".concat(index2));
   }
   if (block.type === "heading") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
       "h3",
       {
-        className: `cc-rich-heading cc-rich-heading--${Number(block.level) || 2}`,
+        className: "cc-rich-heading cc-rich-heading--".concat(Number(block.level) || 2),
         dangerouslySetInnerHTML: markdownHtml(block.text, displayNormalization)
       },
-      `heading-${index2}`
+      "heading-".concat(index2)
     );
   }
   if (block.type === "code") {
@@ -39903,11 +39826,11 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("pre", { className: "cc-rich-code-body", children: codeBlock.highlightedHtml ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
         "code",
         {
-          className: `cc-rich-code-content language-${codeBlock.language || "text"}`,
+          className: "cc-rich-code-content language-".concat(codeBlock.language || "text"),
           dangerouslySetInnerHTML: { __html: codeBlock.highlightedHtml }
         }
-      ) : /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("code", { className: `cc-rich-code-content language-${codeBlock.language || "text"}`, children: codeBlock.body }) })
-    ] }, `code-${index2}`);
+      ) : /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("code", { className: "cc-rich-code-content language-".concat(codeBlock.language || "text"), children: codeBlock.body }) })
+    ] }, "code-".concat(index2));
   }
   if (block.type === "table") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-rich-table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("table", { className: "cc-rich-table", children: [
@@ -39917,7 +39840,7 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
           "data-align": alignmentAttr(block.alignments[cellIndex]),
           dangerouslySetInnerHTML: markdownHtml(header, displayNormalization)
         },
-        `header-${cellIndex}`
+        "header-".concat(cellIndex)
       )) }) }),
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("tbody", { children: block.rows.map((row, rowIndex) => /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("tr", { children: block.headers.map((_header, cellIndex) => /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
         "td",
@@ -39925,9 +39848,9 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
           "data-align": alignmentAttr(block.alignments[cellIndex]),
           dangerouslySetInnerHTML: markdownHtml(row[cellIndex] || "", displayNormalization)
         },
-        `cell-${rowIndex}-${cellIndex}`
-      )) }, `row-${rowIndex}`)) })
-    ] }) }, `table-${index2}`);
+        "cell-".concat(rowIndex, "-").concat(cellIndex)
+      )) }, "row-".concat(rowIndex))) })
+    ] }) }, "table-".concat(index2));
   }
   if (block.type === "command") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "cc-rich-command-stack", children: [
@@ -39949,7 +39872,7 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
         block.output ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("pre", { className: "cc-rich-command-card__output", children: block.output }) : null,
         block.footer ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-rich-command-card__footer", children: block.footer }) : null
       ] })
-    ] }, `command-${index2}`);
+    ] }, "command-".concat(index2));
   }
   if (block.type === "file-change") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("section", { className: "cc-rich-file-change", children: [
@@ -39972,14 +39895,14 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
           }
         )
       ] })
-    ] }, `file-change-${index2}`);
+    ] }, "file-change-".concat(index2));
   }
   if (block.type === "divider") {
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "cc-rich-divider", children: [
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-rich-divider__line" }),
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-rich-divider__label", children: block.text }),
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-rich-divider__line" })
-    ] }, `divider-${index2}`);
+    ] }, "divider-".concat(index2));
   }
   if (block.type === "image") {
     const image3 = block;
@@ -40001,13 +39924,13 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
           }
         )
       },
-      `image-${index2}`
+      "image-".concat(index2)
     );
   }
   if (block.type === "tool-call") {
-    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ToolCallBlock, { block }, `tool-call-${index2}`);
+    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ToolCallBlock, { block }, "tool-call-".concat(index2));
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ThinkingBlock, { block, index: index2, displayNormalization }) }, `thinking-${index2}`);
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ThinkingBlock, { block, index: index2, displayNormalization }) }, "thinking-".concat(index2));
 }
 var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function formatJsonIfPossible(text9) {
@@ -40029,15 +39952,15 @@ function toolBlockCopyText(block) {
     const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
     const result = meaningfulPeerResult(block.result);
     return [
-      `${dir} ${block.peerIdentity || block.peerTarget || "Unknown peer"}`,
+      "".concat(dir, " ").concat(block.peerIdentity || block.peerTarget || "Unknown peer"),
       conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
       peerBody,
       result
     ].filter(Boolean).join(": ").trim();
   }
-  const parts = [`$ ${block.name}`];
-  if (block.arguments) parts.push(`Input: ${block.arguments}`);
-  if (block.result) parts.push(`Result: ${block.result}`);
+  const parts = ["$ ".concat(block.name)];
+  if (block.arguments) parts.push("Input: ".concat(block.arguments));
+  if (block.result) parts.push("Result: ".concat(block.result));
   return parts.join("\n");
 }
 function parseObjectJson(text9) {
@@ -40136,7 +40059,7 @@ function toolAttentionKey(block) {
 function useToolDisclosure(blocks, initiallyOpen) {
   const keys2 = blocks.map(toolAttentionKey).filter((key) => key !== null);
   const signature = JSON.stringify(keys2);
-  const [state, setState] = useRowState(`tool:${JSON.stringify(blocks.map((block) => block.toolCallId))}`, () => ({ signature, keys: keys2, expanded: initiallyOpen }));
+  const [state, setState] = useRowState("tool:".concat(JSON.stringify(blocks.map((block) => block.toolCallId))), () => ({ signature, keys: keys2, expanded: initiallyOpen }));
   const expanded = state.expanded || state.signature !== signature && keys2.some((key) => !state.keys.includes(key));
   if (state.signature !== signature) setState({ signature, keys: keys2, expanded });
   const toggle = () => setState({ signature, keys: keys2, expanded: !expanded });
@@ -40151,7 +40074,7 @@ function ToolCallBlock({
   const displayLabels = useConversationDisplayLabels();
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
-  const statusClass = `cc-tool-call--${block.status}`;
+  const statusClass = "cc-tool-call--".concat(block.status);
   if (isPeer || block.peerIncoming) {
     const target = peerDisplayLabel(block, displayLabels?.peers);
     const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
@@ -40172,7 +40095,7 @@ function ToolCallBlock({
           children: [
             /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
             /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
-            /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__name", title: block.peerIdentity || block.peerTarget, children: block.peerIncoming ? `Received from ${target}` : target }),
+            /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__name", title: block.peerIdentity || block.peerTarget, children: block.peerIncoming ? "Received from ".concat(target) : target }),
             /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("span", { className: "cc-tool-call__peer-summary", children: [
               peerIntent && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__peer-intent", children: peerIntent }),
               content3 && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__peer-body", children: content3 })
@@ -40200,19 +40123,19 @@ function ToolCallBlock({
             }
           )
         },
-        `${image3.blobId || image3.imageId || image3.src}-${index2}`
+        "".concat(image3.blobId || image3.imageId || image3.src, "-").concat(index2)
       )) }),
       expanded && detailRows.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-tool-call__body", children: detailRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "cc-tool-call__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-tool-call__section-label", children: row.label }),
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("pre", { className: "cc-tool-call__pre", children: formatJsonIfPossible(row.value) })
-      ] }, `${row.label}:${row.value}`)) })
+      ] }, "".concat(row.label, ":").concat(row.value))) })
     ] });
   }
   let argsPreview = block.arguments || "";
   try {
     const parsed = JSON.parse(argsPreview);
     if (typeof parsed === "object" && parsed !== null) {
-      argsPreview = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ");
+      argsPreview = Object.entries(parsed).map(([k, v]) => "".concat(k, ": ").concat(typeof v === "string" ? v : JSON.stringify(v))).join(", ");
     }
   } catch {
   }
@@ -40303,7 +40226,7 @@ function ToolCallGroup({ blocks }) {
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
             "span",
             {
-              className: clsx_default("cc-tool-call__peer-status", `cc-tool-call__peer-status--${block.status}`, showCompletionLabel && "cc-tool-call__peer-status--explicit"),
+              className: clsx_default("cc-tool-call__peer-status", "cc-tool-call__peer-status--".concat(block.status), showCompletionLabel && "cc-tool-call__peer-status--explicit"),
               role: "status",
               "aria-label": completionLabel,
               title: completionLabel,
@@ -40338,7 +40261,7 @@ function PeerToolGroup({ blocks }) {
   const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
   const isIncoming = blocks[0]?.peerIncoming;
   const arrow = isIncoming ? "\u2199" : "\u2197";
-  const label = isIncoming ? `Received from ${targets.join(", ")}` : `Sent to ${targets.join(", ")}`;
+  const label = isIncoming ? "Received from ".concat(targets.join(", ")) : "Sent to ".concat(targets.join(", "));
   return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("section", { "data-quote-exclude": true, className: clsx_default("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass), children: [
     /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)(
       "div",
@@ -40373,7 +40296,7 @@ function PeerToolGroup({ blocks }) {
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-tool-call__section-label", children: toolCompletionLabel(block) }),
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("pre", { className: "cc-tool-call__pre", children: block.result })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: `cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`, children: block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF" })
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "cc-tool-call__peer-status cc-tool-call__peer-status--".concat(block.status), children: block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF" })
       ] }, block.toolCallId || i2);
     }) })
   ] });
@@ -40402,7 +40325,7 @@ function ConversationRichContent({
   }
   const body = groupRoutineToolRows(blocks, (block) => [block]).flatMap((run) => {
     if (!insideDisclosure && run.tools.length >= 2) return [
-      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ConversationRichContent, { blocks: run.rows, markdownUrlPolicy, richStyle, Icon: Icon2, displayNormalization }) }, `completed:${run.tools[0].toolCallId}`)
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(ConversationRichContent, { blocks: run.rows, markdownUrlPolicy, richStyle, Icon: Icon2, displayNormalization }) }, "completed:".concat(run.tools[0].toolCallId))
     ];
     return run.rows.map((block) => renderBlock(block, blocks.indexOf(block), Icon2, displayNormalization, markdownUrlPolicy));
   }).filter((element3) => element3 !== null);
@@ -40432,7 +40355,7 @@ function DeliveredContextMessage({ message }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("small", { children: "User-provided snapshot" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record8.quote, label: `Copy quote from ${record8.label}`, copiedLabel: "Copied quote" })
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record8.quote, label: "Copy quote from ".concat(record8.label), copiedLabel: "Copied quote" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("blockquote", { className: "cc-delivered-context__quote", children: record8.quote })
     ] }, record8.id)) })
@@ -40478,7 +40401,7 @@ function ParticipantRow({ row }) {
   return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
     "li",
     {
-      className: `cc-council__participant${row.seated ? "" : " is-unseated"}`,
+      className: "cc-council__participant".concat(row.seated ? "" : " is-unseated"),
       "data-participant-order": row.order,
       "data-seated": row.seated ? "true" : "false",
       children: [
@@ -40501,7 +40424,7 @@ function ExchangeRow({ row }) {
   return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
     "li",
     {
-      className: `cc-council__exchange is-${row.status}`,
+      className: "cc-council__exchange is-".concat(row.status),
       "data-exchange-status": row.status,
       "data-round": row.round,
       "data-sequence": row.sequence,
@@ -40511,7 +40434,7 @@ function ExchangeRow({ row }) {
           row.round + 1
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__exchange-identity", children: row.targetIdentity }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: `cc-council__exchange-status is-${row.status}`, children: exchangeStatusLabel(row.status) }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__exchange-status is-".concat(row.status), children: exchangeStatusLabel(row.status) }),
         row.text ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__exchange-text", children: row.text }) : null,
         row.truncated ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__exchange-truncated", title: "Truncated by the receiver bound", children: "truncated" }) : null
       ]
@@ -40545,12 +40468,12 @@ function CouncilCard({
   return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
     "section",
     {
-      className: `cc-council is-${entry.status}${collapsed ? " is-collapsed" : ""}`,
+      className: "cc-council is-".concat(entry.status).concat(collapsed ? " is-collapsed" : ""),
       "data-council-card": "",
       "data-council-id": entry.councilId,
       "data-status": entry.status,
       "data-exit-reason": entry.exitReason,
-      "data-testid": `council-card:${entry.councilId}`,
+      "data-testid": "council-card:".concat(entry.councilId),
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("header", { className: "cc-council__header", children: [
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__mark", "aria-hidden": "true", children: Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(Icon2, { name: "i-branch" }) : "\u25CE" }),
@@ -40573,8 +40496,8 @@ function CouncilCard({
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
             "span",
             {
-              className: `cc-council__badge is-${entry.status}`,
-              title: `exit_reason: ${entry.exitReason}`,
+              className: "cc-council__badge is-".concat(entry.status),
+              title: "exit_reason: ".concat(entry.exitReason),
               children: CARD_STATUS_LABEL[entry.status]
             }
           ),
@@ -40608,11 +40531,11 @@ function CouncilCard({
             debt.subject,
             ": ",
             debt.detail
-          ] }, `${debt.subject}:${debt.detail}`))
+          ] }, "".concat(debt.subject, ":").concat(debt.detail)))
         ] }) : null,
         collapsed || !hasBody ? null : /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "cc-council__body", children: [
           entry.mergeText ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "cc-council__merge", "data-merge-kind": entry.mergeKind || "", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__merge-label", children: entry.mergeFinalizer ? `Summary by ${entry.mergeFinalizer}` : "Summary" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__merge-label", children: entry.mergeFinalizer ? "Summary by ".concat(entry.mergeFinalizer) : "Summary" }),
             /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { className: "cc-council__merge-text", children: entry.mergeText }),
             entry.mergeTruncated ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__merge-truncated", children: "truncated" }) : null
           ] }) : null,
@@ -40629,7 +40552,7 @@ function CouncilCard({
           ] }) : null,
           entry.exchanges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "cc-council__section", children: [
             /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "cc-council__section-label", children: "Exchanges" }),
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("ul", { className: "cc-council__exchanges", children: entry.exchanges.map((row) => /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ExchangeRow, { row }, `${row.round}:${row.sequence}`)) }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("ul", { className: "cc-council__exchanges", children: entry.exchanges.map((row) => /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ExchangeRow, { row }, "".concat(row.round, ":").concat(row.sequence))) }),
             entry.exchangeOverflowCount ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "cc-council__overflow", children: [
               "+",
               entry.exchangeOverflowCount,
@@ -40698,7 +40621,7 @@ function formatClock(iso) {
   if (Number.isNaN(date6.getTime())) return "";
   const hh = String(date6.getHours()).padStart(2, "0");
   const mm = String(date6.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return "".concat(hh, ":").concat(mm);
 }
 function itemRowHasDetail(row) {
   return Boolean(
@@ -40725,12 +40648,12 @@ function ItemRow({
   return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
     "li",
     {
-      className: `cc-work-graph__item is-${row.status}${expanded ? " is-expanded" : ""}`,
+      className: "cc-work-graph__item is-".concat(row.status).concat(expanded ? " is-expanded" : ""),
       "data-workgraph-item": row.itemId,
       "data-item-status": row.status,
       "data-revision": row.revision,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "cc-work-graph__item-line", style: { paddingLeft: `${row.depth * 18}px` }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "cc-work-graph__item-line", style: { paddingLeft: "".concat(row.depth * 18, "px") }, children: [
           /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
             "button",
             {
@@ -40739,12 +40662,12 @@ function ItemRow({
               disabled: !hasDetail,
               "aria-expanded": hasDetail ? expanded : void 0,
               onClick: hasDetail ? () => setExpanded((value) => !value) : void 0,
-              "data-testid": `workgraph-item:${row.itemId}`,
+              "data-testid": "workgraph-item:".concat(row.itemId),
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: `cc-work-graph__dot is-${row.status}`, "aria-hidden": "true" }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__dot is-".concat(row.status), "aria-hidden": "true" }),
                 /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__item-title", children: row.title }),
-                row.priority && row.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: `cc-work-graph__chip is-priority-${row.priority}`, children: row.priority }) : null,
-                row.ownerLabel ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-owner", title: `Owned by ${row.ownerLabel}`, children: row.ownerLabel }) : null,
+                row.priority && row.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-priority-".concat(row.priority), children: row.priority }) : null,
+                row.ownerLabel ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-owner", title: "Owned by ".concat(row.ownerLabel), children: row.ownerLabel }) : null,
                 row.blocked ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-blocked", children: "blocked" }) : null,
                 dueDay ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-due", title: "Due date", children: dueDay }) : null,
                 hasDetail ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__item-chevron", "aria-hidden": "true", children: expanded ? "\u25BE" : "\u25B8" }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__item-status", children: itemStatusLabel(row.status) })
@@ -40756,8 +40679,8 @@ function ItemRow({
             {
               type: "button",
               className: "cc-work-graph__action",
-              title: `Claim ${row.title}`,
-              "data-testid": `workgraph-action:${row.itemId}:claim`,
+              title: "Claim ".concat(row.title),
+              "data-testid": "workgraph-action:".concat(row.itemId, ":claim"),
               onClick: (event) => {
                 event.stopPropagation();
                 actions?.onClaim?.({ itemId: row.itemId, revision: row.revision });
@@ -40770,8 +40693,8 @@ function ItemRow({
             {
               type: "button",
               className: "cc-work-graph__action",
-              title: `Close ${row.title} as completed`,
-              "data-testid": `workgraph-action:${row.itemId}:close`,
+              title: "Close ".concat(row.title, " as completed"),
+              "data-testid": "workgraph-action:".concat(row.itemId, ":close"),
               onClick: (event) => {
                 event.stopPropagation();
                 actions?.onClose?.({ itemId: row.itemId, revision: row.revision });
@@ -40780,13 +40703,13 @@ function ItemRow({
             }
           ) : null
         ] }),
-        hasDetail && expanded ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "cc-work-graph__item-detail", style: { marginLeft: `${row.depth * 18 + 25}px` }, children: [
+        hasDetail && expanded ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "cc-work-graph__item-detail", style: { marginLeft: "".concat(row.depth * 18 + 25, "px") }, children: [
           row.description ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { className: "cc-work-graph__item-description", children: row.description }) : null,
           row.alsoUnder && row.alsoUnder.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
             "p",
             {
               className: "cc-work-graph__item-also-under",
-              "data-testid": `workgraph-item:${row.itemId}:also-under`,
+              "data-testid": "workgraph-item:".concat(row.itemId, ":also-under"),
               children: [
                 "also under ",
                 row.alsoUnder.join(", ")
@@ -40794,7 +40717,7 @@ function ItemRow({
             }
           ) : null,
           row.labels && row.labels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "cc-work-graph__item-labels", children: row.labels.map((label) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__chip is-label", children: label }, label)) }) : null,
-          row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("li", { children: line }, `${line}-${index2}`)) }) : null,
+          row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("li", { children: line }, "".concat(line, "-").concat(index2))) }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "cc-work-graph__item-meta", children: [
             /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: itemStatusLabel(row.status) }),
             typeof row.revision === "number" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
@@ -40871,10 +40794,10 @@ function AttentionRow({
   return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
     "li",
     {
-      className: `cc-work-graph__attention-row${attentionIsPaused(row) ? " is-paused" : ""}`,
+      className: "cc-work-graph__attention-row".concat(attentionIsPaused(row) ? " is-paused" : ""),
       "data-workgraph-binding": row.bindingId,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: `cc-work-graph__mode is-${row.mode}`, children: row.mode }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__mode is-".concat(row.mode), children: row.mode }),
         /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__attention-status", children: row.statusLabel }),
         row.targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__attention-target", title: "Attention target", children: row.targetLabel }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__attention-spacer" }),
@@ -40884,7 +40807,7 @@ function AttentionRow({
             type: "button",
             className: "cc-work-graph__action",
             title: button.title,
-            "data-testid": `workgraph-attention:${row.bindingId}:${button.key}`,
+            "data-testid": "workgraph-attention:".concat(row.bindingId, ":").concat(button.key),
             onClick: (event) => {
               event.stopPropagation();
               button.onClick();
@@ -40919,11 +40842,11 @@ function WorkGraphCard({
   return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
     "section",
     {
-      className: `cc-work-graph is-${entry.status}${collapsed ? " is-collapsed" : ""}`,
+      className: "cc-work-graph is-".concat(entry.status).concat(collapsed ? " is-collapsed" : ""),
       "data-work-graph-card": "",
       "data-root-id": entry.rootId,
       "data-status": entry.status,
-      "data-testid": `workgraph-card:${entry.rootId}`,
+      "data-testid": "workgraph-card:".concat(entry.rootId),
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("header", { className: "cc-work-graph__header", children: [
           /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__mark", "aria-hidden": "true", children: Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Icon2, { name: "i-cube" }) : "\u25C8" }),
@@ -40939,18 +40862,18 @@ function WorkGraphCard({
               "aria-valuemin": 0,
               "aria-valuemax": total,
               "aria-valuenow": completed,
-              "aria-label": `${completed} of ${total} work items completed`,
+              "aria-label": "".concat(completed, " of ").concat(total, " work items completed"),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { className: "cc-work-graph__progress-count", children: [
                   completed,
                   "/",
                   total
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__progress-track", children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__progress-fill", style: { width: `${percent}%` } }) })
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__progress-track", children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__progress-fill", style: { width: "".concat(percent, "%") } }) })
               ]
             }
           ) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { className: `cc-work-graph__badge is-${entry.status}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { className: "cc-work-graph__badge is-".concat(entry.status), children: [
             entry.status === "active" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "cc-work-graph__pulse", "aria-hidden": "true" }) : null,
             CARD_STATUS_LABEL2[entry.status]
           ] }),
@@ -40959,7 +40882,7 @@ function WorkGraphCard({
             {
               className: "cc-work-graph__last-failed",
               title: "The last WorkGraph action failed",
-              "data-testid": `workgraph-card:${entry.rootId}:last-action-failed`,
+              "data-testid": "workgraph-card:".concat(entry.rootId, ":last-action-failed"),
               children: "\u2717"
             }
           ) : null,
@@ -40970,7 +40893,7 @@ function WorkGraphCard({
               className: "cc-work-graph__collapse",
               "aria-expanded": !collapsed,
               "aria-label": collapsed ? "Expand work graph" : "Collapse work graph",
-              "data-testid": `workgraph-card:${entry.rootId}:toggle`,
+              "data-testid": "workgraph-card:".concat(entry.rootId, ":toggle"),
               onClick: () => setCollapsed((value) => !value),
               children: collapsed ? "\u25B8" : "\u25BE"
             }
@@ -40982,7 +40905,7 @@ function WorkGraphCard({
             "li",
             {
               className: "cc-work-graph__overflow",
-              "data-testid": `workgraph-card:${entry.rootId}:overflow`,
+              "data-testid": "workgraph-card:".concat(entry.rootId, ":overflow"),
               children: [
                 "+",
                 entry.itemOverflowCount,
@@ -41000,7 +40923,7 @@ function WorkGraphCard({
           },
           row.bindingId
         )) }) : null,
-        !collapsed && entry.recentEvents && entry.recentEvents.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "cc-work-graph__events", children: entry.recentEvents.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "cc-work-graph__event", children: line }, `${line}-${index2}`)) }) : null
+        !collapsed && entry.recentEvents && entry.recentEvents.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "cc-work-graph__events", children: entry.recentEvents.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "cc-work-graph__event", children: line }, "".concat(line, "-").concat(index2))) }) : null
       ]
     }
   );
@@ -41039,8 +40962,8 @@ function formatEntryTime(iso) {
   const date6 = new Date(iso);
   if (Number.isNaN(date6.getTime())) return null;
   const pad = (value) => String(value).padStart(2, "0");
-  const short = `${pad(date6.getHours())}:${pad(date6.getMinutes())}`;
-  const full = `${date6.getFullYear()}-${pad(date6.getMonth() + 1)}-${pad(date6.getDate())} ${short}:${pad(date6.getSeconds())}`;
+  const short = "".concat(pad(date6.getHours()), ":").concat(pad(date6.getMinutes()));
+  const full = "".concat(date6.getFullYear(), "-").concat(pad(date6.getMonth() + 1), "-").concat(pad(date6.getDate()), " ").concat(short, ":").concat(pad(date6.getSeconds()));
   return { short, full };
 }
 function EntryTime({ iso }) {
@@ -41089,13 +41012,13 @@ function useConsoleDockController({
   const splitCounterRef = (0, import_react19.useRef)(1);
   const tabCounterRef = (0, import_react19.useRef)(1);
   function nextPanelId() {
-    return `panel-${panelCounterRef.current++}`;
+    return "panel-".concat(panelCounterRef.current++);
   }
   function nextSplitId() {
-    return `split-${splitCounterRef.current++}`;
+    return "split-".concat(splitCounterRef.current++);
   }
   function nextTabId() {
-    return `tab-${tabCounterRef.current++}`;
+    return "tab-".concat(tabCounterRef.current++);
   }
   const [state, setState] = (0, import_react19.useState)(() => createConsoleDockState({
     initialTarget,
@@ -41202,12 +41125,12 @@ function capabilityReason(management, action, edge) {
   }
   const globalCapability = management.policy.capabilities[action];
   if (!topologyCapabilityAllowsRequest(globalCapability)) {
-    return globalCapability.reason || `${action} is not permitted.`;
+    return globalCapability.reason || "".concat(action, " is not permitted.");
   }
   const pairCapability = topologyAffordanceFor(management, edge)?.actions[action];
-  if (!pairCapability) return `${action} is not available for this endpoint pair.`;
+  if (!pairCapability) return "".concat(action, " is not available for this endpoint pair.");
   if (!topologyCapabilityAllowsRequest(pairCapability)) {
-    return pairCapability.reason || `${action} is not permitted for this endpoint pair.`;
+    return pairCapability.reason || "".concat(action, " is not permitted for this endpoint pair.");
   }
   return null;
 }
@@ -41219,7 +41142,7 @@ function operationStatus(receipt) {
     case "queued":
       return "Queued";
     case "running":
-      return `${receipt.action === "disconnect" ? "Disconnecting" : "Connecting"}\u2026`;
+      return "".concat(receipt.action === "disconnect" ? "Disconnecting" : "Connecting", "\u2026");
     case "partial":
       return "Partial";
     case "conflict":
@@ -41299,7 +41222,7 @@ function buildActionState(management, source, target, edge, state, receipt, hasM
   return {
     action,
     label,
-    ariaLabel: `${label} ${target.presentation.label} ${action === "disconnect" ? "from" : "to"} ${source.presentation.label}`,
+    ariaLabel: "".concat(label, " ").concat(target.presentation.label, " ").concat(action === "disconnect" ? "from" : "to", " ").concat(source.presentation.label),
     disabled: Boolean(reason),
     reason,
     approvalRequired,
@@ -41326,7 +41249,7 @@ function boundedActionReason(management, action, hasHandler) {
   }
   if (action.operationCount < 1) return "This bulk action has no operations.";
   if (action.operationCount > action.maxOperations || action.operationCount > Number(policyLimit)) {
-    return `This action exceeds the ${Math.min(action.maxOperations, Number(policyLimit))}-operation limit.`;
+    return "This action exceeds the ".concat(Math.min(action.maxOperations, Number(policyLimit)), "-operation limit.");
   }
   if (topologyOperationIsPending(action.receipt)) {
     return action.receipt?.message || operationStatus(action.receipt || null) || "Operation pending.";
@@ -41390,13 +41313,13 @@ function ConnectionPicker({
       /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: resolvedDescription })
     ] }),
     featureDisabled ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "topo-edit__notice is-disabled", role: "status", children: management.policy.reason || "Connection management is disabled for this runtime." }) : null,
-    health !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: `topo-edit__notice is-${health}`, role: "status", children: [
+    health !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "topo-edit__notice is-".concat(health), role: "status", children: [
       /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("strong", { children: health === "conflict" ? "Topology conflict" : "Topology degraded" }),
       /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: management.message || "The displayed topology may need reconciliation." })
     ] }) : null,
-    source ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("section", { className: "topo-edit__focus", "data-testid": `connection-picker-source:${source.ref.id}`, children: [
+    source ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("section", { className: "topo-edit__focus", "data-testid": "connection-picker-source:".concat(source.ref.id), children: [
       /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "topo-edit__focus-identity", style: endpointTone(source), children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `topo-edit__dot${source.presentation.crossScope ? " is-cross-scope" : ""}` }),
+        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "topo-edit__dot".concat(source.presentation.crossScope ? " is-cross-scope" : "") }),
         /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("strong", { children: source.presentation.label }),
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("small", { children: source.presentation.caption || source.ref.id })
@@ -41474,8 +41397,8 @@ function ConnectionPicker({
           return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
             "div",
             {
-              className: `topo-edit__row is-${state}${endpoint.presentation.crossScope ? " is-cross-scope" : ""}`,
-              "data-testid": `connection-picker-row:${endpoint.ref.id}`,
+              className: "topo-edit__row is-".concat(state).concat(endpoint.presentation.crossScope ? " is-cross-scope" : ""),
+              "data-testid": "connection-picker-row:".concat(endpoint.ref.id),
               "data-connection-state": state,
               style: endpointTone(endpoint),
               children: [
@@ -41488,7 +41411,7 @@ function ConnectionPicker({
                     disabled: !allowSourceChange && Boolean(source),
                     "aria-pressed": isSource,
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `topo-edit__dot${endpoint.presentation.crossScope ? " is-cross-scope" : ""}` }),
+                      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "topo-edit__dot".concat(endpoint.presentation.crossScope ? " is-cross-scope" : "") }),
                       /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "topo-edit__identity-copy", children: [
                         /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("strong", { children: endpoint.presentation.label }),
                         /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("small", { children: endpoint.presentation.caption || endpoint.ref.id }),
@@ -41502,19 +41425,19 @@ function ConnectionPicker({
                   /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
                     "button",
                     {
-                      "aria-label": `Check ${endpoint.presentation.label} connection availability with ${source.presentation.label}`,
+                      "aria-label": "Check ".concat(endpoint.presentation.label, " connection availability with ").concat(source.presentation.label),
                       className: "topo-edit__toggle",
                       type: "button",
                       onClick: () => void onRequestPairInspection?.(edge),
                       children: "Check"
                     }
                   )
-                ] }) : source && edge && unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "topo-edit__action", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `topo-edit__status${pairIsResolving ? " is-running" : " is-unavailable"}`, children: status }) }) : source && actionState && !unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "topo-edit__action", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `topo-edit__status is-${receipt?.status || state}`, children: status }),
+                ] }) : source && edge && unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "topo-edit__action", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "topo-edit__status".concat(pairIsResolving ? " is-running" : " is-unavailable"), children: status }) }) : source && actionState && !unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "topo-edit__action", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "topo-edit__status is-".concat(receipt?.status || state), children: status }),
                   /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
                     "button",
                     {
-                      className: `topo-edit__toggle is-${actionState.action}${actionState.approvalRequired ? " requires-approval" : ""}`,
+                      className: "topo-edit__toggle is-".concat(actionState.action).concat(actionState.approvalRequired ? " requires-approval" : ""),
                       type: "button",
                       disabled: actionState.disabled,
                       "aria-label": actionState.ariaLabel,
@@ -41694,14 +41617,14 @@ function typedCommsPulseFromFrame(frame, data, graph) {
     const requestId = textFromUnknown3(block.request_id);
     if (direction === "outgoing") {
       return {
-        id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+        id: requestId || "".concat(frame.id || frame.timestampMs, "-typed-comms"),
         from: receiver,
         to: peerIdentity,
         ts: frame.timestampMs || 0
       };
     }
     return {
-      id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+      id: requestId || "".concat(frame.id || frame.timestampMs, "-typed-comms"),
       from: peerIdentity,
       to: receiver,
       ts: frame.timestampMs || 0
@@ -41904,7 +41827,7 @@ function deriveTopologyActivity(frames, graph, now, life = 1500) {
         const recipient = resolvePeerTarget(args, peerRegistry, graph);
         if (recipient && recipient !== identity) {
           pulses.push({
-            id: call.id || `${frame.id || ts}-${pulses.length}`,
+            id: call.id || "".concat(frame.id || ts, "-").concat(pulses.length),
             from: identity,
             to: recipient,
             ts
@@ -41973,7 +41896,7 @@ function RoleTree({
       "button",
       {
         type: "button",
-        className: `topo-roletree__mob ${rootHot ? "is-hot" : ""}${rootBusy ? " is-busy" : ""}`,
+        className: "topo-roletree__mob ".concat(rootHot ? "is-hot" : "").concat(rootBusy ? " is-busy" : ""),
         onClick: () => toggle("__root"),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
@@ -42009,7 +41932,7 @@ function RoleTree({
           "button",
           {
             type: "button",
-            className: `topo-roletree__role ${sectionHot ? "is-hot" : ""}${sectionBusy ? " is-busy" : ""}`,
+            className: "topo-roletree__role ".concat(sectionHot ? "is-hot" : "").concat(sectionBusy ? " is-busy" : ""),
             onClick: () => toggle(role),
             children: [
               /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
@@ -42023,7 +41946,7 @@ function RoleTree({
               /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__dot", style: { background: colour } }),
               /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__label", children: role }),
               /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__count", children: list4.length }),
-              sectionBusy && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__busy", "aria-label": `${sectionBusyCount} working`, children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__busy-count", children: sectionBusyCount }) })
+              sectionBusy && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__busy", "aria-label": "".concat(sectionBusyCount, " working"), children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "topo-roletree__busy-count", children: sectionBusyCount }) })
             ]
           }
         ),
@@ -42033,9 +41956,9 @@ function RoleTree({
           return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
             "div",
             {
-              className: `topo-roletree__agent ${isHot ? "is-hot" : ""}${isBusy ? " is-busy" : ""}`,
-              "data-testid": `topology-node:${agent.id}`,
-              title: `${agent.id}${agent.state ? " \xB7 " + agent.state : ""}${isBusy ? " \xB7 working" : ""}`,
+              className: "topo-roletree__agent ".concat(isHot ? "is-hot" : "").concat(isBusy ? " is-busy" : ""),
+              "data-testid": "topology-node:".concat(agent.id),
+              title: "".concat(agent.id).concat(agent.state ? " \xB7 " + agent.state : "").concat(isBusy ? " \xB7 working" : ""),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
                   "span",
@@ -42090,7 +42013,7 @@ function groupPalette(index2) {
 }
 function withAlpha(colour, alpha) {
   if (colour.startsWith("hsl(") && !colour.includes("/")) {
-    return colour.replace(")", ` / ${alpha})`);
+    return colour.replace(")", " / ".concat(alpha, ")"));
   }
   return colour;
 }
@@ -43001,7 +42924,7 @@ function DenseGraphMap({
   let editHint = "Drag an agent onto an authorized peer to connect \xB7 drag an authorized link away to disconnect";
   if (drag?.kind === "node") {
     const target = drag.targetId ? graph.byId.get(drag.targetId) : null;
-    editHint = target ? `Release to connect to ${target.label}` : "Drop on an agent to connect";
+    editHint = target ? "Release to connect to ".concat(target.label) : "Drop on an agent to connect";
   } else if (drag?.kind === "edge") {
     editHint = drag.torn ? "Release to disconnect" : "Drag farther to tear this link";
   }
@@ -43138,8 +43061,8 @@ function DenseGraphMap({
             {
               className: "topo-dense__group-label",
               style: {
-                left: `${g2.x * viewport.scale + viewport.x}px`,
-                top: `${g2.y * viewport.scale + viewport.y + 18}px`,
+                left: "".concat(g2.x * viewport.scale + viewport.x, "px"),
+                top: "".concat(g2.y * viewport.scale + viewport.y + 18, "px"),
                 borderColor: g2.colour
               },
               children: [
@@ -43162,8 +43085,8 @@ function DenseGraphMap({
               {
                 className: "topo-dense__node-label",
                 style: {
-                  left: `${(x + Math.cos(angle) * offset) * viewport.scale + viewport.x}px`,
-                  top: `${(y2 + Math.sin(angle) * offset) * viewport.scale + viewport.y}px`,
+                  left: "".concat((x + Math.cos(angle) * offset) * viewport.scale + viewport.x, "px"),
+                  top: "".concat((y2 + Math.sin(angle) * offset) * viewport.scale + viewport.y, "px"),
                   borderColor: layout.groups[node2.groupIndex]?.colour || colourForRole(node2.agent.role, roleIndex)
                 },
                 children: node2.agent.label
@@ -43179,8 +43102,8 @@ function DenseGraphMap({
             {
               className: "topo-dense__hover-label",
               style: {
-                left: `${(layout.byId.get(hover.id)?.x || 0) * viewport.scale + viewport.x}px`,
-                top: `${(layout.byId.get(hover.id)?.y || 0) * viewport.scale + viewport.y}px`
+                left: "".concat((layout.byId.get(hover.id)?.x || 0) * viewport.scale + viewport.x, "px"),
+                top: "".concat((layout.byId.get(hover.id)?.y || 0) * viewport.scale + viewport.y, "px")
               },
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("strong", { children: hover.label }),
@@ -43335,8 +43258,8 @@ function TopologyPanel({
             " agents \xB7 ",
             graph.edges.length,
             " links",
-            busyCount > 0 ? ` \xB7 ${busyCount} working` : "",
-            liveCount > 0 && busyCount === 0 ? ` \xB7 ${liveCount} live` : "",
+            busyCount > 0 ? " \xB7 ".concat(busyCount, " working") : "",
+            liveCount > 0 && busyCount === 0 ? " \xB7 ".concat(liveCount, " live") : "",
             management?.policy.mode === "read_only" ? " \xB7 read-only" : ""
           ] }),
           view === "graph" ? /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "topo__viewbar topo__viewbar--labels", role: "group", "aria-label": "Edges", children: [
@@ -43345,10 +43268,10 @@ function TopologyPanel({
               "button",
               {
                 type: "button",
-                className: `topo__viewbtn ${edgeMode === mode.id ? "is-active" : ""}`,
+                className: "topo__viewbtn ".concat(edgeMode === mode.id ? "is-active" : ""),
                 onClick: () => pickEdgeMode(mode.id),
                 title: mode.help,
-                "data-testid": `topology-edges:${mode.id}`,
+                "data-testid": "topology-edges:".concat(mode.id),
                 children: mode.label
               },
               mode.id
@@ -43358,10 +43281,10 @@ function TopologyPanel({
             "button",
             {
               type: "button",
-              className: `topo__viewbtn ${view === candidate.id ? "is-active" : ""}`,
+              className: "topo__viewbtn ".concat(view === candidate.id ? "is-active" : ""),
               onClick: () => pickView(candidate.id),
               title: candidate.help,
-              "data-testid": `topology-view:${candidate.id}`,
+              "data-testid": "topology-view:".concat(candidate.id),
               children: candidate.label
             },
             candidate.id
@@ -43502,14 +43425,14 @@ function QuoteContextChip({ record: record8, index: index2, records, onEdit, onR
       setSaving(false);
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("li", { className: `cc-context-chip${editing && onEdit ? " cc-context-chip--editing" : ""}`, children: editing && onEdit ? /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "cc-context-chip__editor", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("li", { className: "cc-context-chip".concat(editing && onEdit ? " cc-context-chip--editing" : ""), children: editing && onEdit ? /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "cc-context-chip__editor", children: [
     /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("label", { children: [
       record8.label,
       /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
         "textarea",
         {
           ref: editorRef,
-          "aria-label": `Quote from ${record8.label}`,
+          "aria-label": "Quote from ".concat(record8.label),
           value: draft,
           rows: 4,
           "aria-invalid": !!error48,
@@ -43535,7 +43458,7 @@ function QuoteContextChip({ record: record8, index: index2, records, onEdit, onR
       /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", onClick: cancel, disabled: saving, "aria-label": "Cancel quote edit", children: "Cancel" })
     ] })
   ] }) : /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(RowDetails, { part: `quote:${record8.id}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(RowDetails, { part: "quote:".concat(record8.id), children: [
       /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("summary", { children: record8.label }),
       /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("blockquote", { children: record8.quote }),
       /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("small", { children: [
@@ -43545,21 +43468,21 @@ function QuoteContextChip({ record: record8, index: index2, records, onEdit, onR
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "cc-context-chip__actions", children: [
       onReorder ? /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record8.id, "up"), "aria-label": `Move quote from ${record8.label} earlier`, title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "up" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record8.id, "down"), "aria-label": `Move quote from ${record8.label} later`, title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "down" }) })
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record8.id, "up"), "aria-label": "Move quote from ".concat(record8.label, " earlier"), title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "up" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record8.id, "down"), "aria-label": "Move quote from ".concat(record8.label, " later"), title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "down" }) })
       ] }) : null,
       onEdit ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", ref: editButtonRef, onClick: () => {
         setDraft(record8.quote);
         setError("");
         setEditing(true);
-      }, "aria-label": `Edit quote from ${record8.label}`, title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
-      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", onClick: () => onRemove(record8.id), "aria-label": `Remove quote from ${record8.label}`, title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
+      }, "aria-label": "Edit quote from ".concat(record8.label), title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
+      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { type: "button", onClick: () => onRemove(record8.id), "aria-label": "Remove quote from ".concat(record8.label), title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
     ] })
   ] }) });
 }
 function QuoteContextChips({ records, destinationLabel, ...actions }) {
   if (!records.length) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("section", { className: "cc-context-chips", "aria-label": `Quoted context for ${destinationLabel}`, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("section", { className: "cc-context-chips", "aria-label": "Quoted context for ".concat(destinationLabel), children: [
     /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "cc-context-chips__destination", children: [
       "Quoted context for ",
       destinationLabel
@@ -43582,7 +43505,7 @@ function createNativeMcpAppsHost(options) {
     signal.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => controller.abort(new Error("MCP App request timed out")), options.requestTimeoutMs ?? 6e4);
     try {
-      const url2 = new URL(`${base.pathname.replace(/\/$/, "")}/console/mcp-apps/${operation2}`, base.origin);
+      const url2 = new URL("".concat(base.pathname.replace(/\/$/, ""), "/console/mcp-apps/").concat(operation2), base.origin);
       const response = await fetch(url2.href, {
         method: "POST",
         credentials: "same-origin",
@@ -43598,7 +43521,7 @@ function createNativeMcpAppsHost(options) {
         body: JSON.stringify({ ...locator, ...params })
       });
       controller.signal.throwIfAborted();
-      if (!response.ok) throw new Error(`MCP App request failed (HTTP ${response.status})`);
+      if (!response.ok) throw new Error("MCP App request failed (HTTP ".concat(response.status, ")"));
       const result = await response.json();
       controller.signal.throwIfAborted();
       return result;
@@ -43677,7 +43600,7 @@ function useConsolePanels(supplied = EMPTY_PANELS, modules = [], baseUrl = "", l
       try {
         return { panels: (await load(consolePanelModuleUrl(path2, baseUrl))).default };
       } catch (error48) {
-        return { error: `${path2}: ${String(error48)}` };
+        return { error: "".concat(path2, ": ").concat(String(error48)) };
       }
     })).then((results) => {
       const panels = [...initial.panels], errors = [...initial.errors];
@@ -43725,7 +43648,7 @@ function createConsolePanelService(baseUrl) {
       redirect: "error",
       ...request.body === void 0 ? {} : { body: JSON.stringify(request.body) }
     });
-    if (!response.ok) throw new Error(`Panel request failed (${response.status})`);
+    if (!response.ok) throw new Error("Panel request failed (".concat(response.status, ")"));
     return response.status === 204 ? null : response.json();
   };
 }
@@ -43904,7 +43827,7 @@ function normalizeAgents(experience, modules) {
       return {
         identity,
         agent_id: String(identity),
-        member_id: identity ? `identity-only:${identity}` : "",
+        member_id: identity ? "identity-only:".concat(identity) : "",
         ...typeof statusRow?.session_id === "string" && statusRow.session_id.trim() ? { session_id: statusRow.session_id.trim() } : {},
         label: String(statusRow?.display_name || identity || "unknown"),
         kind: String(statusRow?.role || "identity"),
@@ -43996,8 +43919,8 @@ function exitDetailOf(exit3) {
   const order2 = asNumber(exit3.participant_order);
   const round = asNumber(exit3.round);
   const parts = [];
-  if (order2 !== void 0) parts.push(`slot ${order2}`);
-  if (round !== void 0) parts.push(`round ${round + 1}`);
+  if (order2 !== void 0) parts.push("slot ".concat(order2));
+  if (round !== void 0) parts.push("round ".concat(round + 1));
   if (target) parts.push(target);
   if (detail) parts.push(detail);
   return parts.length > 0 ? parts.join(" \xB7 ") : void 0;
@@ -44088,7 +44011,7 @@ function councilEntryFromFrame(frame, identity, argsByCallId) {
     kind: "council",
     // Stable across re-renders and adapter passes so live updates land in
     // place, exactly like the workgraph card's `workgraph:{rootId}`.
-    id: `council:${councilId}`,
+    id: "council:".concat(councilId),
     identity,
     ...frame.timestampMs ? { createdAt: new Date(frame.timestampMs).toISOString() } : {},
     ...frame.interactionId ? { interactionId: frame.interactionId } : {},
@@ -44146,7 +44069,7 @@ function summarizeFailureData(data) {
 }
 function describeFailure(data, fallback = "error") {
   const { message, reasonType } = summarizeFailureData(data);
-  if (message && reasonType && !message.includes(reasonType)) return `${message} (${reasonType})`;
+  if (message && reasonType && !message.includes(reasonType)) return "".concat(message, " (").concat(reasonType, ")");
   return message || reasonType || fallback;
 }
 
@@ -44174,15 +44097,15 @@ function randomUuidFromValues(cryptoSource) {
 function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.crypto !== "undefined" ? globalThis.crypto : void 0) {
   if (cryptoSource && typeof cryptoSource.randomUUID === "function") {
     try {
-      return `${prefix}-${cryptoSource.randomUUID()}`;
+      return "".concat(prefix, "-").concat(cryptoSource.randomUUID());
     } catch {
     }
   }
   const generated = cryptoSource ? randomUuidFromValues(cryptoSource) : null;
   if (generated) {
-    return `${prefix}-${generated}`;
+    return "".concat(prefix, "-").concat(generated);
   }
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return "".concat(prefix, "-").concat(Date.now().toString(36), "-").concat(Math.random().toString(36).slice(2));
 }
 
 // src/lib/workgraph-time.ts
@@ -44191,9 +44114,9 @@ function formatWorkGraphTimestamp(value, options = {}) {
   const date6 = new Date(value);
   if (!Number.isFinite(date6.getTime())) return "";
   const pad = (part) => String(part).padStart(2, "0");
-  const day = options.date ? `${date6.getFullYear()}-${pad(date6.getMonth() + 1)}-${pad(date6.getDate())} ` : "";
-  const clock = `${pad(date6.getHours())}:${pad(date6.getMinutes())}`;
-  return `${day}${clock}${options.seconds ? `:${pad(date6.getSeconds())}` : ""}`;
+  const day = options.date ? "".concat(date6.getFullYear(), "-").concat(pad(date6.getMonth() + 1), "-").concat(pad(date6.getDate()), " ") : "";
+  const clock = "".concat(pad(date6.getHours()), ":").concat(pad(date6.getMinutes()));
+  return "".concat(day).concat(clock).concat(options.seconds ? ":".concat(pad(date6.getSeconds())) : "");
 }
 
 // src/lib/adapters.ts
@@ -44203,18 +44126,18 @@ function messageTextBlocks(source, textMode = "markdown", streaming = false) {
 }
 function buildPanelConversationKey2(panelId, target) {
   if (!target) {
-    return `panel:${panelId}:none`;
+    return "panel:".concat(panelId, ":none");
   }
   if (target.kind !== "agent-chat") {
-    return `panel:${panelId}:${target.kind}:${target.id}`;
+    return "panel:".concat(panelId, ":").concat(target.kind, ":").concat(target.id);
   }
   const targetKey = target.identity || target.memberId || target.id;
-  return `panel:${panelId}:${target.kind}:${targetKey}`;
+  return "panel:".concat(panelId, ":").concat(target.kind, ":").concat(targetKey);
 }
 function optimisticUserMessageForPanel2(optimisticByPanelKey, panelKey, identity) {
   const direct = optimisticByPanelKey[panelKey];
   if (direct) return direct;
-  const identitySuffix = `:agent-chat:${identity}`;
+  const identitySuffix = ":agent-chat:".concat(identity);
   let latest = null;
   for (const [key, optimistic] of Object.entries(optimisticByPanelKey)) {
     if (!key.endsWith(identitySuffix)) continue;
@@ -44238,11 +44161,11 @@ function buildDockTarget2(agent) {
 }
 function buildInspectTarget2(agent) {
   return {
-    id: `inspect:${agent.identity || agent.member_id}`,
+    id: "inspect:".concat(agent.identity || agent.member_id),
     kind: "identity-inspect",
     identity: agent.identity || agent.member_id,
     memberId: agent.member_id,
-    title: `${agent.label} Details`,
+    title: "".concat(agent.label, " Details"),
     subtitle: agent.identity || agent.member_id,
     iconName: "i-terminal"
   };
@@ -44352,86 +44275,86 @@ function memoryNumber(data, key) {
 function memoryScopeLabel(data) {
   const kind = memoryString(data, "scope_kind");
   const key = memoryString(data, "scope_key");
-  if (kind && key) return `${kind}:${key}`;
+  if (kind && key) return "".concat(kind, ":").concat(key);
   return kind || key || "";
 }
 function humanizeMemoryEvent(event) {
   const suffix = event.startsWith("memory.") ? event.slice("memory.".length) : event;
   const words = suffix.split(/[._]/).filter(Boolean);
   if (words.length === 0) return "Memory event";
-  return `Memory ${words.join(" ")}`;
+  return "Memory ".concat(words.join(" "));
 }
 function describeMemoryTimelineEvent2(event, data) {
   switch (event) {
     case "memory.dream.started":
-      return `Dream started${memoryString(data, "run_id") ? ` (${memoryString(data, "run_id")})` : ""}`;
+      return "Dream started".concat(memoryString(data, "run_id") ? " (".concat(memoryString(data, "run_id"), ")") : "");
     case "memory.dream.completed": {
       const ops = memoryNumber(data, "ops_committed");
       const detail = memoryString(data, "detail");
-      const opsText = ops !== null ? `${ops} op${ops === 1 ? "" : "s"} committed` : "completed";
-      return `Dream ${opsText}${detail ? ` \u2014 ${detail}` : ""}`;
+      const opsText = ops !== null ? "".concat(ops, " op").concat(ops === 1 ? "" : "s", " committed") : "completed";
+      return "Dream ".concat(opsText).concat(detail ? " \u2014 ".concat(detail) : "");
     }
     case "memory.dream.skipped":
-      return `Dream skipped${memoryString(data, "reason") ? ` \u2014 ${memoryString(data, "reason")}` : ""}`;
+      return "Dream skipped".concat(memoryString(data, "reason") ? " \u2014 ".concat(memoryString(data, "reason")) : "");
     case "memory.record.promoted": {
       const scope = memoryScopeLabel(data);
       const gated = data.gated === true ? " (gated)" : "";
-      return `Record promoted${scope ? ` to ${scope}` : ""}${gated}`;
+      return "Record promoted".concat(scope ? " to ".concat(scope) : "").concat(gated);
     }
     case "memory.quarantine.verdict": {
       const verdict = memoryString(data, "verdict") || "decided";
       const rationale = memoryString(data, "rationale");
-      return `Quarantine verdict: ${verdict}${rationale ? ` \u2014 ${rationale}` : ""}`;
+      return "Quarantine verdict: ".concat(verdict).concat(rationale ? " \u2014 ".concat(rationale) : "");
     }
     case "memory.quarantine.release_blocked": {
       const verdict = memoryString(data, "verdict");
       const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
       const record8 = memoryString(data, "record_id");
       const cls = memoryString(data, "class");
-      return `Quarantine ${action} blocked${record8 ? ` for ${record8}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
+      return "Quarantine ".concat(action, " blocked").concat(record8 ? " for ".concat(record8) : "").concat(cls ? " \u2014 matches secret pattern ".concat(cls) : "");
     }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
       const topic = memoryString(data, "topic");
       const subject = [entity, topic].filter(Boolean).join(" / ");
       const reason = memoryString(data, "reason");
-      return `Conflict signal${subject ? ` on ${subject}` : ""}${reason ? ` \u2014 ${reason}` : ""}`;
+      return "Conflict signal".concat(subject ? " on ".concat(subject) : "").concat(reason ? " \u2014 ".concat(reason) : "");
     }
     case "memory.write.quarantined": {
       const author = memoryString(data, "author");
       const reason = memoryString(data, "reason");
-      return `Write quarantined${author ? ` from ${author}` : ""}${reason ? ` \u2014 ${reason}` : ""}`;
+      return "Write quarantined".concat(author ? " from ".concat(author) : "").concat(reason ? " \u2014 ".concat(reason) : "");
     }
     case "memory.taint.transition": {
       const kind = memoryString(data, "kind") || "changed";
-      const label = kind === "tainted" ? "Session tainted" : kind === "reset_boundary" ? "Reset boundary" : kind === "rotated_clean" ? "Rotated clean" : `Taint ${kind}`;
+      const label = kind === "tainted" ? "Session tainted" : kind === "reset_boundary" ? "Reset boundary" : kind === "rotated_clean" ? "Rotated clean" : "Taint ".concat(kind);
       const source = memoryString(data, "source");
       const session = memoryString(data, "session_key");
       const context = [session, source].filter(Boolean).join(" \xB7 ");
-      return `${label}${context ? ` (${context})` : ""}`;
+      return "".concat(label).concat(context ? " (".concat(context, ")") : "");
     }
     case "memory.budget.denied": {
       const stage = memoryString(data, "stage");
       const reason = memoryString(data, "reason");
-      return `Budget denied${stage ? ` at ${stage}` : ""}${reason ? ` \u2014 ${reason}` : ""}`;
+      return "Budget denied".concat(stage ? " at ".concat(stage) : "").concat(reason ? " \u2014 ".concat(reason) : "");
     }
     case "memory.promotion.pending_gate": {
       const scope = memoryScopeLabel(data);
-      return `Promotion awaiting gate${scope ? ` for ${scope}` : ""}`;
+      return "Promotion awaiting gate".concat(scope ? " for ".concat(scope) : "");
     }
     case "memory.harvest.completed": {
       const promoted = memoryNumber(data, "promoted");
       const tombstoned = memoryNumber(data, "tombstoned");
       const parts = [];
-      if (promoted !== null) parts.push(`${promoted} promoted`);
-      if (tombstoned !== null) parts.push(`${tombstoned} tombstoned`);
+      if (promoted !== null) parts.push("".concat(promoted, " promoted"));
+      if (tombstoned !== null) parts.push("".concat(tombstoned, " tombstoned"));
       const identity = memoryString(data, "identity");
-      return `Harvest completed${parts.length ? ` \u2014 ${parts.join(", ")}` : ""}${identity ? ` (${identity})` : ""}`;
+      return "Harvest completed".concat(parts.length ? " \u2014 ".concat(parts.join(", ")) : "").concat(identity ? " (".concat(identity, ")") : "");
     }
     case "memory.distill.timed_out": {
       const cause = memoryString(data, "cause");
       const session = memoryString(data, "session_key");
-      return `Distill timed out${cause ? ` \u2014 ${cause}` : ""}${session ? ` (${session})` : ""}`;
+      return "Distill timed out".concat(cause ? " \u2014 ".concat(cause) : "").concat(session ? " (".concat(session, ")") : "");
     }
     case "memory.hygiene.proposed":
     case "memory.hygiene.applied":
@@ -44441,12 +44364,12 @@ function describeMemoryTimelineEvent2(event, data) {
       const cause = memoryString(data, "cause");
       const ops = memoryNumber(data, "ops");
       const reason = memoryString(data, "reason");
-      const detail = reason || (ops !== null ? `${ops} op${ops === 1 ? "" : "s"}` : "") || cause;
-      return `Hygiene ${phase2}${detail ? ` \u2014 ${detail}` : ""}`;
+      const detail = reason || (ops !== null ? "".concat(ops, " op").concat(ops === 1 ? "" : "s") : "") || cause;
+      return "Hygiene ".concat(phase2).concat(detail ? " \u2014 ".concat(detail) : "");
     }
     default: {
       const reason = memoryString(data, "reason") || memoryString(data, "detail") || memoryString(data, "cause") || memoryString(data, "verdict");
-      return `${humanizeMemoryEvent(event)}${reason ? ` \u2014 ${reason}` : ""}`;
+      return "".concat(humanizeMemoryEvent(event)).concat(reason ? " \u2014 ".concat(reason) : "");
     }
   }
 }
@@ -44710,7 +44633,7 @@ function normalizeToolArgumentsForSignature(argumentsText) {
   }
 }
 function toolBlockSignature(block) {
-  return `${block.name}\0${normalizeToolArgumentsForSignature(block.arguments)}`;
+  return "".concat(block.name, "\0").concat(normalizeToolArgumentsForSignature(block.arguments));
 }
 function addToolSignatureCount(counts, block) {
   const key = toolBlockSignature(block);
@@ -45044,7 +44967,7 @@ function workGraphEvidenceLines(record8) {
     const label = workGraphString(evidence.label) || workGraphString(evidence.summary);
     const kind = workGraphString(evidence.kind);
     const id = workGraphString(evidence.id);
-    if (label) return kind ? `${kind}: ${label}` : label;
+    if (label) return kind ? "".concat(kind, ": ").concat(label) : label;
     return [kind, id].filter(Boolean).join(" ");
   }).filter(Boolean);
   return lines.length > 0 ? lines : void 0;
@@ -45083,7 +45006,7 @@ function workGraphBindingStatus(value) {
   if (state === "paused") {
     const until = formatWorkGraphTimestamp(workGraphString(record8?.until), { date: true });
     return {
-      label: until ? `paused until ${until}` : "paused",
+      label: until ? "paused until ".concat(until) : "paused",
       active: false
     };
   }
@@ -45149,10 +45072,10 @@ function foldWorkGraphEvent(state, value) {
   const record8 = value;
   const kind = workGraphString(record8.kind);
   if (!kind) return;
-  let dedupeKey = typeof record8.seq === "number" ? `seq:${record8.seq}` : "";
+  let dedupeKey = typeof record8.seq === "number" ? "seq:".concat(record8.seq) : "";
   if (!dedupeKey) {
     try {
-      dedupeKey = `content:${JSON.stringify(record8)}`;
+      dedupeKey = "content:".concat(JSON.stringify(record8));
     } catch {
       dedupeKey = "";
     }
@@ -45186,9 +45109,9 @@ function workGraphFailureLine(name2, raw) {
     }
   }
   if (message.length > WORKGRAPH_FAILURE_MESSAGE_LIMIT) {
-    message = `${message.slice(0, WORKGRAPH_FAILURE_MESSAGE_LIMIT - 1)}\u2026`;
+    message = "".concat(message.slice(0, WORKGRAPH_FAILURE_MESSAGE_LIMIT - 1), "\u2026");
   }
-  return message ? `\u2717 ${name2} failed: ${message}` : `\u2717 ${name2} failed`;
+  return message ? "\u2717 ".concat(name2, " failed: ").concat(message) : "\u2717 ".concat(name2, " failed");
 }
 var parsedWorkGraphResultCache = /* @__PURE__ */ new Map();
 var PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4e3;
@@ -45198,7 +45121,7 @@ function parseWorkGraphResult(frame) {
   const raw = record8.result;
   if (raw && typeof raw === "object") return raw;
   if (typeof raw !== "string") return null;
-  const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
+  const cacheKey = "".concat(frame.id, "@").concat(frame.frameVersion ?? 0);
   const cached2 = parsedWorkGraphResultCache.get(cacheKey);
   if (cached2 !== void 0) return cached2;
   const parsed = parseJsonPayload(raw);
@@ -45497,11 +45420,11 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     for (const itemId2 of contribution.itemIds) {
       const root4 = rootForItem(itemId2);
       if (ownCardRoots.has(root4)) {
-        const cardKey = `workgraph:${root4}`;
+        const cardKey = "workgraph:".concat(root4);
         cardKeys.add(cardKey);
         recordFirstItem(cardKey, itemId2);
       } else if (state.items.has(itemId2) || state.items.has(root4)) {
-        const interactionKey = catchAllForItem.get(root4) || `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+        const interactionKey = catchAllForItem.get(root4) || "workgraph:interaction:".concat(contribution.interactionId || "unscoped");
         catchAllForItem.set(root4, interactionKey);
         const members = catchAllMembers.get(interactionKey) || /* @__PURE__ */ new Set();
         members.add(root4);
@@ -45512,10 +45435,10 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }
     for (const bindingId of contribution.bindingIds) {
       const root4 = bindingRoot(bindingId);
-      if (root4 && ownCardRoots.has(root4)) cardKeys.add(`workgraph:${root4}`);
+      if (root4 && ownCardRoots.has(root4)) cardKeys.add("workgraph:".concat(root4));
     }
     if (contribution.outcome === "error" && cardKeys.size === 0) {
-      const interactionKey = `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+      const interactionKey = "workgraph:interaction:".concat(contribution.interactionId || "unscoped");
       if (!catchAllMembers.has(interactionKey)) {
         catchAllMembers.set(interactionKey, /* @__PURE__ */ new Set());
       }
@@ -45568,9 +45491,9 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }
     return latest;
   };
-  const uiStateKeyForCard = (entryId, anchorInteractionId) => `workgraph:interaction:${anchorInteractionId || "unscoped"}:${firstItemByCard.get(entryId) || "unrooted"}`;
+  const uiStateKeyForCard = (entryId, anchorInteractionId) => "workgraph:interaction:".concat(anchorInteractionId || "unscoped", ":").concat(firstItemByCard.get(entryId) || "unrooted");
   for (const root4 of ownCardRoots) {
-    const entryId = `workgraph:${root4}`;
+    const entryId = "workgraph:".concat(root4);
     const anchor = anchorByCard.get(entryId);
     if (!anchor) continue;
     const items = workGraphItemRows(root4, rootMembers.get(root4) || [], state);
@@ -45581,7 +45504,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const recentEvents = eventsForMembers(memberSet);
     const lastUpdatedAt = latestIso(items.flatMap((item) => [item.updatedAt, item.lastEventAt]));
     const title = rootItem ? rootItem.title : "Goal from an earlier conversation";
-    const objective = rootItem ? rootItem.description ?? null : `Goal \u2026${root4.slice(-6)}`;
+    const objective = rootItem ? rootItem.description ?? null : "Goal \u2026".concat(root4.slice(-6));
     const capped = capWorkGraphItemRows(items);
     pushEntry({
       kind: "workgraph",
@@ -45636,7 +45559,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const allRepresented = itemIds.length > 0 && itemIds.every((itemId2) => {
       if (!itemId2) return false;
       const root4 = rootForItem(itemId2);
-      const cardId = ownCardRoots.has(root4) ? `workgraph:${root4}` : catchAllForItem.get(root4);
+      const cardId = ownCardRoots.has(root4) ? "workgraph:".concat(root4) : catchAllForItem.get(root4);
       return Boolean(cardId && emittedCardIds.has(cardId));
     });
     if (allRepresented) representedToolCallIds.add(callId);
@@ -45690,7 +45613,7 @@ function renderPeerEntry(frame, entryId) {
     identity: SYSTEM_IDENTITY,
     variant: "meta",
     createdAt: isoFromTimestampMs(frame.timestampMs),
-    text: `\u21A9 ${peer.verb}: ${peer.summary}`
+    text: "\u21A9 ".concat(peer.verb, ": ").concat(peer.summary)
   };
 }
 function renderTerminalEntry(agent, frame, entryId, streamedText = "", textMode = "markdown") {
@@ -45707,7 +45630,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "", textMode 
         identity: SYSTEM_IDENTITY,
         variant: "meta",
         createdAt: isoFromTimestampMs(frame.timestampMs),
-        text: `\u21A9 ${peer.verb}: ${peer.summary}`
+        text: "\u21A9 ".concat(peer.verb, ": ").concat(peer.summary)
       };
     }
     if (streamedTextMatchesTerminal(streamedText, text9)) {
@@ -45726,7 +45649,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "", textMode 
   if (frame.event === "interaction_failed" || frame.event === "run_failed") {
     const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
     const detail = describeFailure(frame.data, "");
-    const text9 = detail ? `${humanizeRuntimeEventType(frame.event)}: ${detail}` : runtimeEventText(runtimeEvent);
+    const text9 = detail ? "".concat(humanizeRuntimeEventType(frame.event), ": ").concat(detail) : runtimeEventText(runtimeEvent);
     return {
       kind: "message",
       id: entryId,
@@ -45777,11 +45700,11 @@ function sameTextStreamOwner(left, right) {
 }
 function assistantOwnerKey(frame) {
   const messageKey = assistantMessageKey(frame);
-  if (messageKey) return `assistant:${messageKey}`;
-  if (hasAssistantMessageIdCarrier(frame)) return `unbound:${frame.id}`;
-  if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
+  if (messageKey) return "assistant:".concat(messageKey);
+  if (hasAssistantMessageIdCarrier(frame)) return "unbound:".concat(frame.id);
+  if (frame.runId?.trim()) return "run:".concat(frame.runId.trim());
   const interaction = frame.interactionId?.trim() || "";
-  return UUID_FORM2.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
+  return UUID_FORM2.test(interaction) ? "interaction:".concat(interaction.toLowerCase()) : "legacy";
 }
 function canonicalHistoryAssistantText(frame) {
   if (frame.sourceKind !== "session_history") return void 0;
@@ -45900,10 +45823,10 @@ function historyHasAssistantSiblings(frame) {
   });
 }
 function buildBlobUrl(blobId, baseUrl) {
-  const path2 = `/blobs/${encodeURIComponent(blobId)}`;
+  const path2 = "/blobs/".concat(encodeURIComponent(blobId));
   const base = baseUrl?.trim();
   if (!base) return path2;
-  return `${base.replace(/\/+$/, "")}${path2}`;
+  return "".concat(base.replace(/\/+$/, "")).concat(path2);
 }
 function renderAssistantImageEntry(agent, frame, entryId, blobBaseUrl) {
   const data = frame.data && typeof frame.data === "object" ? frame.data : {};
@@ -45957,7 +45880,7 @@ function renderGeneratedImageToolResultEntries(agent, frame, entryId, blobBaseUr
     const imageEntry = renderAssistantImageEntry(
       agent,
       imageFrame,
-      `${entryId}:generated-image:${index2}`,
+      "".concat(entryId, ":generated-image:").concat(index2),
       blobBaseUrl
     );
     return imageEntry ? [imageEntry] : [];
@@ -45970,16 +45893,16 @@ function imageEntryKey(entry, preferIdentity = false) {
   const block = entry.blocks?.[0];
   if (!block || block.type !== "image") return null;
   if (preferIdentity && typeof block.imageId === "string" && block.imageId.trim()) {
-    return `image:${block.imageId}`;
+    return "image:".concat(block.imageId);
   }
   if (typeof block.blobId === "string" && block.blobId.trim()) {
-    return `blob:${block.blobId.trim()}`;
+    return "blob:".concat(block.blobId.trim());
   }
   if (typeof block.imageId === "string" && block.imageId.trim()) {
-    return `image:${block.imageId.trim()}`;
+    return "image:".concat(block.imageId.trim());
   }
   if (typeof block.src === "string" && block.src.trim()) {
-    return `src:${block.src.trim()}`;
+    return "src:".concat(block.src.trim());
   }
   return null;
 }
@@ -46097,7 +46020,7 @@ function renderUserDeliveryFailureEntry(frame, entryId) {
   if (frame.event !== "user_input" || frame.status !== "delivery_failed") return null;
   return {
     kind: "message",
-    id: `${entryId}:delivery-status`,
+    id: "".concat(entryId, ":delivery-status"),
     identity: SYSTEM_IDENTITY,
     variant: "meta",
     createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -46123,18 +46046,18 @@ function userEntryTextSignature(entry) {
 function userEntryDedupeKey(frame, entry) {
   if (isRealtimeHistoryMessage(frame)) {
     const origin = realtimeMessageOrigin(frame);
-    return origin ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}` : `unbound-realtime-user:${frame.id}`;
+    return origin ? "realtime-user:".concat(JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])) : "unbound-realtime-user:".concat(frame.id);
   }
   const renderKey = userMessageRenderKey(frame);
   if (renderKey) return renderKey;
   const interactionId = frame.interactionId?.trim();
-  if (interactionId) return `interaction:${interactionId}`;
+  if (interactionId) return "interaction:".concat(interactionId);
   const signature = userEntryTextSignature(entry);
   if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
-    return `history-kickoff:${signature}`;
+    return "history-kickoff:".concat(signature);
   }
-  const occurrence = typeof frame.timestampMs === "number" ? `ts:${frame.timestampMs}` : frame.cursor ? `cursor:${frame.cursor}` : `frame:${frame.id}`;
-  return signature ? `content:${occurrence}:${signature}` : "";
+  const occurrence = typeof frame.timestampMs === "number" ? "ts:".concat(frame.timestampMs) : frame.cursor ? "cursor:".concat(frame.cursor) : "frame:".concat(frame.id);
+  return signature ? "content:".concat(occurrence, ":").concat(signature) : "";
 }
 function userPromptDedupeKey(frame, entry) {
   return userEntryDedupeKey(frame, entry);
@@ -46246,7 +46169,7 @@ function contentToUserBlocks(content3, blobBaseUrl, textMode = "markdown") {
       const mediaType = typeof image3.media_type === "string" ? image3.media_type : typeof image3.mediaType === "string" ? image3.mediaType : typeof blobRef?.media_type === "string" ? blobRef.media_type : typeof blobRef?.mediaType === "string" ? blobRef.mediaType : "image/png";
       const inlineData = typeof image3.data === "string" ? image3.data : typeof image3.base64 === "string" ? image3.base64 : "";
       const directSrc = typeof image3.src === "string" && image3.src.trim() ? image3.src.trim() : typeof image3.url === "string" && image3.url.trim() ? image3.url.trim() : "";
-      const src = blobId && (source === "blob" || !directSrc) ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? `data:${mediaType};base64,${inlineData}` : directSrc;
+      const src = blobId && (source === "blob" || !directSrc) ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? "data:".concat(mediaType, ";base64,").concat(inlineData) : directSrc;
       if (!src) continue;
       const alt = typeof image3.alt === "string" && image3.alt.trim() ? image3.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
       const width = typeof image3.width === "number" ? image3.width : void 0;
@@ -46289,10 +46212,10 @@ function summarizePeersResult(result) {
     roleCounts.set(role, (roleCounts.get(role) || 0) + 1);
     if (preview.length < 8) preview.push(peerLastSegment2(rawName));
   }
-  const roles = [...roleCounts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 5).map(([role, count]) => `${role} ${count}`).join(", ");
-  const lines = [`${peers.length} peers${roles ? ` \xB7 ${roles}` : ""}`];
+  const roles = [...roleCounts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 5).map(([role, count]) => "".concat(role, " ").concat(count)).join(", ");
+  const lines = ["".concat(peers.length, " peers").concat(roles ? " \xB7 ".concat(roles) : "")];
   if (preview.length > 0) {
-    lines.push(`First peers: ${preview.join(", ")}`);
+    lines.push("First peers: ".concat(preview.join(", ")));
   }
   return lines.join("\n");
 }
@@ -46306,10 +46229,9 @@ function summarizeToolResultForDisplay(toolName2, result) {
 function formatServerToolAnnotations2(annotations) {
   return annotations.map((annotation, index2) => {
     const record8 = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record8?.title === "string" && record8.title.trim() ? record8.title.trim() : typeof record8?.text === "string" && record8.text.trim() ? record8.text.trim() : `Source ${index2 + 1}`;
+    const title = typeof record8?.title === "string" && record8.title.trim() ? record8.title.trim() : typeof record8?.text === "string" && record8.text.trim() ? record8.text.trim() : "Source ".concat(index2 + 1);
     const url2 = typeof record8?.url === "string" && record8.url.trim() ? record8.url.trim() : "";
-    return url2 ? `${index2 + 1}. ${title}
-${url2}` : `${index2 + 1}. ${title}`;
+    return url2 ? "".concat(index2 + 1, ". ").concat(title, "\n").concat(url2) : "".concat(index2 + 1, ". ").concat(title);
   }).join("\n\n").trim();
 }
 function serverToolContentSummary2(frame) {
@@ -46375,7 +46297,7 @@ function blockAssistantToolBlock(item, index2, peerRegistry, toolResults) {
   if (blockType !== "tool_use") return null;
   const data = item.data && typeof item.data === "object" ? item.data : item;
   const name2 = typeof data.name === "string" && data.name.trim() ? data.name.trim() : "tool";
-  const id = typeof data.id === "string" && data.id.trim() ? data.id.trim() : `history-tool-${index2 + 1}`;
+  const id = typeof data.id === "string" && data.id.trim() ? data.id.trim() : "history-tool-".concat(index2 + 1);
   const args = data.args !== void 0 ? data.args : data.arguments;
   const argsRecord = args && typeof args === "object" ? args : null;
   const argumentsText = args === void 0 ? "" : typeof args === "string" ? args : JSON.stringify(args);
@@ -46610,11 +46532,11 @@ function stripPeerEnvelopeByAlias(text9, peerAliases) {
   for (const alias of aliases) {
     const escaped = escapeRegExp(alias);
     const peerEnvelope = new RegExp(
-      `^Peer\\s+(?:message|request|response)\\s+from\\s+${escaped}:(?:\\s+|$)`,
+      "^Peer\\s+(?:message|request|response)\\s+from\\s+".concat(escaped, ":(?:\\s+|$)"),
       "i"
     );
     const bracketedEnvelope = new RegExp(
-      `^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+${escaped}\\]\\s*`,
+      "^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+".concat(escaped, "\\]\\s*"),
       "i"
     );
     const lines = normalized.split("\n").map((line) => line.trim());
@@ -46641,10 +46563,10 @@ function isPeerEnvelopeScaffoldLine(line, peerAliases = [], allowStandaloneScaff
   for (const alias of peerAliases) {
     if (!alias) continue;
     const escaped = escapeRegExp(alias);
-    if (new RegExp(`^Peer\\s+(?:message|request|response)\\s+from\\s+${escaped}:\\s*$`, "i").test(line)) {
+    if (new RegExp("^Peer\\s+(?:message|request|response)\\s+from\\s+".concat(escaped, ":\\s*$"), "i").test(line)) {
       return true;
     }
-    if (new RegExp(`^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+${escaped}\\]\\s*$`, "i").test(line)) {
+    if (new RegExp("^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+".concat(escaped, "\\]\\s*$"), "i").test(line)) {
       return true;
     }
   }
@@ -46755,7 +46677,7 @@ function systemNoticeCommsSignatures(frame) {
       textFromUnknown4(peer.display_name),
       textFromUnknown4(peer.id)
     );
-    const blockOccurrenceId = textFromUnknown4(block.request_id) || textFromUnknown4(block.correlation_id) || textFromUnknown4(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index2}` : `${index2}`);
+    const blockOccurrenceId = textFromUnknown4(block.request_id) || textFromUnknown4(block.correlation_id) || textFromUnknown4(block.id) || (noticeOccurrenceId ? "".concat(noticeOccurrenceId, ":").concat(index2) : "".concat(index2));
     const blockKind = textFromUnknown4(block.kind);
     const blockDirection = textFromUnknown4(block.direction);
     const contentText = typedNoticeContentBlocks(block.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
@@ -46773,7 +46695,7 @@ function structuredCommsNoticeTextSignatures(frames) {
     for (const signature of systemNoticeCommsSignatures(frame)) {
       const primaryPeerAlias = signature.peer || signature.peerAliases[0] || "";
       const key = [
-        frame.id || `${frame.event}:${index2}`,
+        frame.id || "".concat(frame.event, ":").concat(index2),
         primaryPeerAlias,
         signature.kind || "",
         signature.direction || "",
@@ -46837,7 +46759,7 @@ function structuredCommsPromptSuppressionKeys(frames, structuredCommsSignatures)
     let best = null;
     for (let index2 = 0; index2 < frames.length; index2++) {
       const frame = frames[index2];
-      const key = frame.id || `${frame.event || "frame"}:${index2}`;
+      const key = frame.id || "".concat(frame.event || "frame", ":").concat(index2);
       if (consumed.has(key)) continue;
       if (typeof signature.timestampMs === "number" && typeof frame.timestampMs === "number") {
         if (frame.timestampMs > signature.timestampMs && !runStartedPromptHasImagePlaceholder(frame)) {
@@ -46918,7 +46840,7 @@ function commsNoticeDedupeKeysFromBlock(record8, fallbackBody, index2) {
     );
     const contentText = typedNoticeContentBlocks(record8.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
     const stableBodyText = typedCommsStableBodyText(record8);
-    const occurrenceId = textFromUnknown4(record8.request_id) || textFromUnknown4(record8.correlation_id) || textFromUnknown4(record8.id) || `${index2}`;
+    const occurrenceId = textFromUnknown4(record8.request_id) || textFromUnknown4(record8.correlation_id) || textFromUnknown4(record8.id) || "".concat(index2);
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
@@ -47028,7 +46950,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
           phase: kickoff.phase,
           member,
           ...kickoff.role ? { role: kickoff.role } : {},
-          copyText: `Kickoff ${memberKickoffPhaseLabel(kickoff.phase).toLowerCase()}: ${member}`
+          copyText: "Kickoff ".concat(memberKickoffPhaseLabel(kickoff.phase).toLowerCase(), ": ").concat(member)
         });
         continue;
       }
@@ -47041,7 +46963,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       const kind = textFromUnknown4(record8.kind) || "message";
       const direction = textFromUnknown4(record8.direction);
       const intent = textFromUnknown4(record8.intent);
-      const requestId = textFromUnknown4(record8.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const requestId = textFromUnknown4(record8.request_id) || "typed-comms:".concat(peerLabel, ":").concat(kind);
       const contentBlocks2 = typedNoticeContentBlocks(record8.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
@@ -47066,7 +46988,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       rich.push({
         type: "tool-call",
         toolCallId: requestId,
-        name: `peer_${kind}`,
+        name: "peer_".concat(kind),
         arguments: JSON.stringify(record8.payload ?? {}, null, 2),
         status: "success",
         peerIncoming: direction !== "outgoing",
@@ -47466,11 +47388,11 @@ function internEntries(next, previous3) {
   const byId = /* @__PURE__ */ new Map();
   for (let i2 = same; i2 < previous3.length; i2++) {
     const entry = previous3[i2];
-    byId.set(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`, entry);
+    byId.set("".concat(entry.kind, ":").concat(entry.id, ":").concat(entry.renderKey ?? ""), entry);
   }
   return next.map((entry, index2) => {
     if (index2 < same) return entry;
-    const prior = byId.get(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`);
+    const prior = byId.get("".concat(entry.kind, ":").concat(entry.id, ":").concat(entry.renderKey ?? ""));
     return prior && structurallyEqual(prior, entry) ? prior : entry;
   });
 }
@@ -47600,7 +47522,7 @@ function createTimelineFold(agent, frames, options) {
   function reasoningScope(frame) {
     const messageKey = assistantMessageKey(frame);
     if (messageKey) return { scoped: true, scope: JSON.stringify([frame.runtimeKey || "", frame.identity || "", messageKey]) };
-    if (hasAssistantMessageIdCarrier(frame)) return { scoped: false, scope: `unbound:${frame.id}` };
+    if (hasAssistantMessageIdCarrier(frame)) return { scoped: false, scope: "unbound:".concat(frame.id) };
     const interactionId = frame.interactionId?.trim() || "";
     const runId = frame.runId?.trim() || "";
     const turnId = frame.turnId?.trim() || "";
@@ -47667,7 +47589,7 @@ function createTimelineFold(agent, frames, options) {
   }
   function step(i2) {
     const frame = orderedFrames[i2];
-    const entryId = frame.id || `${frame.event || "frame"}:${i2}`;
+    const entryId = frame.id || "".concat(frame.event || "frame", ":").concat(i2);
     if (frame.event === "mcp_app") {
       const entry = mcpAppEntryFromFrame(frame, entryId, agentIdentity(agent));
       if (!entry || emittedMcpApps.has(entry.renderKey)) return;
@@ -47905,7 +47827,7 @@ function createTimelineFold(agent, frames, options) {
         textMode,
         consumeDuplicateCommsBlock: (key) => {
           const runtimeKey = runtimeAppendNoticeKey(frame);
-          if (runtimeKey) key = `${runtimeKey}:${key}`;
+          if (runtimeKey) key = "".concat(runtimeKey, ":").concat(key);
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
           }
@@ -47931,7 +47853,7 @@ function createTimelineFold(agent, frames, options) {
         toolResults: toolResultsForHistory(frame),
         consumeDuplicateCommsBlock: (key) => {
           const runtimeKey = runtimeAppendNoticeKey(frame);
-          if (runtimeKey) key = `${runtimeKey}:${key}`;
+          if (runtimeKey) key = "".concat(runtimeKey, ":").concat(key);
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
           }
@@ -48053,7 +47975,7 @@ function createTimelineFold(agent, frames, options) {
     }
     if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
-    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
+    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: "".concat(entry.renderKey ?? entry.id, ":text:").concat(textIndex++) } : block) };
   };
   function finish() {
     const pending = pendingText ? pendingTextEntry(false) : null;
@@ -48118,7 +48040,7 @@ function createUserEntry2(message, images = [], options = {}) {
     ];
     return {
       kind: "message",
-      id: `user:${Date.now()}`,
+      id: "user:".concat(Date.now()),
       identity: USER_IDENTITY,
       variant: "rich",
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -48128,7 +48050,7 @@ function createUserEntry2(message, images = [], options = {}) {
   }
   return {
     kind: "message",
-    id: `user:${Date.now()}`,
+    id: "user:".concat(Date.now()),
     identity: USER_IDENTITY,
     variant: "plain",
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -48473,13 +48395,13 @@ var DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2 = 6e4;
 var ERROR_BODY_PREVIEW_LIMIT = 500;
 function formatTimeoutReason(timeoutMs) {
   if (timeoutMs % 1e3 === 0) {
-    return `${timeoutMs / 1e3} s`;
+    return "".concat(timeoutMs / 1e3, " s");
   }
-  return `${timeoutMs} ms`;
+  return "".concat(timeoutMs, " ms");
 }
 async function fetchWithConsoleTimeout(input, init, label, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2, signal) {
   const controller = new AbortController();
-  const timeoutReason = `${label} timeout after ${formatTimeoutReason(timeoutMs)}`;
+  const timeoutReason = "".concat(label, " timeout after ").concat(formatTimeoutReason(timeoutMs));
   const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
@@ -48514,7 +48436,7 @@ function jsonRpcErrorFromText(text9) {
 async function consoleResponseFailure(label, response) {
   const text9 = await response.text().catch(() => "");
   const preview = responseTextErrorPreview(text9);
-  const failure = new Error(`${label} ${response.status}${preview ? `: ${preview}` : ""}`);
+  const failure = new Error("".concat(label, " ").concat(response.status).concat(preview ? ": ".concat(preview) : ""));
   failure.httpStatus = response.status;
   const responseRpcError = jsonRpcErrorFromText(text9);
   if (responseRpcError) failure.responseRpcError = responseRpcError;
@@ -48525,7 +48447,7 @@ async function consoleResponseJson(label, response) {
     return await response.json();
   } catch (error48) {
     const failure = new Error(
-      `${label} returned a non-JSON response (HTTP ${response.status}${response.headers.get("content-type") ? `, ${response.headers.get("content-type")}` : ""})`,
+      "".concat(label, " returned a non-JSON response (HTTP ").concat(response.status).concat(response.headers.get("content-type") ? ", ".concat(response.headers.get("content-type")) : "", ")"),
       { cause: error48 }
     );
     failure.httpStatus = response.status;
@@ -48551,7 +48473,7 @@ function responseTextErrorPreview(text9) {
       const errorMessage2 = error48 && typeof error48.message === "string" ? error48.message : void 0;
       const errorCode = error48 && (typeof error48.code === "string" || typeof error48.code === "number") ? String(error48.code) : void 0;
       const selected = [
-        errorCode ? `code=${errorCode}` : "",
+        errorCode ? "code=".concat(errorCode) : "",
         errorMessage2 || message || ""
       ].filter(Boolean).join(" ");
       if (selected) {
@@ -48560,30 +48482,30 @@ function responseTextErrorPreview(text9) {
     }
   } catch {
   }
-  return trimmed.length > ERROR_BODY_PREVIEW_LIMIT ? `${trimmed.slice(0, ERROR_BODY_PREVIEW_LIMIT)}...` : trimmed;
+  return trimmed.length > ERROR_BODY_PREVIEW_LIMIT ? "".concat(trimmed.slice(0, ERROR_BODY_PREVIEW_LIMIT), "...") : trimmed;
 }
 async function fetchJson2(baseUrl, path2, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
   const response = await fetchWithConsoleTimeout(
-    `${baseUrl}${path2}`,
+    "".concat(baseUrl).concat(path2),
     {},
     "console fetch",
     timeoutMs
   );
   if (!response.ok) {
     const preview = await responseErrorPreview(response);
-    throw new Error(`Request failed ${response.status} for ${path2}${preview ? `: ${preview}` : ""}`);
+    throw new Error("Request failed ".concat(response.status, " for ").concat(path2).concat(preview ? ": ".concat(preview) : ""));
   }
   return response.json();
 }
 async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2, signal) {
   const response = await fetchWithConsoleTimeout(
-    `${baseUrl}${CONSOLE_RPC_PATHS2.jsonRpc}`,
+    "".concat(baseUrl).concat(CONSOLE_RPC_PATHS2.jsonRpc),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
-        id: `${method}:${Date.now()}`,
+        id: "".concat(method, ":").concat(Date.now()),
         method,
         params
       })
@@ -48593,20 +48515,20 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
     signal
   );
   if (!response.ok) {
-    throw await consoleResponseFailure(`${method} request failed`, response);
+    throw await consoleResponseFailure("".concat(method, " request failed"), response);
   }
   const result = await consoleResponseJson(method, response);
   if (result.error) {
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
-      const error49 = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
+      const error49 = new Error("".concat(method, " RPC error ").concat(typedError.code, ": ").concat(typedError.message));
       error49.rpcError = result.error.data === void 0 ? typedError : { ...typedError, data: result.error.data };
       throw error49;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
     if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2) {
       const error49 = new Error(
-        `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
+        "".concat(method, " RPC replay unavailable: ").concat(result.error.message || JSON.stringify(result.error))
       );
       const annotated = error49;
       if (replayError) {
@@ -48615,7 +48537,7 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
       annotated.timelineReplayUnavailable = true;
       throw error49;
     }
-    const error48 = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error48 = new Error("".concat(method, " RPC error: ").concat(result.error.message || JSON.stringify(result.error)));
     error48.rpcError = result.error;
     if (result.error.code === -32030 || result.error.data?.kind === "access_denied") {
       error48.httpStatus = 403;
@@ -48628,18 +48550,18 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
   const content3 = typeof contentInput === "string" ? contentInput.trim() ? [{ type: "text", text: contentInput }] : [] : [...contentInput];
   const form = new FormData();
   attachments.forEach((file2, index2) => {
-    const uploadId = `upload-${Date.now().toString(36)}-${index2}`;
+    const uploadId = "upload-".concat(Date.now().toString(36), "-").concat(index2);
     content3.push({
       type: "image_upload",
       upload_id: uploadId,
       media_type: file2.type || "application/octet-stream",
       alt: file2.name
     });
-    form.append(`file:${uploadId}`, file2, file2.name);
+    form.append("file:".concat(uploadId), file2, file2.name);
   });
   form.append("payload", JSON.stringify({
     jsonrpc: "2.0",
-    id: `${CONSOLE_RPC_METHODS2.send}:${Date.now()}`,
+    id: "".concat(CONSOLE_RPC_METHODS2.send, ":").concat(Date.now()),
     method: CONSOLE_RPC_METHODS2.send,
     params: {
       identity,
@@ -48652,7 +48574,7 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
     }
   }));
   const response = await fetchWithConsoleTimeout(
-    `${baseUrl}${CONSOLE_RPC_PATHS2.multipartJsonRpc}`,
+    "".concat(baseUrl).concat(CONSOLE_RPC_PATHS2.multipartJsonRpc),
     {
       method: "POST",
       body: form
@@ -48661,11 +48583,11 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
     timeoutMs
   );
   if (!response.ok) {
-    throw await consoleResponseFailure(`${CONSOLE_RPC_METHODS2.send} multipart failed`, response);
+    throw await consoleResponseFailure("".concat(CONSOLE_RPC_METHODS2.send, " multipart failed"), response);
   }
-  const result = await consoleResponseJson(`${CONSOLE_RPC_METHODS2.send} multipart`, response);
+  const result = await consoleResponseJson("".concat(CONSOLE_RPC_METHODS2.send, " multipart"), response);
   if (result.error) {
-    const error48 = new Error(`${CONSOLE_RPC_METHODS2.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error48 = new Error("".concat(CONSOLE_RPC_METHODS2.send, " RPC error: ").concat(result.error.message || JSON.stringify(result.error)));
     error48.rpcError = result.error;
     if (result.error.code === -32030 || result.error.data?.kind === "access_denied") {
       error48.httpStatus = 403;
@@ -48677,16 +48599,16 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
 async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
   const file2 = input.file;
   if (!file2) {
-    throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} requires a file`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.blobUpload, " requires a file"));
   }
   const mediaType = input.mediaType || file2.type || "application/octet-stream";
-  const uploadId = input.blobId?.trim() || `upload-${Date.now().toString(36)}-0`;
+  const uploadId = input.blobId?.trim() || "upload-".concat(Date.now().toString(36), "-0");
   const uploadFile = file2.type === mediaType ? file2 : new File([file2], file2.name || "upload", { type: mediaType });
   const form = new FormData();
-  form.append(`file:${uploadId}`, uploadFile, uploadFile.name || file2.name || "upload");
+  form.append("file:".concat(uploadId), uploadFile, uploadFile.name || file2.name || "upload");
   form.append("payload", JSON.stringify({
     jsonrpc: "2.0",
-    id: `${CONSOLE_RPC_METHODS2.blobUpload}:${Date.now()}`,
+    id: "".concat(CONSOLE_RPC_METHODS2.blobUpload, ":").concat(Date.now()),
     method: CONSOLE_RPC_METHODS2.blobUpload,
     params: {
       upload: {
@@ -48698,7 +48620,7 @@ async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_C
     }
   }));
   const response = await fetchWithConsoleTimeout(
-    `${baseUrl}${CONSOLE_RPC_PATHS2.multipartJsonRpc}`,
+    "".concat(baseUrl).concat(CONSOLE_RPC_PATHS2.multipartJsonRpc),
     {
       method: "POST",
       body: form
@@ -48708,16 +48630,16 @@ async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_C
   );
   if (!response.ok) {
     const preview = await responseErrorPreview(response);
-    throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.blobUpload, " multipart failed ").concat(response.status).concat(preview ? ": ".concat(preview) : ""));
   }
   const result = await response.json();
   if (result.error) {
-    throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.blobUpload, " RPC error: ").concat(result.error.message || JSON.stringify(result.error)));
   }
   const record8 = result.result && typeof result.result === "object" ? result.result : {};
   const blobId = typeof record8.blob_id === "string" ? record8.blob_id : "";
   if (!blobId) {
-    throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} returned an invalid blob payload`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.blobUpload, " returned an invalid blob payload"));
   }
   return {
     blob_id: blobId,
@@ -48783,7 +48705,7 @@ async function streamFramesFromResponse(response, options = {}, mode = "collect"
       throw replayStreamError({ id: "", event: "replay_unavailable", data: replayError || parsed });
     }
     const preview = responseTextErrorPreview(text9);
-    const error48 = new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    const error48 = new Error("interaction stream request failed ".concat(response.status).concat(preview ? ": ".concat(preview) : ""));
     error48.httpStatus = response.status;
     throw error48;
   }
@@ -48832,7 +48754,7 @@ async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey,
     handling_mode: handlingMode
   }, timeoutMs);
   if (!accepted || typeof accepted !== "object") {
-    throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.send, " returned an invalid acceptance payload"));
   }
   const record8 = accepted;
   return normalizeConsoleTimelineAccepted(record8);
@@ -48840,7 +48762,7 @@ async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey,
 function normalizeConsoleTimelineAccepted(accepted) {
   const record8 = accepted && typeof accepted === "object" ? accepted : {};
   if (typeof record8.interaction_id !== "string" || !record8.interaction_id.trim() || typeof record8.identity !== "string" || !record8.identity.trim() || "input_frame_id" in record8 && record8.input_frame_id != null && (typeof record8.input_frame_id !== "string" || !record8.input_frame_id.trim())) {
-    throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
+    throw new Error("".concat(CONSOLE_RPC_METHODS2.send, " returned an invalid acceptance payload"));
   }
   return {
     interaction_id: record8.interaction_id,
@@ -48859,7 +48781,7 @@ function timelineStreamPath(target) {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  return `${CONSOLE_REST_PATHS2.timelineStream}${params.size > 0 ? `?${params.toString()}` : ""}`;
+  return "".concat(CONSOLE_REST_PATHS2.timelineStream).concat(params.size > 0 ? "?".concat(params.toString()) : "");
 }
 function subscribeTimelineEvents2(baseUrl, target, onFrame, options = {}) {
   const fetchImpl = globalThis.fetch;
@@ -48870,7 +48792,7 @@ function subscribeTimelineEvents2(baseUrl, target, onFrame, options = {}) {
     async open(signal, after, connected, deliver) {
       const headers = { "content-type": "application/json" };
       if (after) headers["Last-Event-ID"] = after;
-      const response = await fetchImpl(`${baseUrl}${timelineStreamPath(target)}`, {
+      const response = await fetchImpl("".concat(baseUrl).concat(timelineStreamPath(target)), {
         method: "GET",
         headers,
         signal
@@ -49193,7 +49115,7 @@ function createHttpConsoleTransport2({
       if (identityCommandMethods2.has(spec.method)) {
         const identity = stringValue2(params.identity) || identityForCommandTarget(input.target);
         if (!identity) {
-          throw new Error(`${input.command} requires an identity-addressed target`);
+          throw new Error("".concat(input.command, " requires an identity-addressed target"));
         }
         params.identity = identity;
       }
@@ -49213,7 +49135,7 @@ function createHttpConsoleTransport2({
       };
     },
     upload: (input) => uploadConsoleBlobMultipart2(baseUrl, input, timeout()),
-    blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX2}${encodeURIComponent(blobId)}`
+    blobUrl: (blobId) => "".concat(baseUrl).concat(CONSOLE_BLOB_PATH_PREFIX2).concat(encodeURIComponent(blobId))
   };
 }
 function createMobKitConsoleController2({
@@ -49257,7 +49179,7 @@ function createConsoleCommandSurface(transport, facts) {
     async sendMessage(target, input) {
       const identity = identityForSendTarget(target);
       if (!identity) {
-        throw new Error(`target ${target.kind} cannot send MobKit console messages`);
+        throw new Error("target ".concat(target.kind, " cannot send MobKit console messages"));
       }
       const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS2.send);
       const optimistic = facts.optimistic({
@@ -49281,7 +49203,7 @@ function createConsoleCommandSurface(transport, facts) {
     async uploadBlob(input) {
       const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS2.blobUpload);
       if (!transport.upload) {
-        throw new Error(`transport does not implement ${CONSOLE_RPC_METHODS2.blobUpload}`);
+        throw new Error("transport does not implement ".concat(CONSOLE_RPC_METHODS2.blobUpload));
       }
       const uploaded = await transport.upload(input);
       return facts.mobkit(uploaded, {
@@ -49292,16 +49214,16 @@ function createConsoleCommandSurface(transport, facts) {
     async execute(input) {
       input.signal?.throwIfAborted();
       if (!isMobKitTarget(input.target)) {
-        throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
+        throw new Error("host target ".concat(input.target.kind, " cannot execute MobKit commands"));
       }
       const spec = commandSpec(input.command);
       if (!spec.targetKinds.has(input.target.kind)) {
-        throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
+        throw new Error("target ".concat(input.target.kind, " cannot execute command ").concat(input.command));
       }
       await requireFreshCapability(spec.method);
       input.signal?.throwIfAborted();
       if (!transport.executeCommand) {
-        throw new Error(`transport does not implement command ${input.command}`);
+        throw new Error("transport does not implement command ".concat(input.command));
       }
       return transport.executeCommand(input);
     }
@@ -49356,7 +49278,7 @@ function normalizeCapabilities(value) {
 }
 var ConsoleCapabilityUnavailableError2 = class extends Error {
   constructor(method, capabilities) {
-    super(`MobKit capability missing for ${method}`);
+    super("MobKit capability missing for ".concat(method));
     this.method = method;
     __publicField(this, "kind", "console-capability-unavailable");
     __publicField(this, "availableMethods");
@@ -49374,7 +49296,7 @@ function hasCapability(capabilities, method) {
 }
 function commandSpec(command) {
   if (!isConsoleCommandName(command)) {
-    throw new Error(`unknown MobKit console command ${String(command)}`);
+    throw new Error("unknown MobKit console command ".concat(String(command)));
   }
   return CONSOLE_COMMAND_SPECS2[command];
 }
@@ -49427,7 +49349,7 @@ async function resolveWorkGraphItemRevision(run, itemId2) {
   const result = await run(CONSOLE_COMMAND_NAMES2.workgraphGet, { id: itemId2 });
   const revision = revisionOfItem(result);
   if (revision === void 0) {
-    throw new Error(`could not resolve the current revision of work item ${itemId2}`);
+    throw new Error("could not resolve the current revision of work item ".concat(itemId2));
   }
   return revision;
 }
@@ -49435,7 +49357,7 @@ async function resolveWorkGraphGoalItemRevision(run, bindingId) {
   const result = await run(CONSOLE_COMMAND_NAMES2.workgraphGoalStatus, { binding_id: bindingId });
   const revision = revisionOfItem(result);
   if (revision === void 0) {
-    throw new Error(`could not resolve the goal item revision for binding ${bindingId}`);
+    throw new Error("could not resolve the goal item revision for binding ".concat(bindingId));
   }
   return revision;
 }
@@ -49444,7 +49366,7 @@ async function resolveWorkGraphBindingRevision(run, bindingId) {
   const machineState = asRecord2(asRecord2(asRecord2(result)?.attention)?.machine_state);
   const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
   if (revision === void 0) {
-    throw new Error(`could not resolve the machine revision of attention binding ${bindingId}`);
+    throw new Error("could not resolve the machine revision of attention binding ".concat(bindingId));
   }
   return revision;
 }
@@ -49686,8 +49608,8 @@ function normalizeConsoleTopologyQuery(value, options = {}) {
     action,
     mutationCapability(
       globalAllowed,
-      reason || `${action} is not permitted by the runtime.`,
-      `topology.${action}`
+      reason || "".concat(action, " is not permitted by the runtime."),
+      "topology.".concat(action)
     )
   ]));
   const pairs = /* @__PURE__ */ new Map();
@@ -49722,8 +49644,8 @@ function normalizeConsoleTopologyQuery(value, options = {}) {
       const allowed = globalAllowed && crossAuthorityAllowed && endpointAllows(fromNode, action) && endpointAllows(toNode, action);
       return [action, mutationCapability(
         allowed,
-        reason || (!crossAuthorityAllowed ? "Permission denied: cross-authority topology changes require explicit bilateral access." : `Permission denied: ${action} requires access to both endpoints.`),
-        `topology.${action}`
+        reason || (!crossAuthorityAllowed ? "Permission denied: cross-authority topology changes require explicit bilateral access." : "Permission denied: ".concat(action, " requires access to both endpoints.")),
+        "topology.".concat(action)
       )];
     }));
     return [{
@@ -49951,7 +49873,7 @@ function definitiveTopologyFailure(pending, request, error48) {
 }
 function ambiguousTopologyFailure(pending, error48) {
   const detail = topologyMutationErrorMessage(error48);
-  const message = topologyRpcOutcomeRemainsAmbiguous(error48) ? `Topology operation is still in progress: ${detail}. Resolve checks the original request without creating a new mutation.` : `Topology outcome is unknown because the response was lost: ${detail}. Resolve checks the original request without creating a new mutation.`;
+  const message = topologyRpcOutcomeRemainsAmbiguous(error48) ? "Topology operation is still in progress: ".concat(detail, ". Resolve checks the original request without creating a new mutation.") : "Topology outcome is unknown because the response was lost: ".concat(detail, ". Resolve checks the original request without creating a new mutation.");
   return {
     receipt: {
       ...pending,
@@ -50114,7 +50036,7 @@ function parseRunStopResult(result) {
       }
       break;
     default:
-      throw new Error(`invalid mobkit/stop_member_run receipt outcome: ${String(record8.outcome)}`);
+      throw new Error("invalid mobkit/stop_member_run receipt outcome: ".concat(String(record8.outcome)));
   }
   return receipt;
 }
@@ -50123,14 +50045,14 @@ function describeRunStopReceipt(receipt) {
     case "stopped": {
       const cancelled = receipt.contributors.filter((row) => row.terminal === "cancelled").length;
       const consumed = receipt.contributors.length - cancelled;
-      const parts = [`${cancelled} input${cancelled === 1 ? "" : "s"} cancelled`];
-      if (consumed > 0) parts.push(`${consumed} kept`);
-      return `Run stopped: ${parts.join(", ")}.`;
+      const parts = ["".concat(cancelled, " input").concat(cancelled === 1 ? "" : "s", " cancelled")];
+      if (consumed > 0) parts.push("".concat(consumed, " kept"));
+      return "Run stopped: ".concat(parts.join(", "), ".");
     }
     case "not_current":
       return "That run already ended; nothing was stopped.";
     case "not_stoppable":
-      return `The run cannot be stopped right now (runtime ${receipt.state}).`;
+      return "The run cannot be stopped right now (runtime ".concat(receipt.state, ").");
   }
 }
 
@@ -50310,7 +50232,7 @@ function SpriteSheet() {
   ] });
 }
 function Icon({ name: name2, className }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("svg", { className, "aria-label": name2, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("use", { href: `#${name2}` }) });
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("svg", { className, "aria-label": name2, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("use", { href: "#".concat(name2) }) });
 }
 
 // src/lib/identity-log.ts
@@ -50436,7 +50358,7 @@ function formatTime(tsMs) {
   const d2 = new Date(tsMs);
   const hh = String(d2.getHours()).padStart(2, "0");
   const mm = String(d2.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return "".concat(hh, ":").concat(mm);
 }
 function summarizeFrame(frame) {
   const ev = frame.event;
@@ -50444,21 +50366,21 @@ function summarizeFrame(frame) {
   const shortInteraction = String(frame.interactionId || "").slice(0, 8);
   switch (ev) {
     case "interaction_complete":
-      return shortInteraction ? `Completed ${shortInteraction}` : "Completed";
+      return shortInteraction ? "Completed ".concat(shortInteraction) : "Completed";
     case "interaction_failed":
-      return `Failed: ${describeFailure(data)}`;
+      return "Failed: ".concat(describeFailure(data));
     case "interaction_started":
-      return shortInteraction ? `Started ${shortInteraction}` : "Started";
+      return shortInteraction ? "Started ".concat(shortInteraction) : "Started";
     case "gating_decision":
-      return `Gate ${String(data.decision || "")}: ${String(data.action_id || data.pending_id || "")}`;
+      return "Gate ".concat(String(data.decision || ""), ": ").concat(String(data.action_id || data.pending_id || ""));
     case "member_ready":
-      return `Member ready`;
+      return "Member ready";
     case "member_retired":
-      return `Member retired`;
+      return "Member retired";
     case "state_changed":
-      return `State \u2192 ${String(data.state || data.new_state || "")}`;
+      return "State \u2192 ".concat(String(data.state || data.new_state || ""));
     case "route_changed":
-      return `Route updated`;
+      return "Route updated";
     default:
       return ev.replace(/_/g, " ");
   }
@@ -50514,11 +50436,11 @@ function formatWaited(entry) {
   const waited = entry.waited_ms || entry.waited || entry.age_ms;
   if (typeof waited !== "number") return "\u2014";
   const seconds = Math.floor(waited / 1e3);
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return "".concat(seconds, "s");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return "".concat(minutes, "m");
   const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
+  return "".concat(hours, "h ").concat(minutes % 60, "m");
 }
 function payloadSummary(entry) {
   const payload = entry.payload;
@@ -50527,7 +50449,7 @@ function payloadSummary(entry) {
     try {
       const parts = [];
       for (const [k, v] of Object.entries(payload).slice(0, 3)) {
-        parts.push(`${k}=${String(v).slice(0, 20)}`);
+        parts.push("".concat(k, "=").concat(String(v).slice(0, 20)));
       }
       return parts.join(" ");
     } catch {
@@ -50581,7 +50503,7 @@ function GatingInboxPanel({
       /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
-          className: `gating__tab ${tab2 === "pending" ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === "pending" ? "is-active" : ""),
           onClick: () => setTab("pending"),
           "data-testid": "gating-tab:pending",
           children: [
@@ -50593,7 +50515,7 @@ function GatingInboxPanel({
       /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
-          className: `gating__tab ${tab2 === "auto" ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === "auto" ? "is-active" : ""),
           onClick: () => setTab("auto"),
           "data-testid": "gating-tab:auto",
           children: [
@@ -50605,7 +50527,7 @@ function GatingInboxPanel({
       /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
-          className: `gating__tab ${tab2 === "audit" ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === "audit" ? "is-active" : ""),
           onClick: () => setTab("audit"),
           "data-testid": "gating-tab:audit",
           children: [
@@ -50617,7 +50539,7 @@ function GatingInboxPanel({
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         "button",
         {
-          className: `gating__tab ${tab2 === "policies" ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === "policies" ? "is-active" : ""),
           onClick: () => setTab("policies"),
           "data-testid": "gating-tab:policies",
           children: "Policies"
@@ -50638,21 +50560,21 @@ function GatingInboxPanel({
       ] }),
       currentList.map(({ raw, record: record8 }, index2) => {
         const r2 = raw && typeof raw === "object" ? raw : {};
-        const pid = (tab2 === "pending" ? record8.pendingId : record8.auditId) || `item-${index2}`;
+        const pid = (tab2 === "pending" ? record8.pendingId : record8.auditId) || "item-".concat(index2);
         const action = record8.actionId || record8.eventType || "Unknown action";
         const agent = record8.actorId || (tab2 === "pending" ? String(r2.agent || r2.identity || r2.actor || "") : "");
         const waited = formatWaited(r2);
         const risk = record8.riskTier;
-        const tierLabel = risk === "unknown" ? `Unknown${record8.recordedRiskTier ? ` (${record8.recordedRiskTier})` : ""}` : risk.toUpperCase();
+        const tierLabel = risk === "unknown" ? "Unknown".concat(record8.recordedRiskTier ? " (".concat(record8.recordedRiskTier, ")") : "") : risk.toUpperCase();
         const payload = tab2 === "pending" ? payloadSummary(r2) : "";
         const selected = selectedId === pid;
         const showActions = tab2 === "pending" && !readOnly;
         return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
           "div",
           {
-            className: `gitem ${selected ? "is-selected" : ""}`,
+            className: "gitem ".concat(selected ? "is-selected" : ""),
             "data-risk": risk,
-            "data-testid": `gating-${tab2 === "pending" ? "pending" : "audit"}:${pid}`,
+            "data-testid": "gating-".concat(tab2 === "pending" ? "pending" : "audit", ":").concat(pid),
             onClick: () => setSelectedId(pid),
             children: [
               /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "gitem__risk", "aria-hidden": "true" }),
@@ -50692,7 +50614,7 @@ function GatingInboxPanel({
                   "button",
                   {
                     className: "approve",
-                    "data-testid": `gating-action:${pid}:approve`,
+                    "data-testid": "gating-action:".concat(pid, ":approve"),
                     onClick: (e) => {
                       e.stopPropagation();
                       onDecide(pid, "approve");
@@ -50704,7 +50626,7 @@ function GatingInboxPanel({
                   "button",
                   {
                     className: "reject",
-                    "data-testid": `gating-action:${pid}:reject`,
+                    "data-testid": "gating-action:".concat(pid, ":reject"),
                     onClick: (e) => {
                       e.stopPropagation();
                       onDecide(pid, "reject");
@@ -50715,7 +50637,7 @@ function GatingInboxPanel({
                 /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                   "button",
                   {
-                    "data-testid": `gating-action:${pid}:escalate`,
+                    "data-testid": "gating-action:".concat(pid, ":escalate"),
                     onClick: (e) => {
                       e.stopPropagation();
                       onDecide(pid, "escalate");
@@ -50759,20 +50681,20 @@ function parseLabelSelectorInput(raw) {
   return labels2;
 }
 function formatLabelSelectorInput(labels2) {
-  return Object.entries(labels2 || {}).map(([key, value]) => `${key}=${value}`).join(", ");
+  return Object.entries(labels2 || {}).map(([key, value]) => "".concat(key, "=").concat(value)).join(", ");
 }
 function summarizeRuleSubjects(rule) {
   const parts = [];
-  if (rule.groups?.length) parts.push(`groups: ${rule.groups.join(", ")}`);
+  if (rule.groups?.length) parts.push("groups: ".concat(rule.groups.join(", ")));
   if (rule.subjects?.length) parts.push(rule.subjects.join(", "));
   return parts.length > 0 ? parts.join(" \xB7 ") : "everyone";
 }
 function summarizeRuleResources(rule) {
   const parts = [];
-  if (rule.agents?.length) parts.push(`agents: ${rule.agents.join(", ")}`);
-  if (rule.roles?.length) parts.push(`roles: ${rule.roles.join(", ")}`);
+  if (rule.agents?.length) parts.push("agents: ".concat(rule.agents.join(", ")));
+  if (rule.roles?.length) parts.push("roles: ".concat(rule.roles.join(", ")));
   const labels2 = formatLabelSelectorInput(rule.match_labels);
-  if (labels2) parts.push(`labels: ${labels2}`);
+  if (labels2) parts.push("labels: ".concat(labels2));
   return parts.length > 0 ? parts.join(" \xB7 ") : "all agents";
 }
 function emptyRuleDraft() {
@@ -51024,11 +50946,11 @@ function AccessPanel({
       ["overview", "groups", "rules", "preview"].map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
         "button",
         {
-          className: `gating__tab ${tab2 === candidate ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === candidate ? "is-active" : ""),
           onClick: () => setTab(candidate),
-          "data-testid": `access-tab:${candidate}`,
+          "data-testid": "access-tab:".concat(candidate),
           children: [
-            candidate === "overview" ? "Overview" : candidate === "groups" ? `Groups` : candidate === "rules" ? `Rules` : "Preview",
+            candidate === "overview" ? "Overview" : candidate === "groups" ? "Groups" : candidate === "rules" ? "Rules" : "Preview",
             candidate === "groups" ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "n", children: groups.length }) : null,
             candidate === "rules" ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "n", children: rules.length }) : null
           ]
@@ -51042,7 +50964,7 @@ function AccessPanel({
         /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy", "data-state": enabled ? "active" : "paused", children: [
           /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy__head", children: [
             /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: "Enforcement" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: `gpolicy__state gpolicy__state--${enabled ? "active" : "paused"}`, children: enabled ? "enabled" : "disabled" })
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__state gpolicy__state--".concat(enabled ? "active" : "paused"), children: enabled ? "enabled" : "disabled" })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__rule", children: enabled ? "Deny by default: every console caller only sees and operates what a rule (or admin standing) grants." : "Access control is configured but not enforced. Enabling requires at least one admin subject." }),
           canEdit ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
@@ -51109,7 +51031,7 @@ function AccessPanel({
       tab2 === "groups" ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gating__policies", children: [
         groups.length === 0 && editingGroup === null ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gating__empty", children: "No groups yet. Groups assign people to rules - create one, then reference it from a rule." }) : null,
         groups.map(
-          ([name2, group]) => editingGroup === name2 ? null : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": `access-group:${name2}`, children: [
+          ([name2, group]) => editingGroup === name2 ? null : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-group:".concat(name2), children: [
             /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: name2 }) }),
             group.description ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__rule", children: group.description }) : null,
             /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "chip", style: { display: "inline-flex", alignItems: "center", gap: 6 }, children: [
@@ -51119,7 +51041,7 @@ function AccessPanel({
                 {
                   type: "button",
                   style: { textDecoration: "underline" },
-                  "aria-label": `Inspect access for ${member}`,
+                  "aria-label": "Inspect access for ".concat(member),
                   onClick: () => inspectSubject(member),
                   children: "Inspect access"
                 }
@@ -51129,7 +51051,7 @@ function AccessPanel({
               /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
                 "button",
                 {
-                  "data-testid": `access-group-edit:${name2}`,
+                  "data-testid": "access-group-edit:".concat(name2),
                   onClick: () => startGroupEdit(name2, group.members),
                   children: "Edit members"
                 }
@@ -51138,9 +51060,9 @@ function AccessPanel({
                 "button",
                 {
                   className: "reject",
-                  "data-testid": `access-group-delete:${name2}`,
+                  "data-testid": "access-group-delete:".concat(name2),
                   onClick: () => {
-                    if (window.confirm(`Delete group "${name2}"?`)) {
+                    if (window.confirm('Delete group "'.concat(name2, '"?'))) {
                       void mutate("immediate", captureBase(), (base) => onDeleteGroup(name2, base));
                     }
                   },
@@ -51151,7 +51073,7 @@ function AccessPanel({
           ] }, name2)
         ),
         canEdit || groupBase ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: editingGroup ? `Edit ${editingGroup}` : "New group" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: editingGroup ? "Edit ".concat(editingGroup) : "New group" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "access-panel__form", children: [
             /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("label", { children: [
               "Group name",
@@ -51205,11 +51127,11 @@ function AccessPanel({
             {
               className: "gpolicy",
               "data-state": rule.effect === "deny" ? "paused" : "active",
-              "data-testid": `access-rule:${rule.id}`,
+              "data-testid": "access-rule:".concat(rule.id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy__head", children: [
                   /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: rule.id }),
-                  /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: `gpolicy__state gpolicy__state--${rule.effect === "deny" ? "paused" : "active"}`, children: rule.effect === "deny" ? "deny" : "allow" })
+                  /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__state gpolicy__state--".concat(rule.effect === "deny" ? "paused" : "active"), children: rule.effect === "deny" ? "deny" : "allow" })
                 ] }),
                 rule.description ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__rule", children: rule.description }) : null,
                 /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy__meta", children: [
@@ -51228,7 +51150,7 @@ function AccessPanel({
                   /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
                     "button",
                     {
-                      "data-testid": `access-rule-edit:${rule.id}`,
+                      "data-testid": "access-rule-edit:".concat(rule.id),
                       onClick: () => {
                         setRuleBase(captureBase());
                         setRuleDraft(draftFromRule(rule));
@@ -51240,9 +51162,9 @@ function AccessPanel({
                     "button",
                     {
                       className: "reject",
-                      "data-testid": `access-rule-delete:${rule.id}`,
+                      "data-testid": "access-rule-delete:".concat(rule.id),
                       onClick: () => {
-                        if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
+                        if (window.confirm('Delete rule "'.concat(rule.id, '"? Access it grants (or denies) stops immediately.'))) {
                           void mutate("immediate", captureBase(), (base) => onDeleteRule(rule.id, base));
                         }
                       },
@@ -51260,7 +51182,7 @@ function AccessPanel({
           setRuleDraft({ ...emptyRuleDraft(), actions: actions.slice(0, 1) });
         }, children: "New rule" }) }) : null,
         ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? `Edit ${ruleDraft.id}` : "New rule" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? "Edit ".concat(ruleDraft.id) : "New rule" }) }),
           /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "access-panel__form", children: [
             /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("label", { children: [
               "Rule id",
@@ -51330,9 +51252,9 @@ function AccessPanel({
                 return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
                   "button",
                   {
-                    className: `chip ${selected ? "is-active" : ""}`,
+                    className: "chip ".concat(selected ? "is-active" : ""),
                     "data-selected": selected ? "true" : "false",
-                    "data-testid": `access-rule-action:${action}`,
+                    "data-testid": "access-rule-action:".concat(action),
                     onClick: () => setRuleDraft({
                       ...ruleDraft,
                       actions: selected ? ruleDraft.actions.filter((candidate) => candidate !== action) : [...ruleDraft.actions, action]
@@ -51455,9 +51377,9 @@ function AccessPanel({
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: "Observation only, not permission for a later action. " }),
                 previewResult.allowed ? "ALLOWED" : "DENIED",
-                previewResult.reason ? ` - ${previewResult.reason}` : "",
+                previewResult.reason ? " - ".concat(previewResult.reason) : "",
                 previewResult.is_admin ? " (admin)" : "",
-                previewResult.groups?.length ? ` \xB7 groups: ${previewResult.groups.join(", ")}` : ""
+                previewResult.groups?.length ? " \xB7 groups: ".concat(previewResult.groups.join(", ")) : ""
               ]
             }
           ) : null
@@ -51497,13 +51419,13 @@ function realmOfRecord(record8) {
 function scopeGroupKey(scope) {
   switch (scope.scope) {
     case "identity":
-      return `identity:${scope.realm}:${scope.identity}`;
+      return "identity:".concat(scope.realm, ":").concat(scope.identity);
     case "mob":
-      return `mob:${scope.realm}:${scope.mob}`;
+      return "mob:".concat(scope.realm, ":").concat(scope.mob);
     case "operator":
-      return `operator:${scope.realm}:${scope.operator}`;
+      return "operator:".concat(scope.realm, ":").concat(scope.operator);
     case "realm":
-      return `realm:${scope.realm}`;
+      return "realm:".concat(scope.realm);
   }
 }
 function scopeGroupLabel(scope) {
@@ -51511,9 +51433,9 @@ function scopeGroupLabel(scope) {
     case "identity":
       return scope.identity;
     case "mob":
-      return `Mob: ${scope.mob}`;
+      return "Mob: ".concat(scope.mob);
     case "operator":
-      return `Operator: ${scope.operator}`;
+      return "Operator: ".concat(scope.operator);
     case "realm":
       return "Realm";
   }
@@ -51587,9 +51509,9 @@ function statusLabel(status) {
     case "active":
       return "active";
     case "superseded":
-      return status.by ? `superseded \u2192 ${status.by}` : "superseded";
+      return status.by ? "superseded \u2192 ".concat(status.by) : "superseded";
     case "quarantined":
-      return status.reason ? `quarantined: ${status.reason}` : "quarantined";
+      return status.reason ? "quarantined: ".concat(status.reason) : "quarantined";
     case "tombstoned":
       return "tombstoned";
   }
@@ -51619,19 +51541,19 @@ function relativeAge(atMs, now = Date.now()) {
   if (diff < 1e3) return "now";
   for (const [unitMs, suffix] of RELATIVE_UNITS) {
     if (diff >= unitMs) {
-      return `${Math.floor(diff / unitMs)}${suffix} ago`;
+      return "".concat(Math.floor(diff / unitMs)).concat(suffix, " ago");
     }
   }
   return "now";
 }
 function evidenceLabel(evidence) {
   const parts = [];
-  if (evidence.session_id) parts.push(`session ${evidence.session_id}`);
-  if (typeof evidence.generation === "number") parts.push(`gen ${evidence.generation}`);
-  if (evidence.revision) parts.push(`rev ${evidence.revision}`);
+  if (evidence.session_id) parts.push("session ".concat(evidence.session_id));
+  if (typeof evidence.generation === "number") parts.push("gen ".concat(evidence.generation));
+  if (evidence.revision) parts.push("rev ".concat(evidence.revision));
   if (evidence.range && evidence.range.length === 2) {
     const [start2, end] = evidence.range;
-    parts.push(`msgs ${start2}\u2013${end}`);
+    parts.push("msgs ".concat(start2, "\u2013").concat(end));
   }
   return parts.join(" \u2022 ") || "evidence";
 }
@@ -51639,11 +51561,11 @@ function authorLine(author) {
   if (!author) return "unknown author";
   switch (author.author) {
     case "agent":
-      return author.identity ? `agent ${author.identity}` : "agent";
+      return author.identity ? "agent ".concat(author.identity) : "agent";
     case "steward":
-      return author.run_id ? `steward run ${author.run_id}` : "steward";
+      return author.run_id ? "steward run ".concat(author.run_id) : "steward";
     case "distiller":
-      return author.run_id ? `distiller run ${author.run_id}` : "distiller";
+      return author.run_id ? "distiller run ".concat(author.run_id) : "distiller";
     case "operator":
       return "operator";
     case "application":
@@ -51654,20 +51576,20 @@ function dreamOpKindsSummary(opKinds) {
   if (!opKinds) return "";
   const entries = Object.entries(opKinds).filter(([, count]) => typeof count === "number" && count > 0).sort((a, b2) => b2[1] - a[1] || a[0].localeCompare(b2[0]));
   if (entries.length === 0) return "";
-  return entries.map(([kind, count]) => `${count} ${kind}`).join(" \xB7 ");
+  return entries.map(([kind, count]) => "".concat(count, " ").concat(kind)).join(" \xB7 ");
 }
 function dreamTimeRange(run, now = Date.now()) {
   const first = run.first_op_at_ms;
   const last = run.last_op_at_ms;
   if (!first && !last) return "\u2014";
   if (first && last && first !== last) {
-    return `${relativeAge(first, now)} \u2192 ${relativeAge(last, now)}`;
+    return "".concat(relativeAge(first, now), " \u2192 ").concat(relativeAge(last, now));
   }
   return relativeAge(last || first, now);
 }
 function injectionLine(injection, now = Date.now()) {
   const surface = injection.surface === "build" ? "build" : "turn";
-  return `${surface} \u2022 ${injection.identity} \u2022 ${relativeAge(injection.at_ms, now)}`;
+  return "".concat(surface, " \u2022 ").concat(injection.identity, " \u2022 ").concat(relativeAge(injection.at_ms, now));
 }
 function buildRecordsQueryParams(filter, options = {}) {
   const params = {};
@@ -51808,13 +51730,13 @@ function sortRecordsByUtility(records) {
 function utilityLine(record8) {
   const u2 = recordUtility(record8);
   const ratio = u2.ratio === null ? "\u2014" : u2.ratio.toFixed(2);
-  return `inj ${u2.injected} \xB7 recall ${u2.recalled} \xB7 useful ${u2.useful} \xB7 ratio ${ratio} \xB7 ~${formatBytes(u2.bytesSpent)} spent`;
+  return "inj ".concat(u2.injected, " \xB7 recall ").concat(u2.recalled, " \xB7 useful ").concat(u2.useful, " \xB7 ratio ").concat(ratio, " \xB7 ~").concat(formatBytes(u2.bytesSpent), " spent");
 }
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0B";
-  if (bytes < 1024) return `${Math.round(bytes)}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  if (bytes < 1024) return "".concat(Math.round(bytes), "B");
+  if (bytes < 1024 * 1024) return "".concat((bytes / 1024).toFixed(1), "KB");
+  return "".concat((bytes / (1024 * 1024)).toFixed(1), "MB");
 }
 var LATTICE_WALK_MAX_RECORDS = 2e3;
 var LATTICE_WALK_PAGE_LIMIT = 200;
@@ -51855,9 +51777,9 @@ function latticeInvariants(records, options) {
 }
 function latticeFingerprint(records, realms, baseCursor) {
   const rows = records.map(
-    (record8) => `${record8.id}:${record8.supersedes || ""}:${record8.trust}:${record8.status?.status || ""}:${record8.updated_at_ms || 0}`
+    (record8) => "".concat(record8.id, ":").concat(record8.supersedes || "", ":").concat(record8.trust, ":").concat(record8.status?.status || "", ":").concat(record8.updated_at_ms || 0)
   ).join("|");
-  return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
+  return "".concat(realms.join(","), "#").concat(baseCursor || "", "#").concat(records.length, "#").concat(rows);
 }
 async function runLatticeWalk(fetchPage, options) {
   const max = options.maxRecords ?? LATTICE_WALK_MAX_RECORDS;
@@ -51945,11 +51867,11 @@ function computeVerdictTiles(inputs) {
       label: "LATTICE",
       status: violations.length > 0 ? "violated" : "holding",
       lines: [
-        violations.length > 0 ? `${violations.length} violation${violations.length === 1 ? "" : "s"}` : "0 violations",
-        walk.complete ? `checked ${walk.checked}/${walk.checked}` : `checked first ${walk.checked} \u2014 partial (cap ${LATTICE_WALK_MAX_RECORDS})`,
+        violations.length > 0 ? "".concat(violations.length, " violation").concat(violations.length === 1 ? "" : "s") : "0 violations",
+        walk.complete ? "checked ".concat(walk.checked, "/").concat(walk.checked) : "checked first ".concat(walk.checked, " \u2014 partial (cap ").concat(LATTICE_WALK_MAX_RECORDS, ")"),
         "invariant (b) needs ever_quarantined (surface 2)",
         ...inputs.latticeRunning ? ["re-checking\u2026"] : [],
-        ...violations.length > VERDICT_EVIDENCE_MAX ? [`+${violations.length - VERDICT_EVIDENCE_MAX} more violations`] : []
+        ...violations.length > VERDICT_EVIDENCE_MAX ? ["+".concat(violations.length - VERDICT_EVIDENCE_MAX, " more violations")] : []
       ],
       targetTab: "records",
       evidence: violations.slice(0, VERDICT_EVIDENCE_MAX)
@@ -51971,8 +51893,8 @@ function computeVerdictTiles(inputs) {
       label: "RECALL",
       status: dead.length > 0 ? "degraded" : "holding",
       lines: [
-        `${dead.length} dead weight of ${inputs.records.length} loaded`,
-        `~${formatBytes(deadBytes)} spent (approx)`
+        "".concat(dead.length, " dead weight of ").concat(inputs.records.length, " loaded"),
+        "~".concat(formatBytes(deadBytes), " spent (approx)")
       ],
       targetTab: "records"
     });
@@ -52003,8 +51925,8 @@ function computeVerdictTiles(inputs) {
       label: "DREAMS",
       status: "holding",
       lines: [
-        `last run ${relativeAge(lastOp, now)}`,
-        quarantined > 0 ? `\u26A0 ${quarantined} quarantined ops` : "0 quarantined ops",
+        "last run ".concat(relativeAge(lastOp, now)),
+        quarantined > 0 ? "\u26A0 ".concat(quarantined, " quarantined ops") : "0 quarantined ops",
         "verdict sheet needs persisted DreamRun (surface 11)"
       ],
       targetTab: "dreams"
@@ -52029,16 +51951,16 @@ function computeVerdictTiles(inputs) {
   } else {
     const floor = storeFloorVerdict(inputs.overview.scopes);
     const floors = inputs.overview.floors;
-    const floorLine = floors ? `floors ${floors.records ?? "?"} records / ${typeof floors.bytes === "number" ? formatBytes(floors.bytes) : "?"} per scope` : "floors unreported";
+    const floorLine = floors ? "floors ".concat(floors.records ?? "?", " records / ").concat(typeof floors.bytes === "number" ? formatBytes(floors.bytes) : "?", " per scope") : "floors unreported";
     tiles.push({
       id: "store-floor",
       label: "STORE FLOOR",
       status: floor.status === "ok" ? "holding" : "degraded",
       lines: floor.status === "ok" ? [
-        `OK \u2014 no scope at floor pressure (${inputs.overview.scopes.length} scopes)`,
+        "OK \u2014 no scope at floor pressure (".concat(inputs.overview.scopes.length, " scopes)"),
         floorLine
       ] : [
-        `PRESSURE \u2014 ${floor.pressured.length} scope${floor.pressured.length === 1 ? "" : "s"} at floor`,
+        "PRESSURE \u2014 ".concat(floor.pressured.length, " scope").concat(floor.pressured.length === 1 ? "" : "s", " at floor"),
         floor.pressured.map((scope) => overviewScopeLabel(scope)).join(" \xB7 "),
         floorLine
       ],
@@ -52059,7 +51981,7 @@ function scopeOverviewRows(records) {
       const trust = trustLabel(record8.trust);
       trustCounts.set(trust, (trustCounts.get(trust) || 0) + 1);
     }
-    const trustMix = Array.from(trustCounts.entries()).sort((a, b2) => b2[1] - a[1] || a[0].localeCompare(b2[0])).map(([trust, count]) => `${count} ${trust}`).join(" \xB7 ");
+    const trustMix = Array.from(trustCounts.entries()).sort((a, b2) => b2[1] - a[1] || a[0].localeCompare(b2[0])).map(([trust, count]) => "".concat(count, " ").concat(trust)).join(" \xB7 ");
     return {
       key: group.key,
       label: group.label,
@@ -52083,21 +52005,21 @@ function filterForScope(scope) {
   }
 }
 function overviewScopeKey(scope) {
-  if (scope.scope_kind === "realm") return `realm:${scope.realm}`;
-  return `${scope.scope_kind}:${scope.realm}:${scope.scope_key}`;
+  if (scope.scope_kind === "realm") return "realm:".concat(scope.realm);
+  return "".concat(scope.scope_kind, ":").concat(scope.realm, ":").concat(scope.scope_key);
 }
 function overviewScopeLabel(scope) {
   switch (scope.scope_kind) {
     case "identity":
       return scope.scope_key;
     case "mob":
-      return `Mob: ${scope.scope_key}`;
+      return "Mob: ".concat(scope.scope_key);
     case "operator":
-      return `Operator: ${scope.scope_key}`;
+      return "Operator: ".concat(scope.scope_key);
     case "realm":
       return "Realm";
     default:
-      return `${scope.scope_kind}:${scope.scope_key}`;
+      return "".concat(scope.scope_kind, ":").concat(scope.scope_key);
   }
 }
 function filterForOverviewScope(scope) {
@@ -52156,11 +52078,11 @@ function dreamRunsNewestFirst(runs) {
 }
 function formatDurationMs(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "\u2014";
-  if (ms < 1e3) return `${Math.round(ms)}ms`;
-  if (ms < 60 * 1e3) return `${(ms / 1e3).toFixed(1)}s`;
+  if (ms < 1e3) return "".concat(Math.round(ms), "ms");
+  if (ms < 60 * 1e3) return "".concat((ms / 1e3).toFixed(1), "s");
   const minutes = Math.floor(ms / (60 * 1e3));
   const seconds = Math.round(ms % (60 * 1e3) / 1e3);
-  return `${minutes}m ${seconds}s`;
+  return "".concat(minutes, "m ").concat(seconds, "s");
 }
 function dreamRunDuration(run) {
   if (!run.started_at_ms || !run.completed_at_ms) return "\u2014";
@@ -52226,7 +52148,7 @@ function knowledgeComposition(records, identity) {
   const count = (predicate) => records.filter(predicate).length;
   return [
     {
-      label: `identity:${identity}`,
+      label: "identity:".concat(identity),
       count: count(
         (record8) => record8.scope.scope === "identity" && record8.scope.identity === identity
       ),
@@ -52257,7 +52179,7 @@ function dedupeFramesById(frames) {
   const seen = /* @__PURE__ */ new Set();
   const result = [];
   for (const frame of frames) {
-    const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+    const key = frame.id || "".concat(frame.event, ":").concat(frame.timestampMs || 0);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(frame);
@@ -52282,23 +52204,23 @@ function canDecideQuarantinedRecord(record8) {
 var QUARANTINE_RATIONALE_MAX_BYTES = 400;
 function quarantineRationaleProblem(rationale) {
   const bytes = new TextEncoder().encode(rationale.trim()).length;
-  return bytes > QUARANTINE_RATIONALE_MAX_BYTES ? `The rationale is ${bytes} bytes (UTF-8); the limit is ${QUARANTINE_RATIONALE_MAX_BYTES}.` : null;
+  return bytes > QUARANTINE_RATIONALE_MAX_BYTES ? "The rationale is ".concat(bytes, " bytes (UTF-8); the limit is ").concat(QUARANTINE_RATIONALE_MAX_BYTES, ".") : null;
 }
 function quarantineDecisionSummary(result) {
   const successor = result.successor?.memory_id;
   switch (result.outcome) {
     case "released":
-      return `Released as ${successor ?? "a new record"} (agent_observed, ever-quarantined); the original is kept, tombstoned.`;
+      return "Released as ".concat(successor ?? "a new record", " (agent_observed, ever-quarantined); the original is kept, tombstoned.");
     case "already_released":
-      return `Already released as ${successor ?? "a new record"}; nothing changed.`;
+      return "Already released as ".concat(successor ?? "a new record", "; nothing changed.");
     case "tombstoned": {
       const invalidated = result.decision?.review?.invalidated_promotions ?? [];
-      return invalidated.length > 0 ? `Tombstoned; it will never be recalled. Pending promotion ${invalidated.join(", ")} invalidated; it can no longer publish.` : "Tombstoned; it will never be recalled.";
+      return invalidated.length > 0 ? "Tombstoned; it will never be recalled. Pending promotion ".concat(invalidated.join(", "), " invalidated; it can no longer publish.") : "Tombstoned; it will never be recalled.";
     }
     case "already_tombstoned":
       return "Already tombstoned; nothing changed.";
     default:
-      return `Decided: ${String(result.outcome)}`;
+      return "Decided: ".concat(String(result.outcome));
   }
 }
 function quarantineDecisionErrorText(error48) {
@@ -52314,17 +52236,17 @@ function quarantineDecisionErrorText(error48) {
       case "content_mismatch":
         return "Refused: the record differs from the one loaded here. Reload it and review again.";
       case "not_quarantined":
-        return data.released_as ? `Refused: it was already released as ${String(data.released_as)}.` : `Refused: the record is ${String(data.status)}, not quarantined.`;
+        return data.released_as ? "Refused: it was already released as ".concat(String(data.released_as), ".") : "Refused: the record is ".concat(String(data.status), ", not quarantined.");
       case "gate_pending": {
-        const expires = typeof data.expires_at_ms === "number" ? ` (or wait until it expires, ${new Date(data.expires_at_ms).toISOString()})` : "";
-        return `Refused: gated promotion ${String(data.pending_id)} is waiting on it; decide it in the Gating inbox${expires}. Tombstoning the record instead invalidates that promotion.`;
+        const expires = typeof data.expires_at_ms === "number" ? " (or wait until it expires, ".concat(new Date(data.expires_at_ms).toISOString(), ")") : "";
+        return "Refused: gated promotion ".concat(String(data.pending_id), " is waiting on it; decide it in the Gating inbox").concat(expires, ". Tombstoning the record instead invalidates that promotion.");
       }
       case "successor_conflict":
-        return `Refused: another record already holds the release id ${String(data.successor_id)}; nothing was changed.`;
+        return "Refused: another record already holds the release id ".concat(String(data.successor_id), "; nothing was changed.");
       case "secret_detected":
-        return `Refused: the content matches the ${String(data.class)} secret pattern; tombstone is the only exit.`;
+        return "Refused: the content matches the ".concat(String(data.class), " secret pattern; tombstone is the only exit.");
       case "stale_update":
-        return `Refused: the version this update replaces (${String(data.prior)}) is ${String(data.prior_status)}; tombstone it instead.`;
+        return "Refused: the version this update replaces (".concat(String(data.prior), ") is ").concat(String(data.prior_status), "; tombstone it instead.");
       default:
         break;
     }
@@ -52351,7 +52273,7 @@ function RecordRow({
     {
       type: "button",
       className: "memory-row",
-      "data-testid": `memory-record:${record8.id}`,
+      "data-testid": "memory-record:".concat(record8.id),
       onClick: onSelect,
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: record8.title || record8.id }),
@@ -52368,7 +52290,7 @@ function RecordRow({
   );
 }
 function evidenceKey(evidence, index2) {
-  return `${index2}:${evidence.session_id || ""}:${evidence.generation ?? ""}`;
+  return "".concat(index2, ":").concat(evidence.session_id || "", ":").concat(evidence.generation ?? "");
 }
 function QuarantineDecisionBlock({
   realm,
@@ -52514,13 +52436,13 @@ function BiographyView({
         {
           type: "button",
           className: "memory-evidence__ref",
-          "data-testid": `memory-evidence:${index2}`,
+          "data-testid": "memory-evidence:".concat(index2),
           onClick: () => void openEvidence(ref, index2),
           disabled: !onLoadEvidence,
           title: onLoadEvidence ? "Open transcript window" : void 0,
           children: evidenceLabel(ref)
         },
-        `ev-${index2}`
+        "ev-".concat(index2)
       )) }) : null,
       evidenceState ? evidenceState.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "Loading transcript\u2026" }) : evidenceState.status === "not-found" ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-degraded", children: "Session not found in the recent timeline window \u2014 evidence reference retained as label only." }) : evidenceState.status === "empty-range" ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-empty", children: "Session found, but no message entries in the evidence range \u2014 the window is approximate against the console timeline." }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-excerpt", "data-testid": "memory-evidence-excerpt", children: [
         /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line memory-excerpt__note", children: "Approximate window against the console timeline (evidence indexes a session generation)." }),
@@ -52543,7 +52465,7 @@ function BiographyView({
           className: "memory-chain__row",
           "data-current": current ? "true" : void 0,
           "data-dimmed": current ? void 0 : "true",
-          "data-testid": `memory-chain:${entry.id}`,
+          "data-testid": "memory-chain:".concat(entry.id),
           onClick: () => {
             if (!current) onSelectRecord(realmOfRecord(entry), entry.id);
           },
@@ -52566,9 +52488,9 @@ function BiographyView({
         usage.explicit_recall_count ?? 0,
         " \xB7 judged useful ",
         usage.judged_useful_count ?? 0,
-        usage.last_injected_at_ms ? ` \xB7 last injected ${relativeAge(usage.last_injected_at_ms)}` : ""
+        usage.last_injected_at_ms ? " \xB7 last injected ".concat(relativeAge(usage.last_injected_at_ms)) : ""
       ] }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no usage recorded" }),
-      injections.length > 0 ? injections.map((injection, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: injectionLine(injection) }, `inj-${index2}`)) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no injections recorded for this record" })
+      injections.length > 0 ? injections.map((injection, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: injectionLine(injection) }, "inj-".concat(index2))) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no injections recorded for this record" })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-dreams", children: [
       /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-detail__label", children: "Dreams" }),
@@ -52576,7 +52498,7 @@ function BiographyView({
         run.run_id,
         " \xB7 ",
         dreamTimeRange(run),
-        run.quarantined_ops ? ` \xB7 \u26A0 ${run.quarantined_ops} quarantined` : ""
+        run.quarantined_ops ? " \xB7 \u26A0 ".concat(run.quarantined_ops, " quarantined") : ""
       ] }, run.run_id)) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no sampled dream runs reference this record (sample is \u226412 ids per run \u2014 exact history needs the record history[] surface)" })
     ] })
   ] });
@@ -52593,7 +52515,7 @@ function VerdictStrip({
       role: "button",
       tabIndex: 0,
       "data-status": tile.status,
-      "data-testid": `memory-verdict:${tile.id}`,
+      "data-testid": "memory-verdict:".concat(tile.id),
       onClick: () => onOpen(tile),
       onKeyDown: (event) => {
         if (event.key === "Enter" || event.key === " ") onOpen(tile);
@@ -52601,13 +52523,13 @@ function VerdictStrip({
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-tile__label", children: tile.label }),
         /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-tile__status", "data-status": tile.status, children: verdictStatusLabel(tile.status) }),
-        tile.lines.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-tile__line", children: line }, `l-${index2}`)),
+        tile.lines.map((line, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-tile__line", children: line }, "l-".concat(index2))),
         (tile.evidence || []).map((violation) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
           "button",
           {
             type: "button",
             className: "memory-tile__evidence",
-            "data-testid": `memory-verdict-evidence:${tile.id}:${violation.id}`,
+            "data-testid": "memory-verdict-evidence:".concat(tile.id, ":").concat(violation.id),
             onClick: (event) => {
               event.stopPropagation();
               onOpenRecord(violation.realm, violation.id);
@@ -52664,7 +52586,7 @@ function MemoryLiveStrip({
       shown.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "No memory events in the ring." }) : shown.map((frame) => {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
         const pivot = memoryFramePivot(frame);
-        return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-live__row", "data-testid": `memory-live-row:${frame.id}`, children: [
+        return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-live__row", "data-testid": "memory-live-row:".concat(frame.id), children: [
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__age", children: relativeAge(frame.timestampMs) }),
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-live__text", children: describeMemoryTimelineEvent2(frame.event, data) }),
           pivot ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
@@ -52672,7 +52594,7 @@ function MemoryLiveStrip({
             {
               type: "button",
               className: "memory-live__pivot",
-              "data-testid": `memory-live-pivot:${frame.id}`,
+              "data-testid": "memory-live-pivot:".concat(frame.id),
               onClick: () => onPivot(pivot.realm, pivot.recordId),
               children: "state here"
             }
@@ -52858,7 +52780,7 @@ function MemoryPanel({
       /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("p", { children: [
         records.length,
         " records",
-        realms.length > 1 ? ` \xB7 ${realms.length} realms` : ""
+        realms.length > 1 ? " \xB7 ".concat(realms.length, " realms") : ""
       ] })
     ] }),
     error48 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "gating__empty", "data-testid": "memory-error", children: error48 }) : null,
@@ -52866,9 +52788,9 @@ function MemoryPanel({
       MEMORY_TABS.map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
         "button",
         {
-          className: `gating__tab ${tab2 === candidate ? "is-active" : ""}`,
+          className: "gating__tab ".concat(tab2 === candidate ? "is-active" : ""),
           onClick: () => setTab(candidate),
-          "data-testid": `memory-tab:${candidate}`,
+          "data-testid": "memory-tab:".concat(candidate),
           children: [
             memoryTabLabel(candidate),
             candidate === "pipeline" && quarantineCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "n", children: quarantineCount }) : null,
@@ -52901,7 +52823,7 @@ function MemoryPanel({
           }
         ),
         recordsDenied ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(SectionNote, { testid: "memory-holdings-denied", children: "Records are not readable by this principal (access denied)." }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-group", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-group__label", children: overviewScopes ? `Scopes \u2014 store totals (panel/overview)${overview?.floors ? ` \xB7 floors ${overview.floors.records ?? "?"} records / ${typeof overview.floors.bytes === "number" ? formatBytes(overview.floors.bytes) : "?"} per scope` : ""}` : `Scopes \u2014 counts over the ${records.length} loaded records (full totals need panel/overview)` }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-group__label", children: overviewScopes ? "Scopes \u2014 store totals (panel/overview)".concat(overview?.floors ? " \xB7 floors ".concat(overview.floors.records ?? "?", " records / ").concat(typeof overview.floors.bytes === "number" ? formatBytes(overview.floors.bytes) : "?", " per scope") : "") : "Scopes \u2014 counts over the ".concat(records.length, " loaded records (full totals need panel/overview)") }),
           overviewScopes ? overviewScopes.length === 0 && !operatorScopeDenied && !mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewScopes.map((scope) => {
             const key = overviewScopeKey(scope);
             return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
@@ -52909,16 +52831,16 @@ function MemoryPanel({
               {
                 type: "button",
                 className: "memory-row memory-scope-row",
-                "data-testid": `memory-holdings-scope:${key}`,
+                "data-testid": "memory-holdings-scope:".concat(key),
                 onClick: () => openRecordsFiltered(filterForOverviewScope(scope)),
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: overviewScopeLabel(scope) }),
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__meta", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${scope.active ?? 0} active`, tone: "positive" }),
-                    (scope.quarantined ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${scope.quarantined} quarantined`, tone: "warning" }) : null,
-                    (scope.superseded ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${scope.superseded} superseded`, tone: "muted" }) : null,
-                    (scope.tombstoned ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${scope.tombstoned} tombstoned`, tone: "muted" }) : null,
-                    scope.floor_pressure ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": `memory-holdings-floor:${key}`, children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "FLOOR PRESSURE", tone: "warning" }) }) : null,
+                    /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(scope.active ?? 0, " active"), tone: "positive" }),
+                    (scope.quarantined ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(scope.quarantined, " quarantined"), tone: "warning" }) : null,
+                    (scope.superseded ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(scope.superseded, " superseded"), tone: "muted" }) : null,
+                    (scope.tombstoned ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(scope.tombstoned, " tombstoned"), tone: "muted" }) : null,
+                    scope.floor_pressure ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": "memory-holdings-floor:".concat(key), children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "FLOOR PRESSURE", tone: "warning" }) }) : null,
                     /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__age", children: formatBytes(scope.body_bytes ?? 0) })
                   ] })
                 ]
@@ -52930,15 +52852,15 @@ function MemoryPanel({
             {
               type: "button",
               className: "memory-row memory-scope-row",
-              "data-testid": `memory-holdings-scope:${row.key}`,
+              "data-testid": "memory-holdings-scope:".concat(row.key),
               onClick: () => openRecordsFiltered(filterForScope(row.scope)),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: row.label }),
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__meta", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${row.active} active`, tone: "positive" }),
-                  row.quarantined > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${row.quarantined} quarantined`, tone: "warning" }) : null,
-                  row.superseded > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${row.superseded} superseded`, tone: "muted" }) : null,
-                  row.tombstoned > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${row.tombstoned} tombstoned`, tone: "muted" }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(row.active, " active"), tone: "positive" }),
+                  row.quarantined > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(row.quarantined, " quarantined"), tone: "warning" }) : null,
+                  row.superseded > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(row.superseded, " superseded"), tone: "muted" }) : null,
+                  row.tombstoned > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(row.tombstoned, " tombstoned"), tone: "muted" }) : null,
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__age", children: formatBytes(row.bytes) })
                 ] }),
                 row.trustMix ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__meta memory-row__reason", children: row.trustMix }) : null
@@ -52977,9 +52899,9 @@ function MemoryPanel({
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-group", children: [
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-group__label", children: "In transit" }),
-          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: dreams.length > 0 ? `Last dream ${dreamTimeRange(dreams[0])} \xB7 ${dreams[0].ops ?? "\u2014"} ops` : dreamsDenied ? "Dream audit: no grant" : "No dream runs recorded yet" }),
-          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: canReviewQuarantine ? `Quarantine queue ${quarantineRecords.length} \xB7 pending gate ${pendingPromotions.length}` : "Quarantine queue: requires memory.quarantine.review" }),
-          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: proposalsDenied ? "Proposals: no grant" : `Proposals: ${proposals.length} pending${proposals.filter((proposal) => proposal.tainted).length > 0 ? ` \xB7 ${proposals.filter((proposal) => proposal.tainted).length} held (taint)` : ""}` }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: dreams.length > 0 ? "Last dream ".concat(dreamTimeRange(dreams[0]), " \xB7 ").concat(dreams[0].ops ?? "\u2014", " ops") : dreamsDenied ? "Dream audit: no grant" : "No dream runs recorded yet" }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: canReviewQuarantine ? "Quarantine queue ".concat(quarantineRecords.length, " \xB7 pending gate ").concat(pendingPromotions.length) : "Quarantine queue: requires memory.quarantine.review" }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: proposalsDenied ? "Proposals: no grant" : "Proposals: ".concat(proposals.length, " pending").concat(proposals.filter((proposal) => proposal.tainted).length > 0 ? " \xB7 ".concat(proposals.filter((proposal) => proposal.tainted).length, " held (taint)") : "") }),
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "Health (taint \xB7 budgets \xB7 cursors): needs mobkit/memory/panel/health (surface 8)" })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-group", "data-testid": "memory-harvests", children: [
@@ -52988,7 +52910,7 @@ function MemoryPanel({
             "div",
             {
               className: "memory-row memory-row--static",
-              "data-testid": `memory-harvest:${harvest.identity}`,
+              "data-testid": "memory-harvest:".concat(harvest.identity),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: harvest.identity }),
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__meta", children: [
@@ -53004,7 +52926,7 @@ function MemoryPanel({
                 ] })
               ]
             },
-            `${harvest.realm}:${harvest.identity}:${index2}`
+            "".concat(harvest.realm, ":").concat(harvest.identity, ":").concat(index2)
           ))
         ] })
       ] }) : null,
@@ -53148,7 +53070,7 @@ function MemoryPanel({
             onSelect: () => onSelectRecord(realmOfRecord(record8), record8.id)
           },
           record8.id
-        )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
+        )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-group", "data-testid": "memory-group:".concat(group.key), children: [
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-group__label", children: group.label }),
           group.records.map((record8) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
             RecordRow,
@@ -53192,12 +53114,12 @@ function MemoryPanel({
               {
                 type: "button",
                 className: "memory-row",
-                "data-testid": `memory-knowledge-segment:${segment.label}`,
+                "data-testid": "memory-knowledge-segment:".concat(segment.label),
                 onClick: () => openRecordsFiltered(segment.filter),
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: segment.label }),
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__meta", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${segment.count} records` }),
+                    /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(segment.count, " records") }),
                     segment.approximate ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__reason", children: [
                       "all ",
                       segment.label.split(" ")[0],
@@ -53217,14 +53139,14 @@ function MemoryPanel({
             "div",
             {
               className: "memory-row memory-row--static",
-              "data-testid": `memory-injection:${index2}`,
+              "data-testid": "memory-injection:".concat(index2),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   "button",
                   {
                     type: "button",
                     className: "memory-dream__record",
-                    "data-testid": `memory-injection-record:${index2}`,
+                    "data-testid": "memory-injection-record:".concat(index2),
                     onClick: () => onSelectRecord(entry.realm, entry.record_id),
                     children: entry.record_id
                   }
@@ -53233,14 +53155,14 @@ function MemoryPanel({
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: entry.surface, tone: "muted" }),
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__reason", children: [
                     entry.identity,
-                    entry.session_key ? ` \xB7 session ${entry.session_key}` : ""
+                    entry.session_key ? " \xB7 session ".concat(entry.session_key) : ""
                   ] }),
-                  dup ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": `memory-injection-dup:${index2}`, children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "DUP", tone: "warning" }) }) : null,
+                  dup ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": "memory-injection-dup:".concat(index2), children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "DUP", tone: "warning" }) }) : null,
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__age", children: relativeAge(entry.at_ms) })
                 ] })
               ]
             },
-            `inj-${index2}`
+            "inj-".concat(index2)
           )),
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(SectionNote, { testid: "memory-knowledge-budget", children: "Session budget gauge requires panel/health (deferred to the distinct-affordance design)." })
         ] })
@@ -53262,7 +53184,7 @@ function MemoryPanel({
             "div",
             {
               className: "memory-row memory-row--static",
-              "data-testid": `memory-proposal:${proposal.proposal_id}`,
+              "data-testid": "memory-proposal:".concat(proposal.proposal_id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: proposal.title || proposal.proposal_id }),
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__meta", children: [
@@ -53270,11 +53192,11 @@ function MemoryPanel({
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                     Chip,
                     {
-                      label: `\u2192 ${proposal.scope_kind}${proposal.scope_key ? `:${proposal.scope_key}` : ""}`,
+                      label: "\u2192 ".concat(proposal.scope_kind).concat(proposal.scope_key ? ":".concat(proposal.scope_key) : ""),
                       tone: "muted"
                     }
                   ),
-                  proposal.tainted ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": `memory-proposal-taint:${proposal.proposal_id}`, children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "tainted", tone: "warning" }) }) : null,
+                  proposal.tainted ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { "data-testid": "memory-proposal-taint:".concat(proposal.proposal_id), children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "tainted", tone: "warning" }) }) : null,
                   proposal.status ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                     Chip,
                     {
@@ -53287,7 +53209,7 @@ function MemoryPanel({
                 ] })
               ]
             },
-            `${proposal.realm}:${proposal.proposal_id}`
+            "".concat(proposal.realm, ":").concat(proposal.proposal_id)
           ))
         ] }),
         canReviewQuarantine ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
@@ -53298,7 +53220,7 @@ function MemoryPanel({
               "div",
               {
                 className: "memory-row memory-row--static",
-                "data-testid": `memory-pending:${pending.pending_id}`,
+                "data-testid": "memory-pending:".concat(pending.pending_id),
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "memory-row__title", children: [
                     pending.record_id,
@@ -53316,7 +53238,7 @@ function MemoryPanel({
                       {
                         type: "button",
                         className: "memory-back",
-                        "data-testid": `memory-pipeline-decide:${pending.pending_id}`,
+                        "data-testid": "memory-pipeline-decide:".concat(pending.pending_id),
                         onClick: onOpenGating,
                         children: "\u2192 decide in Gating inbox"
                       }
@@ -53336,7 +53258,7 @@ function MemoryPanel({
                 {
                   type: "button",
                   className: "memory-row",
-                  "data-testid": `memory-quarantine-record:${record8.id}`,
+                  "data-testid": "memory-quarantine-record:".concat(record8.id),
                   onClick: () => onSelectRecord(realmOfRecord(record8), record8.id),
                   children: [
                     /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__title", children: record8.title || record8.id }),
@@ -53358,14 +53280,14 @@ function MemoryPanel({
             "div",
             {
               className: "memory-row memory-row--static",
-              "data-testid": `memory-review:${verdict.run_id}:${verdict.record_id}`,
+              "data-testid": "memory-review:".concat(verdict.run_id, ":").concat(verdict.record_id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   "button",
                   {
                     type: "button",
                     className: "memory-dream__record",
-                    "data-testid": `memory-review-record:${verdict.run_id}:${verdict.record_id}`,
+                    "data-testid": "memory-review-record:".concat(verdict.run_id, ":").concat(verdict.record_id),
                     onClick: () => onSelectRecord(verdict.realm, verdict.record_id),
                     children: verdict.record_id
                   }
@@ -53378,7 +53300,7 @@ function MemoryPanel({
                 ] })
               ]
             },
-            `${verdict.realm}:${verdict.run_id}:${verdict.record_id}`
+            "".concat(verdict.realm, ":").concat(verdict.run_id, ":").concat(verdict.record_id)
           )),
           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-note", children: "Read-only \u2014 the correction affordance ships with the write-path design." })
         ] }),
@@ -53400,14 +53322,14 @@ function MemoryPanel({
               "div",
               {
                 className: "gpolicy memory-dream-run",
-                "data-testid": `memory-dream-run:${run.run_id}`,
+                "data-testid": "memory-dream-run:".concat(run.run_id),
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
                     "button",
                     {
                       type: "button",
                       className: "memory-row memory-dream-run__head",
-                      "data-testid": `memory-dream-run-toggle:${run.run_id}`,
+                      "data-testid": "memory-dream-run-toggle:".concat(run.run_id),
                       onClick: () => setExpandedRuns((current) => ({
                         ...current,
                         [run.run_id]: !expanded
@@ -53424,7 +53346,7 @@ function MemoryPanel({
                             dreamRunDuration(run),
                             " \xB7",
                             " ",
-                            typeof run.ops_committed === "number" ? `${run.ops_committed} ops` : "\u2014 ops"
+                            typeof run.ops_committed === "number" ? "".concat(run.ops_committed, " ops") : "\u2014 ops"
                           ] }),
                           /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "memory-row__age", children: relativeAge(run.completed_at_ms || run.started_at_ms) })
                         ] })
@@ -53435,19 +53357,19 @@ function MemoryPanel({
                     "div",
                     {
                       className: "memory-dream-run__detail",
-                      "data-testid": `memory-dream-run-detail:${run.run_id}`,
+                      "data-testid": "memory-dream-run-detail:".concat(run.run_id),
                       children: detail2.raw !== null ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-detail__line", children: [
                         "unparsed detail: ",
                         detail2.raw
                       ] }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
                         detail2.phases.length > 0 ? detail2.phases.map(([name2, note], index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-detail__line", children: [
                           name2,
-                          note ? ` \u2014 ${note}` : ""
-                        ] }, `ph-${index2}`)) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no phases recorded" }),
+                          note ? " \u2014 ".concat(note) : ""
+                        ] }, "ph-".concat(index2))) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-detail__line", children: "no phases recorded" }),
                         /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-detail__line", children: [
                           "verdicts:",
                           " ",
-                          detail2.verdicts.length > 0 ? detail2.verdicts.map(([name2, count]) => `${count} ${name2}`).join(" \xB7 ") : "all counters zero"
+                          detail2.verdicts.length > 0 ? detail2.verdicts.map(([name2, count]) => "".concat(count, " ").concat(name2)).join(" \xB7 ") : "all counters zero"
                         ] }),
                         detail2.skips.map((skip, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
                           "div",
@@ -53458,7 +53380,7 @@ function MemoryPanel({
                               skip
                             ]
                           },
-                          `sk-${index2}`
+                          "sk-".concat(index2)
                         ))
                       ] })
                     }
@@ -53472,15 +53394,15 @@ function MemoryPanel({
         /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-group__label", children: "Reconstructed from audit rows" }),
         dreams.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "gating__empty", children: dreamsDenied ? "Dream audit: no grant." : "No dream runs recorded yet." }) : dreams.map((run) => {
           const summary = dreamOpKindsSummary(run.op_kinds);
-          return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "gpolicy memory-dream", "data-testid": `memory-dream:${run.run_id}`, children: [
+          return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "gpolicy memory-dream", "data-testid": "memory-dream:".concat(run.run_id), children: [
             /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "gpolicy__head", children: [
               /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { className: "gpolicy__action", children: run.run_id }),
-              run.quarantined_ops && run.quarantined_ops > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: `${run.quarantined_ops} quarantined`, tone: "warning" }) : null
+              run.quarantined_ops && run.quarantined_ops > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(Chip, { label: "".concat(run.quarantined_ops, " quarantined"), tone: "warning" }) : null
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "gpolicy__meta", children: dreamTimeRange(run) }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "gpolicy__meta", children: [
-              typeof run.ops === "number" ? `${run.ops} ops` : "\u2014",
-              summary ? ` \xB7 ${summary}` : ""
+              typeof run.ops === "number" ? "".concat(run.ops, " ops") : "\u2014",
+              summary ? " \xB7 ".concat(summary) : ""
             ] }),
             (run.memory_ids || []).length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "memory-dream__touched", children: [
               "touched:",
@@ -53489,14 +53411,14 @@ function MemoryPanel({
                 {
                   type: "button",
                   className: "memory-dream__record",
-                  "data-testid": `memory-dream-record:${run.run_id}:${memoryId}`,
+                  "data-testid": "memory-dream-record:".concat(run.run_id, ":").concat(memoryId),
                   onClick: () => onSelectRecord(run.realm, memoryId),
                   children: memoryId
                 },
                 memoryId
               ))
             ] }) : null,
-            (run.rationales || []).map((rationale, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-dream__rationale", children: rationale }, `r-${index2}`))
+            (run.rationales || []).map((rationale, index2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "memory-dream__rationale", children: rationale }, "r-".concat(index2)))
           ] }, run.run_id);
         })
       ] }) : null
@@ -53549,7 +53471,7 @@ function RosterPanel({
     return agents.filter((a) => {
       if (role !== "all" && roleOf(a) !== role) return false;
       if (!q2) return true;
-      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.role || ""} ${a.kind || ""}`.toLowerCase();
+      const hay = "".concat(a.label, " ").concat(a.member_id, " ").concat(a.identity || "", " ").concat(a.role || "", " ").concat(a.kind || "").toLowerCase();
       return hay.includes(q2.toLowerCase());
     });
   }, [agents, q2, role]);
@@ -53593,14 +53515,14 @@ function RosterPanel({
           return /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)(
             "div",
             {
-              className: `roster__row ${isSel ? "is-selected" : ""}`,
+              className: "roster__row ".concat(isSel ? "is-selected" : ""),
               "data-state": stateLabel(r2.state),
               "data-health": r2.progress?.health || void 0,
               onClick: () => {
                 setSel(r2.member_id);
                 onSelect(r2);
               },
-              "data-testid": `roster-row:${r2.member_id}`,
+              "data-testid": "roster-row:".concat(r2.member_id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("span", { className: "roster__name", children: [
                   /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("span", { className: "roster__dot" }),
@@ -53663,7 +53585,7 @@ function RosterPanel({
             /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dt", { children: "In flight" }),
             /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dd", { className: "mono", children: active.progress.in_flight_work }),
             /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dt", { children: "Last progress" }),
-            /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dd", { className: "mono dim", children: active.progress.last_progress_at_ms > 0 ? `${new Date(active.progress.last_progress_at_ms).toLocaleTimeString()} (${active.progress.last_progress_event})` : active.progress.last_progress_event })
+            /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dd", { className: "mono dim", children: active.progress.last_progress_at_ms > 0 ? "".concat(new Date(active.progress.last_progress_at_ms).toLocaleTimeString(), " (").concat(active.progress.last_progress_event, ")") : active.progress.last_progress_event })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dt", { children: "Wired" }),
           /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("span", { className: "mono dim", children: "none" }) })
@@ -53842,7 +53764,7 @@ function layoutWorkGraph(items, edges) {
     if (edge.kind === "parent" || typeof edge.kind !== "string" || !edge.kind) continue;
     if (typeof edge.from_id !== "string" || typeof edge.to_id !== "string") continue;
     if (edge.from_id === edge.to_id) continue;
-    const dedupeKey = `${edge.kind}\0${edge.from_id}\0${edge.to_id}`;
+    const dedupeKey = "".concat(edge.kind, "\0").concat(edge.from_id, "\0").concat(edge.to_id);
     if (seenEdges.has(dedupeKey)) continue;
     seenEdges.add(dedupeKey);
     const from = rects.get(edge.from_id);
@@ -53868,7 +53790,7 @@ function layoutWorkGraph(items, edges) {
 }
 function workGraphEdgePath(edge) {
   const [p0, p1, p2, p3] = edge.points;
-  return `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${p3.x} ${p3.y}`;
+  return "M ".concat(p0.x, " ").concat(p0.y, " C ").concat(p1.x, " ").concat(p1.y, ", ").concat(p2.x, " ").concat(p2.y, ", ").concat(p3.x, " ").concat(p3.y);
 }
 function workGraphEdgeMidpoint(edge) {
   const [p0, p1, p2, p3] = edge.points;
@@ -53966,7 +53888,7 @@ function useZoomPan(width, height, fit = IDENTITY_VIEWPORT) {
   return { viewport, reset, svgRef, onPointerDown, onPointerMove, onPointerUp, isDragging };
 }
 function viewportTransform(v) {
-  return `translate(${v.tx} ${v.ty}) scale(${v.scale})`;
+  return "translate(".concat(v.tx, " ").concat(v.ty, ") scale(").concat(v.scale, ")");
 }
 
 // src/panels/WorkGraphGraphView.tsx
@@ -53979,7 +53901,7 @@ var TITLE_FONT = { size: 12, weight: 500, family: "--sans" };
 var META_FONT = { size: 10, weight: 400, family: "--mono" };
 var FIT_MIN_SCALE = 0.85;
 function truncate(text9, max) {
-  return text9.length > max ? `${text9.slice(0, max - 1)}\u2026` : text9;
+  return text9.length > max ? "".concat(text9.slice(0, max - 1), "\u2026") : text9;
 }
 function fitLabel(text9, maxWidth, measure, fallbackChars) {
   if (!measure) return truncate(text9, fallbackChars);
@@ -53988,10 +53910,10 @@ function fitLabel(text9, maxWidth, measure, fallbackChars) {
   let hi = text9.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (measure(`${text9.slice(0, mid).trimEnd()}\u2026`) <= maxWidth) lo = mid;
+    if (measure("".concat(text9.slice(0, mid).trimEnd(), "\u2026")) <= maxWidth) lo = mid;
     else hi = mid - 1;
   }
-  return `${text9.slice(0, lo).trimEnd()}\u2026`;
+  return "".concat(text9.slice(0, lo).trimEnd(), "\u2026");
 }
 function fitViewport(frameWidth, frameHeight, layoutWidth, layoutHeight) {
   if (frameWidth <= 0 || frameHeight <= 0 || layoutWidth <= 0 || layoutHeight <= 0) {
@@ -54054,7 +53976,7 @@ function useLabelMeasurers(ref, mounted) {
     if (!ctx) return null;
     const measurer = (font) => {
       const family = font.family === "--mono" ? families.mono : families.sans;
-      const spec = `${font.weight} ${font.size}px ${family}`;
+      const spec = "".concat(font.weight, " ").concat(font.size, "px ").concat(family);
       const cache = /* @__PURE__ */ new Map();
       return (text9) => {
         const hit = cache.get(text9);
@@ -54073,7 +53995,7 @@ function nodeMetaText(node2) {
   if (node2.priority && node2.priority !== "medium") parts.push(node2.priority);
   if (node2.blocked) parts.push("blocked");
   if (node2.ownerLabel) parts.push(node2.ownerLabel);
-  if (node2.alsoUnder.length > 0) parts.push(`also under ${node2.alsoUnder.join(", ")}`);
+  if (node2.alsoUnder.length > 0) parts.push("also under ".concat(node2.alsoUnder.join(", ")));
   return parts.join(" \xB7 ");
 }
 function edgeLabelPlacement(edge) {
@@ -54087,9 +54009,9 @@ function edgeLabelPlacement(edge) {
   return { x: mid.x, y: mid.y, anchor: "middle" };
 }
 function nodeHoverText(node2, item) {
-  const lines = [node2.title, `status: ${node2.status}`];
-  if (node2.ownerLabel) lines.push(`owner: ${node2.ownerLabel}`);
-  if (node2.alsoUnder.length > 0) lines.push(`also under: ${node2.alsoUnder.join(", ")}`);
+  const lines = [node2.title, "status: ".concat(node2.status)];
+  if (node2.ownerLabel) lines.push("owner: ".concat(node2.ownerLabel));
+  if (node2.alsoUnder.length > 0) lines.push("also under: ".concat(node2.alsoUnder.join(", ")));
   if (item?.description) lines.push(item.description);
   return lines.join("\n");
 }
@@ -54103,7 +54025,7 @@ function WorkItemDetails({ itemId: itemId2, item, hasAttention }) {
     /* @__PURE__ */ (0, import_jsx_runtime47.jsxs)("div", { className: "workgraph-graph__detail-heading", children: [
       /* @__PURE__ */ (0, import_jsx_runtime47.jsx)("h4", { className: "workgraph-graph__detail-title", children: item?.title || (item ? "Untitled work item" : "Work item unavailable in this snapshot") }),
       status ? /* @__PURE__ */ (0, import_jsx_runtime47.jsxs)("span", { className: "workgraph-graph__detail-status", "data-status": item?.status, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime47.jsx)("span", { className: `workgraph__dot is-${item?.status}`, "aria-hidden": "true" }),
+        /* @__PURE__ */ (0, import_jsx_runtime47.jsx)("span", { className: "workgraph__dot is-".concat(item?.status), "aria-hidden": "true" }),
         status[0].toUpperCase() + status.slice(1)
       ] }) : null
     ] }),
@@ -54204,8 +54126,8 @@ function WorkGraphGraphView({
       "svg",
       {
         "data-testid": "workgraph-graph",
-        className: `workgraph-graph__svg${zoom.isDragging ? " is-dragging" : ""}`,
-        viewBox: `0 0 ${viewBoxWidth} ${viewBoxHeight}`,
+        className: "workgraph-graph__svg".concat(zoom.isDragging ? " is-dragging" : ""),
+        viewBox: "0 0 ".concat(viewBoxWidth, " ").concat(viewBoxHeight),
         preserveAspectRatio: "xMidYMid meet",
         "data-scale": zoom.viewport.scale.toFixed(3),
         role: "img",
@@ -54254,11 +54176,11 @@ function WorkGraphGraphView({
                 {
                   "data-testid": "workgraph-graph-edge",
                   "data-kind": edge.kind,
-                  className: `workgraph-graph__edge is-${edge.kind}`,
+                  className: "workgraph-graph__edge is-".concat(edge.kind),
                   d: workGraphEdgePath(edge),
                   markerEnd: marker
                 }
-              ) }, `${edge.kind}:${edge.fromId}:${edge.toId}:${index2}`);
+              ) }, "".concat(edge.kind, ":").concat(edge.fromId, ":").concat(edge.toId, ":").concat(index2));
             }),
             layout.nodes.map((node2) => {
               const labelWidth = node2.w - LABEL_X - LABEL_RIGHT_PAD;
@@ -54272,8 +54194,8 @@ function WorkGraphGraphView({
                   "data-testid": "workgraph-graph-node",
                   "data-item-id": node2.itemId,
                   "data-status": node2.status,
-                  className: `workgraph-graph__node is-${node2.status}${selected ? " is-selected" : ""}`,
-                  transform: `translate(${node2.x} ${node2.y})`,
+                  className: "workgraph-graph__node is-".concat(node2.status).concat(selected ? " is-selected" : ""),
+                  transform: "translate(".concat(node2.x, " ").concat(node2.y, ")"),
                   onPointerDown: (event) => {
                     event.stopPropagation();
                     onSelect?.(node2.itemId);
@@ -54320,7 +54242,7 @@ function WorkGraphGraphView({
                   dominantBaseline: "central",
                   children: edge.kind
                 },
-                `label:${edge.kind}:${edge.fromId}:${edge.toId}:${index2}`
+                "label:".concat(edge.kind, ":").concat(edge.fromId, ":").concat(edge.toId, ":").concat(index2)
               );
             })
           ] })
@@ -54383,7 +54305,7 @@ function workGraphBindingStatusLabel(binding) {
   const state = binding.status?.state || "active";
   if (state === "paused") {
     const until = formatWorkGraphTimestamp(binding.status?.until, { date: true });
-    return until ? `paused until ${until}` : "paused";
+    return until ? "paused until ".concat(until) : "paused";
   }
   return state;
 }
@@ -54432,7 +54354,7 @@ function createWorkGraphRefreshSequencer() {
   };
 }
 function statusDotClass(status) {
-  return `workgraph__dot is-${status || "open"}`;
+  return "workgraph__dot is-".concat(status || "open");
 }
 function ItemRow2({
   row,
@@ -54449,12 +54371,12 @@ function ItemRow2({
     "div",
     {
       className: "workgraph__item",
-      "data-testid": `workgraph-panel-item:${itemId2}`,
-      style: { paddingLeft: `${depth * 16}px` },
+      "data-testid": "workgraph-panel-item:".concat(itemId2),
+      style: { paddingLeft: "".concat(depth * 16, "px") },
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: statusDotClass(status), "aria-hidden": "true" }),
         /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__item-title", title: item.description || item.title, children: item.title || itemId2 }),
-        item.priority && item.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: `workgraph__chip is-priority-${item.priority}`, children: item.priority }) : null,
+        item.priority && item.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__chip is-priority-".concat(item.priority), children: item.priority }) : null,
         owner ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__chip", children: owner }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__item-status", children: status.replace(/_/g, " ") }),
         canManage && onClaim && status === "open" && !owner ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)(
@@ -54462,7 +54384,7 @@ function ItemRow2({
           {
             type: "button",
             className: "workgraph__action",
-            "data-testid": `workgraph-panel-action:${itemId2}:claim`,
+            "data-testid": "workgraph-panel-action:".concat(itemId2, ":claim"),
             onClick: () => onClaim({ itemId: itemId2, revision }),
             children: "Claim"
           }
@@ -54472,7 +54394,7 @@ function ItemRow2({
           {
             type: "button",
             className: "workgraph__action",
-            "data-testid": `workgraph-panel-action:${itemId2}:close`,
+            "data-testid": "workgraph-panel-action:".concat(itemId2, ":close"),
             onClick: () => onClose({ itemId: itemId2, revision }),
             children: "Done"
           }
@@ -54504,9 +54426,9 @@ function AttentionRow2({
   const bindingInput = { bindingId, revision };
   const goalInput = { bindingId, revision: goalRevision };
   if (!bindingId) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime48.jsxs)("div", { className: "workgraph__binding", "data-testid": `workgraph-panel-binding:${bindingId}`, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime48.jsxs)("div", { className: "workgraph__binding", "data-testid": "workgraph-panel-binding:".concat(bindingId), children: [
     /* @__PURE__ */ (0, import_jsx_runtime48.jsxs)("div", { className: "workgraph__binding-line", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: `workgraph__mode is-${binding.mode || "pursue"}`, children: binding.mode || "pursue" }),
+      /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__mode is-".concat(binding.mode || "pursue"), children: binding.mode || "pursue" }),
       /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__binding-status", children: statusLabel2 }),
       targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__binding-target", children: targetLabel }) : null,
       binding.work_ref?.item_id ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("span", { className: "workgraph__chip", title: "Bound work item", children: binding.work_ref.item_id }) : null,
@@ -54533,7 +54455,7 @@ function AttentionRow2({
           placeholder: "Target agent identity\u2026",
           value: reassignIdentity,
           onChange: (event) => setReassignIdentity(event.target.value),
-          "data-testid": `workgraph-panel-reassign-input:${bindingId}`
+          "data-testid": "workgraph-panel-reassign-input:".concat(bindingId)
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime48.jsx)(
@@ -54542,7 +54464,7 @@ function AttentionRow2({
           type: "button",
           className: "workgraph__action",
           disabled: !reassignIdentity.trim(),
-          "data-testid": `workgraph-panel-reassign-submit:${bindingId}`,
+          "data-testid": "workgraph-panel-reassign-submit:".concat(bindingId),
           onClick: () => {
             onAttentionReassign({ ...bindingInput, identity: reassignIdentity.trim() });
             setReassignOpen(false);
@@ -54595,7 +54517,7 @@ function WorkGraphPanel({
           "button",
           {
             type: "button",
-            className: `workgraph__action${viewMode === "tree" ? " is-active" : ""}`,
+            className: "workgraph__action".concat(viewMode === "tree" ? " is-active" : ""),
             "aria-pressed": viewMode === "tree",
             "data-testid": "workgraph-view-toggle:tree",
             onClick: () => setViewMode("tree"),
@@ -54606,7 +54528,7 @@ function WorkGraphPanel({
           "button",
           {
             type: "button",
-            className: `workgraph__action${viewMode === "graph" ? " is-active" : ""}`,
+            className: "workgraph__action".concat(viewMode === "graph" ? " is-active" : ""),
             "aria-pressed": viewMode === "graph",
             "data-testid": "workgraph-view-toggle:graph",
             onClick: () => setViewMode("graph"),
@@ -54670,12 +54592,12 @@ function WorkGraphPanel({
             onAttentionResume,
             onAttentionReassign
           },
-          binding.binding_id || `binding-${index2}`
+          binding.binding_id || "binding-".concat(index2)
         ))
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime48.jsxs)("div", { className: "workgraph__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__sec-label", children: "Recent events" }),
-        data.events.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__empty", children: "No events." }) : /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__events", children: data.events.map((event, index2) => /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__event", children: workGraphEventLine(event) }, `${event.seq ?? index2}`)) })
+        data.events.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__empty", children: "No events." }) : /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__events", children: data.events.map((event, index2) => /* @__PURE__ */ (0, import_jsx_runtime48.jsx)("div", { className: "workgraph__event", children: workGraphEventLine(event) }, "".concat(event.seq ?? index2))) })
       ] })
     ] })
   ] });
@@ -54734,9 +54656,9 @@ function RoutingPanel({ data }) {
           return /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)(
             "div",
             {
-              className: `routing__row ${isSel ? "is-selected" : ""}`,
+              className: "routing__row ".concat(isSel ? "is-selected" : ""),
               onClick: () => setSel(r2.route_key),
-              "data-testid": `routing-route:${r2.route_key}`,
+              "data-testid": "routing-route:".concat(r2.route_key),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
                 /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
@@ -54779,16 +54701,16 @@ function RoutingPanel({ data }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dt", { children: "Backoff" }),
-            /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
+            /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dd", { children: active.backoff_ms ? "".concat(active.backoff_ms, " ms") : "\u2014" })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dt", { children: "Rate limit" }),
-            /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
+            /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("dd", { children: active.rate_limit_per_minute ? "".concat(active.rate_limit_per_minute, "/m") : "\u2014" })
           ] })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
         /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
-          recentDeliveries.filter((d2) => d2.route_id === active.route_key).slice(0, 8).map((d2) => /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("div", { "data-testid": `routing-delivery:${d2.delivery_id}`, children: [
+          recentDeliveries.filter((d2) => d2.route_id === active.route_key).slice(0, 8).map((d2) => /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("div", { "data-testid": "routing-delivery:".concat(d2.delivery_id), children: [
             /* @__PURE__ */ (0, import_jsx_runtime49.jsx)("span", { style: { color: d2.status === "delivered" ? "var(--ok)" : d2.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d2.status }),
             " ",
             /* @__PURE__ */ (0, import_jsx_runtime49.jsxs)("span", { className: "dim", children: [
@@ -54834,7 +54756,7 @@ function formatTime2(tsMs) {
   const mm = String(d2.getMinutes()).padStart(2, "0");
   const ss = String(d2.getSeconds()).padStart(2, "0");
   const ms = String(d2.getMilliseconds()).padStart(3, "0");
-  return `${hh}:${mm}:${ss}.${ms}`;
+  return "".concat(hh, ":").concat(mm, ":").concat(ss, ".").concat(ms);
 }
 var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
   "reasoning",
@@ -54898,16 +54820,16 @@ function textFromContent(value) {
 function preferredLogSummary(frame, data) {
   if (frame.event === "user_input") {
     const text9 = textFromContent(data.content ?? data.input ?? data.prompt);
-    return text9 ? `input=${text9.slice(0, 120)}` : null;
+    return text9 ? "input=".concat(text9.slice(0, 120)) : null;
   }
   for (const key of ["result", "text", "summary", "body", "message_text"]) {
     const value = data[key];
     if (typeof value === "string" && value.trim()) {
-      return `${key}=${value.trim().slice(0, 120)}`;
+      return "".concat(key, "=").concat(value.trim().slice(0, 120));
     }
   }
   const contentText = textFromContent(data.content);
-  return contentText ? `content=${contentText.slice(0, 120)}` : null;
+  return contentText ? "content=".concat(contentText.slice(0, 120)) : null;
 }
 function summarizeLogFrame(frame) {
   const sanitized = sanitizeLogFrameData(frame.data);
@@ -54925,7 +54847,7 @@ function summarizeLogFrame(frame) {
         str = "[obj]";
       }
     } else str = String(v).slice(0, 60);
-    bits.push(`${k}=${str}`);
+    bits.push("".concat(k, "=").concat(str));
   }
   return bits.join(" ");
 }
@@ -54999,11 +54921,11 @@ function LogsPanel({ frames }) {
           "info ",
           /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "n", children: counts.info })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)("button", { className: "warn ".concat(lvl === "warn" ? "is-active" : ""), onClick: () => setLvl("warn"), children: [
           "warn ",
           /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "n", children: counts.warn })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)("button", { className: "bad ".concat(lvl === "error" ? "is-active" : ""), onClick: () => setLvl("error"), children: [
           "err ",
           /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "n", children: counts.error })
         ] })
@@ -55011,14 +54933,14 @@ function LogsPanel({ frames }) {
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)("div", { className: "logs__stream", children: [
       rows.map(({ f: f2, level }, i2) => {
-        const key = f2.id || `${f2.event}:${f2.timestampMs}:${i2}`;
+        const key = f2.id || "".concat(f2.event, ":").concat(f2.timestampMs, ":").concat(i2);
         const isOpen = expanded.has(key);
         const hasStructured = hasStructuredOutput(f2);
         return /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)(
           "div",
           {
-            className: `logline logline--${level}${isOpen ? " is-open" : ""}`,
-            "data-testid": `log-line:${f2.id || i2}`,
+            className: "logline logline--".concat(level).concat(isOpen ? " is-open" : ""),
+            "data-testid": "log-line:".concat(f2.id || i2),
             children: [
               /* @__PURE__ */ (0, import_jsx_runtime50.jsxs)(
                 "button",
@@ -55027,20 +54949,20 @@ function LogsPanel({ frames }) {
                   className: "logline__row",
                   onClick: () => toggle(key),
                   "aria-expanded": isOpen,
-                  "data-testid": `log-line:${f2.id || i2}:toggle`,
+                  "data-testid": "log-line:".concat(f2.id || i2, ":toggle"),
                   children: [
                     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__chevron", children: isOpen ? "\u25BE" : "\u25B8" }),
                     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__t", children: formatTime2(f2.timestampMs) }),
-                    /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
+                    /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__lvl logline__lvl--".concat(level), children: level.toUpperCase() }),
                     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__src", children: f2.identity || "_system" }),
                     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__evt", children: f2.event }),
-                    /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__ctx dim", children: f2.interactionId ? `int=${f2.interactionId.slice(0, 8)}` : "" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__ctx dim", children: f2.interactionId ? "int=".concat(f2.interactionId.slice(0, 8)) : "" }),
                     /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f2) }),
                     hasStructured && /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
                   ]
                 }
               ),
-              isOpen && /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("pre", { className: "logline__detail", "data-testid": `log-line:${f2.id || i2}:detail`, children: formatFrameData(f2) })
+              isOpen && /* @__PURE__ */ (0, import_jsx_runtime50.jsx)("pre", { className: "logline__detail", "data-testid": "log-line:".concat(f2.id || i2, ":detail"), children: formatFrameData(f2) })
             ]
           },
           key
@@ -55068,7 +54990,7 @@ function PanelGlyph({ side, open }) {
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime51.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "1.5" }),
         /* @__PURE__ */ (0, import_jsx_runtime51.jsx)("path", { d: dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19" }),
-        /* @__PURE__ */ (0, import_jsx_runtime51.jsx)("path", { d: `M${x1} 9.5 L${x2} 12 L${x1} 14.5` })
+        /* @__PURE__ */ (0, import_jsx_runtime51.jsx)("path", { d: "M".concat(x1, " 9.5 L").concat(x2, " 12 L").concat(x1, " 14.5") })
       ]
     }
   );
@@ -55127,7 +55049,7 @@ function Topbar({
         type: "button",
         onClick: onToggleTheme,
         "data-testid": "theme-toggle",
-        title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
+        title: "Switch to ".concat(theme === "dark" ? "light" : "dark", " mode"),
         children: theme === "dark" ? "\u263E dark" : "\u2600 light"
       }
     ) }),
@@ -55724,7 +55646,7 @@ function buildSidebarVirtualRows(args) {
       for (const row of pinnedRows) {
         rows.push({
           kind: "agent",
-          key: `agent:${PINNED_SECTION_NAME}:${row.agent.member_id}`,
+          key: "agent:".concat(PINNED_SECTION_NAME, ":").concat(row.agent.member_id),
           bucket: PINNED_SECTION_NAME,
           row
         });
@@ -55738,7 +55660,7 @@ function buildSidebarVirtualRows(args) {
     const collapsedSection = args.searchActive ? false : args.collapsedSections.has(bucket);
     rows.push({
       kind: "section",
-      key: `section:${bucket}`,
+      key: "section:".concat(bucket),
       bucket,
       count: list4.length,
       collapsed: collapsedSection,
@@ -55748,7 +55670,7 @@ function buildSidebarVirtualRows(args) {
     if (list4.length === 0) {
       rows.push({
         kind: "empty",
-        key: `empty:${bucket}`,
+        key: "empty:".concat(bucket),
         bucket,
         sectionConfig
       });
@@ -55775,7 +55697,7 @@ function buildSidebarVirtualRows(args) {
         currentSubgroupCollapsed = args.searchActive ? false : args.collapsedSubgroups.has(storageKey);
         rows.push({
           kind: "subgroup",
-          key: `subgroup:${bucket}:${row.subgroup}`,
+          key: "subgroup:".concat(bucket, ":").concat(row.subgroup),
           bucket,
           label: row.subgroup,
           count: subgroupCounts.get(row.subgroup) || 0,
@@ -55787,7 +55709,7 @@ function buildSidebarVirtualRows(args) {
       if (currentSubgroupCollapsed) continue;
       rows.push({
         kind: "agent",
-        key: `agent:${row.agent.member_id}`,
+        key: "agent:".concat(row.agent.member_id),
         bucket,
         row
       });
@@ -55930,7 +55852,7 @@ function renderSidebarDragPreviewRows(rows) {
             /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__sec-count", children: row.count })
           ]
         },
-        `preview:${row.key}`
+        "preview:".concat(row.key)
       );
     }
     if (row.kind === "subgroup") {
@@ -55938,15 +55860,15 @@ function renderSidebarDragPreviewRows(rows) {
         /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { children: row.label }),
         /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__sec-spacer" }),
         /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__sec-count", children: row.count })
-      ] }, `preview:${row.key}`);
+      ] }, "preview:".concat(row.key));
     }
     if (row.kind === "empty") {
-      return /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
+      return /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, "preview:".concat(row.key));
     }
     return /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)(
       "div",
       {
-        className: `sidebar__drag-preview-agent ${row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""}`,
+        className: "sidebar__drag-preview-agent ".concat(row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""),
         "data-depth": row.row.childOfHost ? String(Math.min(row.row.depth, 3)) : void 0,
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "agent__dot" }),
@@ -55956,7 +55878,7 @@ function renderSidebarDragPreviewRows(rows) {
           ] })
         ]
       },
-      `preview:${row.key}`
+      "preview:".concat(row.key)
     );
   });
 }
@@ -56030,11 +55952,11 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
   return /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)(
     "div",
     {
-      className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+      className: "agent ".concat(childOfHost ? "agent--child" : "", " ").concat(agent.member_id === selectedMemberId ? "is-active" : ""),
       "data-state": stateAttr,
       "data-child-of-host": childOfHost ? "true" : void 0,
       "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
-      "data-testid": `sidebar-agent:${agent.member_id}`,
+      "data-testid": "sidebar-agent:".concat(agent.member_id),
       onClick: () => onSelect(agent),
       onKeyDown: (event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -56054,7 +55976,7 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
             {
               className: "agent__badge",
               "data-tone": badge.tone || "neutral",
-              title: `${badge.label}: ${badge.value}`,
+              title: "".concat(badge.label, ": ").concat(badge.value),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { children: badge.label }),
                 /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("strong", { children: badge.value })
@@ -56069,10 +55991,10 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
             type: "button",
             className: "agent__pin",
             "data-active": pinned ? "true" : void 0,
-            "aria-label": pinned ? `Unpin ${agent.label}` : `Pin ${agent.label}`,
+            "aria-label": pinned ? "Unpin ".concat(agent.label) : "Pin ".concat(agent.label),
             "aria-pressed": pinned,
             title: pinned ? "Unpin agent" : "Pin agent",
-            "data-testid": `sidebar-agent-pin:${agent.member_id}`,
+            "data-testid": "sidebar-agent-pin:".concat(agent.member_id),
             onClick: (event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -56082,7 +56004,7 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
           }
         ) : null }),
         /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)("span", { className: "agent__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i2) => /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i2)) }),
+          /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i2) => /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { style: { height: "".concat(Math.max(1, Math.min(12, v * 2 + 1)), "px") } }, i2)) }),
           inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "agent__inbox", children: inbox })
         ] })
       ]
@@ -56202,7 +56124,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
-    setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
+    setOrderAnnouncement("Moved section ".concat(draggedId, " ").concat(where, " ").concat(target, "."));
   }, [sectionNames, sectionOrderStorageKey]);
   const subgroupIdsForBucket = import_react40.default.useCallback((bucket) => {
     const list4 = grouped.get(bucket) || [];
@@ -56225,7 +56147,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
-    setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
+    setOrderAnnouncement("Moved subgroup ".concat(sidebarSubgroupStorageLabel(draggedId), " ").concat(where, " ").concat(sidebarSubgroupStorageLabel(target), "."));
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
   const handleSectionOrderKeyDown = import_react40.default.useCallback((event, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
@@ -56461,7 +56383,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
           {
             className: "sidebar__navitem",
             onClick: () => onOpenControl(kind),
-            "data-testid": `nav:${kind}`,
+            "data-testid": "nav:".concat(kind),
             children: NAV_LABEL[kind]
           },
           kind
@@ -56470,7 +56392,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
           "button",
           {
             className: "sidebar__navitem",
-            "data-testid": `nav-custom-panel:${panel.id}`,
+            "data-testid": "nav-custom-panel:".concat(panel.id),
             onClick: () => onOpenCustomPanel?.(panel.id),
             children: panel.title
           },
@@ -56484,7 +56406,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
               {
                 className: "sidebar__navitem",
                 onClick: () => onOpenControl(control),
-                "data-testid": `nav-custom:${button.id}`,
+                "data-testid": "nav-custom:".concat(button.id),
                 title: button.label,
                 children: button.label
               },
@@ -56505,7 +56427,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
                 href: safeHref,
                 target,
                 rel,
-                "data-testid": `nav-custom:${button.id}`,
+                "data-testid": "nav-custom:".concat(button.id),
                 title: button.label,
                 children: button.label
               },
@@ -56525,15 +56447,15 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
         "data-testid": "sidebar-agent-list",
         children: [
           filtered.length === 0 && (q2 || activityFilter !== "all") ? /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("div", { className: "sidebar__empty", role: "status", children: "No matching agents." }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index2) => {
+          /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("div", { className: "sidebar__virtual-space", style: { height: "".concat(virtualOffsets.total, "px") }, children: visibleRows.map((row, index2) => {
             const rowIndex = visibleRange.start + index2;
             const top = virtualOffsets.offsets[rowIndex] || 0;
             const height = virtualRowHeight(row);
             return /* @__PURE__ */ (0, import_jsx_runtime52.jsx)(
               "div",
               {
-                className: `sidebar__virtual-row sidebar__virtual-row--${row.kind}`,
-                style: { transform: `translateY(${top}px)`, height: `${height}px` },
+                className: "sidebar__virtual-row sidebar__virtual-row--".concat(row.kind),
+                style: { transform: "translateY(".concat(top, "px)"), height: "".concat(height, "px") },
                 children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime52.jsx)(
                   "div",
                   {
@@ -56545,7 +56467,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
                       "button",
                       {
                         type: "button",
-                        className: `sidebar__sec-head sidebar__sec-head--button ${row.reorderable ? "sidebar__order-target" : ""}`,
+                        className: "sidebar__sec-head sidebar__sec-head--button ".concat(row.reorderable ? "sidebar__order-target" : ""),
                         "aria-expanded": !row.collapsed,
                         "data-sidebar-order-kind": row.reorderable ? "section" : void 0,
                         "data-sidebar-order-id": row.reorderable ? row.bucket : void 0,
@@ -56562,7 +56484,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
                             return next;
                           });
                         },
-                        "data-testid": `sidebar-section-toggle:${row.bucket}`,
+                        "data-testid": "sidebar-section-toggle:".concat(row.bucket),
                         children: [
                           /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
                           /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__sec-spacer" }),
@@ -56571,14 +56493,14 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
                       }
                     )
                   }
-                ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
+                ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)("div", { className: "sidebar__empty", "data-testid": "sidebar-section-empty:".concat(row.bucket), children: [
                   row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
                   /* @__PURE__ */ (0, import_jsx_runtime52.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
                 ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime52.jsxs)(
                   "button",
                   {
                     type: "button",
-                    className: `sidebar__subgroup sidebar__subgroup--button ${row.reorderable ? "sidebar__order-target" : ""}`,
+                    className: "sidebar__subgroup sidebar__subgroup--button ".concat(row.reorderable ? "sidebar__order-target" : ""),
                     "data-collapsed": row.collapsed ? "true" : void 0,
                     "data-drag-over": dragOverOrder?.kind === "subgroup" && dragOverOrder.id === row.storageKey ? dragOverOrder.where : void 0,
                     "aria-expanded": !row.collapsed,
@@ -56586,7 +56508,7 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
                     "data-sidebar-order-id": row.reorderable ? row.storageKey : void 0,
                     "data-sidebar-order-bucket": row.reorderable ? row.bucket : void 0,
                     "data-reorderable": row.reorderable ? "true" : void 0,
-                    "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
+                    "data-testid": "sidebar-subgroup-toggle:".concat(row.bucket, ":").concat(row.label),
                     onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : void 0,
                     onKeyDown: row.reorderable ? (event) => handleSubgroupOrderKeyDown(event, row.storageKey, row.bucket) : void 0,
                     onClick: () => {
@@ -56628,8 +56550,8 @@ var Sidebar = import_react40.default.memo(function Sidebar2({
         className: "sidebar__drag-preview",
         "data-testid": "sidebar-drag-preview",
         style: {
-          width: `${Math.max(160, dragPreview.width)}px`,
-          transform: `translate3d(${dragPreview.x + 12}px, ${dragPreview.y + 12}px, 0)`
+          width: "".concat(Math.max(160, dragPreview.width), "px"),
+          transform: "translate3d(".concat(dragPreview.x + 12, "px, ").concat(dragPreview.y + 12, "px, 0)")
         },
         "aria-hidden": "true",
         children: renderSidebarDragPreviewRows(dragPreviewRows)
@@ -56683,11 +56605,11 @@ function textFromValue(value) {
 function truncate2(value, max = 110) {
   const normalized = value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
+  return "".concat(normalized.slice(0, Math.max(0, max - 1)).trimEnd(), "...");
 }
 function displayName(value) {
   if (!value || value === "_system") return "System";
-  return value.split(/[-_\s]+/).filter(Boolean).map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join(" ");
+  return value.split(/[-_\s]+/).filter(Boolean).map((part) => "".concat(part.slice(0, 1).toUpperCase()).concat(part.slice(1))).join(" ");
 }
 function isMeaningfulReply(value) {
   const normalized = value.trim().replace(/[.!]+$/g, "").toLowerCase();
@@ -56773,7 +56695,7 @@ function signalFromFrame(frame) {
   const data = recordOf3(frame.data);
   const severity = severityOf(frame);
   const base = {
-    id: frame.id || `${frame.event}:${frame.timestampMs || 0}`,
+    id: frame.id || "".concat(frame.event, ":").concat(frame.timestampMs || 0),
     severity,
     agent: agentFor(frame),
     at: timeFor(frame.timestampMs),
@@ -56798,8 +56720,8 @@ function signalFromFrame(frame) {
       if (isScaffoldRequest(request)) return null;
       return {
         ...base,
-        id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
-        label: `You asked ${displayName(base.agent)}`,
+        id: "user:".concat(frame.id || frame.interactionId || frame.timestampMs || request),
+        label: "You asked ".concat(displayName(base.agent)),
         detail: truncate2(request)
       };
     }
@@ -56810,17 +56732,17 @@ function signalFromFrame(frame) {
         const { kickoff } = comms;
         return {
           ...base,
-          id: `kickoff:${frame.id || frame.interactionId || frame.timestampMs || kickoff.member}`,
+          id: "kickoff:".concat(frame.id || frame.interactionId || frame.timestampMs || kickoff.member),
           severity: kickoff.phase === "failed" ? "warning" : base.severity,
-          label: `Kickoff ${memberKickoffPhaseLabel(kickoff.phase).toLowerCase()}`,
-          detail: truncate2(kickoff.role ? `${displayName(kickoff.member)} (${kickoff.role})` : displayName(kickoff.member))
+          label: "Kickoff ".concat(memberKickoffPhaseLabel(kickoff.phase).toLowerCase()),
+          detail: truncate2(kickoff.role ? "".concat(displayName(kickoff.member), " (").concat(kickoff.role, ")") : displayName(kickoff.member))
         };
       }
       const peer = comms.targets.map(displayName).join(", ");
       return {
         ...base,
-        id: `comms:${frame.id || frame.interactionId || frame.timestampMs || peer}`,
-        label: `${comms.incoming ? "Received from" : "Sent to"} ${peer}`,
+        id: "comms:".concat(frame.id || frame.interactionId || frame.timestampMs || peer),
+        label: "".concat(comms.incoming ? "Received from" : "Sent to", " ").concat(peer),
         detail: truncate2(comms.detail || "Peer comms")
       };
     }
@@ -56829,7 +56751,7 @@ function signalFromFrame(frame) {
       if (!isMeaningfulReply(reply)) return null;
       return {
         ...base,
-        label: `${displayName(base.agent)} replied`,
+        label: "".concat(displayName(base.agent), " replied"),
         detail: truncate2(reply)
       };
     }
@@ -56837,8 +56759,8 @@ function signalFromFrame(frame) {
     case "assistant_image_appended": {
       return {
         ...base,
-        id: `image:${blobKey(frame)}`,
-        label: `${displayName(base.agent)} generated image`,
+        id: "image:".concat(blobKey(frame)),
+        label: "".concat(displayName(base.agent), " generated image"),
         detail: textFromValue(data.prompt ?? recordOf3(data.image).prompt ?? recordOf3(data.image).alt) || "Generated image attached"
       };
     }
@@ -56851,21 +56773,21 @@ function signalFromFrame(frame) {
       const verb = name2 === "send_request" ? "asked" : name2 === "send_response" ? "replied to" : "sent to";
       return {
         ...base,
-        id: `peer:${frame.id || frame.interactionId || `${target}:${body}`}`,
-        label: `${displayName(base.agent)} ${verb} ${displayName(target)}`,
+        id: "peer:".concat(frame.id || frame.interactionId || "".concat(target, ":").concat(body)),
+        label: "".concat(displayName(base.agent), " ").concat(verb, " ").concat(displayName(target)),
         detail: truncate2(body || "Peer comms")
       };
     }
     case "gating_decision":
       return {
         ...base,
-        label: `Gate ${String(data.decision || "decision")}`,
+        label: "Gate ".concat(String(data.decision || "decision")),
         detail: truncate2(textFromValue(data.reason) || "Gating decision recorded")
       };
     case "member_retired":
       return { ...base, label: "Member retired", detail: truncate2(textFromValue(data.reason) || "Lifecycle change") };
     case "state_changed":
-      return { ...base, label: `State -> ${String(data.state || data.new_state || "changed")}`, detail: base.agent };
+      return { ...base, label: "State -> ".concat(String(data.state || data.new_state || "changed")), detail: base.agent };
     case "route_changed":
       return { ...base, label: "Route changed", detail: truncate2(textFromValue(data.reason) || "Routing updated") };
     default:
@@ -56908,8 +56830,8 @@ function memorySignal(frame, data, base) {
 }
 function groupKeyFor(signal) {
   const interactionId = signal.raw.interactionId?.trim();
-  if (interactionId) return `interaction:${interactionId}`;
-  return `single:${signal.id}`;
+  if (interactionId) return "interaction:".concat(interactionId);
+  return "single:".concat(signal.id);
 }
 function semanticSignalKey(signal) {
   const canonical = (value) => value.replace(/\+\d+\s+-\d+\b/g, "").replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, " ").replace(/[.!?\s]+$/g, "").trim().toLowerCase();
@@ -56963,7 +56885,7 @@ function titleForGroup(items) {
   const replyCount = items.filter((item) => item.raw.event === "interaction_complete").length;
   if (hasUser && (peerCount > 0 || replyCount > 0)) return "Turn activity";
   if (peerCount > 1) return "Peer conversation";
-  return `${items.length} related events`;
+  return "".concat(items.length, " related events");
 }
 function detailForGroup(items) {
   if (items.length === 1) return items[0].detail;
@@ -56974,9 +56896,9 @@ function detailForGroup(items) {
 function timeFor(tsMs) {
   if (!tsMs) return "--";
   const diff = Date.now() - tsMs;
-  if (diff < 6e4) return `${Math.max(1, Math.floor(diff / 1e3))}s`;
-  if (diff < 36e5) return `${Math.floor(diff / 6e4)}m`;
-  return `${Math.floor(diff / 36e5)}h`;
+  if (diff < 6e4) return "".concat(Math.max(1, Math.floor(diff / 1e3)), "s");
+  if (diff < 36e5) return "".concat(Math.floor(diff / 6e4), "m");
+  return "".concat(Math.floor(diff / 36e5), "h");
 }
 function buildSignalGroupsForTest(frames) {
   const seen = /* @__PURE__ */ new Set();
@@ -57076,12 +56998,12 @@ var SignalsRail = import_react41.default.memo(function SignalsRail2({
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
       "button",
       {
-        className: `rail__filter ${filter === preset.id ? "is-active" : ""}`,
+        className: "rail__filter ".concat(filter === preset.id ? "is-active" : ""),
         onClick: () => {
           setFilter(preset.id);
           onPresetChange?.(preset.id);
         },
-        "data-testid": `signals-filter:${preset.id}`,
+        "data-testid": "signals-filter:".concat(preset.id),
         children: [
           preset.label,
           " ",
@@ -57099,7 +57021,7 @@ var SignalsRail = import_react41.default.memo(function SignalsRail2({
           {
             className: "signal",
             "data-sev": s.severity,
-            "data-testid": `signal:${s.id}`,
+            "data-testid": "signal:".concat(s.id),
             "data-expanded": expanded ? "true" : "false",
             onClick: () => toggleGroup(s),
             role: "button",
@@ -57215,7 +57137,7 @@ function parseVoiceContextStatus(raw, scope) {
   throw new Error("Invalid voice context status.");
 }
 function voiceContextFailureMessage(reason) {
-  return `${failureMessages[reason]} Voice remains connected. End voice and start again to retry.`;
+  return "".concat(failureMessages[reason], " Voice remains connected. End voice and start again to retry.");
 }
 
 // src/panels/VoiceBar.tsx
@@ -57236,7 +57158,7 @@ function VoiceButton({
   checking = false,
   onClick
 }) {
-  const label = active ? `End voice with ${agentLabel}` : checking ? `Start voice with ${agentLabel} (checking availability)` : `Start voice with ${agentLabel}`;
+  const label = active ? "End voice with ".concat(agentLabel) : checking ? "Start voice with ".concat(agentLabel, " (checking availability)") : "Start voice with ".concat(agentLabel);
   return /* @__PURE__ */ (0, import_jsx_runtime54.jsx)(
     "button",
     {
@@ -57319,7 +57241,7 @@ function AudioWaveform({
       observer.disconnect();
     };
   }, [active, sampleWaveform, source]);
-  return /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("canvas", { className: `voice-waveform voice-waveform--${source}`, ref: canvasRef, "aria-hidden": "true" });
+  return /* @__PURE__ */ (0, import_jsx_runtime54.jsx)("canvas", { className: "voice-waveform voice-waveform--".concat(source), ref: canvasRef, "aria-hidden": "true" });
 }
 var VoiceBar = import_react42.default.memo(function VoiceBar2({
   state,
@@ -57337,13 +57259,13 @@ var VoiceBar = import_react42.default.memo(function VoiceBar2({
   const preparation = state.contextPreparation;
   const contextState = !active || preparation === void 0 ? null : state.contextStatusError ? "status_unavailable" : preparation === null ? "checking" : preparation.phase;
   const contextLabel = contextState === null ? null : contextState === "status_unavailable" ? "Context status unavailable" : contextState === "checking" || contextState === "preparing" ? "Context arriving" : contextState === "provider_acknowledged" ? "Context supplied" : contextState === "not_requested" ? "No summary pending" : "Context unavailable";
-  const contextTitle = contextState === "checking" ? "Checking whether the agent's context is on its way. You can talk now." : contextState === "preparing" ? `The agent's context is ${CONTEXT_STAGE_TITLES[preparation.stage]}. You can talk now; the model receives it as it arrives.` : contextState === "provider_acknowledged" ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion." : contextState === "not_requested" ? "No concurrent context preparation was requested for this call." : void 0;
+  const contextTitle = contextState === "checking" ? "Checking whether the agent's context is on its way. You can talk now." : contextState === "preparing" ? "The agent's context is ".concat(CONTEXT_STAGE_TITLES[preparation.stage], ". You can talk now; the model receives it as it arrives.") : contextState === "provider_acknowledged" ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion." : contextState === "not_requested" ? "No concurrent context preparation was requested for this call." : void 0;
   const contextMessage = !active ? null : state.contextStatusError ?? (preparation?.phase === "failed" ? voiceContextFailureMessage(preparation.reason) : null);
   return /* @__PURE__ */ (0, import_jsx_runtime54.jsxs)(
     "section",
     {
       className: "voice-bar",
-      "aria-label": state.target ? `Voice with ${state.target.label}` : "Voice",
+      "aria-label": state.target ? "Voice with ".concat(state.target.label) : "Voice",
       "data-testid": "voice-bar",
       "data-phase": state.phase,
       children: [
@@ -57761,7 +57683,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
       pins.current.focus = /* @__PURE__ */ new Set([index2]);
       mount(index2);
     }
-    const element3 = bodyRef.current?.querySelector(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    const element3 = bodyRef.current?.querySelector(':scope > [data-conversation-turn-id="'.concat(CSS.escape(id), '"]:not([hidden])'));
     if (element3) {
       pendingFocus.current = null;
       element3.focus();
@@ -57780,7 +57702,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
   React27.useLayoutEffect(() => {
     const id = pendingFocus.current;
     if (!id) return;
-    const element3 = bodyRef.current?.querySelector(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    const element3 = bodyRef.current?.querySelector(':scope > [data-conversation-turn-id="'.concat(CSS.escape(id), '"]:not([hidden])'));
     if (!element3) return;
     pendingFocus.current = null;
     element3.focus();
@@ -57806,7 +57728,7 @@ function formatTime3(iso) {
   if (Number.isNaN(d2.getTime())) return "";
   const hh = String(d2.getHours()).padStart(2, "0");
   const mm = String(d2.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return "".concat(hh, ":").concat(mm);
 }
 function formatFullTimestamp(iso) {
   if (!iso) return "";
@@ -57816,20 +57738,20 @@ function formatFullTimestamp(iso) {
   const hh = String(d2.getHours()).padStart(2, "0");
   const mm = String(d2.getMinutes()).padStart(2, "0");
   const ss = String(d2.getSeconds()).padStart(2, "0");
-  return `${day} ${hh}:${mm}:${ss}`;
+  return "".concat(day, " ").concat(hh, ":").concat(mm, ":").concat(ss);
 }
 function formatWorkedDuration(ms) {
   const totalSeconds = Math.max(0, Math.round(ms / 1e3));
   if (totalSeconds < 1) return "under 1s";
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return "".concat(totalSeconds, "s");
   const totalMinutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   if (totalMinutes < 60) {
-    return seconds ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    return seconds ? "".concat(totalMinutes, "m ").concat(seconds, "s") : "".concat(totalMinutes, "m");
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  return minutes ? "".concat(hours, "h ").concat(minutes, "m") : "".concat(hours, "h");
 }
 function msgCopyText(message) {
   if (message.copyText !== void 0) return message.copyText;
@@ -57849,7 +57771,7 @@ function buildChatTurns(messages) {
     const current = turns.at(-1);
     if (!current || message.kind === "user") {
       turns.push({
-        id: `turn-${message.renderKey ?? message.id}`,
+        id: "turn-".concat(message.renderKey ?? message.id),
         messages: [message]
       });
       continue;
@@ -57859,7 +57781,7 @@ function buildChatTurns(messages) {
   for (const turn of turns) {
     if (turn.messages[0]?.kind === "user") continue;
     const occurrence = turn.messages.find((message) => message.assistantOccurrenceKey)?.assistantOccurrenceKey;
-    if (occurrence) turn.id = `turn-${occurrence}`;
+    if (occurrence) turn.id = "turn-".concat(occurrence);
   }
   return turns;
 }
@@ -57911,7 +57833,7 @@ function transcriptFindMatches(messages, query) {
   if (!needle) return [];
   const rows = [];
   for (const message of messages) {
-    const text9 = message.kind === "event" || message.kind === "origin" ? `${message.source?.sentence ?? ""} ${msgCopyText(message)}` : msgCopyText(message);
+    const text9 = message.kind === "event" || message.kind === "origin" ? "".concat(message.source?.sentence ?? "", " ").concat(msgCopyText(message)) : msgCopyText(message);
     if (text9.toLocaleLowerCase().includes(needle)) rows.push(message.scrollRowId ?? message.id);
   }
   return rows;
@@ -57982,7 +57904,7 @@ function TranscriptFindBar({
       {
         "aria-label": "Find in transcript",
         autoFocus: true,
-        "data-testid": `chat-find:${identity}`,
+        "data-testid": "chat-find:".concat(identity),
         onChange: (event) => setQuery(event.target.value),
         onKeyDown: (event) => {
           if (event.key === "Enter") {
@@ -57999,7 +57921,7 @@ function TranscriptFindBar({
         value: query
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { "aria-live": "polite", className: "conv__find-count", "data-testid": `chat-find-count:${identity}`, children: query.trim() ? matches.length ? `${current + 1} of ${matches.length}` : "No matches" : "" }),
+    /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { "aria-live": "polite", className: "conv__find-count", "data-testid": "chat-find-count:".concat(identity), children: query.trim() ? matches.length ? "".concat(current + 1, " of ").concat(matches.length) : "No matches" : "" }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { "aria-label": "Previous match", disabled: !matches.length, onClick: () => step(-1), type: "button", children: "\u2191" }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { "aria-label": "Next match", disabled: !matches.length, onClick: () => step(1), type: "button", children: "\u2193" }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { "aria-label": "Close find", onClick: onClose, type: "button", children: "\xD7" })
@@ -58011,10 +57933,9 @@ function transcriptCopyText(messages) {
     if (!text9) return "";
     const label = message.kind === "tool" ? "Tool" : message.kind === "thought" ? "Thinking" : message.source ? [message.source.label, message.source.detail].filter(Boolean).join(" - ") : message.kind === "user" ? "User message" : message.who || "Assistant";
     const stamp = formatFullTimestamp(message.createdAt);
-    const time4 = stamp ? `[${stamp}] ` : "";
-    const worked = message.workedFor ? `
-Worked for ${message.workedFor}` : "";
-    const row = `${time4}${label}: ${text9}${worked}`;
+    const time4 = stamp ? "[".concat(stamp, "] ") : "";
+    const worked = message.workedFor ? "\nWorked for ".concat(message.workedFor) : "";
+    const row = "".concat(time4).concat(label, ": ").concat(text9).concat(worked);
     return message.blocks?.some((block) => block.type === "markdown") ? row : row.trim();
   }).filter(Boolean).join("\n\n");
 }
@@ -58031,12 +57952,12 @@ function flattenEntry(entry, options = {}) {
   const rowKey = entry.renderKey ?? entry.id;
   return rows.map((row, index2) => ({
     ...row,
-    renderKey: entry.renderKey === void 0 ? void 0 : index2 === 0 ? entry.renderKey : `${entry.renderKey}:row:${index2}`,
+    renderKey: entry.renderKey === void 0 ? void 0 : index2 === 0 ? entry.renderKey : "".concat(entry.renderKey, ":row:").concat(index2),
     sourceEntryId: entry.id,
     assistantOccurrenceKey: entry.kind === "message" ? entry.assistantOccurrenceKey : void 0,
     interactionId: entry.interactionId,
     runId: entry.kind === "message" ? entry.runId || void 0 : void 0,
-    scrollRowId: index2 === 0 ? rowKey : `${rowKey}:row:${index2}`,
+    scrollRowId: index2 === 0 ? rowKey : "".concat(rowKey, ":row:").concat(index2),
     source,
     dayKey,
     showHeader: index2 === 0
@@ -58049,7 +57970,7 @@ function flattenEntryRows(entry) {
       kind: "origin",
       time: formatTime3(entry.createdAt),
       createdAt: entry.createdAt,
-      text: `${entry.title} (+${entry.plus}/-${entry.minus})`
+      text: "".concat(entry.title, " (+").concat(entry.plus, "/-").concat(entry.minus, ")")
     }];
   }
   if (entry.kind === "council") {
@@ -58116,7 +58037,7 @@ function flattenEntryRows(entry) {
     const flushGroup = (endIndex) => {
       if (groupKind === null || groupBlocks.length === 0) return;
       msgs.push({
-        id: `${entry.id}:${groupStart}-${endIndex - 1}`,
+        id: "".concat(entry.id, ":").concat(groupStart, "-").concat(endIndex - 1),
         kind: groupKind,
         time: time4,
         createdAt: entry.createdAt,
@@ -58231,7 +58152,7 @@ function extendChatMessages(previous3, entries, options = {}) {
       const peerCompatible = !sameName ? false : !mBlocks[0].peerTarget ? true : Boolean(lastBlocks[0].peerIncoming) === Boolean(mBlocks[0].peerIncoming);
       if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
         last.blocks = [...lastBlocks, ...mBlocks];
-        last.id = `${last.id}+${m2.id}`;
+        last.id = "".concat(last.id, "+").concat(m2.id);
         spans[spans.length - 1].end = entryIndex;
       } else {
         const canDedupeAdjacent = last?.id === m2.id && (m2.kind === "user" && last.kind === "user" || m2.kind === "agent" && last.kind === "agent" && last.who === m2.who);
@@ -58264,7 +58185,7 @@ function extendChatMessages(previous3, entries, options = {}) {
     merged[index2] = {
       ...message,
       workedFor,
-      workedForCopyText: `Worked for ${workedFor}`
+      workedForCopyText: "Worked for ".concat(workedFor)
     };
   }
   return { entries: entries.slice(), resolvePeerLabel: options.resolvePeerLabel, messages: merged, spans };
@@ -58336,7 +58257,7 @@ function fileFromImageDataUrl(dataUrl) {
       bytes[i2] = binary.charCodeAt(i2);
     }
     const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    return new File([bytes], `pasted-image.${ext}`, { type: mediaType });
+    return new File([bytes], "pasted-image.".concat(ext), { type: mediaType });
   } catch {
     return null;
   }
@@ -58350,7 +58271,7 @@ async function fileFromConsoleBlobUrl(url2) {
     const blob = await response.blob();
     const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
     const slug = decodeURIComponent(new URL(url2).pathname.split("/").pop() || "blob").replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80) || "blob";
-    return new File([blob], `${slug}.${ext}`, { type: mediaType });
+    return new File([blob], "".concat(slug, ".").concat(ext), { type: mediaType });
   } catch {
     return null;
   }
@@ -58384,7 +58305,7 @@ function CopyInlineButton({
     "button",
     {
       "aria-label": title,
-      className: `msg__copy ${className}`,
+      className: "msg__copy ".concat(className),
       "data-copied": outcome === "copied" ? "true" : void 0,
       "data-copy-outcome": outcome === "idle" ? void 0 : outcome,
       disabled,
@@ -58406,32 +58327,32 @@ function textMark(value) {
   for (let i2 = 0; i2 < value.length; i2 += step) {
     hash3 = hash3 * 31 + value.charCodeAt(i2) | 0;
   }
-  return `${value.length}.${hash3}`;
+  return "".concat(value.length, ".").concat(hash3);
 }
 function blockSignature(block) {
   switch (block.type) {
     case "markdown":
-      return `md${block.id}:${block.streaming ? 1 : 0}:${block.source}`;
+      return "md".concat(block.id, ":").concat(block.streaming ? 1 : 0, ":").concat(block.source);
     case "paragraph":
-      return `p${textMark(block.text)}`;
+      return "p".concat(textMark(block.text));
     case "heading":
-      return `h${block.level}${textMark(block.text)}`;
+      return "h".concat(block.level).concat(textMark(block.text));
     case "code":
-      return `c${block.language}:${textMark(block.body)}`;
+      return "c".concat(block.language, ":").concat(textMark(block.body));
     case "table":
-      return `t${block.headers.length}x${block.rows.length}`;
+      return "t".concat(block.headers.length, "x").concat(block.rows.length);
     case "command":
-      return `m${textMark(block.title)}:${textMark(block.body)}:${textMark(block.output)}:${textMark(block.footer)}`;
+      return "m".concat(textMark(block.title), ":").concat(textMark(block.body), ":").concat(textMark(block.output), ":").concat(textMark(block.footer));
     case "tool-call":
-      return `tc${block.toolCallId}:${block.name}:${block.status}:${block.completionEvidence?.outcome ?? "unknown"}:${block.completionEvidence?.source ?? "unknown"}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerIdentity ?? ""}:${block.peerTarget ?? ""}:${block.peerImages?.length ?? 0}`;
+      return "tc".concat(block.toolCallId, ":").concat(block.name, ":").concat(block.status, ":").concat(block.completionEvidence?.outcome ?? "unknown", ":").concat(block.completionEvidence?.source ?? "unknown", ":").concat(textMark(block.arguments), ":").concat(textMark(block.result), ":").concat(textMark(block.peerBody), ":").concat(block.peerIdentity ?? "", ":").concat(block.peerTarget ?? "", ":").concat(block.peerImages?.length ?? 0);
     case "file-change":
-      return `f${block.verb}:${block.name}:${block.plus}:${block.minus}`;
+      return "f".concat(block.verb, ":").concat(block.name, ":").concat(block.plus, ":").concat(block.minus);
     case "divider":
-      return `d${textMark(block.text)}`;
+      return "d".concat(textMark(block.text));
     case "thinking":
-      return `k${block.final ? 1 : 0}${block.persisted ? 1 : 0}:${textMark(block.text)}`;
+      return "k".concat(block.final ? 1 : 0).concat(block.persisted ? 1 : 0, ":").concat(textMark(block.text));
     case "image":
-      return `i${block.src}:${block.width ?? 0}x${block.height ?? 0}`;
+      return "i".concat(block.src, ":").concat(block.width ?? 0, "x").concat(block.height ?? 0);
     default:
       return JSON.stringify(block);
   }
@@ -58449,7 +58370,7 @@ function msgSignature(message) {
     message.who ?? "",
     message.showHeader ? "h" : "",
     message.dayKey ?? "",
-    message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? void 0)}` : "",
+    message.source ? "".concat(message.source.kind, ":").concat(message.source.label, ":").concat(message.source.detail ?? "", ":").concat(message.source.untrusted ? 1 : 0, ":").concat(textMark(message.source.sentence ?? void 0)) : "",
     textMark(message.text),
     textMark(message.copyText),
     message.operationFeedback ? JSON.stringify(message.operationFeedback) : "",
@@ -58462,16 +58383,16 @@ function msgSignature(message) {
   const wg = message.workGraphEntry;
   if (wg) {
     parts.push(
-      `wg${wg.id}:${wg.status}:${wg.progress.completed}/${wg.progress.total}:${wg.itemOverflowCount ?? 0}:${wg.recentEvents?.length ?? 0}`,
-      wg.items.map((item) => `${item.itemId}:${item.status}:${item.revision ?? 0}:${item.priority ?? ""}:${item.ownerLabel ?? ""}`).join(","),
-      wg.attention.map((row) => `${row.bindingId}:${row.mode}:${row.statusLabel}:${row.revision ?? 0}`).join(",")
+      "wg".concat(wg.id, ":").concat(wg.status, ":").concat(wg.progress.completed, "/").concat(wg.progress.total, ":").concat(wg.itemOverflowCount ?? 0, ":").concat(wg.recentEvents?.length ?? 0),
+      wg.items.map((item) => "".concat(item.itemId, ":").concat(item.status, ":").concat(item.revision ?? 0, ":").concat(item.priority ?? "", ":").concat(item.ownerLabel ?? "")).join(","),
+      wg.attention.map((row) => "".concat(row.bindingId, ":").concat(row.mode, ":").concat(row.statusLabel, ":").concat(row.revision ?? 0)).join(",")
     );
   }
   const council = message.councilEntry;
   if (council) {
     parts.push(
-      `cc${council.id}:${council.status}:${council.exitReason}:${council.roundsCompleted}:${council.participants.length}`,
-      council.exchanges.map((row) => `${row.round}.${row.sequence}:${row.status}:${textMark(row.text)}`).join(",")
+      "cc".concat(council.id, ":").concat(council.status, ":").concat(council.exitReason, ":").concat(council.roundsCompleted, ":").concat(council.participants.length),
+      council.exchanges.map((row) => "".concat(row.round, ".").concat(row.sequence, ":").concat(row.status, ":").concat(textMark(row.text))).join(",")
     );
   }
   signature = parts.join("|");
@@ -58485,7 +58406,7 @@ function UntrustedBadge() {
   return /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
     "span",
     {
-      "aria-label": `Untrusted source. ${UNTRUSTED_SOURCE_DESCRIPTION}`,
+      "aria-label": "Untrusted source. ".concat(UNTRUSTED_SOURCE_DESCRIPTION),
       className: "msg__badge msg__badge--untrusted",
       "data-tooltip": UNTRUSTED_SOURCE_DESCRIPTION,
       role: "note",
@@ -58516,10 +58437,10 @@ function EventRow({ message: m2 }) {
     "div",
     {
       "aria-label": m2.source?.label,
-      className: `msg msg--${m2.kind}`,
+      className: "msg msg--".concat(m2.kind),
       "data-source-kind": m2.source?.kind,
       "data-conversation-row-id": m2.scrollRowId ?? m2.id,
-      "data-testid": m2.kind === "event" ? `chat-event:${m2.runtimeEvent?.eventType ?? ""}` : void 0,
+      "data-testid": m2.kind === "event" ? "chat-event:".concat(m2.runtimeEvent?.eventType ?? "") : void 0,
       children: /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "msg__bubble", children: [
         /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "msg__event-line", children: [
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { "aria-hidden": "true", className: "msg__event-mark" }),
@@ -58565,9 +58486,9 @@ function MessageRowBody({
   if (m2.kind === "event" || m2.kind === "origin") {
     return /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(EventRow, { message: m2 });
   }
-  const copyLabel = m2.kind === "user" || m2.kind === "agent" ? `Copy ${m2.kind === "user" ? "message" : "reply"}` : null;
+  const copyLabel = m2.kind === "user" || m2.kind === "agent" ? "Copy ".concat(m2.kind === "user" ? "message" : "reply") : null;
   const header = m2.showHeader && m2.source;
-  return /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: `msg msg--${m2.kind}`, "data-source-kind": m2.source?.kind, "data-conversation-row-id": m2.scrollRowId ?? m2.id, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "msg msg--".concat(m2.kind), "data-source-kind": m2.source?.kind, "data-conversation-row-id": m2.scrollRowId ?? m2.id, children: [
     header ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(MessageHeader, { copyLabel, message: m2 }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "msg__bubble", children: [
       !header && copyLabel && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(CopyInlineButton, { label: copyLabel, text: msgCopyText(m2) }),
@@ -58612,7 +58533,7 @@ var TranscriptTurn = import_react43.default.memo(function TranscriptTurn2({
       element3.style.removeProperty("flex-shrink");
     } else {
       element3.style.setProperty("flex-shrink", "0");
-      element3.style.setProperty("contain-intrinsic-block-size", `${parkedHeight}px`);
+      element3.style.setProperty("contain-intrinsic-block-size", "".concat(parkedHeight, "px"));
       element3.setAttribute("hidden", "until-found");
     }
   }, [parkedHeight]);
@@ -58627,23 +58548,23 @@ var TranscriptTurn = import_react43.default.memo(function TranscriptTurn2({
       {
         "aria-label": label,
         className: "conv__day",
-        "data-testid": `chat-day:${identity}:${next}`,
+        "data-testid": "chat-day:".concat(identity, ":").concat(next),
         role: "separator",
         children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { children: label })
       },
-      `day:${next}:${message.renderKey ?? message.id}`
+      "day:".concat(next, ":").concat(message.renderKey ?? message.id)
     );
   };
   return /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
     "div",
     {
-      "aria-label": `Turn ${turnIndex + 1}`,
+      "aria-label": "Turn ".concat(turnIndex + 1),
       "aria-posinset": turnIndex + 1,
       "aria-setsize": setSize,
       className: "conv-turn",
       "data-chat-turn-index": turnIndex,
       "data-conversation-turn-id": turn.id,
-      "data-testid": `chat-turn:${identity}:${turnIndex}`,
+      "data-testid": "chat-turn:".concat(identity, ":").concat(turnIndex),
       ref: turnRef,
       role: "article",
       tabIndex: -1,
@@ -58655,7 +58576,7 @@ var TranscriptTurn = import_react43.default.memo(function TranscriptTurn2({
           ] }, m2.scrollRowId ?? m2.id));
           return /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(import_react43.default.Fragment, { children: run.tools.length >= 2 ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: rows }) : rows }, run.rows[0].scrollRowId ?? run.rows[0].id);
         }),
-        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(ConversationRowStateScope, { rowId: `approvals:${turn.id}`, children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractionIds }) })
+        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(ConversationRowStateScope, { rowId: "approvals:".concat(turn.id), children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractionIds }) })
       ]
     }
   );
@@ -58757,7 +58678,7 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
             {
               "aria-label": "Find in transcript",
               className: "msg__copy",
-              "data-testid": `chat-find-open:${identity}`,
+              "data-testid": "chat-find-open:".concat(identity),
               onClick: onOpenFind,
               title: "Find in transcript (Ctrl+Shift+F)",
               type: "button",
@@ -58776,7 +58697,7 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
           "button",
           {
             className: "conv__history",
-            "data-testid": `chat-reveal-earlier:${identity}`,
+            "data-testid": "chat-reveal-earlier:".concat(identity),
             onClick: onRevealEarlier,
             type: "button",
             children: "Show earlier messages"
@@ -58795,7 +58716,7 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
           "div",
           {
             className: "msg msg--origin",
-            "data-testid": `chat-loading-history:${identity}`,
+            "data-testid": "chat-loading-history:".concat(identity),
             "aria-live": "polite",
             "aria-busy": "true",
             children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: "msg__typing", children: [
@@ -58820,10 +58741,10 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
             {
               "aria-hidden": "true",
               className: "conv__spacer",
-              "data-conversation-spacer": `${windowStart + slot.from}-${windowStart + slot.to}`,
+              "data-conversation-spacer": "".concat(windowStart + slot.from, "-").concat(windowStart + slot.to),
               style: { height: slot.height, flex: "none" }
             },
-            `spacer:${windowedTurns[slot.from].id}`
+            "spacer:".concat(windowedTurns[slot.from].id)
           )
         ) : renderTurn(slot.index, slot.kind === "parked" ? slot.height : void 0)),
         /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId }),
@@ -58832,13 +58753,13 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
           {
             "aria-label": "Live speech",
             className: "conv-turn conv-turn--live",
-            "data-testid": `chat-live-speech:${identity}`,
+            "data-testid": "chat-live-speech:".concat(identity),
             children: liveSpeech.map((item) => /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
               "div",
               {
-                className: `msg msg--live msg--live-${item.speaker}`,
+                className: "msg msg--live msg--live-".concat(item.speaker),
                 "data-live-final": item.final ? "true" : "false",
-                "data-testid": `chat-live-row:${identity}:${item.itemId}`,
+                "data-testid": "chat-live-row:".concat(identity, ":").concat(item.itemId),
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "msg__head", children: [
                     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "msg__source", children: item.speaker === "user" ? "Operator (voice)" : "Assistant (voice)" }),
@@ -58847,7 +58768,7 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
                   /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "msg__text", children: item.text }) })
                 ]
               },
-              `${item.speaker}:${item.itemId}`
+              "".concat(item.speaker, ":").concat(item.itemId)
             ))
           }
         ),
@@ -58855,9 +58776,9 @@ var TranscriptView = import_react43.default.memo(function TranscriptView2({
           "div",
           {
             className: "msg msg--typing",
-            "data-testid": `chat-typing:${identity}`,
+            "data-testid": "chat-typing:".concat(identity),
             "aria-live": "polite",
-            "aria-label": `${agentLabel} is ${phaseLabel(phase2)}`,
+            "aria-label": "".concat(agentLabel, " is ").concat(phaseLabel(phase2)),
             children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: "msg__typing", children: [
               /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
                 /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
@@ -58903,7 +58824,7 @@ var ComposerTextarea = import_react43.default.memo(function ComposerTextarea2({
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "composer__input", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
       "textarea",
       {
-        placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
+        placeholder: readOnly ? "View-only console" : sendWithheld ? "You can view ".concat(agentLabel, " but not message it") : voiceActive ? "Message ".concat(agentLabel, " (background agent)\u2026") : "Message ".concat(agentLabel, "\u2026"),
         value,
         disabled: readOnly || sendWithheld,
         onChange: (e) => {
@@ -58919,7 +58840,7 @@ var ComposerTextarea = import_react43.default.memo(function ComposerTextarea2({
           }
         },
         rows: 2,
-        "data-testid": `chat-composer:${identity}`
+        "data-testid": "chat-composer:".concat(identity)
       }
     ) }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "composer__row", children: [
@@ -58941,7 +58862,7 @@ var ComposerTextarea = import_react43.default.memo(function ComposerTextarea2({
           className: "composer__send",
           disabled: !value.trim() && stagedCount === 0 || readOnly || sendWithheld || stagedCount > 0 && !canAttachImages || stagedCount > 0 && sending,
           onClick: onSubmit,
-          "data-testid": `chat-send:${identity}`,
+          "data-testid": "chat-send:".concat(identity),
           children: [
             sendLabel,
             "  \u23CE"
@@ -59110,7 +59031,7 @@ function ChatPane({
       for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
       return before;
     });
-    return (turn, index2) => `${previous3[index2] ?? ""}\0${turnContentKey(turn)}`;
+    return (turn, index2) => "".concat(previous3[index2] ?? "", "\0").concat(turnContentKey(turn));
   }, [revealedTurns]);
   const actionableTurnIds = import_react43.default.useMemo(() => {
     if (!approvalSnapshot?.requests.length) return NO_TURN_IDS;
@@ -59335,9 +59256,9 @@ function ChatPane({
     const measureBand = () => {
       const paneBounds = pane.getBoundingClientRect();
       const bodyBounds = body.getBoundingClientRect();
-      nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
-      nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
-      nav.style.setProperty("--conv-pane-inline-size", `${paneBounds.width}px`);
+      nav.style.top = "".concat(Math.max(0, bodyBounds.top - paneBounds.top) + 16, "px");
+      nav.style.bottom = "".concat(Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64, "px");
+      nav.style.setProperty("--conv-pane-inline-size", "".concat(paneBounds.width, "px"));
     };
     const observer = new ResizeObserver((entries2) => {
       measureBand();
@@ -59377,9 +59298,9 @@ function ChatPane({
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
             "button",
             {
-              "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
+              "aria-label": "Jump to the ".concat(railWindow.overflow, " earlier turns"),
               className: "conv-turn-rail__button",
-              "data-testid": `chat-turn-rail:${identity}:overflow`,
+              "data-testid": "chat-turn-rail:".concat(identity, ":overflow"),
               onClick: (event) => {
                 scrollToTurn(0);
                 if (event.detail > 0) {
@@ -59413,9 +59334,9 @@ function ChatPane({
               "button",
               {
                 "aria-current": isVisibleTurn ? "true" : void 0,
-                "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
-                className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
-                "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
+                "aria-label": "Jump to turn ".concat(turnIndex + 1, ": ").concat(preview.title),
+                className: "conv-turn-rail__button".concat(isVisibleTurn ? " is-active" : ""),
+                "data-testid": "chat-turn-rail:".concat(identity, ":").concat(turnIndex),
                 onClick: (event) => {
                   scrollToTurn(turnIndex);
                   if (event.detail > 0) {
@@ -59450,7 +59371,7 @@ function ChatPane({
         continue;
       }
       accepted.push({
-        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        id: "".concat(Date.now().toString(36), "-").concat(Math.random().toString(36).slice(2, 8)),
         file: file2,
         previewUrl: URL.createObjectURL(file2)
       });
@@ -59467,7 +59388,7 @@ function ChatPane({
         currentKeys.add(key);
         if (current.length + append.length >= MAX_ATTACHMENTS) {
           URL.revokeObjectURL(item.previewUrl);
-          error48 = `Maximum ${MAX_ATTACHMENTS} images`;
+          error48 = "Maximum ".concat(MAX_ATTACHMENTS, " images");
           continue;
         }
         append.push(item);
@@ -59579,7 +59500,7 @@ function ChatPane({
     "div",
     {
       className: "conv",
-      "data-testid": `chat-pane:${identity}`,
+      "data-testid": "chat-pane:".concat(identity),
       onKeyDown: (event) => {
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
           event.preventDefault();
@@ -59587,13 +59508,13 @@ function ChatPane({
         }
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__head-frame", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: `conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__head-frame", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "conv__head".concat(headerVariant === "compact" ? " conv__head--compact" : ""), children: [
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__avatar", children: initial }),
           /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "conv__target", children: [
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__title", title: identity, children: agentLabel }),
             headerVariant === "full" ? /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "conv__identity", children: [
               identity,
-              agent?.role ? ` \xB7 ${agent.role}` : ""
+              agent?.role ? " \xB7 ".concat(agent.role) : ""
             ] }) : null
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__actions", children: [
@@ -59608,8 +59529,8 @@ function ChatPane({
               className: "conv__action",
               onClick: action.onClick,
               "aria-label": action.label,
-              title: `${action.label} - ${identity}`,
-              "data-testid": `conv-action:${action.id}`,
+              title: "".concat(action.label, " - ").concat(identity),
+              "data-testid": "conv-action:".concat(action.id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "conv__action-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: action.icon }) }),
                 /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "conv__action-label", children: action.label })
@@ -59618,7 +59539,7 @@ function ChatPane({
             action.id
           )) })
         ] }) }),
-        runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__notice", role: "status", "data-testid": `run-stop-notice:${identity}`, children: runStopNotice }) : null,
+        runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__notice", role: "status", "data-testid": "run-stop-notice:".concat(identity), children: runStopNotice }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
           TranscriptView,
           {
@@ -59660,7 +59581,7 @@ function ChatPane({
         turnRail,
         scroll.revealingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__history-status", role: "status", children: "Restoring earlier position..." }) : null,
         scroll.missingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("div", { className: "conv__history-status", role: "status", children: "Earlier position is unavailable. Load older history to see more." }) : null,
-        onQuoteSelection ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(QuoteSelectionAction, { viewportRef: bodyRef, onQuote: onQuoteSelection, onError: setQuoteError, disabled: readOnly }, `${identity}:${conversationId ?? ""}:${viewportKey?.authority ?? ""}`) : null,
+        onQuoteSelection ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(QuoteSelectionAction, { viewportRef: bodyRef, onQuote: onQuoteSelection, onError: setQuoteError, disabled: readOnly }, "".concat(identity, ":").concat(conversationId ?? "", ":").concat(viewportKey?.authority ?? "")) : null,
         scroll.awayFromEnd ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(JumpToLatest, { onClick: scroll.jumpToLatest, working: phase2 !== null }) : null,
         stackSlot,
         /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "composer", children: [
@@ -59670,7 +59591,7 @@ function ChatPane({
           /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
             "div",
             {
-              className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
+              className: "composer__shell".concat(dragActive && canAttachImages ? " is-drag-active" : ""),
               onDragLeave: () => setDragActive(false),
               onDragOver: (event) => {
                 if (!canAttachImages) return;
@@ -59846,9 +59767,9 @@ function MobKitDock({
         return /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)(
           "div",
           {
-            className: `wstab ${isActive ? "is-active" : ""}`,
+            className: "wstab ".concat(isActive ? "is-active" : ""),
             onClick: () => onSelectTab(t.id),
-            "data-testid": `wstab:${t.id}`,
+            "data-testid": "wstab:".concat(t.id),
             children: [
               /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { className: "wstab__mark" }),
               /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
@@ -59861,7 +59782,7 @@ function MobKitDock({
                     e.stopPropagation();
                     onCloseTab(t.id);
                   },
-                  "data-testid": `wstab-close:${t.id}`,
+                  "data-testid": "wstab-close:".concat(t.id),
                   "aria-label": "Close workspace",
                   children: "\xD7"
                 }
@@ -59913,7 +59834,7 @@ function SplitView(props) {
   if (node2.kind !== "split") return null;
   const ratio = typeof node2.ratio === "number" ? Math.max(0.1, Math.min(0.9, node2.ratio)) : 0.5;
   const direction = node2.direction;
-  const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
+  const style = direction === "horizontal" ? { gridTemplateColumns: "".concat(ratio * 100, "% 6px ").concat((1 - ratio) * 100, "%") } : { gridTemplateRows: "".concat(ratio * 100, "% 6px ").concat((1 - ratio) * 100, "%") };
   const hostRef = import_react44.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
@@ -59938,16 +59859,16 @@ function SplitView(props) {
     "div",
     {
       ref: hostRef,
-      className: `split split--${direction === "horizontal" ? "h" : "v"}`,
+      className: "split split--".concat(direction === "horizontal" ? "h" : "v"),
       style,
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(DockLayout, { ...props, node: node2.first }),
         /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(
           "div",
           {
-            className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
+            className: "split__handle split__handle--".concat(direction === "horizontal" ? "h" : "v"),
             onPointerDown: startDrag,
-            "data-testid": `split-handle:${node2.id}`
+            "data-testid": "split-handle:".concat(node2.id)
           }
         ),
         /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(DockLayout, { ...props, node: node2.second })
@@ -59977,9 +59898,9 @@ function PaneView({
   return /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)(
     "div",
     {
-      className: `pane ${isFocused ? "is-focused" : ""}`,
+      className: "pane ".concat(isFocused ? "is-focused" : ""),
       onMouseDown: () => onFocusPanel(panelId),
-      "data-testid": `pane:${panelId}`,
+      "data-testid": "pane:".concat(panelId),
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)("div", { className: "pane__bar", children: [
           /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)(
@@ -59991,7 +59912,7 @@ function PaneView({
                 onFocusPanel(panelId);
                 setMenuOpen((v) => !v);
               },
-              "data-testid": `pane-title:${panelId}`,
+              "data-testid": "pane-title:".concat(panelId),
               title: "Retarget pane",
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { className: "pane__title-text", children: title }),
@@ -60010,7 +59931,7 @@ function PaneView({
                 onSplitPanel(panelId, "right");
               },
               title: "Split right (\u2318D)",
-              "data-testid": `pane-split-right:${panelId}`,
+              "data-testid": "pane-split-right:".concat(panelId),
               children: "\u25E8"
             }
           ),
@@ -60023,7 +59944,7 @@ function PaneView({
                 onSplitPanel(panelId, "down");
               },
               title: "Split down (\u2318\u21E7D)",
-              "data-testid": `pane-split-down:${panelId}`,
+              "data-testid": "pane-split-down:".concat(panelId),
               children: "\u2B13"
             }
           ),
@@ -60036,7 +59957,7 @@ function PaneView({
                 onClosePanel(panelId);
               },
               title: "Close pane (\u2318W)",
-              "data-testid": `pane-close:${panelId}`,
+              "data-testid": "pane-close:".concat(panelId),
               children: "\xD7"
             }
           ),
@@ -60078,7 +59999,7 @@ function PaneMenu({ agents, visibleControls, customPanels = [], onClose, onPick 
         {
           className: "pane-menu__item",
           onClick: () => onPick(buildControlTarget2(kind)),
-          "data-testid": `pane-menu-view:${kind}`,
+          "data-testid": "pane-menu-view:".concat(kind),
           children: [
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { children: label }),
@@ -60092,7 +60013,7 @@ function PaneMenu({ agents, visibleControls, customPanels = [], onClose, onPick 
         {
           className: "pane-menu__item",
           onClick: () => onPick(consoleCustomPanelTarget(panel)),
-          "data-testid": `pane-menu-custom-panel:${panel.id}`,
+          "data-testid": "pane-menu-custom-panel:".concat(panel.id),
           children: [
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { children: panel.title }),
@@ -60109,7 +60030,7 @@ function PaneMenu({ agents, visibleControls, customPanels = [], onClose, onPick 
           className: "pane-menu__item",
           "data-state": (a.state || "").toLowerCase(),
           onClick: () => onPick(buildDockTarget2(a)),
-          "data-testid": `pane-menu-agent:${a.member_id}`,
+          "data-testid": "pane-menu-agent:".concat(a.member_id),
           children: [
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { className: "agent__dot" }),
             /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { children: a.label }),
@@ -60169,7 +60090,7 @@ function StackHead({
     /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stack__head-count", children: count }),
     !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
     /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stack__head-spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("span", { className: "stack__head-phase ".concat(agentBusy ? "" : "is-idle"), children: [
       /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("b", {}),
       agentBusy ? "Agent busy" : "Agent idle"
     ] }),
@@ -60189,10 +60110,10 @@ function StackHead({
 function timeAgo(ts) {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1e3));
   if (s < 5) return "just now";
-  if (s < 60) return `${s}s`;
+  if (s < 60) return "".concat(s, "s");
   const m2 = Math.floor(s / 60);
-  if (m2 < 60) return `${m2}m`;
-  return `${Math.floor(m2 / 60)}h`;
+  if (m2 < 60) return "".concat(m2, "m");
+  return "".concat(Math.floor(m2 / 60), "h");
 }
 function StackItem({
   item,
@@ -60272,7 +60193,7 @@ function StackItem({
       role: "listitem",
       tabIndex: 0,
       "data-id": item.id,
-      "data-testid": `pending-item:${item.id}`,
+      "data-testid": "pending-item:".concat(item.id),
       draggable: !item.editing && item.state === "draft",
       onDragStart: (e) => onDragStart(e, item.id),
       onDragOver: (e) => onDragOver(e, item.id),
@@ -60312,7 +60233,7 @@ function StackItem({
               },
               onKeyDown: handleEditKey,
               placeholder: "Rewrite this message\u2026",
-              "data-testid": `pending-item-edit:${item.id}`
+              "data-testid": "pending-item-edit:".concat(item.id)
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("div", { className: "stk-item__edit-row", children: [
@@ -60362,7 +60283,7 @@ function StackItem({
             "div",
             {
               id: previewId,
-              className: `stk-item__text ${longText && !item.expanded ? "stk-item__text--preview" : "stk-item__text--expanded"}`,
+              className: "stk-item__text ".concat(longText && !item.expanded ? "stk-item__text--preview" : "stk-item__text--expanded"),
               onClick: longText ? () => onToggleExpand(item.id) : void 0,
               style: longText ? { cursor: "pointer" } : void 0,
               title: longText && !item.expanded ? item.text : void 0,
@@ -60379,9 +60300,9 @@ function StackItem({
               onReorder: item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : void 0
             }
           ),
-          copy.title && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__title", "data-testid": `pending-title:${item.id}`, children: copy.title }),
-          copy.detail && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__explanation", "data-testid": `pending-explanation:${item.id}`, children: copy.detail }),
-          check2 && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__explanation stk-item__check", role: "status", "data-testid": `pending-check:${item.id}`, children: check2.phase === "checking" ? "Checking..." : check2.text })
+          copy.title && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__title", "data-testid": "pending-title:".concat(item.id), children: copy.title }),
+          copy.detail && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__explanation", "data-testid": "pending-explanation:".concat(item.id), children: copy.detail }),
+          check2 && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("p", { className: "stk-item__explanation stk-item__check", role: "status", "data-testid": "pending-check:".concat(item.id), children: check2.phase === "checking" ? "Checking..." : check2.text })
         ] }),
         !item.editing && /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("div", { className: "stk-item__actions", children: [
           needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", disabled: checking, onClick: () => onReconcile(item.id), children: "Check" }),
@@ -60395,7 +60316,7 @@ function StackItem({
               onClick: () => onSteer(item.id),
               "aria-label": "Steer - send now and interrupt at next cooperative pause",
               title: "Send now and interrupt at the next cooperative pause",
-              "data-testid": `pending-steer:${item.id}`,
+              "data-testid": "pending-steer:".concat(item.id),
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(Icon, { name: "i-bolt" }) }),
                 " Steer"
@@ -60410,7 +60331,7 @@ function StackItem({
               onClick: () => onEdit(item.id),
               "aria-label": "Edit message",
               title: "Edit message",
-              "data-testid": `pending-edit:${item.id}`,
+              "data-testid": "pending-edit:".concat(item.id),
               children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(Icon, { name: "i-compose" }) })
             }
           ),
@@ -60422,7 +60343,7 @@ function StackItem({
               onClick: () => onTrash(item.id),
               "aria-label": "Remove from queue",
               title: "Remove from queue",
-              "data-testid": `pending-trash:${item.id}`,
+              "data-testid": "pending-trash:".concat(item.id),
               children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(Icon, { name: "i-close" }) })
             }
           ) : /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(
@@ -60432,7 +60353,7 @@ function StackItem({
               className: "stk-btn stk-btn--trash",
               onClick: () => onTrash(item.id),
               title: "Discard this message",
-              "data-testid": `pending-trash:${item.id}`,
+              "data-testid": "pending-trash:".concat(item.id),
               children: "Discard"
             }
           )
@@ -60529,7 +60450,7 @@ function PendingStack3({
   return /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)(
     "section",
     {
-      className: `stack stack--console ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
+      className: "stack stack--console ".concat(collapsed ? "is-collapsed" : "", " ").concat(reducedMotion ? "reduced-motion" : ""),
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
@@ -60543,7 +60464,7 @@ function PendingStack3({
             onClear: onClearAll
           }
         ),
-        notices.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("ul", { className: "stack__delivered", "aria-label": "Delivered messages", children: notices.map((notice) => /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("li", { className: "stack__delivered-item", role: "status", "data-testid": `pending-delivered:${notice.id}`, children: [
+        notices.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("ul", { className: "stack__delivered", "aria-label": "Delivered messages", children: notices.map((notice) => /* @__PURE__ */ (0, import_jsx_runtime57.jsxs)("li", { className: "stack__delivered-item", role: "status", "data-testid": "pending-delivered:".concat(notice.id), children: [
           notice.text,
           onDismissDelivered && /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("button", { type: "button", className: "stk-btn stk-btn--icon", "aria-label": "Dismiss", onClick: () => onDismissDelivered(notice.id), children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime57.jsx)(Icon, { name: "i-close" }) }) })
         ] }, notice.id)) }),
@@ -60583,7 +60504,7 @@ function PendingStack3({
 }
 
 // src/lib/send-attempt-storage.ts
-var consoleSendStorageKey = (namespace, destination) => `mobkit-send-attempts:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(destination)}`;
+var consoleSendStorageKey = (namespace, destination) => "mobkit-send-attempts:v1:".concat(encodeURIComponent(namespace), ":").concat(encodeURIComponent(destination));
 function loadConsoleSendAttempts(storage, namespace, destination, now = Date.now()) {
   try {
     const raw = storage.getItem(consoleSendStorageKey(namespace, destination));
@@ -60663,7 +60584,7 @@ function consoleLegacyQueueImported(storage, namespace, destination) {
   return raw !== null && JSON.parse(raw).legacyImported === true;
 }
 function readLegacyConsoleQueue(storage, destination) {
-  const raw = storage.getItem(`mobkit-pending-stack:${destination}`);
+  const raw = storage.getItem("mobkit-pending-stack:".concat(destination));
   if (!raw) return [];
   const data = JSON.parse(raw);
   if (!Array.isArray(data) || data.some((item) => !item || typeof item.id !== "string" || typeof item.text !== "string" || !Number.isFinite(item.addedAt))) {
@@ -60671,7 +60592,7 @@ function readLegacyConsoleQueue(storage, destination) {
   }
   return data;
 }
-var consoleComposerDraftKey = (namespace, destination, composerId) => composerId ? `mobkit-composer-draft:v2:${encodeURIComponent(namespace)}:${encodeURIComponent(destination)}:${encodeURIComponent(composerId)}` : `mobkit-composer-draft:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(destination)}`;
+var consoleComposerDraftKey = (namespace, destination, composerId) => composerId ? "mobkit-composer-draft:v2:".concat(encodeURIComponent(namespace), ":").concat(encodeURIComponent(destination), ":").concat(encodeURIComponent(composerId)) : "mobkit-composer-draft:v1:".concat(encodeURIComponent(namespace), ":").concat(encodeURIComponent(destination));
 function consoleComposerTabId(storage, createId) {
   const key = "mobkit-composer-tab:v1";
   try {
@@ -60706,32 +60627,32 @@ var import_react46 = __toESM(require("react"));
 // ../sdk/typescript/src/live.ts
 function asRecord3(value, context) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${context} must be an object`);
+    throw new TypeError("".concat(context, " must be an object"));
   }
   return value;
 }
 function assertExactKeys(value, allowed, context) {
   const unknown2 = Object.keys(value).find((key) => !allowed.includes(key));
   if (unknown2 !== void 0) {
-    throw new TypeError(`${context} contains unknown field ${unknown2}`);
+    throw new TypeError("".concat(context, " contains unknown field ").concat(unknown2));
   }
 }
 function requireString(value, context) {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new TypeError(`${context} must be a non-empty string`);
+    throw new TypeError("".concat(context, " must be a non-empty string"));
   }
   return value;
 }
 function requireBoolean(value, context) {
   if (typeof value !== "boolean") {
-    throw new TypeError(`${context} must be a boolean`);
+    throw new TypeError("".concat(context, " must be a boolean"));
   }
   return value;
 }
 function parseExecutionMode(raw, context) {
-  const mode = requireString(raw, `${context}.execution_mode`);
+  const mode = requireString(raw, "".concat(context, ".execution_mode"));
   if (mode !== "function_bridge" && mode !== "client_context") {
-    throw new TypeError(`${context}.execution_mode is unknown`);
+    throw new TypeError("".concat(context, ".execution_mode is unknown"));
   }
   return mode;
 }
@@ -60835,7 +60756,7 @@ function parseTransport(raw) {
     assertExactKeys(d2, ["transport", "debug"], "unknown transport");
     return { transport: "unknown", debug: requireString(d2.debug, "transport.debug") };
   }
-  throw new TypeError(`unknown live transport ${kind}`);
+  throw new TypeError("unknown live transport ".concat(kind));
 }
 function parseCapabilities(raw) {
   const d2 = asRecord3(raw, "capabilities");
@@ -60881,7 +60802,7 @@ function parseContinuity(raw) {
     assertExactKeys(d2, ["mode", "debug"], "continuity");
     return { mode, debug: requireString(d2.debug, "continuity.debug") };
   }
-  throw new TypeError(`unknown live continuity mode ${mode}`);
+  throw new TypeError("unknown live continuity mode ".concat(mode));
 }
 
 // src/lib/voice-captions.ts
@@ -61029,7 +60950,7 @@ function browserEnvironment2(baseUrl) {
     createAudioElement: () => document.createElement("audio"),
     rpc: (method, params, timeoutMs) => callConsoleRpc2(baseUrl, method, params, timeoutMs),
     pagehideClose: (params) => {
-      void fetch(`${baseUrl}${CONSOLE_RPC_PATHS2.jsonRpc}`, {
+      void fetch("".concat(baseUrl).concat(CONSOLE_RPC_PATHS2.jsonRpc), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -61069,7 +60990,7 @@ var VoiceTimeout = class extends VoiceError {
 };
 var VoiceCloseUnconfirmed = class extends VoiceError {
   constructor(attempts, cause) {
-    super(`The gateway has not confirmed voice closure after ${attempts} attempts.`);
+    super("The gateway has not confirmed voice closure after ".concat(attempts, " attempts."));
     this.attempts = attempts;
     this.cause = cause;
   }
@@ -61351,10 +61272,10 @@ function createVoiceSession(baseUrl, environment) {
       }
     } catch (failure) {
       if (current === attempt) {
-        const attempts = failure instanceof VoiceCloseUnconfirmed ? ` after ${failure.attempts} attempts` : "";
+        const attempts = failure instanceof VoiceCloseUnconfirmed ? " after ".concat(failure.attempts, " attempts") : "";
         publish({
           phase: "error",
-          error: `${error48 ? `${error48} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure${attempts}. Close again to retry before starting another session.`,
+          error: "".concat(error48 ? "".concat(error48, " ") : "", "Your microphone and speaker are off, but the gateway has not confirmed voice closure").concat(attempts, ". Close again to retry before starting another session."),
           notice: null
         });
       }
@@ -62392,7 +62313,7 @@ function createIdempotencyKey() {
   return createConsoleId("console");
 }
 function dockLayoutStorageKey(authorityScope) {
-  return `${DOCK_LAYOUT_STORAGE_PREFIX}:${authorityScope}`;
+  return "".concat(DOCK_LAYOUT_STORAGE_PREFIX, ":").concat(authorityScope);
 }
 function stableHash(value) {
   let hash3 = 5381;
@@ -62982,7 +62903,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
   function identityWorkbenchTarget(identity, mode) {
     return requireWorkbenchTarget({
-      id: mode === "inspect" ? `inspect:${identity}` : `chat:${identity}`,
+      id: mode === "inspect" ? "inspect:".concat(identity) : "chat:".concat(identity),
       kind: mode === "inspect" ? "identity-inspect" : "agent-chat",
       title: identity,
       identity
@@ -63046,7 +62967,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setSendingPanels((current) => {
       let changed = false;
       const next = new Set(current);
-      const suffix = `:agent-chat:${identity}`;
+      const suffix = ":agent-chat:".concat(identity);
       for (const panelKey of current) {
         if (panelKey.endsWith(suffix)) {
           next.delete(panelKey);
@@ -63067,7 +62988,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     for (const [panelKey, optimistic] of Object.entries(
       optimisticUserByPanelKeyRef.current
     )) {
-      if (!panelKey.endsWith(`:agent-chat:${identity}`)) continue;
+      if (!panelKey.endsWith(":agent-chat:".concat(identity))) continue;
       if (optimistic.interactionId) continue;
       if (!("text" in optimistic.entry) || typeof optimistic.entry.text !== "string")
         continue;
@@ -63094,7 +63015,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function frameKey(frame) {
     if (frame.id) return frame.id;
     if (frame.cursor) return frame.cursor;
-    return `${frame.event}:${frame.identity || ""}:${frame.interactionId || ""}:${frame.timestampMs || 0}`;
+    return "".concat(frame.event, ":").concat(frame.identity || "", ":").concat(frame.interactionId || "", ":").concat(frame.timestampMs || 0);
   }
   function appendFrame(identity, frame) {
     const log = getOrCreateLog(identity);
@@ -63410,9 +63331,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
   const sendControllerRef = import_react48.default.useRef(consoleController);
   sendControllerRef.current = consoleController;
-  const transientSendScope = import_react48.default.useMemo(() => `transient:${createIdempotencyKey()}`, [consoleController]);
+  const transientSendScope = import_react48.default.useMemo(() => "transient:".concat(createIdempotencyKey()), [consoleController]);
   const persistentSendScope = storageNamespace?.trim() || (experience?.storage_scope?.trim() ? JSON.stringify([baseUrl, experience.storage_scope]) : null);
-  const sendScope = persistentSendScope || `${transientSendScope}:${baseUrl}`;
+  const sendScope = persistentSendScope || "".concat(transientSendScope, ":").concat(baseUrl);
   const [composerTabId] = import_react48.default.useState(() => {
     try {
       return consoleComposerTabId(window.sessionStorage, createIdempotencyKey);
@@ -63433,7 +63354,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const loadedComposerDraftsRef = import_react48.default.useRef({});
   function storedComposerDraft(identity, panelKey) {
     const namespace = persistentSendScopeRef.current;
-    const key = `${sendScopeRef.current}:${composerIdFor(panelKey)}`;
+    const key = "".concat(sendScopeRef.current, ":").concat(composerIdFor(panelKey));
     if (!loadedComposerDraftsRef.current[key]) {
       try {
         const storage = browserComposerStorage();
@@ -63454,10 +63375,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         if (!storage) throw new Error("Draft storage is unavailable.");
         saveConsoleComposerDraft(storage, namespace, identity, { text: text9, contexts }, composerIdFor(panelKey));
       }
-      loadedComposerDraftsRef.current[`${sendScopeRef.current}:${composerIdFor(panelKey)}`] = { text: text9, contexts };
+      loadedComposerDraftsRef.current["".concat(sendScopeRef.current, ":").concat(composerIdFor(panelKey))] = { text: text9, contexts };
       return true;
     } catch (error49) {
-      setActionError(`Draft remains visible but was not saved: ${errorMessage(error49)}`);
+      setActionError("Draft remains visible but was not saved: ".concat(errorMessage(error49)));
       return false;
     }
   }
@@ -63482,7 +63403,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setDeliveredNotices({});
   }, [sendScope]);
   persistentSendScopeRef.current = persistentSendScope;
-  const scopedDraftKey = (panelKey) => `${sendScopeRef.current}:${panelKey}`;
+  const scopedDraftKey = (panelKey) => "".concat(sendScopeRef.current, ":").concat(panelKey);
   function loadPendingStack(identity) {
     const namespace = persistentSendScopeRef.current;
     if (!namespace) return pendingStackRef.current[identity] ?? [];
@@ -63523,7 +63444,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         }
       } catch (error49) {
         pendingStorageErrorRef.current[identity] = errorMessage(error49);
-        const message = `Queue could not be saved: ${errorMessage(error49)}`;
+        const message = "Queue could not be saved: ".concat(errorMessage(error49));
         queueStorageBannerRef.current = { scope: sendScopeRef.current, identity, message };
         setActionError(message);
         forceRender();
@@ -63924,7 +63845,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const [approvalSnapshot, setApprovalSnapshot] = import_react48.default.useState();
   const [selectedApprovalId, setSelectedApprovalId] = import_react48.default.useState();
   const approvalResourceRef = import_react48.default.useRef(null);
-  const approvalScope = `${sendScope}:${experience?.runtime_id || "loading"}`;
+  const approvalScope = "".concat(sendScope, ":").concat(experience?.runtime_id || "loading");
   import_react48.default.useEffect(() => {
     setApprovalSnapshot(void 0);
     setSelectedApprovalId(void 0);
@@ -63942,7 +63863,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         command: CONSOLE_COMMAND_NAMES2.decideGating,
         target,
         signal,
-        params: { pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` }
+        params: { pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: "console_".concat(decision) }
       })).result
     });
     approvalResourceRef.current = resource;
@@ -64485,7 +64406,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
     );
-    const refreshes = inspects.map((t) => panelRefreshFlight(`inspect:${t.identity}`, async () => {
+    const refreshes = inspects.map((t) => panelRefreshFlight("inspect:".concat(t.identity), async () => {
       const r2 = await inspectIdentityViaHeadless(t.identity);
       const result = normalizeConsoleInspectResult(r2);
       setInspectByIdentity((c) => ({ ...c, [t.identity]: result }));
@@ -64799,7 +64720,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
     const attemptNamespace = persistentSendScopeRef.current;
-    const optimisticTopologyFrameId = `optimistic-topology:${identity}:${Date.now()}`;
+    const optimisticTopologyFrameId = "optimistic-topology:".concat(identity, ":").concat(Date.now());
     commitLiveFrames([{
       id: optimisticTopologyFrameId,
       event: "interaction_started",
@@ -64807,7 +64728,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       interactionId: "",
       timestampMs: Date.now(),
       data: {
-        origin: `console:${panelId}`,
+        origin: "console:".concat(panelId),
         handling_mode: handlingMode
       }
     }, ...liveFramesRef.current].slice(0, 300));
@@ -64821,7 +64742,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         workbenchTarget,
         {
           content: envelope?.content ?? text9,
-          origin: envelope?.origin ?? `console:${panelId}`,
+          origin: envelope?.origin ?? "console:".concat(panelId),
           idempotencyKey: envelope?.idempotency_key ?? createIdempotencyKey(),
           handlingMode: envelope?.handling_mode ?? handlingMode,
           attachments
@@ -64856,7 +64777,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
-      const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
+      const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: "".concat(errorMessage(submitError), ". Nothing was sent.") } : classifyConsoleSendFailure(submitError);
       if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
         optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
           (url2) => URL.revokeObjectURL(url2)
@@ -64928,10 +64849,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     let item;
     try {
       item = createConsoleSendAttempt({
-        id: `pmsg-${createIdempotencyKey()}`,
+        id: "pmsg-".concat(createIdempotencyKey()),
         scope: sendScopeRef.current,
         destination: identity,
-        origin: `console:${panelId}`,
+        origin: "console:".concat(panelId),
         idempotencyKey: createIdempotencyKey(),
         text: text9,
         contexts,
@@ -64959,7 +64880,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const directSendIdsRef = import_react48.default.useRef(/* @__PURE__ */ new Set());
   const pendingDrainOwnerRef = import_react48.default.useRef(
-    `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    "tab-".concat(Date.now().toString(36), "-").concat(Math.random().toString(36).slice(2, 8))
   );
   function findChatTargetFor(identity) {
     for (const panel of dockRef.current.viewState.panels) {
@@ -65041,7 +64962,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       const record8 = inspection && typeof inspection === "object" ? inspection : null;
       const owner = record8?.identity && typeof record8.identity === "object" ? record8.identity : record8;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
-        answer(`Couldn't check: ${names.agent} couldn't be found.`);
+        answer("Couldn't check: ".concat(names.agent, " couldn't be found."));
         return;
       }
       canonicalIdentity = owner.identity;
@@ -65075,7 +64996,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setDeliveredNotices((current) => ({ ...current, [identity]: [...(current[identity] ?? []).filter((notice) => notice.id !== id), { id, text: delivered }] }));
       return;
     }
-    answer(`${delivered} The saved copy couldn't be removed; discard it.`);
+    answer("".concat(delivered, " The saved copy couldn't be removed; discard it."));
   }
   function updatePendingContexts(identity, id, update) {
     setPendingStack(identity, (previous3) => previous3.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
@@ -65139,7 +65060,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const head = getPendingStack(identity)[0];
     if (head?.state === "draft" && !head.editing) {
       const target = findChatTargetFor(identity);
-      const key = `${sendScopeRef.current}:${head.id}`;
+      const key = "".concat(sendScopeRef.current, ":").concat(head.id);
       if (!target) {
         if (!autoDrainRequestedRef.current.get(key)?.inFlight) autoDrainRequestedRef.current.delete(key);
         return;
@@ -65166,7 +65087,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (consoleLegacyQueueImported(storage, namespace, identity)) return;
       const legacy = readLegacyConsoleQueue(storage, identity);
       const imported = legacy.map((item) => createConsoleSendAttempt({
-        id: `legacy:${item.id}`,
+        id: "legacy:".concat(item.id),
         scope: namespace,
         destination: identity,
         origin: "console:legacy-import",
@@ -65529,7 +65450,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     function onPointerMove(e) {
       root4.style.setProperty(
         "--cc-workbench-sidebar-width",
-        `${Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)))}px`
+        "".concat(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX))), "px")
       );
     }
     function cleanup() {
@@ -65563,7 +65484,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     function onPointerMove(e) {
       root4.style.setProperty(
         "--cc-workbench-activity-width",
-        `${Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)))}px`
+        "".concat(Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX))), "px")
       );
     }
     function cleanup() {
@@ -65703,7 +65624,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     try {
       const storage = browserLocalStorage();
       const namespace = persistentSendScopeRef.current;
-      hasLegacyQueue = Boolean(storage && namespace && !consoleLegacyQueueImported(storage, namespace, identity) && storage.getItem(`mobkit-pending-stack:${identity}`));
+      hasLegacyQueue = Boolean(storage && namespace && !consoleLegacyQueueImported(storage, namespace, identity) && storage.getItem("mobkit-pending-stack:".concat(identity)));
     } catch {
     }
     const agentBusy = isIdentityBusy(identity);
@@ -65764,7 +65685,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (sendScope !== sendScopeRef.current) return;
       try {
         const context = createConsoleContextRecord({
-          id: `quote:${createIdempotencyKey()}`,
+          id: "quote:".concat(createIdempotencyKey()),
           sourceScope: sendScopeRef.current,
           // The renderer ID names a stable message assembled from potentially many
           // frames. Without canonical frame provenance, no frame-relative range is claimed.
@@ -65858,7 +65779,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         activeVoiceScope: voiceState.target?.identity === identity && voiceState.phase === "active" && agent?.session_id && voiceState.activeChannelId ? { sessionId: agent.session_id, channelId: voiceState.activeChannelId } : null,
         workGraphActions: workGraphCardActionsFor(identity)
       },
-      `${sendScope}:${panel.id}:${identity}`
+      "".concat(sendScope, ":").concat(panel.id, ":").concat(identity)
     );
   }
   function renderInspectPanel(target) {
@@ -65873,7 +65794,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       "div",
       {
         className: "console-panel",
-        "data-testid": `inspect-panel:${target.identity}`,
+        "data-testid": "inspect-panel:".concat(target.identity),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("div", { className: "console-panel__header", children: [
             /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("h3", { children: target.identity }),
@@ -65881,7 +65802,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
               canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(
                 "button",
                 {
-                  "data-testid": `inspect-action:${target.identity}:respawn`,
+                  "data-testid": "inspect-action:".concat(target.identity, ":respawn"),
                   type: "button",
                   onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"),
                   children: configuredActionLabels.respawn
@@ -65890,7 +65811,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
               canReset ? /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(
                 "button",
                 {
-                  "data-testid": `inspect-action:${target.identity}:reset`,
+                  "data-testid": "inspect-action:".concat(target.identity, ":reset"),
                   type: "button",
                   onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"),
                   children: configuredActionLabels.reset
@@ -65899,7 +65820,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
               canRetire ? /* @__PURE__ */ (0, import_jsx_runtime58.jsx)(
                 "button",
                 {
-                  "data-testid": `inspect-action:${target.identity}:retire`,
+                  "data-testid": "inspect-action:".concat(target.identity, ":retire"),
                   type: "button",
                   onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"),
                   children: configuredActionLabels.retire
@@ -65909,10 +65830,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           ] }),
           !inspect ? /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("dl", { className: "console-panel__grid", children: [
             /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("dd", { "data-testid": `inspect-state:${target.identity}`, children: identityStateLabel(inspect) }),
+            /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("dd", { "data-testid": "inspect-state:".concat(target.identity), children: identityStateLabel(inspect) }),
             inspect.session_repair ? /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)(import_jsx_runtime58.Fragment, { children: [
               /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("dt", { children: "Repair" }),
-              /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("dd", { "data-testid": `inspect-session-repair:${target.identity}`, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("dd", { "data-testid": "inspect-session-repair:".concat(target.identity), children: [
                 /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("p", { children: "The durable session is intact but refused until it is repaired. Run the diagnose command, then the repair command, then reload the member (mobkit/reload_member)." }),
                 /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("code", { "data-testid": "inspect-session-repair-diagnose", children: inspect.session_repair.diagnose_command }),
                 /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("code", { "data-testid": "inspect-session-repair-apply", children: inspect.session_repair.apply_command })
@@ -65942,7 +65863,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     );
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime58.jsxs)("li", { "data-testid": "health-identity:".concat(r2.identity), children: [
       /* @__PURE__ */ (0, import_jsx_runtime58.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
       identityStateLabel(r2),
