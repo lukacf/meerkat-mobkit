@@ -14,16 +14,29 @@ function domains(value, schemes = ['https:', 'http:']) {
   });
 }
 
-function appCsp(csp = {}, proxy = false) {
-  const resource = domains(csp.resourceDomains).join(' ');
-  const connect = domains(csp.connectDomains, ['https:', 'http:', 'wss:', 'ws:']).join(' ') || "'none'";
-  const frames = domains(csp.frameDomains).join(' ');
-  const base = domains(csp.baseUriDomains).join(' ') || "'self'";
+function appCsp(csp = {}, proxy = false, hostOrigins = []) {
+  const safeDomains = (value, schemes) => domains(value, schemes).map(origin => {
+    const source = new URL(origin);
+    for (const hostOrigin of hostOrigins) {
+      const host = new URL(hostOrigin);
+      // A CSP HTTP source can also match its HTTPS upgrade. Conservatively
+      // reserve every port and transport of Console hostnames for host APIs.
+      const sourceName = source.hostname.replace(/\.$/, '');
+      const hostName = host.hostname.replace(/\.$/, '');
+      const wildcard = sourceName === '*' || (sourceName.startsWith('*.') && hostName.endsWith(sourceName.slice(1)));
+      if (sourceName === hostName || wildcard) throw Error('CSP must not grant access to Console hosts');
+    }
+    return origin;
+  });
+  const resource = safeDomains(csp.resourceDomains).join(' ');
+  const connect = safeDomains(csp.connectDomains, ['https:', 'http:', 'wss:', 'ws:']).join(' ') || "'none'";
+  const frames = safeDomains(csp.frameDomains).join(' ');
+  const base = safeDomains(csp.baseUriDomains).join(' ') || "'self'";
   return ["default-src 'none'", `script-src 'self' 'unsafe-inline' ${resource}`,
     `style-src 'self' 'unsafe-inline' ${resource}`, `img-src 'self' data: ${resource}`,
     `media-src 'self' data: ${resource}`, `font-src 'self' ${resource}`, `connect-src ${connect}`,
     `frame-src ${proxy ? "'self' " : ''}${frames || (proxy ? '' : "'none'")}`,
-    `base-uri ${base}`, "object-src 'none'", "form-action 'none'"].join('; ');
+    `base-uri ${base}`, "object-src 'none'", "form-action 'none'", "webrtc 'block'"].join('; ');
 }
 
 function createSandboxServer({ allowedHostOrigins }) {
@@ -36,12 +49,12 @@ function createSandboxServer({ allowedHostOrigins }) {
       const hostOrigin = url.searchParams.get('hostOrigin');
       if (!allowed.has(hostOrigin)) throw Error('Host origin is not allowed');
       const csp = JSON.parse(url.searchParams.get('csp') || '{}');
-      const innerCsp = appCsp(csp);
+      const innerCsp = appCsp(csp, false, [...allowed]);
       const script = fs.readFileSync(path.join(__dirname, 'src/mcp-apps/sandbox.js'), 'utf8');
       const bootstrap = JSON.stringify({ hostOrigin, innerCsp }).replaceAll('<', '\\u003c');
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': `${appCsp(csp, true)}; frame-ancestors ${hostOrigin}`,
+        'Content-Security-Policy': `${appCsp(csp, true, [...allowed])}; frame-ancestors ${hostOrigin}`,
         'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), clipboard-write=()',
         'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',

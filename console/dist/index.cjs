@@ -19999,15 +19999,21 @@ var import_jsx_runtime = require("react/jsx-runtime");
 var ConsoleMcpAppsProviderContext = import_react.default.createContext(null);
 var ConsoleMcpAppsProvider = ConsoleMcpAppsProviderContext.Provider;
 var McpAppTransport = class {
-  constructor(target, origin) {
+  constructor(target, origin, retired) {
     this.target = target;
     this.origin = origin;
+    this.retired = retired;
     __publicField(this, "onmessage");
     __publicField(this, "onerror");
     __publicField(this, "onclose");
     __publicField(this, "phase", "open");
     __publicField(this, "receive", (event) => {
       if (this.phase === "closed" || event.source !== this.target || event.origin !== this.origin) return;
+      if (event.data?.type === "console-mcp-app-retired") {
+        this.beginTeardown();
+        this.retired?.();
+        return;
+      }
       const parsed = JSONRPCMessageSchema.safeParse(event.data);
       if (parsed.success && (this.phase === "open" || !("method" in parsed.data))) this.onmessage?.(parsed.data);
     });
@@ -20182,7 +20188,7 @@ function ConsoleMcpAppView({ locator, fallback }) {
         void bridge.sendSandboxResourceReady({ html: html5, csp: ui?.csp }).catch(fail);
       };
       frame.src = sandbox.href;
-      transport = new McpAppTransport(frame.contentWindow, sandbox.origin);
+      transport = new McpAppTransport(frame.contentWindow, sandbox.origin, fail);
       await bridge.connect(transport);
       controller.signal.throwIfAborted();
       observer = new ResizeObserver(([entry]) => {

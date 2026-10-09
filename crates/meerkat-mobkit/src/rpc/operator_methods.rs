@@ -1603,7 +1603,7 @@ mod tests {
                 self.concrete.as_ref(),
                 None,
             )
-            .expect("runtime adapter acquisition")
+            .expect("acquire the operator fixture runtime owner")
             .expect("persistent completion owner");
             let session = self
                 .identity_runtime
@@ -1863,6 +1863,7 @@ comms = true
             concrete.clone(),
         )
         .with_session_runtime_adapter(Arc::clone(&adapter))
+        .expect("acquire the fixture session runtime owner")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -2164,12 +2165,9 @@ comms = true
             harness.concrete.as_ref(),
             None,
         )
-        .expect("runtime adapter acquisition")
+        .expect("acquire the operator fixture runtime owner")
         .expect("persistent service runtime adapter");
-        assert!(
-            Arc::ptr_eq(&completion_runtime, &harness.adapter),
-            "the concrete service and bootstrap must share the canonical runtime owner"
-        );
+        assert!(completion_runtime.shares_runtime_execution_owner_with(&harness.adapter));
         let configured_observer = harness
             .runtime
             .mob_runtime()
@@ -2178,8 +2176,8 @@ comms = true
             .runtime_completion_observer()
             .expect("owner observer");
         assert!(
-            Arc::ptr_eq(&configured_observer, &completion_runtime),
-            "operator observer must use the concrete service's canonical runtime owner"
+            configured_observer.shares_runtime_execution_owner_with(&completion_runtime),
+            "operator observer must use the concrete service's acquired runtime owner"
         );
         let fat = "seeded transcript ballast ".repeat(160);
         for turn in 0..4 {
@@ -2597,7 +2595,7 @@ comms = true
             harness.concrete.as_ref(),
             None,
         )
-        .expect("runtime adapter acquisition")
+        .expect("acquire the operator fixture runtime owner")
         .expect("persistent owner");
         let operation_id = meerkat_core::SessionId::new().to_string();
         let key = format!("mobkit-compact:{operation_id}");
@@ -2686,7 +2684,7 @@ comms = true
                 harness.concrete.as_ref(),
                 None,
             )
-            .expect("runtime adapter acquisition")
+            .expect("acquire the operator fixture runtime owner")
             .expect("observer"),
             admission: Arc::new(IdentityCompactionAdmission),
             floors: harness.floors.clone(),
@@ -2740,7 +2738,7 @@ comms = true
                 harness.concrete.as_ref(),
                 None,
             )
-            .expect("runtime adapter acquisition")
+            .expect("acquire the operator fixture runtime owner")
             .expect("persistent owner"),
             failing: AtomicBool::new(true),
         });

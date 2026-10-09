@@ -145,9 +145,9 @@ async fn control_run(runtime: &UnifiedRuntime, request: RunRequest) -> Result<Va
     let machine = runtime
         .mob_runtime()
         .session_service()
-        .ok_or("fixture needs a session service")?
+        .ok_or("fixture needs the actual session runtime adapter")?
         .acquire_runtime_adapter(None)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("acquire the fixture session runtime adapter: {error}"))?
         .ok_or("fixture needs the actual session runtime adapter")?;
     // Both operations compare and admit under the owner's mutation gate. A
     // stale test request cannot cancel a successor run of the same member.

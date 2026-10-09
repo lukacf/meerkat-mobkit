@@ -84,6 +84,31 @@ describe('standard MCP Apps host', () => {
     expect(resolve.mock.calls[0][1].aborted).toBe(true);
   });
 
+  it('retires a navigated app and rejects its replacement document requests', async () => {
+    const binding = session();
+    const view = render(show(async () => binding));
+    const frame = screen.getByTitle('Interactive tool result') as HTMLIFrameElement;
+    await waitFor(() => expect(frame.src).toContain('sandbox.test'));
+    const sent = vi.spyOn(frame.contentWindow!, 'postMessage');
+    await initialize(frame, sent);
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+    const data = { type: 'console-mcp-app-retired' };
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { source: window, origin: 'https://sandbox.test', data }));
+      window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, origin: 'https://other.test', data }));
+    });
+    expect(binding.dispose).not.toHaveBeenCalled();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, origin: 'https://sandbox.test', data }));
+      message(frame, 'tools/call', { name: 'refresh' }, 5);
+    });
+    expect(binding.dispose).toHaveBeenCalledTimes(1);
+    expect(binding.callTool).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('Seven results');
+    expect(frame).not.toBeVisible();
+    view.unmount();
+  });
+
   it('aborts an in-flight widget action on unmount and never replays it', async () => {
     const binding = session();
     let finish: (value: any) => void;

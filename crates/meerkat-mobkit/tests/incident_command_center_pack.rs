@@ -696,7 +696,8 @@ comms = true
             16,
             None,
         )
-    };
+    }
+    .unwrap_or_else(|error| panic!("build {constructor_name} ephemeral spec: {error}"));
     let llm_client = Arc::new(IncidentPackTestClient::for_provider(Provider::Other));
     let spec = spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: true,
@@ -1218,7 +1219,7 @@ comms = true
     );
     let runtime_adapter =
         MobSessionService::acquire_runtime_adapter(session_service.as_ref(), None)
-            .expect("runtime adapter acquisition")
+            .expect("acquire the stock ephemeral service's runtime adapter")
             .expect("the stock ephemeral service exposes its runtime adapter");
     assert!(
         !runtime_adapter.has_session_llm_reconfigure_host(),

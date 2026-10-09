@@ -35,7 +35,9 @@ The proxy needs Node's standard library and `src/mcp-apps/sandbox.js`, with no
 npm dependencies.
 
 Omitting the URL or setting a realm override to an empty string retains text
-tool results. Gateways reject malformed URLs, credentials, fragments and a
+tool results and disables the corresponding HTTP app operations. Native live
+operations also require an MCP connection that negotiated MCP Apps. Gateways
+reject malformed URLs, credentials, fragments and a
 sandbox sharing their known local or declared public Console origin before
 advertising MCP Apps. The browser also checks its actual origin, including
 when an embedding host supplies a custom adapter. A reusable product can
@@ -72,8 +74,11 @@ for the current agent turn. `canCallTools` reports the authenticated viewer's
 access to the live host action surface; each action still requires fresh native
 admission and the original MCP connection. Reopening a view does not run
 its original tool. Retained HTML can render a historical invocation; uncached
-resource reads and app actions must re-enter the live registration check. A
-resource need not appear in `resources/list` to be read through its declared URI.
+resource reads and app actions must re-enter the live registration check.
+Both require the Console's `agent.send` permission and an editable Console.
+A viewer with only `agent.view` can read the exact retained renderer resource
+without contacting the MCP server. Other resource URIs require fresh admission;
+they need not appear in `resources/list`.
 
 During a run, the native Agent publishes a process-only display observation
 only after accepting the actual tool result into its canonical Session. The
@@ -90,20 +95,49 @@ the fallback for other channels and unavailable views.
 
 The native host preloads the declared renderer resource before `tools/call`,
 then delivers the actual invocation's input and result after view initialization.
-The host permits resource reads
-and authorized tool calls, and rejects actions in view-only mode. Calls are never
+The host permits admitted resource reads and tool calls. App tool actions pass
+through the native pre- and post-tool hooks with fresh invocation context.
+A pre-hook refusal prevents dispatch. A post-hook refusal withholds the result
+without pretending already settled tool effects were undone. Calls are never
 automatically retried. Setup times out after 15 seconds; API calls also obey a
 bounded timeout. Closing or changing authority aborts requests and retires its
 isolated iframe. The host allows a bounded teardown acknowledgment without
 letting the retiring view send further requests or affect a replacement view.
 
-The proxy applies CSP from resource metadata, denying undeclared connections and
-frames by default. The inner view has an opaque origin. Camera, microphone,
+Products requiring a durable action audit should provide native hooks or an
+admission/observation implementation that records these actions. The stock
+runtime persists session effects and hook notices, with best-effort hook events;
+enabling governance alone does not create a durable widget-action journal.
+Tool hooks cover app tool calls, not resource reads. Ungoverned members do not
+consult the governed work-policy owners. Products requiring resource URI
+restrictions, explicit-only app visibility or an audit of every operation need
+policy and recording in their trusted native host; these are not stock Console
+configuration options.
+App results are delivered through MCP Apps rather than added as synthetic model
+transcript entries.
+
+The proxy applies CSP from resource metadata to fetches and frames, denying
+undeclared origins by default. It rejects grants covering any configured
+Console hostname, including alternate ports, transports and covering wildcards.
+The inner view has an opaque origin. Camera, microphone,
 geolocation, downloads, popups and form submission are unavailable in this host
 profile. External-link requests, conversation handoff and model-context updates
 are not advertised or supported by this profile.
 
-## Future generated interfaces
+Navigation retires the bridge when the proxy observes document unload or a
+replacement load. This is a lifecycle mechanism: browser event ordering does
+not guarantee that retirement precedes every message from a replacement
+document, and app JavaScript can remove document listeners. Fresh resource
+reads still require native admission; tool actions also cross native tool hooks.
+Cached renderer reads remain authorized history lookups without live tool IO.
+
+CSP coverage depends on the browser. The proxy emits the standard
+`webrtc 'block'` directive, but Chromium 140 ignores it and still gathers ICE
+candidates with `connect-src 'none'`. This host therefore does not promise
+complete network containment of arbitrary app JavaScript. Products requiring
+that guarantee need browser or network enforcement beyond iframe CSP.
+
+## Generated interfaces
 
 The [OpenUI article](https://www.openui.com/blog/how-chatgpt-intelligent-ui-works)
 is a reverse-engineering report, not an OpenAI interoperability contract. It
@@ -142,6 +176,12 @@ generated component language or native renderer operations. Those are future
 product decisions, not additional requirements on today's app authors.
 
 ## Protocol fixture
+
+Run the sandbox policy and real-browser lifecycle checks with:
+
+```sh
+npm --prefix console run test:mcp-apps:sandbox
+```
 
 ```sh
 node console/mcp-apps-preview.cjs

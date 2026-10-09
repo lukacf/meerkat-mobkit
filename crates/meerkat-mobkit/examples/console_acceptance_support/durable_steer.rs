@@ -48,9 +48,9 @@ fn machine(runtime: &UnifiedRuntime) -> Result<Arc<meerkat_runtime::MeerkatMachi
     runtime
         .mob_runtime()
         .session_service()
-        .ok_or("fixture needs a session service")?
+        .ok_or("fixture needs the actual session runtime adapter")?
         .acquire_runtime_adapter(None)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("acquire the fixture session runtime adapter: {error}"))?
         .ok_or_else(|| "fixture needs the actual session runtime adapter".into())
 }
 

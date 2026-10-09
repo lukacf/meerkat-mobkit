@@ -183,12 +183,12 @@ fn messages(include_transient: bool) -> Vec<Message> {
         Message::BlockAssistant(BlockAssistantMessage::new(blocks, StopReason::ToolUse)),
         Message::tool_results(vec![ToolResult {
             host_metadata: Default::default(),
-            settlement_failures: Default::default(),
             tool_use_id: "call-1".to_string(),
             content: vec![ContentBlock::Text {
                 text: "untrusted source".to_string(),
             }],
             is_error: false,
+            settlement_failures: Vec::new(),
         }]),
     ]
 }

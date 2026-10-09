@@ -44,6 +44,16 @@ pub struct ConsoleToolApplicationIngress {
 
 type Ingress = ConsoleToolApplicationIngress;
 
+fn apps_enabled(state: &ConsoleJsonState) -> bool {
+    state
+        .decisions
+        .console
+        .ui
+        .mcp_apps_sandbox_url
+        .as_ref()
+        .is_some_and(|url| !url.trim().is_empty())
+}
+
 impl ConsoleToolApplicationIngress {
     /// Actual authenticated Console principal. `None` denotes a host-protected
     /// open Console; it is never an inferred user or member identity.
@@ -58,19 +68,25 @@ impl ConsoleToolApplicationIngress {
 
 impl ToolApplicationIngress for Ingress {
     fn revalidate(&self) -> Result<(), meerkat_core::OperationAuthorizationError> {
+        // This is the gateway's effective, realm-resolved Console config.
+        // An HTTP caller cannot enable Apps by bypassing the absent UI.
+        if !apps_enabled(&self.state) {
+            return Err(meerkat_core::OperationAuthorizationError::Unavailable);
+        }
         let auth = console_request_auth_context(&self.state, &self.headers, &self.uri)
             .ok_or(meerkat_core::OperationAuthorizationError::Unavailable)?;
+        let fresh_io = self.operation != Operation::Resolve;
         if self.registration.as_ref().is_some_and(|registration| {
             self.state
                 .console_aggregator
                 .as_ref()
                 .is_none_or(|aggregator| !aggregator.application_runtime_is_current(registration))
         }) || auth.principal != self.principal
-            || (self.operation == Operation::CallTool && self.state.decisions.console.read_only)
+            || (fresh_io && self.state.decisions.console.read_only)
             || auth.access_view.as_ref().is_some_and(|view| {
                 view.enforced()
                     && (!view.allows_agent(ACTION_AGENT_VIEW, &self.public_identity)
-                        || (self.operation == Operation::CallTool
+                        || (fresh_io
                             && !view.allows_agent(ACTION_AGENT_SEND, &self.public_identity)))
             })
         {
@@ -301,6 +317,21 @@ async fn original_invocation(
     found.ok_or(())
 }
 
+fn cached_renderer_resource(
+    original: &McpAppInvocation,
+    uri: Option<&str>,
+) -> Result<Option<Value>, ()> {
+    if uri.is_none() || uri != tool_ui_resource_uri(&original.tool) {
+        return Ok(None);
+    }
+    original
+        .resource
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| ())
+}
+
 fn unavailable() -> axum::response::Response {
     let mut response = console_json_error(
         StatusCode::FORBIDDEN,
@@ -353,7 +384,8 @@ async fn handle(
             "Console app access requires authorization",
         );
     };
-    if request.identity.trim().is_empty()
+    if !apps_enabled(&state)
+        || request.identity.trim().is_empty()
         || request.identity.len() > 1024
         || request.tool_call_id.trim().is_empty()
         || request.tool_call_id.len() > 1024
@@ -364,17 +396,24 @@ async fn handle(
         return unavailable();
     }
     let public_identity = request.identity.clone();
-    let Ok((state, request, registration)) = route(state, request, operation).await else {
+    // A retained renderer is history, including after session rotation. A
+    // cache miss is upgraded to fresh resource admission before any native IO.
+    let lookup_operation = if operation == Operation::ReadResource {
+        Operation::Resolve
+    } else {
+        operation
+    };
+    let Ok((state, request, registration)) = route(state, request, lookup_operation).await else {
         return unavailable();
     };
-    let ingress = Arc::new(Ingress {
+    let mut ingress = Arc::new(Ingress {
         state: state.clone(),
         headers,
         uri,
         request: request.clone(),
         public_identity,
         registration,
-        operation,
+        operation: lookup_operation,
         principal: auth.principal,
     });
     let Some(runtime) = state.runtime.as_ref() else {
@@ -389,7 +428,25 @@ async fn handle(
     if ingress.revalidate_async().await.is_err() {
         return unavailable();
     }
-    let mut response = if operation == Operation::Resolve {
+    let cached_resource = if operation == Operation::ReadResource {
+        match cached_renderer_resource(&original, request.uri.as_deref()) {
+            Ok(resource) => resource,
+            Err(()) => return unavailable(),
+        }
+    } else {
+        None
+    };
+    if operation == Operation::ReadResource && cached_resource.is_none() {
+        let mut fresh_ingress = (*ingress).clone();
+        fresh_ingress.operation = Operation::ReadResource;
+        ingress = Arc::new(fresh_ingress);
+        if ingress.revalidate_async().await.is_err() {
+            return unavailable();
+        }
+    }
+    let mut response = if let Some(resource) = cached_resource {
+        resource
+    } else if operation == Operation::Resolve {
         // This advertises the host's action surface for the current member.
         // Exact tool permission and physical connection custody are checked
         // when an action enters native dispatch. A native capability probe here
@@ -491,6 +548,10 @@ mod tests {
             decisions: RuntimeDecisionState::local_console(
                 crate::ConsolePolicy {
                     require_app_auth: false,
+                    ui: crate::ConsoleUiConfig {
+                        mcp_apps_sandbox_url: Some("https://apps.example.test/sandbox.html".into()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 None,
@@ -546,6 +607,113 @@ mod tests {
         let value = json!({ "identity": "review:apps", "sessionId": meerkat_core::SessionId::new(),
             "toolCallId": "call-1", "result": { "_meta": { "ui": {} } } });
         assert!(serde_json::from_value::<Request>(value).is_err());
+    }
+
+    #[test]
+    fn effective_realm_config_gates_every_app_operation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let config = r#"
+mcp_apps_sandbox_url = "https://apps.example.test/sandbox.html"
+[realms.disabled]
+mcp_apps_sandbox_url = " "
+"#;
+        let request = request(&meerkat_core::SessionId::new());
+        for (realm, enabled) in [(None, true), (Some("disabled"), false)] {
+            let mut state = state(None);
+            state.decisions.console.ui =
+                crate::console_config::load_console_ui_config_from_toml_for_realm(config, realm)?;
+            for operation in [
+                Operation::Resolve,
+                Operation::ReadResource,
+                Operation::CallTool,
+            ] {
+                assert_eq!(
+                    ingress(state.clone(), request.clone(), operation)
+                        .revalidate()
+                        .is_ok(),
+                    enabled,
+                    "effective realm config must gate every HTTP app operation"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn view_only_grants_do_not_authorize_fresh_member_resource_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = request(&meerkat_core::SessionId::new());
+        for allow_send in [false, true] {
+            let mut state = state(None);
+            let mut actions = vec![ACTION_AGENT_VIEW.to_string()];
+            if allow_send {
+                actions.push(ACTION_AGENT_SEND.to_string());
+            }
+            state.access = Some(AccessController::new(crate::access::AccessControlConfig {
+                enabled: true,
+                admins: vec!["admin@example.test".into()],
+                // This explicitly grants an anonymous caller on an open Console.
+                rules: vec![crate::access::AccessRule {
+                    id: "open-console-viewer".into(),
+                    actions,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })?);
+            assert!(
+                ingress(state.clone(), request.clone(), Operation::Resolve)
+                    .revalidate()
+                    .is_ok()
+            );
+            for operation in [Operation::ReadResource, Operation::CallTool] {
+                assert_eq!(
+                    ingress(state.clone(), request.clone(), operation)
+                        .revalidate()
+                        .is_ok(),
+                    allow_send
+                );
+                let mut read_only = state.clone();
+                read_only.decisions.console.read_only = true;
+                assert!(
+                    ingress(read_only, request.clone(), operation)
+                        .revalidate()
+                        .is_err()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cached_reads_select_only_the_original_declared_renderer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut invocation: McpAppInvocation = serde_json::from_value(json!({
+            "registration": {"server": "fixture", "connection": "original"},
+            "tool": {"name": "view", "inputSchema": {},
+                "_meta": {"ui": {"resourceUri": "ui://fixture/view"}}},
+            "arguments": {}, "result": {"content": []},
+            "resource": {"contents": [{"uri": "ui://fixture/view",
+                "mimeType": "text/html;profile=mcp-app", "text": "<p>Original view</p>"}]}
+        }))?;
+        let original = serde_json::to_value(invocation.resource.as_ref())?;
+        assert_eq!(
+            cached_renderer_resource(&invocation, Some("ui://fixture/view")),
+            Ok(Some(original))
+        );
+        for uri in [
+            None,
+            Some("ui://fixture/other"),
+            Some("private://member/secret"),
+        ] {
+            assert_eq!(cached_renderer_resource(&invocation, uri), Ok(None));
+        }
+        invocation.resource = None;
+        assert_eq!(
+            cached_renderer_resource(&invocation, Some("ui://fixture/view")),
+            Ok(None),
+            "a missing retained resource requires fresh IO admission"
+        );
+        Ok(())
     }
 
     #[test]

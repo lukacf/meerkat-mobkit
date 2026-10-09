@@ -240,6 +240,7 @@ async fn harness(tool_name: &'static str, fill_dispatch_slot: bool) -> Harness {
         16,
         None,
     )
+    .expect("build the memory dispatch taint ephemeral spec")
     .with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: true,
         notify_orchestrator_on_resume: true,

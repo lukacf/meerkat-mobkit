@@ -148,20 +148,28 @@ Completed-run replay uses the runtime's committed session. These observations
 carry no action authority. UI-only `_meta` is excluded from model requests and the
 public transcript. Timeline frames carry locators, not private HTML or metadata.
 Every lookup rechecks the authenticated viewer and session ownership. Uncached
-resource reads and app actions also require the original live MCP connection; replacing
-or retiring it cannot silently redirect an old widget.
+resource reads and app actions also require `agent.send`, an editable Console
+and the original live MCP connection with negotiated MCP Apps; replacing or
+retiring it cannot silently redirect an old widget. View-only users can read
+the exact retained renderer without fresh member-credential IO. Disabling the
+sandbox URL also disables the Console's app HTTP operations.
 
 Tool visibility follows `_meta.ui.visibility`: omitted permits model and app,
 `["model"]` permits only the model, `["app"]` permits only the app, and `[]`
 permits neither. A model-only launch tool can still own a view. App actions use
-fresh native authorization and normal tool execution policy, including review
-when required. View-only users cannot invoke them.
+fresh native authorization, pre- and post-tool hooks and normal execution
+policy, including review when required. A post-hook refusal withholds the result
+while preserving already settled effects. View-only users cannot invoke them.
 
 The current host profile supports inline rendering, resource reads and tool
 calls. It does not advertise conversation handoff, model-context updates,
-external links or downloads. The sandbox denies undeclared network access and
-sensitive browser permissions. Serve it without Console cookies or application
-APIs; production hosts should use a dedicated HTTPS origin.
+external links or downloads. The sandbox restricts fetches and frames through
+CSP and denies sensitive browser permissions. It rejects CSP grants covering
+configured Console hostnames. Browser support limits network containment:
+Chromium 140 ignores the emitted standard `webrtc 'block'` directive. Navigation
+retirement is best-effort lifecycle handling, with every fresh action still
+subject to native admission. Serve the sandbox without Console cookies or
+application APIs; production hosts should use a dedicated HTTPS origin.
 
 An ordinary MCP App can render a versioned generated document from its result
 data today. The app supplies the renderer; the runtime does not impose a

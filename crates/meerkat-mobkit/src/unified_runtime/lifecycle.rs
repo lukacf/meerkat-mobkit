@@ -237,11 +237,6 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
-        // Close native continuation/job admission before quiescing sessions.
-        // External job producers may still retain this shared composition.
-        if let Some(delivery) = self.mob_runtime.runtime_delivery() {
-            delivery.shutdown();
-        }
         // The liveness probe is observation only. Abort it before anything
         // can quiesce the mob actor so an intentional shutdown stall cannot
         // page a false ActorLoopStalled.
@@ -357,6 +352,10 @@ impl UnifiedRuntime {
         // releasing identity authority while a member is still live parks
         // Active identities Broken. Phases 3 and 4 continue either way.
         let mut mob_stop = self.stop_mob().await;
+        // Shutdown is terminal: the delivery owner stops with the mob rather
+        // than when the last runtime clone happens to drop. Undelivered rows
+        // stay pending in the durable inbox.
+        self.mob_runtime.stop_runtime_delivery();
 
         // A first cleanup attempt can fail while the Mob stop itself finishes
         // quiescing the old runtime. Retry the retained exact debt once more;
@@ -587,10 +586,13 @@ impl UnifiedRuntime {
     /// variant (and [`super::types::ErrorEvent::MobStopProceededWithoutInterrupt`]) stays
     /// for wire and SDK compatibility.
     pub async fn stop_mob_for_teardown(&self) -> MobStopOutcome {
-        match self.stop_mob().await {
+        let outcome = match self.stop_mob().await {
             Ok(()) => MobStopOutcome::Stopped,
             Err(error) => MobStopOutcome::Failed(error),
-        }
+        };
+        // Teardown: no delivery may be applied to the stopped mob.
+        self.mob_runtime.stop_runtime_delivery();
+        outcome
     }
 
     /// Stop the mob, settling its active flow runs first when they hold the

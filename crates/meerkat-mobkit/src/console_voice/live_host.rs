@@ -944,7 +944,7 @@ pub(crate) mod tests {
                 Arc::new(Base64BlobStoreAdapter::new(binary.clone()));
             let machine = Arc::new(
                 meerkat_runtime::MeerkatMachine::persistent(runtime_store.clone(), blobs.clone())
-                    .expect("runtime owner"),
+                    .expect("acquire the live voice fixture runtime machine"),
             );
             let factory = meerkat::AgentFactory::new(directory.path())
                 .session_store(store.clone())
@@ -967,18 +967,21 @@ pub(crate) mod tests {
             let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), config.clone());
             builder.default_llm_client = Some(client.clone());
             builder.default_blob_store = Some(blobs.clone());
-            let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            let jobs: Arc<dyn meerkat::DetachedJobStore> =
                 Arc::new(meerkat::MemoryDetachedJobStore::new());
-            builder.default_detached_job_store = Some(job_store.clone());
-            let runtime_delivery = Arc::new(crate::MobRuntimeDelivery::new(
-                runtime_store.clone(),
-                job_store,
-            ));
-            let mob_tools = Arc::clone(&builder.default_mob_tools);
-            let service = Arc::new(
-                PersistentSessionService::new(builder, 16, store, runtime_store.clone(), blobs)
-                    .with_canonical_runtime_adapter(machine.clone()),
+            builder.default_detached_job_store = Some(Arc::clone(&jobs));
+            let delivery = crate::mob_handle_runtime::MobRuntimeDelivery::new(
+                Arc::clone(&runtime_store),
+                jobs,
             );
+            let mob_tools = Arc::clone(&builder.default_mob_tools);
+            let service = Arc::new(PersistentSessionService::new(
+                builder,
+                16,
+                store,
+                runtime_store.clone(),
+                blobs,
+            ));
             let definition = meerkat_mob::MobDefinition::from_toml(&format!(
                 r#"
     [mob]
@@ -1002,15 +1005,16 @@ pub(crate) mod tests {
                 service.clone(),
             )
             .with_session_runtime_adapter(machine.clone())
-            .with_runtime_delivery(runtime_delivery)
+            .expect("acquire the fixture session runtime owner")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: false,
                 notify_orchestrator_on_resume: true,
                 default_llm_client: Some(client),
             });
             spec = spec
+                .with_runtime_delivery(delivery)
                 .with_agent_mob_tools(mob_tools)
-                .expect("canonical agent mob tool runtime owner");
+                .expect("install the live voice fixture's agent mob tools");
             spec.runtime_adapter = Some(machine.clone());
             spec.binary_blob_store = Some(binary);
             let runtime = Arc::new(

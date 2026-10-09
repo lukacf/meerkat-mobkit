@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "mcp-apps:sandbox": "node mcp-apps-sandbox.cjs",
+    "test:mcp-apps:sandbox": "node --test mcp-apps-sandbox.test.cjs mcp-apps-sandbox.browser.test.cjs",
     "e2e:mcp-apps": "node mcp-apps-native-e2e.cjs",
     "build": "node build.cjs",
     "test:build": "node --test build.test.cjs",

@@ -10456,7 +10456,7 @@ async fn collect_console_snapshot_read_model(
     // `collect_console_session_index_for_handle`.
     let runtime_machine = runtime
         .session_service()
-        .and_then(|service| service.acquire_runtime_adapter(None).ok().flatten());
+        .and_then(|service| crate::mob_handle_runtime::observed_runtime_adapter(service.as_ref()));
     let (primary_members, _primary_owner_index) = project_console_members_from_handle(
         &handle,
         runtime_machine.as_deref(),
@@ -19412,6 +19412,7 @@ comms = true
                 4,
                 None,
             )
+            .expect("build the console progress fixture ephemeral spec")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -19427,9 +19428,11 @@ comms = true
             spec.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
             runtime.handle().ensure_member(spec).await?;
         }
-        let runtime_machine = runtime
-            .session_service()
-            .and_then(|service| service.acquire_runtime_adapter(None).ok().flatten());
+        let runtime_machine = runtime.session_service().and_then(|service| {
+            service
+                .acquire_runtime_adapter(None)
+                .expect("acquire the console progress fixture runtime machine")
+        });
         Ok((runtime, runtime_machine))
     }
 

@@ -3363,13 +3363,11 @@ external_addressable = true
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
-        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+        let jobs: Arc<dyn meerkat::DetachedJobStore> =
             Arc::new(meerkat::MemoryDetachedJobStore::new());
-        inner_builder.default_detached_job_store = Some(job_store.clone());
-        let runtime_delivery = Arc::new(crate::MobRuntimeDelivery::new(
-            runtime_store.clone(),
-            job_store,
-        ));
+        inner_builder.default_detached_job_store = Some(Arc::clone(&jobs));
+        let delivery =
+            crate::mob_handle_runtime::MobRuntimeDelivery::new(Arc::clone(&runtime_store), jobs);
         let attached = attach_schedule_tools_with_identity_targets(&inner_builder, &state)
             .expect("schedule tools attach");
         let inner_builder_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
@@ -3378,18 +3376,15 @@ external_addressable = true
                 Arc::clone(&runtime_store),
                 Arc::clone(&blob_store),
             )
-            .expect("runtime owner"),
+            .expect("acquire the schedule delivery fixture runtime machine"),
         );
-        let concrete = Arc::new(
-            PersistentSessionService::new(
-                inner_builder,
-                16,
-                session_store,
-                runtime_store,
-                blob_store,
-            )
-            .with_canonical_runtime_adapter(adapter.clone()),
-        );
+        let concrete = Arc::new(PersistentSessionService::new(
+            inner_builder,
+            16,
+            session_store,
+            runtime_store,
+            blob_store,
+        ));
         static NEXT_DELIVERY_MOB: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         // Per-call mob id: 0.8.23's fail-closed in-proc registration means
@@ -3420,9 +3415,10 @@ schedule = true
             concrete.clone(),
         )
         .with_session_runtime_adapter(adapter.clone())
-        .with_runtime_delivery(runtime_delivery)
+        .expect("acquire the fixture session runtime owner")
+        .with_runtime_delivery(delivery)
         .with_agent_mob_tools(agent_mob_tools_slot)
-        .expect("canonical agent mob tool runtime owner")
+        .expect("install the schedule delivery fixture's agent mob tools")
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

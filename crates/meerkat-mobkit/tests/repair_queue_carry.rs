@@ -187,18 +187,15 @@ async fn build_harness(gate: watch::Receiver<bool>) -> Harness {
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         )
-        .expect("runtime owner"),
+        .expect("acquire the repair queue fixture runtime machine"),
     );
-    let service = Arc::new(
-        PersistentSessionService::new(
-            builder,
-            16,
-            session_store.clone(),
-            runtime_store,
-            blob_store,
-        )
-        .with_canonical_runtime_adapter(machine.clone()),
-    );
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store.clone(),
+        runtime_store,
+        blob_store,
+    ));
     let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
@@ -216,6 +213,7 @@ comms = true
     let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
         .with_session_runtime_adapter(machine.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

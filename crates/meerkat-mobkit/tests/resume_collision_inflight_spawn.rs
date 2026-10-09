@@ -121,18 +121,15 @@ async fn boot(state: &std::path::Path, mob_id: &str, gate: watch::Receiver<bool>
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         )
-        .expect("runtime owner"),
+        .expect("acquire the resume collision fixture runtime machine"),
     );
-    let session_service = Arc::new(
-        PersistentSessionService::new(
-            builder,
-            16,
-            session_store.clone(),
-            runtime_store,
-            blob_store,
-        )
-        .with_canonical_runtime_adapter(machine.clone()),
-    );
+    let session_service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store.clone(),
+        runtime_store,
+        blob_store,
+    ));
     let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
@@ -151,6 +148,7 @@ comms = true
     let hook_parked = Arc::clone(&parked_builds);
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_session_runtime_adapter(machine.clone())
+        .expect("acquire the fixture session runtime owner")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,

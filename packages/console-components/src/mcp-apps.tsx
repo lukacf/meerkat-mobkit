@@ -45,10 +45,15 @@ export class McpAppTransport implements Transport {
   private phase: "open" | "closing" | "closed" = "open";
   private readonly receive = (event: MessageEvent) => {
     if (this.phase === "closed" || event.source !== this.target || event.origin !== this.origin) return;
+    if (event.data?.type === "console-mcp-app-retired") {
+      this.beginTeardown();
+      this.retired?.();
+      return;
+    }
     const parsed = JSONRPCMessageSchema.safeParse(event.data);
     if (parsed.success && (this.phase === "open" || !("method" in parsed.data))) this.onmessage?.(parsed.data);
   };
-  constructor(private readonly target: Window, private readonly origin: string) {}
+  constructor(private readonly target: Window, private readonly origin: string, private readonly retired?: () => void) {}
   async start() { window.addEventListener("message", this.receive); }
   async send(message: JSONRPCMessage) {
     if (this.phase === "closed" || (this.phase === "closing" && !("method" in message && message.method === "ui/resource-teardown"))) return;
@@ -197,7 +202,7 @@ export function ConsoleMcpAppView({ locator, fallback }: { locator: McpAppLocato
       };
       frame.src = sandbox.href;
       // Listener registration runs synchronously before the sandbox can load.
-      transport = new McpAppTransport(frame.contentWindow!, sandbox.origin);
+      transport = new McpAppTransport(frame.contentWindow!, sandbox.origin, fail);
       await bridge.connect(transport);
       controller.signal.throwIfAborted();
       observer = new ResizeObserver(([entry]) => {

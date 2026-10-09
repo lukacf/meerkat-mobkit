@@ -108,10 +108,10 @@ impl AgentToolDispatcher for HostTools {
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         Ok(meerkat_core::ToolResult {
             host_metadata: Default::default(),
-            settlement_failures: Default::default(),
             tool_use_id: call.id.to_string(),
             content: vec![],
             is_error: false,
+            settlement_failures: Vec::new(),
         }
         .into())
     }
@@ -245,7 +245,7 @@ async fn member_run_starts_held(runtime: &meerkat_mobkit::UnifiedRuntime) -> Opt
         .mob_runtime()
         .session_service()?
         .acquire_runtime_adapter(None)
-        .expect("runtime adapter acquisition")?;
+        .expect("acquire the customizer restart fixture's runtime adapter")?;
     machine.run_starts_held_for_test(&session_id).await
 }
 

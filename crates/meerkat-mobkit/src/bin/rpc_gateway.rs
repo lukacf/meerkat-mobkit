@@ -58,6 +58,8 @@ use meerkat_mobkit::{
 use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
+#[cfg(test)]
+use meerkat::EphemeralSessionService;
 use meerkat::{
     AgentEvent, AgentFactory, Config, CreateSessionRequest, FactoryAgent, FactoryAgentBuilder,
     SessionAgentBuilder, SessionError,
@@ -1771,10 +1773,10 @@ default_binding = "local"
         )
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestSideband;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcSidebandSession for PublicationTestSideband {
         async fn send_command(
@@ -1801,13 +1803,13 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestAnswerTransport;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestPendingBoundReady;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for PublicationTestPendingBoundReady {
         async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
@@ -1815,7 +1817,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for PublicationTestAnswerTransport {
         async fn answer_admitted_offer(
@@ -1867,16 +1869,16 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestBoundReadyBinder;
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     struct PublicationTestBoundReadyCustody {
         authority:
             Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for PublicationTestBoundReadyCustody {
         async fn commit(mut self: Box<Self>) -> Result<(), String> {
@@ -1895,7 +1897,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyBinder for PublicationTestBoundReadyBinder {
         async fn bind_answer_ready(
@@ -2236,6 +2238,9 @@ default_binding = "local"
         };
         assert_eq!(event.event_type, "job.terminal");
         assert_eq!(event.handling_mode, meerkat_core::HandlingMode::Queue);
+        assert!(event.header.ingress_context.is_none());
+        assert!(event.header.authority_association.is_none());
+        assert!(event.header.retained_resume.is_none());
         assert_eq!(
             event
                 .header
@@ -2519,8 +2524,8 @@ default_binding = "local"
 
     /// A gateway-shaped callback job runtime with one completed job whose
     /// Event subscription targets `subscriber`. The delivery service is a
-    /// concrete `PersistentSessionService` bound to the serving machine before
-    /// the delivery host observes it.
+    /// concrete `PersistentSessionService` that acquires the explicit serving
+    /// machine before its first runtime use.
     async fn event_delivery_fixture(
         temp: &std::path::Path,
         register_subscriber: bool,
@@ -2529,6 +2534,7 @@ default_binding = "local"
             DetachedCallbackJobRuntime,
             Arc<meerkat_runtime::MeerkatMachine>,
             meerkat_core::SessionId,
+            meerkat_mobkit::MobRuntime,
         ),
         Box<dyn std::error::Error + Send + Sync>,
     > {
@@ -2541,27 +2547,33 @@ default_binding = "local"
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary));
-        let serving = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        )?);
+        let serving = Arc::new(
+            meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            )
+            .expect("acquire the RPC gateway fixture runtime machine"),
+        );
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
+            Arc::new(meerkat::MemoryDetachedJobStore::new());
         let factory = meerkat::AgentFactory::new(temp);
-        let builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
-        let concrete: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(
-            meerkat_session::PersistentSessionService::new(
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
+        builder.default_detached_job_store = Some(Arc::clone(&job_store));
+        let concrete: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
                 16,
                 session_store,
                 Arc::clone(&runtime_store),
                 Arc::clone(&blob_store),
-            )
-            .with_canonical_runtime_adapter(Arc::clone(&serving)),
-        );
+            ));
+        let acquired = concrete
+            .acquire_runtime_adapter(Some(Arc::clone(&serving)))
+            .expect("acquire the event delivery fixture's serving runtime owner")
+            .expect("the event delivery service exposes its runtime owner");
         assert!(
-            concrete
-                .acquire_runtime_adapter(Some(Arc::clone(&serving)))?
-                .is_some_and(|machine| Arc::ptr_eq(&machine, &serving)),
-            "delivery and session execution must share the exact machine"
+            acquired.shares_runtime_execution_owner_with(&serving),
+            "event delivery and the session service must share their runtime owner"
         );
 
         let origin = meerkat_core::SessionId::new();
@@ -2570,8 +2582,6 @@ default_binding = "local"
             serving.register_session(subscriber.clone()).await?;
         }
 
-        let job_store: Arc<dyn meerkat::DetachedJobStore> =
-            Arc::new(meerkat::MemoryDetachedJobStore::new());
         let jobs = meerkat::DetachedJobService::new(Arc::clone(&job_store));
         let receipt = jobs
             .submit(meerkat::JobSpec::new(
@@ -2623,19 +2633,34 @@ default_binding = "local"
             blob_store,
         )
         .with_runtime_delivery(&delivery);
-        delivery.owner.arm(concrete, Arc::clone(&serving), None)?;
-        Ok((runtime, serving, subscriber))
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"delivery-{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+            uuid::Uuid::new_v4()
+        ))?;
+        let owner = meerkat_mobkit::MobRuntime::bootstrap(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), concrete)
+                .with_session_runtime_adapter(Arc::clone(&serving))?
+                .with_runtime_delivery(delivery.composition.clone()),
+        )
+        .await?;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while delivery.composition.last_pass().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok((runtime, serving, subscriber, owner))
     }
 
-    /// A job Event delivery is admitted on the machine that SERVES the
-    /// subscriber's session. The service and delivery host share the canonical
-    /// machine, so admission cannot target a separately created runtime.
+    /// A job Event delivery is admitted on the machine that serves the
+    /// subscriber's session. The service acquires that explicit owner before
+    /// registration, and the drain receives the same machine for admission.
     #[tokio::test]
     async fn a_job_event_delivery_is_admitted_on_the_serving_machine()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp = tempfile::tempdir()?;
-        let (runtime, serving, subscriber) = event_delivery_fixture(temp.path(), true).await?;
-        runtime.wait_for_delivery_pass().await?;
+        let (runtime, serving, subscriber, _owner) =
+            event_delivery_fixture(temp.path(), true).await?;
 
         let admitted = meerkat_runtime::SessionServiceRuntimeExt::list_active_inputs(
             serving.as_ref(),
@@ -2647,55 +2672,42 @@ default_binding = "local"
             1,
             "the job's Event delivery must be admitted on the serving machine"
         );
-        assert!(
-            runtime.health_projection().await?["detached_jobs"]["blocked_deliveries"]
-                .as_array()
-                .is_some_and(Vec::is_empty)
-        );
+        let pass = runtime
+            .runtime_delivery
+            .as_ref()
+            .expect("delivery")
+            .last_pass()
+            .expect("native pass");
+        assert!(pass.blocked_sessions.is_empty(), "{pass:?}");
         Ok(())
     }
 
-    /// A delivery that cannot be applied remains visible through the native
-    /// owner's blocked runtimes and failures. Repeated observation logs once.
+    /// Native owner health reports the blocked address and exact failures;
+    /// unavailable row-level diagnostics must never masquerade as an empty list.
     #[tokio::test]
-    async fn a_blocked_job_delivery_is_reported_once_and_degrades_health()
+    async fn a_blocked_job_delivery_degrades_native_owner_health()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp = tempfile::tempdir()?;
-        // Not registered on the serving machine: admission is refused.
-        let (runtime, _serving, _subscriber) = event_delivery_fixture(temp.path(), false).await?;
-        let writer = CaptureWriter::default();
-        let subscriber_log = tracing_subscriber::fmt()
-            .with_writer(writer.clone())
-            .with_max_level(tracing::Level::WARN)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber_log);
-
-        runtime.wait_for_delivery_pass().await?;
-        runtime.wait_for_delivery_pass().await?;
-
+        let (runtime, _serving, _subscriber, _owner) =
+            event_delivery_fixture(temp.path(), false).await?;
+        let pass = runtime
+            .runtime_delivery
+            .as_ref()
+            .expect("delivery")
+            .last_pass()
+            .expect("native pass");
+        assert!(!pass.blocked_runtimes.is_empty(), "{pass:?}");
+        assert!(!pass.failures.is_empty(), "{pass:?}");
         let projection = runtime.health_projection().await?;
         assert_eq!(projection["detached_jobs"]["status"], json!("degraded"));
-        let rows = projection["detached_jobs"]["blocked_deliveries"]
-            .as_array()
-            .expect("blocked_deliveries is a list");
-        assert_eq!(rows.len(), 1, "one origin queue is blocked: {projection:#}");
-        assert!(
-            rows[0]["runtime_id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with("rt:session:"))
-        );
-        assert!(
-            projection["detached_jobs"]["delivery_failures"]
-                .as_array()
-                .is_some_and(|failures| !failures.is_empty()),
-            "native failure is visible: {projection:#}"
-        );
-        let logs = writer.contents();
+        assert!(projection["detached_jobs"]["blocked_deliveries"].is_null());
         assert_eq!(
-            logs.matches("callback job delivery is blocked in native owner")
-                .count(),
-            1,
-            "one WARN for one blocked row across two passes: {logs}"
+            projection["detached_jobs"]["blocked_deliveries_reading"],
+            "unavailable"
+        );
+        assert_eq!(
+            projection["detached_jobs"]["runtime_delivery_pass"]["failures"],
+            json!(pass.failures)
         );
         Ok(())
     }
@@ -2756,7 +2768,14 @@ default_binding = "local"
                 .health_projection()
                 .await
                 .unwrap_or_else(|error| panic!("tick {tick}: health projection failed: {error}"));
-            assert_eq!(projection["status"], json!("ok"));
+            // This helper composes delivery but arms no native owner, so the
+            // owner's pass dimension has nothing to read and the overall
+            // status says so. The backlog census itself is read and counted.
+            assert_eq!(projection["status"], json!("unreadable"));
+            assert_eq!(
+                projection["detached_jobs"]["runtime_delivery_pass"],
+                Value::Null
+            );
             assert_eq!(
                 projection["detached_jobs"]["runtime_inbox_backlog"],
                 json!(0)
@@ -3779,7 +3798,15 @@ actions = ["agent.view"]
         };
         let response = json!({"additional_instructions": ["be terse"]});
         let applied = builder
-            .apply_build_agent_response(&mint_req, &response, "b")
+            .apply_build_agent_response(
+                &mint_req,
+                mint_req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone()),
+                &response,
+                "b",
+            )
             .await
             .expect("response applies");
         assert_eq!(
@@ -3791,7 +3818,15 @@ actions = ["agent.view"]
             "a Mint carrier honors standing instructions"
         );
         let applied = builder
-            .apply_build_agent_response(&resume_req, &response, "b")
+            .apply_build_agent_response(
+                &resume_req,
+                resume_req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone()),
+                &response,
+                "b",
+            )
             .await
             .expect("response applies");
         assert_eq!(
@@ -3840,7 +3875,14 @@ actions = ["agent.view"]
         ];
         for (req, expected) in requests {
             let applied = builder
-                .apply_build_agent_response(&req, &spoofing_response, "b")
+                .apply_build_agent_response(
+                    &req,
+                    req.build
+                        .as_ref()
+                        .and_then(|build| build.external_tools.clone()),
+                    &spoofing_response,
+                    "b",
+                )
                 .await
                 .expect("response applies");
             assert_eq!(
@@ -3942,7 +3984,7 @@ comms = true
                     Arc::clone(&runtime_store),
                     Arc::clone(&blob_store),
                 )
-                .expect("runtime machine"),
+                .expect("acquire the RPC gateway fixture runtime machine"),
             );
             let factory = AgentFactory::new(state).builtins(false).comms(true);
             let mut inner = FactoryAgentBuilder::new(factory, Config::default());
@@ -3953,22 +3995,19 @@ comms = true
             let (stdout_tx, stdout_rx) = mpsc::channel(16);
             let bridge = StdioCallbackBridge::new(stdout_tx);
             let (builds, responder) = answer_build_callbacks(stdout_rx, bridge.clone(), response);
-            let service = Arc::new(
-                meerkat_session::PersistentSessionService::new(
-                    StdioCallbackAgentBuilder {
-                        inner,
-                        bridge,
-                        has_session_builder: true,
-                        session_store: Some(session_store.clone()),
-                        detached_jobs: None,
-                    },
-                    16,
-                    session_store,
-                    Arc::clone(&runtime_store),
-                    blob_store,
-                )
-                .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-            );
+            let service = Arc::new(meerkat_session::PersistentSessionService::new(
+                StdioCallbackAgentBuilder {
+                    inner,
+                    bridge,
+                    has_session_builder: true,
+                    session_store: Some(session_store.clone()),
+                    detached_jobs: None,
+                },
+                16,
+                session_store,
+                Arc::clone(&runtime_store),
+                blob_store,
+            ));
             let (mob_storage, provenance) =
                 meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
                     state.join("mob.sqlite3"),
@@ -3984,6 +4023,7 @@ comms = true
             .with_runtime_authority_prewarm(&runtime_store)
             .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
+            .expect("acquire the RPC gateway fixture session runtime owner")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -6324,6 +6364,324 @@ comms = true
             Err("stdout channel closed".to_string())
         );
         assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    /// The (registry, owner session) an ops-capable source was bound to.
+    type ObservedBinding = std::sync::Mutex<
+        Option<(
+            Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            meerkat_core::SessionId,
+        )>,
+    >;
+
+    /// Ops-capable external tool source for the owned-build tests. Its
+    /// observations live outside it, so a test holds no extra handle to it.
+    struct ObservedOpsSource {
+        seen: Arc<ObservedBinding>,
+    }
+
+    #[async_trait]
+    impl meerkat_core::AgentToolDispatcher for ObservedOpsSource {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::ToolDef>]> {
+            Arc::from([Arc::new(meerkat_core::ToolDef {
+                audience: Default::default(),
+                name: "ops_probe".into(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                provenance: None,
+            })])
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+            Err(ToolError::not_found(call.name))
+        }
+
+        fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+            meerkat_core::agent::DispatcherCapabilities {
+                ops_lifecycle: true,
+            }
+        }
+
+        fn bind_ops_lifecycle(
+            self: Arc<Self>,
+            registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            owner_bridge_session_id: meerkat_core::SessionId,
+        ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+        {
+            let this = Arc::try_unwrap(self)
+                .map_err(|_| meerkat_core::agent::OpsLifecycleBindError::SharedOwnership)?;
+            *this.seen.lock().expect("source lock") = Some((registry, owner_bridge_session_id));
+            Ok(meerkat_core::agent::BindOutcome::Bound(Arc::new(this)))
+        }
+    }
+
+    /// How the scripted SDK host is configured for an owned-build test.
+    enum SdkBuildHost {
+        /// No SDK SessionBuilder: the gateway builder takes its no-callback
+        /// branch. The host still answers, so a stray callback is recorded
+        /// instead of hanging.
+        Absent,
+        /// An SDK SessionBuilder answering every `callback/build_agent` with
+        /// this response.
+        Answers(Value),
+    }
+
+    struct OwnedBuildFixture {
+        _temp: tempfile::TempDir,
+        service: EphemeralSessionService<StdioCallbackAgentBuilder>,
+        request: CreateSessionRequest,
+        session_id: meerkat_core::SessionId,
+        machine: meerkat_runtime::MeerkatMachine,
+        builds: Arc<std::sync::Mutex<Vec<Value>>>,
+        _responder: tokio::task::JoinHandle<()>,
+    }
+
+    /// A session-owned create request carrying `external` as its external
+    /// tools, and the gateway's non-persistent service composition (the
+    /// gateway builder inside an `EphemeralSessionService`) to create it
+    /// through. The service's own create path decides how the request
+    /// reaches the builder, as it does in the gateway.
+    async fn owned_build_fixture(
+        external: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        host: SdkBuildHost,
+    ) -> OwnedBuildFixture {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut inner = FactoryAgentBuilder::new(
+            AgentFactory::new(temp.path().join("sessions")),
+            Config::default(),
+        );
+        inner.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let machine = meerkat_runtime::MeerkatMachine::ephemeral();
+        let session = meerkat_core::Session::new();
+        let session_id = session.id().clone();
+        let bindings = machine
+            .prepare_bindings(session_id.clone())
+            .await
+            .expect("prepare bindings");
+        let request = CreateSessionRequest {
+            injected_context: Vec::new(),
+            model: "claude-sonnet-4-5".to_string(),
+            prompt: "hello".to_string().into(),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+            build: Some(meerkat_core::service::SessionBuildOptions {
+                resume_session: Some(session),
+                runtime_build_mode: meerkat_core::RuntimeBuildMode::SessionOwned(bindings),
+                external_tools: Some(external),
+                ..meerkat_core::service::SessionBuildOptions::default()
+            }),
+            labels: None,
+        };
+        let (stdout_tx, stdout_rx) = mpsc::channel(16);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let (has_session_builder, response) = match host {
+            SdkBuildHost::Absent => (false, json!({})),
+            SdkBuildHost::Answers(response) => (true, response),
+        };
+        let (builds, responder) = answer_build_callbacks(stdout_rx, bridge.clone(), response);
+        let builder = StdioCallbackAgentBuilder {
+            inner,
+            bridge,
+            has_session_builder,
+            session_store: None,
+            detached_jobs: None,
+        };
+        OwnedBuildFixture {
+            _temp: temp,
+            service: EphemeralSessionService::new(builder, 4),
+            request,
+            session_id,
+            machine,
+            builds,
+            _responder: responder,
+        }
+    }
+
+    fn weather_callback_tools() -> Value {
+        json!({ "tools": [{
+            "name": "weather",
+            "description": "Look up the weather",
+            "input_schema": {"type": "object"}
+        }]})
+    }
+
+    fn build_callbacks_seen(builds: &std::sync::Mutex<Vec<Value>>) -> usize {
+        builds.lock().expect("build log").len()
+    }
+
+    /// The source was bound to the registry the runtime machine holds for
+    /// the created session, with the created session as owner.
+    async fn assert_bound_to_created_session(
+        seen: &ObservedBinding,
+        machine: &meerkat_runtime::MeerkatMachine,
+        created: &meerkat_core::SessionId,
+    ) {
+        let (registry, owner) = seen
+            .lock()
+            .expect("source lock")
+            .clone()
+            .expect("the ops-capable external source was bound");
+        let session_registry = machine
+            .ops_lifecycle_registry(created)
+            .await
+            .expect("the created session has a runtime ops registry");
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&registry), Arc::as_ptr(&session_registry)),
+            "bound to the created session's own ops registry"
+        );
+        assert_eq!(&owner, created);
+    }
+
+    async fn visible_tool_names(
+        service: &EphemeralSessionService<StdioCallbackAgentBuilder>,
+        session_id: &meerkat_core::SessionId,
+    ) -> Vec<String> {
+        service
+            .live_visible_tool_defs(session_id)
+            .await
+            .expect("the created session is live")
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    /// No SDK SessionBuilder: creating the session through the service hands
+    /// the owned request straight to the factory, so the ops-capable external
+    /// source moves into the created session's agent and binds to that
+    /// session's registry. Through the borrowed path it stayed shared and
+    /// was refused.
+    #[tokio::test]
+    async fn a_session_created_without_a_callback_binds_its_ops_capable_external_source() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            SdkBuildHost::Absent,
+        )
+        .await;
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            0,
+            "no SDK SessionBuilder, so no build callback"
+        );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
+    }
+
+    /// An SDK SessionBuilder whose callback answers without `tools` takes the
+    /// callback branch but installs nothing: the drained external source is
+    /// put back into the transformed request uncomposed, and the created
+    /// session binds it.
+    #[tokio::test]
+    async fn a_session_created_through_a_callback_without_tools_binds_its_ops_source() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            SdkBuildHost::Answers(json!({})),
+        )
+        .await;
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the build callback ran and answered without tools"
+        );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "weather"), "{names:?}");
+    }
+
+    /// An SDK SessionBuilder whose callback adds its own tools: they compose
+    /// OVER the ops-capable external source, and the created session still
+    /// binds it, because the original request's slot is drained before the
+    /// transform and the composition forwards the binding.
+    #[tokio::test]
+    async fn a_session_created_through_a_callback_adding_tools_binds_its_ops_source() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let fixture = owned_build_fixture(
+            Arc::new(ObservedOpsSource {
+                seen: Arc::clone(&seen),
+            }),
+            SdkBuildHost::Answers(weather_callback_tools()),
+        )
+        .await;
+        let created = meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        .expect("the session is created and its source bound, no SharedOwnership");
+        assert_eq!(created.session_id, fixture.session_id);
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the build callback ran"
+        );
+        assert_bound_to_created_session(&seen, &fixture.machine, &created.session_id).await;
+        let names = visible_tool_names(&fixture.service, &created.session_id).await;
+        assert!(names.iter().any(|name| name == "weather"), "{names:?}");
+        assert!(names.iter().any(|name| name == "ops_probe"), "{names:?}");
+    }
+
+    /// A host that keeps its own handle to the ops-capable source cannot have
+    /// it rebound: creation fails typed after the callback ran, instead of
+    /// running the session with the source silently unbound, and no session
+    /// is left behind.
+    #[tokio::test]
+    async fn a_retained_ops_source_fails_session_creation_with_shared_ownership() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let external: Arc<dyn meerkat_core::AgentToolDispatcher> = Arc::new(ObservedOpsSource {
+            seen: Arc::clone(&seen),
+        });
+        let retained = Arc::clone(&external);
+        let fixture =
+            owned_build_fixture(external, SdkBuildHost::Answers(weather_callback_tools())).await;
+        let error = match meerkat_core::service::SessionService::create_session(
+            &fixture.service,
+            fixture.request,
+        )
+        .await
+        {
+            Ok(_) => panic!("a shared ops-capable source must not build"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("shared ownership"), "{error}");
+        assert!(seen.lock().expect("source lock").is_none());
+        assert_eq!(
+            build_callbacks_seen(&fixture.builds),
+            1,
+            "the callback ran; binding refused the build"
+        );
+        assert!(matches!(
+            meerkat_core::service::SessionService::read(&fixture.service, &fixture.session_id)
+                .await,
+            Err(SessionError::NotFound { .. })
+        ));
+        drop(retained);
     }
 
     #[tokio::test]
@@ -9805,8 +10163,9 @@ fn classify_runtime_inbox_backlog(
 /// projector and the detached-job delivery runtime therefore both take clones
 /// of this one inbox, so a delivery committed through either path wakes every
 /// subscriber of the other. Build it once per gateway.
+#[derive(Clone)]
 struct GatewayRuntimeDelivery {
-    owner: Arc<meerkat_mobkit::MobRuntimeDelivery>,
+    composition: meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery,
 }
 
 impl GatewayRuntimeDelivery {
@@ -9815,14 +10174,20 @@ impl GatewayRuntimeDelivery {
         jobs: Arc<dyn meerkat::DetachedJobStore>,
     ) -> Self {
         Self {
-            owner: Arc::new(meerkat_mobkit::MobRuntimeDelivery::new(runtime_store, jobs)),
+            composition: meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(
+                runtime_store,
+                jobs,
+            ),
         }
     }
 
+    /// A clone sharing the commit signal.
     fn inbox(&self) -> meerkat_runtime::RuntimeDeliveryInbox {
-        self.owner.inbox()
+        self.composition.inbox()
     }
 
+    /// The default shell job projector over this inbox. Per-session builds
+    /// rebind its realm (`bound_to_realm`); the inbox stays this one.
     fn shell_job_projector(
         &self,
         job_store: Arc<dyn meerkat::DetachedJobStore>,
@@ -9846,8 +10211,7 @@ struct DetachedCallbackJobRuntime {
     /// backlog read; the WARN naming the operation fires on that transition
     /// only. See [`Self::runtime_inbox_backlog`].
     runtime_inbox_unsupported_announced: Arc<AtomicBool>,
-    runtime_delivery: Option<Arc<meerkat_mobkit::MobRuntimeDelivery>>,
-    last_delivery_pass: Arc<std::sync::Mutex<Option<meerkat::RuntimeDeliveryPass>>>,
+    runtime_delivery: Option<meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery>,
     delivery_driver_started: Arc<AtomicBool>,
     monitor_recovery_completed: Arc<AtomicBool>,
     monitor_shell_config: Option<meerkat_tools::builtin::shell::ShellConfig>,
@@ -9869,7 +10233,6 @@ impl DetachedCallbackJobRuntime {
             runtime_inbox: None,
             runtime_inbox_unsupported_announced: Arc::new(AtomicBool::new(false)),
             runtime_delivery: None,
-            last_delivery_pass: Arc::new(std::sync::Mutex::new(None)),
             delivery_driver_started: Arc::new(AtomicBool::new(false)),
             monitor_recovery_completed: Arc::new(AtomicBool::new(false)),
             monitor_shell_config: None,
@@ -9880,7 +10243,7 @@ impl DetachedCallbackJobRuntime {
 
     fn with_runtime_delivery(mut self, delivery: &GatewayRuntimeDelivery) -> Self {
         self.runtime_inbox = Some(delivery.inbox());
-        self.runtime_delivery = Some(Arc::clone(&delivery.owner));
+        self.runtime_delivery = Some(delivery.composition.clone());
         self
     }
 
@@ -10012,17 +10375,20 @@ impl DetachedCallbackJobRuntime {
             return;
         }
         let runtime = self.clone();
+        let unified_runtime = Arc::downgrade(&unified_runtime);
         tokio::spawn(async move {
             loop {
+                let Some(host) = unified_runtime.upgrade() else {
+                    break;
+                };
                 if let Err(error) = runtime.recover_monitor_jobs().await {
                     tracing::warn!(%error, "durable monitor recovery failed");
                 }
-                runtime.observe_delivery_pass();
                 match runtime.health_projection().await {
-                    Ok(projection) => unified_runtime.set_job_health_projection(Some(projection)),
+                    Ok(projection) => host.set_job_health_projection(Some(projection)),
                     Err(error) => {
                         tracing::warn!(%error, "durable callback health projection failed");
-                        unified_runtime.set_job_health_projection(Some(json!({
+                        host.set_job_health_projection(Some(json!({
                             "status": "degraded",
                             "detached_jobs": {
                                 "status": "degraded",
@@ -10031,68 +10397,10 @@ impl DetachedCallbackJobRuntime {
                         })));
                     }
                 }
+                drop(host);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
-    }
-
-    /// Observe the native owner's result. This health loop never consumes the
-    /// inbox; callback jobs, shell jobs and member continuations share one owner.
-    fn observe_delivery_pass(&self) {
-        let Some(passes) = self
-            .runtime_delivery
-            .as_ref()
-            .and_then(|owner| owner.subscribe_passes())
-        else {
-            return;
-        };
-        let current = passes.borrow().clone();
-        let mut previous = self
-            .last_delivery_pass
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let changed = previous.as_ref().is_none_or(|old| {
-            old.blocked_runtimes != current.blocked_runtimes
-                || old.failures != current.failures
-                || old.cross_process_wake_unavailable != current.cross_process_wake_unavailable
-        });
-        if changed {
-            if !current.blocked_runtimes.is_empty()
-                || !current.failures.is_empty()
-                || current.cross_process_wake_unavailable.is_some()
-            {
-                tracing::warn!(
-                    blocked_runtimes = ?current.blocked_runtimes,
-                    failures = ?current.failures,
-                    cross_process_wake_unavailable = ?current.cross_process_wake_unavailable,
-                    "callback job delivery is blocked in native owner"
-                );
-            } else if previous
-                .as_ref()
-                .is_some_and(|old| !old.blocked_runtimes.is_empty())
-            {
-                tracing::info!("callback job delivery unblocked");
-            }
-        }
-        *previous = Some(current);
-    }
-
-    #[cfg(test)]
-    async fn wait_for_delivery_pass(&self) -> Result<(), String> {
-        let mut passes = self
-            .runtime_delivery
-            .as_ref()
-            .and_then(|owner| owner.subscribe_passes())
-            .ok_or_else(|| "native runtime delivery owner is not armed".to_string())?;
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            passes.wait_for(|pass| pass.generation > 0),
-        )
-        .await
-        .map_err(|_| "native runtime delivery owner did not complete its first pass".to_string())?
-        .map_err(|_| "native runtime delivery owner stopped".to_string())?;
-        self.observe_delivery_pass();
-        Ok(())
     }
 
     /// The exact host-store total behind `JobHealthSummary.runtime_inbox_backlog`.
@@ -10173,28 +10481,42 @@ impl DetachedCallbackJobRuntime {
         // operator is told to look rather than told a rung. An unsupported
         // store lands on that rung too: it never established a count.
         let reading = health.reading().worst(runtime_inbox_backlog.reading());
-        self.observe_delivery_pass();
         let delivery_pass = self
-            .last_delivery_pass
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let owner_unavailable = self.runtime_delivery.as_ref().is_some_and(|owner| {
-            owner
-                .subscribe_passes()
-                .is_none_or(|passes| passes.has_changed().is_err())
-        });
-        let delivery_degraded = owner_unavailable
-            || delivery_pass.as_ref().is_some_and(|pass| {
-                !pass.blocked_runtimes.is_empty()
+            .runtime_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.last_pass());
+        let owner_running = self
+            .runtime_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.is_running());
+        let reading = match delivery_pass.as_ref() {
+            Some(pass) if owner_running => {
+                if !pass.blocked_sessions.is_empty()
+                    || !pass.blocked_runtimes.is_empty()
                     || !pass.failures.is_empty()
                     || pass.cross_process_wake_unavailable.is_some()
-            });
-        let reading = if delivery_degraded {
-            reading.worst(meerkat::JobHealthReading::Degraded)
-        } else {
-            reading
+                {
+                    reading.worst(meerkat::JobHealthReading::Degraded)
+                } else {
+                    reading
+                }
+            }
+            _ => reading.worst(meerkat::JobHealthReading::Unreadable),
         };
+        let delivery_pass = delivery_pass.map(|pass| {
+            json!({
+                "generation": pass.generation,
+                "projected": pass.projected,
+                "applied": pass.applied,
+                "refused": pass.refused,
+                "blocked_sessions": pass.blocked_sessions,
+                "blocked_runtimes": pass.blocked_runtimes,
+                "failures": pass.failures,
+                "awaiting_other_hosts": pass.awaiting_other_hosts,
+                "applies_cold_deliveries": pass.applies_cold_deliveries,
+                "cross_process_wake_unavailable": pass.cross_process_wake_unavailable,
+            })
+        });
         let status = match reading {
             meerkat::JobHealthReading::Ok => "ok",
             meerkat::JobHealthReading::Degraded => "degraded",
@@ -10261,15 +10583,10 @@ impl DetachedCallbackJobRuntime {
                 "pending_outbox_jobs": health.pending_outbox_jobs,
                 "runtime_inbox_backlog": runtime_inbox_backlog.count_value(),
                 "runtime_inbox_backlog_reading": runtime_inbox_backlog.reading_label(),
-                // Native owner passes report blocked runtimes and pass failures,
-                // not an invented association between a row and a failure string.
-                "blocked_deliveries": delivery_pass.as_ref().map(|pass| pass.blocked_runtimes
-                    .iter().map(|runtime| json!({"runtime_id": runtime.0})).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-                "delivery_owner_unavailable": owner_unavailable,
-                "delivery_failures": delivery_pass.as_ref().map(|pass| &pass.failures),
-                "cross_process_wake_unavailable": delivery_pass.as_ref()
-                    .and_then(|pass| pass.cross_process_wake_unavailable.as_ref()),
+                "blocked_deliveries": null,
+                "blocked_deliveries_reading": "unavailable",
+                "runtime_delivery_owner_running": owner_running,
+                "runtime_delivery_pass": delivery_pass
             },
             "by_session": by_session
         }))
@@ -11024,23 +11341,23 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
         match self.bridge.call("callback/call_tool", params).await {
             Ok(result) => Ok(ToolResult {
                 host_metadata: Default::default(),
-                settlement_failures: Default::default(),
                 tool_use_id: call.id.to_string(),
                 content:
                     meerkat_mobkit::identity_first::gateway_bridges::callback_result_to_content(
                         &result,
                     ),
                 is_error: false,
+                settlement_failures: Vec::new(),
             }
             .into()),
             Err(err) => Ok(ToolResult {
                 host_metadata: Default::default(),
-                settlement_failures: Default::default(),
                 tool_use_id: call.id.to_string(),
                 content: vec![ContentBlock::Text {
                     text: format!("Tool execution failed: {err}"),
                 }],
                 is_error: true,
+                settlement_failures: Vec::new(),
             }
             .into()),
         }
@@ -11998,9 +12315,14 @@ impl StdioCallbackAgentBuilder {
     /// and the host only ever receives it, so a response naming
     /// `fork_source` (or `fork_source_identity`) is ignored and the request's
     /// own lineage, or its absence, is what the build sees.
+    /// `external_tools` is the request's external tool dispatcher, passed
+    /// explicitly rather than read from `req`: the owned build path drains it
+    /// from the caller's request first, so the transformed request is its
+    /// only holder (see `build_agent_taking_tools`).
     async fn apply_build_agent_response(
         &self,
         req: &CreateSessionRequest,
+        external_tools: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>,
         result: &Value,
         scope_id: &str,
     ) -> Result<CreateSessionRequest, SessionError> {
@@ -12023,6 +12345,19 @@ impl StdioCallbackAgentBuilder {
             deferred_prompt_policy: req.deferred_prompt_policy,
             injected_context: req.injected_context.clone(),
         };
+        match external_tools {
+            Some(tools) => {
+                modified_req
+                    .build
+                    .get_or_insert_with(meerkat_core::service::SessionBuildOptions::default)
+                    .external_tools = Some(tools);
+            }
+            None => {
+                if let Some(build) = modified_req.build.as_mut() {
+                    build.external_tools = None;
+                }
+            }
+        }
         // Resume-ness decides the instruction fold below, so resolve
         // it FIRST: a resume can arrive spawn-level
         // (build.resume_session already loaded) or be requested by
@@ -12260,8 +12595,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 
         match callback_result {
             Ok(result) => {
+                let shared_tools = req
+                    .build
+                    .as_ref()
+                    .and_then(|build| build.external_tools.clone());
                 let modified_req = self
-                    .apply_build_agent_response(req, &result, &scope_id)
+                    .apply_build_agent_response(req, shared_tools, &result, &scope_id)
                     .await?;
                 self.inner.build_agent(&modified_req, event_tx).await
             }
@@ -12273,6 +12612,54 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     "callback/build_agent failed: {err}"
                 ))))
             }
+        }
+    }
+
+    /// The owned build: the request's external tool dispatcher moves into the
+    /// agent's composed tool surface instead of staying shared with `req`, so
+    /// session-time binding (owner session, ops registry) can rebind it.
+    /// Building through the borrowed `build_agent` would keep a second holder
+    /// alive and fail an ops-capable source with `SharedOwnership`.
+    ///
+    /// The original request's tool slot is drained FIRST, before any clone, so
+    /// no copy of the request keeps the dispatcher. Everything else in `req`
+    /// stays readable after the call, as the trait requires.
+    async fn build_agent_taking_tools(
+        &self,
+        req: &mut CreateSessionRequest,
+        event_tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<Self::Agent, SessionError> {
+        if !self.has_session_builder {
+            // The borrowed path's normalization copies every field unchanged;
+            // forwarding the owned request directly is the same request with
+            // its tools handed over.
+            return self.inner.build_agent_taking_tools(req, event_tx).await;
+        }
+
+        let scope_id = format!(
+            "build-{}",
+            self.bridge
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let owned_tools = req
+            .build
+            .as_mut()
+            .and_then(|build| build.external_tools.take());
+        let options = callback_build_agent_options(req, &scope_id);
+        let params = json!({ "options": options });
+        match self.bridge.call("callback/build_agent", params).await {
+            Ok(result) => {
+                let mut modified_req = self
+                    .apply_build_agent_response(req, owned_tools, &result, &scope_id)
+                    .await?;
+                self.inner
+                    .build_agent_taking_tools(&mut modified_req, event_tx)
+                    .await
+            }
+            Err(err) => Err(SessionError::Agent(agent_tool_error(format!(
+                "callback/build_agent failed: {err}"
+            )))),
         }
     }
 }
@@ -13326,7 +13713,11 @@ external_addressable = true
                 Arc::clone(&blob_store),
             )
             .unwrap_or_else(|error| {
-                fail_init(&request_id, STORAGE_RESOLUTION_CODE, error.to_string())
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway runtime machine: {error}"),
+                )
             }),
         );
         // Match the ephemeral path's capability mask — only comms is enabled
@@ -13385,7 +13776,7 @@ external_addressable = true
                 fail_init(
                     &request_id,
                     STORAGE_RESOLUTION_CODE,
-                    "persistent runtime has no detached job store".to_string(),
+                    "persistent launch did not resolve its detached job store".to_string(),
                 )
             }),
         );
@@ -13520,17 +13911,24 @@ external_addressable = true
         // Keep the CONCRETE typed service for the firing host (the runtime-backed
         // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
         // erased Arc<dyn MobSessionService> the spec consumes).
-        // Bind the serving machine before a host observes the session service.
-        let concrete_service = Arc::new(
-            meerkat_session::PersistentSessionService::new(
-                callback_builder,
-                gateway_options.max_sessions,
-                session_store,
-                Arc::clone(&runtime_store),
-                blob_store,
-            )
-            .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-        );
+        let concrete_service = Arc::new(meerkat_session::PersistentSessionService::new(
+            callback_builder,
+            gateway_options.max_sessions,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+        concrete_service
+            .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!(
+                        "failed to acquire the persistent gateway session runtime owner: {error}"
+                    ),
+                )
+            });
         let schedule_host_inputs = schedule_tools.map(|tools| {
             (
                 tools.service,
@@ -13584,16 +13982,27 @@ external_addressable = true
             // never the session body).
             .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
-            .with_runtime_delivery(Arc::clone(&runtime_delivery.owner))
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway session runtime owner: {error}"),
+                )
+            })
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
             .with_workgraph_service(workgraph_service.clone())
             // Agent mob tools + the schedule host's mob authority (HomeCore
             // 0.7.26 last-link fix): without this, agent-authored schedules
             // can't rewrite to mob-member targets or deliver them.
+            .with_runtime_delivery(runtime_delivery.composition.clone())
             .with_agent_mob_tools(agent_mob_tools_slot)
             .unwrap_or_else(|error| {
-                fail_init(&request_id, STORAGE_RESOLUTION_CODE, error.to_string())
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to install gateway agent mob tools: {error}"),
+                )
             })
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
@@ -13702,9 +14111,9 @@ external_addressable = true
             detached_jobs,
         )
     } else {
-        // Ephemeral mode (original behavior).
-        // Keep the default session store in memory. A launch with no persistent
-        // state must not require writable paths for JSONL session storage.
+        // Process-local mode keeps sessions and runtime state in memory.
+        // The supported persistent service/machine pair does not require
+        // durable session files on read-only container filesystems.
         let temp_dir = if scratch_dir.is_none() {
             Some(tempfile::tempdir().expect("create temp dir for agent working space"))
         } else {
@@ -13737,21 +14146,26 @@ external_addressable = true
                 Arc::clone(&blob_store),
             )
             .unwrap_or_else(|error| {
-                fail_init(&request_id, STORAGE_RESOLUTION_CODE, error.to_string())
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway runtime machine: {error}"),
+                )
             }),
         );
-        let ephemeral_jobs: Arc<dyn meerkat::DetachedJobStore> =
+        let process_local_session_store: Arc<dyn meerkat::SessionStore> =
+            Arc::new(meerkat::MemoryStore::new());
+        let job_store: Arc<dyn meerkat::DetachedJobStore> =
             Arc::new(meerkat::MemoryDetachedJobStore::new());
         let runtime_delivery =
-            GatewayRuntimeDelivery::new(Arc::clone(&runtime_store), Arc::clone(&ephemeral_jobs));
-        let ephemeral_session_store: Arc<dyn meerkat::SessionStore> =
-            Arc::new(meerkat::MemoryStore::new());
+            GatewayRuntimeDelivery::new(Arc::clone(&runtime_store), Arc::clone(&job_store));
+        let agent_mob_tools_slot = Arc::new(std::sync::RwLock::new(None));
         let mut factory = AgentFactory::new(agent_workspace)
             .builtins(false)
             .shell(shell)
             .comms(true)
             .mcp_apps(gateway_options.console_ui.mcp_apps_sandbox_url.is_some())
-            .session_store(ephemeral_session_store.clone());
+            .session_store(process_local_session_store.clone());
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
@@ -13762,10 +14176,14 @@ external_addressable = true
         }
         let mut inner_builder =
             FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            process_local_session_store.clone(),
+        )));
         inner_builder.default_blob_store = Some(blob_store.clone());
-        inner_builder.default_detached_job_store = Some(Arc::clone(&ephemeral_jobs));
+        inner_builder.default_detached_job_store = Some(Arc::clone(&job_store));
+        inner_builder.default_mob_tools = Arc::clone(&agent_mob_tools_slot);
         inner_builder.default_shell_job_delivery_projector =
-            Some(runtime_delivery.shell_job_projector(ephemeral_jobs));
+            Some(runtime_delivery.shell_job_projector(Arc::clone(&job_store)));
         // No-persistent_state launches default to a memory-backed
         // workgraph (tools stay profile-gated, so nothing changes for
         // members that do not opt in); an explicit directory gets the
@@ -13854,7 +14272,7 @@ external_addressable = true
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
-            session_store: None,
+            session_store: Some(process_local_session_store.clone()),
             detached_jobs: None,
         };
         // Heal seam (2026-07-29 incident): captured from the CONCRETE
@@ -13895,6 +14313,10 @@ external_addressable = true
                     meerkat_store::StoreAdapter::new(session_store.clone()),
                 ));
                 inner_builder.default_blob_store = Some(blob_store.clone());
+                inner_builder.default_detached_job_store = Some(Arc::clone(&job_store));
+                inner_builder.default_mob_tools = Arc::clone(&agent_mob_tools_slot);
+                inner_builder.default_shell_job_delivery_projector =
+                    Some(runtime_delivery.shell_job_projector(Arc::clone(&job_store)));
                 if let Some(service) = workgraph_service.as_ref() {
                     workgraph_admission_slots.push(
                         meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
@@ -13910,32 +14332,49 @@ external_addressable = true
                     session_store: Some(session_store.clone()),
                     detached_jobs: None,
                 };
-                // Bound to the serving machine, as in the persistent-store
-                // composition above.
-                let concrete = Arc::new(
-                    meerkat_session::PersistentSessionService::new(
-                        callback_builder,
-                        gateway_options.max_sessions,
-                        session_store,
-                        Arc::clone(&runtime_store),
-                        blob_store.clone(),
-                    )
-                    .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-                );
+                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
+                    callback_builder,
+                    gateway_options.max_sessions,
+                    session_store,
+                    Arc::clone(&runtime_store),
+                    blob_store.clone(),
+                ));
+                concrete
+                    .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            STORAGE_RESOLUTION_CODE,
+                            format!(
+                                "failed to acquire the continuity-backed gateway \
+                                 session runtime owner: {error}"
+                            ),
+                        )
+                    });
                 committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
                 gateway_transcript_edit_service = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
-                Arc::new(
-                    meerkat_session::PersistentSessionService::new(
-                        callback_builder,
-                        gateway_options.max_sessions,
-                        ephemeral_session_store,
-                        Arc::clone(&runtime_store),
-                        blob_store.clone(),
-                    )
-                    .with_canonical_runtime_adapter(Arc::clone(&adapter)),
-                )
+                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
+                    callback_builder,
+                    gateway_options.max_sessions,
+                    process_local_session_store,
+                    Arc::clone(&runtime_store),
+                    blob_store.clone(),
+                ));
+                concrete
+                    .acquire_canonical_runtime_adapter(Some(Arc::clone(&adapter)))
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            STORAGE_RESOLUTION_CODE,
+                            format!(
+                                "failed to acquire the process-local gateway \
+                                 session runtime owner: {error}"
+                            ),
+                        )
+                    });
+                concrete
             };
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
@@ -13949,8 +14388,23 @@ external_addressable = true
             // different instance here would warm nothing.
             .with_runtime_authority_prewarm(&runtime_store)
             .with_session_runtime_adapter(adapter.clone())
-            .with_runtime_delivery(Arc::clone(&runtime_delivery.owner))
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to acquire the gateway session runtime owner: {error}"),
+                )
+            })
             .with_workgraph_service(workgraph_service.clone())
+            .with_runtime_delivery(runtime_delivery.composition.clone())
+            .with_agent_mob_tools(agent_mob_tools_slot)
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!("failed to install gateway agent mob tools: {error}"),
+                )
+            })
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -14006,8 +14460,8 @@ external_addressable = true
             ephemeral_workgraph_slot,
             meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
                 "jobs",
-                "disabled",
-                "semantic detached admission is unavailable in ephemeral gateway mode",
+                "MemoryDetachedJobStore",
+                "declared by the ephemeral launch mode",
             ),
             gateway_event_log_slot(&gateway_options),
         ];

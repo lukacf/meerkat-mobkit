@@ -585,12 +585,12 @@ mob = true
             std::sync::Arc::ptr_eq(
                 &service
                     .acquire_runtime_adapter(None)
-                    .expect("runtime adapter acquisition")
+                    .expect("acquire the parent runtime machine")
                     .expect("parent runtime machine"),
                 &state
                     .session_service()
                     .acquire_runtime_adapter(None)
-                    .expect("runtime adapter acquisition")
+                    .expect("acquire the child runtime machine")
                     .expect("child runtime machine"),
             ),
             "agent-created mobs must share the parent's real runtime authority"

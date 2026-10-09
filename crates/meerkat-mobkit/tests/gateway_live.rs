@@ -523,7 +523,7 @@ mod cross_provider_open {
                 Arc::clone(&runtime_store),
                 Arc::clone(&blob_store),
             )
-            .expect("runtime owner"),
+            .expect("acquire the gateway live fixture runtime machine"),
         );
         let agent_factory = AgentFactory::new(&state_path).builtins(false);
         let mut builder = FactoryAgentBuilder::new(agent_factory.clone(), Config::default());
@@ -532,16 +532,16 @@ mod cross_provider_open {
         )));
         builder.default_blob_store = Some(blob_store.clone());
         builder.default_llm_client = Some(Arc::new(TestClient::default()));
-        let service = Arc::new(
-            PersistentSessionService::new(
-                builder,
-                16,
-                session_store,
-                Arc::clone(&runtime_store),
-                blob_store,
-            )
-            .with_canonical_runtime_adapter(machine.clone()),
-        );
+        let service = Arc::new(PersistentSessionService::new(
+            builder,
+            16,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+        service
+            .acquire_canonical_runtime_adapter(Some(Arc::clone(&machine)))
+            .expect("acquire the gateway live fixture session runtime owner");
 
         // Runtime-backed create, the same shape every runtime surface uses:
         // pre-mint the session, prepare machine-owned bindings on the SAME

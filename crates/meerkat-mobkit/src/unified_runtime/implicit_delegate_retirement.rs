@@ -344,9 +344,9 @@ async fn observe_member_execution(
     let runtime = match session_service.acquire_runtime_adapter(None) {
         Ok(runtime) => runtime,
         Err(error) => {
-            return MemberExecution::Unreadable(meerkat_core::service::SessionError::Agent(
-                meerkat_core::AgentError::InternalError(error.to_string()),
-            ));
+            return MemberExecution::Unreadable(
+                crate::mob_handle_runtime::runtime_adapter_acquisition_session_error(error),
+            );
         }
     };
     if let Some(runtime) = runtime
@@ -445,6 +445,46 @@ mod tests {
         assert!(!turn_phase_is_idle(TurnPhase::Extracting));
         assert!(!turn_phase_is_idle(TurnPhase::ErrorRecovery));
         assert!(!turn_phase_is_idle(TurnPhase::Cancelling));
+    }
+
+    #[tokio::test]
+    async fn runtime_acquisition_refusal_is_unreadable_before_idle_snapshot_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let service =
+            crate::mob_handle_runtime::acquisition_observation_probe(true, Arc::clone(&reads));
+        let session_id = meerkat_core::SessionId::new();
+        assert!(matches!(
+            observe_member_execution(service.as_ref(), &session_id).await,
+            MemberExecution::Unreadable(meerkat_core::SessionError::RuntimeUnavailable {
+                reason: meerkat_runtime::traits::ControllerReadinessFailure::AuthorityChanged,
+            })
+        ));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "a refused runtime owner must not fall back to an idle session snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_runtime_adapter_preserves_idle_snapshot_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let service =
+            crate::mob_handle_runtime::acquisition_observation_probe(false, Arc::clone(&reads));
+        let session_id = meerkat_core::SessionId::new();
+        assert!(matches!(
+            observe_member_execution(service.as_ref(), &session_id).await,
+            MemberExecution::Idle
+        ));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "a service without a runtime owner must still consult its idle session snapshot"
+        );
     }
 
     #[test]
@@ -637,6 +677,7 @@ comms = true
             4,
             None,
         )
+        .expect("build the idle retirement fixture ephemeral spec")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -1035,6 +1076,7 @@ comms = true
             4,
             None,
         )
+        .expect("build the idle retirement fixture ephemeral spec")
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -2162,6 +2204,7 @@ comms = true
                 4,
                 None,
             )
+            .expect("build the idle retirement fixture ephemeral spec")
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,

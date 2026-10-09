@@ -7444,6 +7444,18 @@ fn frames_from_session_history_message_with_namespace(
                 let result_text = result.text_content();
                 let tool_use_id = result.tool_use_id.clone();
                 let timestamp_ms = created_at.timestamp_millis().max(0) as u64;
+                let mut payload = json!({
+                    "id": tool_use_id,
+                    "tool_call_id": tool_use_id,
+                    "result": result_text,
+                    "content": content,
+                    "is_error": result.is_error,
+                    "source_event_type": "session_history",
+                    "type": "session_history",
+                });
+                if !result.settlement_failures.is_empty() {
+                    payload["settlement_failures"] = json!(result.settlement_failures);
+                }
                 let mut frames = vec![NewConsoleFrame {
                     id: None,
                     dedupe_key: format!(
@@ -7456,15 +7468,7 @@ fn frames_from_session_history_message_with_namespace(
                     session_id: Some(session_id.to_string()),
                     kind: "tool_execution_completed".to_string(),
                     status: ConsoleFrameStatus::Completed,
-                    payload: json!({
-                        "id": tool_use_id,
-                        "tool_call_id": tool_use_id,
-                        "result": result_text,
-                        "content": content,
-                        "is_error": result.is_error,
-                        "source_event_type": "session_history",
-                        "type": "session_history",
-                    }),
+                    payload,
                     source: ConsoleFrameSource {
                         member_provenance: None,
                         kind: ConsoleFrameSourceKind::SessionHistory,
@@ -18342,34 +18346,51 @@ comms = true
 
     #[test]
     fn session_history_projection_preserves_tool_results() {
-        let frames = frames_from_session_history_message(
-            "runtime-a",
-            "agent-a",
-            "session-a",
-            5,
-            json!({
-                "role": "tool_results",
-                "results": [
-                    {
-                        "tool_use_id": "call-peers",
-                        "content": "{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}",
-                        "is_error": false
-                    }
-                ],
-                "created_at": "1970-01-01T00:00:00.050Z"
-            }),
-        );
+        for is_error in [false, true] {
+            for include_diagnostic in [false, true] {
+                let failures = if include_diagnostic {
+                    vec![crate::test_diagnostics::settlement_failure(is_error)]
+                } else {
+                    Vec::new()
+                };
+                let frames = frames_from_session_history_message(
+                    "runtime-a",
+                    "agent-a",
+                    "session-a",
+                    5,
+                    json!({
+                        "role": "tool_results",
+                        "results": [
+                            {
+                                "tool_use_id": "call-peers",
+                                "content": "{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}",
+                                "is_error": is_error,
+                                "settlement_failures": failures,
+                            }
+                        ],
+                        "created_at": "1970-01-01T00:00:00.050Z"
+                    }),
+                );
 
-        assert_eq!(frames.len(), 1);
-        let frame = &frames[0];
-        assert_eq!(frame.kind, "tool_execution_completed");
-        assert_eq!(frame.payload["tool_call_id"], json!("call-peers"));
-        assert_eq!(
-            frame.payload["result"],
-            json!("{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}")
-        );
-        assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
-        assert_eq!(frame.timestamp_ms, 50);
+                assert_eq!(frames.len(), 1);
+                let frame = &frames[0];
+                assert_eq!(frame.kind, "tool_execution_completed");
+                assert_eq!(frame.status, ConsoleFrameStatus::Completed);
+                assert_eq!(frame.payload["tool_call_id"], json!("call-peers"));
+                assert_eq!(frame.payload["is_error"], json!(is_error));
+                assert_eq!(
+                    frame.payload["result"],
+                    json!("{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}")
+                );
+                if include_diagnostic {
+                    assert_eq!(frame.payload["settlement_failures"], json!(failures));
+                } else {
+                    assert!(frame.payload.get("settlement_failures").is_none());
+                }
+                assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
+                assert_eq!(frame.timestamp_ms, 50);
+            }
+        }
     }
 
     #[test]
