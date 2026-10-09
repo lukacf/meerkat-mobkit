@@ -475,9 +475,16 @@ impl LlmClient for CrossMobClient {
             kind: meerkat_core::ToolSourceKind::RustBundle,
             source_id: NAME.into(),
         };
+        let name_restricted = matches!(role, POLICY_SOURCE | POLICY_FORK | POLICY_BARRIER);
         for name in ["documents_read", "documents_apply"] {
-            let tool = request.tools.iter().find(|tool| tool.name == name).unwrap();
-            assert_eq!(tool.provenance.as_ref(), Some(&expected_provenance));
+            let tool = request.tools.iter().find(|tool| tool.name == name);
+            if name_restricted && name == "documents_apply" {
+                // Static name denials also restrict native session visibility.
+                assert!(tool.is_none(), "{role}: denied tool must not be advertised");
+            } else {
+                let tool = tool.unwrap_or_else(|| panic!("{role}: missing {name}"));
+                assert_eq!(tool.provenance.as_ref(), Some(&expected_provenance));
+            }
         }
         let probe = |actor: &str, action: &str| ScriptCall {
             name: if matches!(
@@ -581,11 +588,17 @@ impl LlmClient for CrossMobClient {
         let mut events = Vec::new();
         let mut expected = Vec::new();
         for (slot, call) in calls.iter().enumerate() {
-            assert!(
-                request.tools.iter().any(|tool| tool.name == call.name),
-                "native inherited surface must offer {}",
-                call.name
-            );
+            if name_restricted && call.name == "documents_apply" {
+                // Deliberately forge the hidden call to exercise dispatch policy,
+                // independently of the model-visible surface restriction.
+                assert_eq!(call.error, Some("policy"));
+            } else {
+                assert!(
+                    request.tools.iter().any(|tool| tool.name == call.name),
+                    "native inherited surface must offer {}",
+                    call.name
+                );
+            }
             let id = format!("{role}-{index}-{slot}");
             expected.push(ExpectedResult {
                 id: id.clone(),
