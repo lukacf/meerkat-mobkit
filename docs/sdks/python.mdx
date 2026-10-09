@@ -341,7 +341,7 @@ the Rust struct:
 ```python
 class MyRoster:
     async def roster(self, context):
-        household = (context.mob_definition or {}).get("id")
+        mob_id = (context.mob_definition or {}).get("id")
         known = set(context.previous_identities)
         ...
 ```

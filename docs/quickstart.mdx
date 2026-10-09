@@ -147,7 +147,7 @@ shut it down when finished, and a console host should retain that cleanup on exi
 
 The console shows the agent sidebar, conversation workspace, signals rail, topology, logs, and health overview. The bundled app seeds from REST, sends through JSON-RPC, and tails replayable timeline frames over SSE.
 
-## Identity-first (household apps)
+## Identity-first (durable identity apps)
 
 For apps with durable agent identities, use the identity-first API:
 
@@ -155,7 +155,7 @@ For apps with durable agent identities, use the identity-first API:
 from meerkat_mobkit import MobKit
 from meerkat_mobkit.identity_first_models import DurableAgentSpec, ManagedPeerEdge
 
-# Define your household roster
+# Define your roster
 class MyRoster:
     async def roster(self, context):
         return [

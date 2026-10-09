@@ -1247,6 +1247,7 @@ mod tests {
     fn run_started(session: &SessionId) -> AgentEvent {
         AgentEvent::RunStarted {
             identity: Default::default(),
+            request_reasoning: None,
             session_id: session.clone(),
             input: meerkat_core::types::RunInput::Content {
                 content: meerkat_core::ContentInput::Text("hi".to_string()),
@@ -1893,6 +1894,7 @@ mod tests {
         let receiver_session = SessionId::new();
         let delivery = AgentEvent::RunStarted {
             identity: Default::default(),
+            request_reasoning: None,
             session_id: receiver_session.clone(),
             input: meerkat_core::types::RunInput::Content {
                 content: meerkat_core::ContentInput::Text(
@@ -1917,6 +1919,7 @@ mod tests {
         let receiver2 = SessionId::new();
         let clean_delivery = AgentEvent::RunStarted {
             identity: Default::default(),
+            request_reasoning: None,
             session_id: receiver2.clone(),
             input: meerkat_core::types::RunInput::Content {
                 content: meerkat_core::ContentInput::Text(

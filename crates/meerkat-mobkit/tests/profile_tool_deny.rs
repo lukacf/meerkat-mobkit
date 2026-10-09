@@ -1,14 +1,14 @@
-//! A downstream app's per-profile deny set through MobKit's production runtime
-//! (meerkat 0.8.51 `[profiles.*.tools] deny`).
+//! A workspace profile's deny set through MobKit's production runtime
+//! (meerkat `[profiles.*.tools] deny`).
 //!
 //! A workspace identity agent's profile enables the mob tools but denies the
 //! ones that would let it spawn or rewire broader same-mob members, keeping
 //! fork_off, council, mob_check_member and mob_retire_member. The member is
 //! built through `UnifiedRuntime` from the definition TOML and drives its own
-//! turn: every denied tool it has mounted is refused with an `access_denied`
-//! tool error (the tool stays listed), every kept tool it has mounted runs
-//! past the gate, and the deny set itself builds (a known name the member
-//! does not mount is inert, not a build failure).
+//! turn: every denied tool is hidden from its visible tools (meerkat 0.8.52),
+//! every kept tool it has mounted runs past the gate, and the deny set itself
+//! builds (a known name the member does not mount is inert, not a build
+//! failure).
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
@@ -31,9 +31,9 @@ mod llm_usage;
 
 static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-const PROBE: &str = "DOWNSTREAM-DENY-PROBE";
+const PROBE: &str = "WORKSPACE-DENY-PROBE";
 
-/// The downstream app's deny set: the agent mob tools and the mob operator tools that
+/// The workspace deny set: the agent mob tools and the mob operator tools that
 /// spawn or rewire members.
 const DENIED: &[&str] = &[
     "spawn_member",
@@ -67,7 +67,7 @@ fn definition_denying(names: &[&str]) -> MobDefinition {
     MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "downstream-deny-mob-{}"
+id = "workspace-deny-mob-{}"
 
 [profiles.workspace]
 model = "gpt-5.5"
@@ -81,7 +81,7 @@ deny = [{deny}]
 "#,
         NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ))
-    .expect("parse the downstream definition")
+    .expect("parse the workspace definition")
 }
 
 /// What the probe turn saw: the tools the member had mounted, and each probe
@@ -277,7 +277,7 @@ async fn an_unknown_deny_entry_fails_ensure_member_with_invalid_params_naming_it
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn downstream_deny_set_builds_and_refuses_denied_mob_tools() {
+async fn a_workspace_deny_set_builds_and_hides_denied_mob_tools() {
     let store_dir = tempfile::tempdir().expect("store dir");
     let client = ProbeClient::default();
     let runtime = runtime_for(definition(), &client, store_dir.path()).await;
@@ -287,7 +287,7 @@ async fn downstream_deny_set_builds_and_refuses_denied_mob_tools() {
     runtime
         .spawn_many(vec![SpawnMemberSpec::new("workspace", "assistant")])
         .await
-        .expect("a member builds with the downstream app's deny set");
+        .expect("a member builds with the workspace deny set");
 
     let done = client.done.notified();
     tokio::pin!(done);
@@ -309,24 +309,22 @@ async fn downstream_deny_set_builds_and_refuses_denied_mob_tools() {
                 .expect("the probe turn recorded its results"),
         )
     };
-    // The mob operator tools a `mob = true` member mounts are the core of the
-    // downstream app's restriction; the probe is meaningless without them.
-    for operator_tool in ["spawn_member", "wire_members"] {
+    // A `mob = true` member mounts the mob operator tools; the probe is
+    // meaningless without them. `retire_member` and `list_members` are not in
+    // the deny set, so they stay mounted.
+    for operator_tool in ["retire_member", "list_members"] {
         assert!(
             mounted.iter().any(|name| name == operator_tool),
             "a mob-enabled member mounts {operator_tool}: {mounted:?}"
         );
     }
-    for tool in DENIED
-        .iter()
-        .filter(|tool| mounted.iter().any(|name| name == *tool))
-    {
-        let text = results
-            .get(&probe_call_id(tool))
-            .unwrap_or_else(|| panic!("{tool} was called"));
+    // An unconditional profile deny hides the tool from the member's visible
+    // set at build time (meerkat 0.8.52); the execution gate still refuses
+    // any denied call that reaches it.
+    for tool in DENIED {
         assert!(
-            text.contains("access_denied"),
-            "{tool} is denied by the profile and refused: {text}"
+            !mounted.iter().any(|name| name == tool),
+            "{tool} is denied by the profile and hidden: {mounted:?}"
         );
     }
     for tool in KEPT

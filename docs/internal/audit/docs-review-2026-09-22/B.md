@@ -72,7 +72,7 @@ The implementation serializes the supplied typed context under the SDK-consumed 
 **`sdk/python/tests/test_identity_first_builder_dispatcher.py:527-581`**
 
 ```text
-assert context.mob_definition["id"] == "household"
+assert context.mob_definition["id"] == "team"
         assert context.mob_definition["profiles"]["assistant"]["model"] == "gpt-5.5"
         assert context.previous_identities == ["a:main", "b:main"]
 ```
@@ -84,7 +84,7 @@ The fixture checks received values, not merely model existence. A separate no-fi
 ```text
 assert.deepEqual(seen[0], {
       mobDefinition: {
-        id: "household",
+        id: "team",
         profiles: { assistant: { model: "gpt-5.5" } },
       },
       previousIdentities: ["a:main", "b:main"],

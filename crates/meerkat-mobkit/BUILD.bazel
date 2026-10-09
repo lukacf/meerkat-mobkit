@@ -1300,6 +1300,7 @@ rust_test(
     ],
     srcs = [
         "tests/child_application_tool_policy.rs",
+        "tests/support/llm_usage.rs",
     ],
     visibility = ["//visibility:public"],
     rustc_env = {

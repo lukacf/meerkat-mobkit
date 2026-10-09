@@ -5322,7 +5322,7 @@ mod tests {
     }
 
     /// Records the post-close work source a composition binds.
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[derive(Default)]
     struct RecordingPostCloseAuthority {
         bound: std::sync::Mutex<
@@ -5330,7 +5330,7 @@ mod tests {
         >,
     }
 
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider
         for RecordingPostCloseAuthority

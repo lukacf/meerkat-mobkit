@@ -308,7 +308,7 @@ routing: {
 - Recent deliveries with status (from `mobkit/delivery/history`) — delivered, failed, retrying
 - Per-delivery attempt history (attempt count, backoff, final status)
 
-Host-specific overlays (NOT shared): household notification semantics, Slack channel rendering, business-specific routing reasons. The shared component provides the route list + delivery timeline chrome; hosts provide domain-specific context rendering where needed.
+Host-specific overlays (NOT shared): app-specific notification semantics, Slack channel rendering, business-specific routing reasons. The shared component provides the route list + delivery timeline chrome; hosts provide domain-specific context rendering where needed.
 
 ---
 
@@ -449,4 +449,4 @@ Console UI: context menu on sidebar items (retire, respawn, reset, inspect). Act
 
 ## Architectural principle
 
-The experience endpoint describes what data is available, with protocol metadata per section (schema version, refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, households, or domain-specific gate policies — but it provides typed extension points for hosts that do.
+The experience endpoint describes what data is available, with protocol metadata per section (schema version, refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, app domains, or domain-specific gate policies — but it provides typed extension points for hosts that do.
