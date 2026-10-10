@@ -22742,6 +22742,10 @@ comms = true
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         let mut resume_spec = SpawnMemberSpec::new(ProfileName::from("worker"), mid.clone());
+        // Ordinary autonomous Resume starts a new kickoff even without an
+        // explicit initial message. This fixture checks turnless restoration,
+        // so select the public turn-driven mode and leave initial_message None.
+        resume_spec.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
         resume_spec.launch_mode = meerkat_mob::MemberLaunchMode::Resume {
             // 0.8.25: no migration authority on this path; a declaration is
             // attached only where resume_session detects a genuine role divergence.
@@ -22758,6 +22762,27 @@ comms = true
             .await
             .unwrap_or_else(|| panic!("resumed worker has no bridge session id"));
         assert_eq!(resumed_session_id, session_id);
+        let resumed_members = restarted.handle.list_members().await;
+        let [resumed_member] = resumed_members.as_slice() else {
+            panic!("restart fixture must resume exactly one worker");
+        };
+        assert_eq!(resumed_member.agent_identity, mid);
+        assert_eq!(resumed_member.role, ProfileName::from("worker"));
+        assert_eq!(
+            resumed_member.runtime_mode,
+            meerkat_mob::MobRuntimeMode::TurnDriven
+        );
+        assert!(
+            resumed_member.kickoff.is_none(),
+            "turnless resume must not admit an autonomous kickoff: {resumed_member:?}"
+        );
+        // Compare after teardown so a late write cannot hide behind an early
+        // read of the predecessor's still-unchanged durable projection.
+        restarted
+            .handle
+            .shutdown()
+            .await
+            .unwrap_or_else(|e| panic!("failed to quiesce resumed runtime: {e}"));
         let after_restart = custom_store
             .load(&session_id)
             .await
@@ -22766,7 +22791,7 @@ comms = true
         assert_eq!(
             after_restart.messages().len(),
             before_restart_message_count,
-            "turnless resume must not shrink the durable transcript"
+            "turnless resume must preserve the durable transcript length"
         );
         assert_eq!(
             meerkat_core::transcript_messages_digest(after_restart.messages())
@@ -22774,11 +22799,6 @@ comms = true
             before_restart_revision,
             "turnless resume must preserve the exact durable transcript"
         );
-        restarted
-            .handle
-            .shutdown()
-            .await
-            .unwrap_or_else(|e| panic!("failed to quiesce resumed runtime: {e}"));
     }
 
     /// Regression: public ephemeral builds without image generation retain the
