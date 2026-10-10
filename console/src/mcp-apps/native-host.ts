@@ -1,6 +1,7 @@
 import { CallToolResultSchema, ReadResourceResultSchema, ToolSchema } from "@modelcontextprotocol/core";
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { mcpSandboxUrl, type ConsoleMcpAppsHost, type McpAppLocator } from "../../../packages/console-components/src/mcp-apps";
+import { CONSOLE_REST_PATHS } from "../lib/contract";
 
 export interface NativeMcpAppsHostOptions {
   baseUrl: string;
@@ -18,14 +19,14 @@ export function createNativeMcpAppsHost(options: NativeMcpAppsHostOptions): Cons
     throw new Error("The stock MCP Apps adapter requires the Console's authenticated origin");
   }
   const sandboxProxyUrl = mcpSandboxUrl(options.sandboxProxyUrl).href;
-  const request = async (operation: string, locator: McpAppLocator, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
+  const request = async (path: string, locator: McpAppLocator, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     signal.throwIfAborted();
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => controller.abort(new Error("MCP App request timed out")), options.requestTimeoutMs ?? 60_000);
     try {
-      const url = new URL(`${base.pathname.replace(/\/$/, "")}/console/mcp-apps/${operation}`, base.origin);
+      const url = new URL(`${base.pathname.replace(/\/$/, "")}${path}`, base.origin);
       const response = await fetch(url.href, {
         method: "POST", credentials: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal,
         headers: {
@@ -52,7 +53,7 @@ export function createNativeMcpAppsHost(options: NativeMcpAppsHostOptions): Cons
       // Capture a locator, never a caller-owned object that can change between requests.
       const original = { identity: locator.identity, sessionId: locator.sessionId, toolCallId: locator.toolCallId };
       if (Object.values(original).some(value => typeof value !== "string" || !value.trim())) throw new Error("Invalid MCP App invocation");
-      const response = await request("resolve", original, {}, signal);
+      const response = await request(CONSOLE_REST_PATHS.mcpAppsResolve, original, {}, signal);
       if (response === null) return null;
       if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("Invalid MCP App response");
       const resolved = response as Record<string, unknown>;
@@ -80,12 +81,12 @@ export function createNativeMcpAppsHost(options: NativeMcpAppsHostOptions): Cons
             cachedResource = undefined;
             return cached;
           }
-          return ReadResourceResultSchema.parse(await request("read-resource", original, { uri }, requestSignal));
+          return ReadResourceResultSchema.parse(await request(CONSOLE_REST_PATHS.mcpAppsReadResource, original, { uri }, requestSignal));
         },
         ...(resolved.canCallTools === true && !options.readOnly ? {
           async callTool(name: string, toolArgs: Record<string, unknown>, requestSignal: AbortSignal) {
             current(requestSignal);
-            return CallToolResultSchema.parse(await request("call-tool", original, { name, arguments: toolArgs }, requestSignal));
+            return CallToolResultSchema.parse(await request(CONSOLE_REST_PATHS.mcpAppsCallTool, original, { name, arguments: toolArgs }, requestSignal));
           },
         } : {}),
       };

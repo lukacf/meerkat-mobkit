@@ -3,6 +3,7 @@
 
 // Real stock Console -> native session admission -> physical stdio MCP server.
 // Uses the prebuilt native acceptance fixture and the current production UI.
+// MOBKIT_MCP_APPS_LONG_POLL=1 adds three live App pollers during a >65s model hold.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const http = require("node:http");
@@ -38,9 +39,108 @@ async function post(base, endpoint, body) {
   return { status: response.status, body: await response.json(), cache: response.headers.get("cache-control") };
 }
 
+async function exerciseLivePolling({ baseUrl, page, apps, requests, evidence }) {
+  const views = ['display', 'display-two', 'display-three'];
+  const barrierCommand = action => post(baseUrl, '/__fixture/model-barrier', { action, id: 'apps-live-polling' });
+  const readStates = () => Promise.all(apps.map(app => app.locator('#native-poll-status').getAttribute('data-state').then(JSON.parse)));
+  const assertHeld = async () => {
+    const status = await barrierCommand('status');
+    assert.equal(status.status, 200);
+    assert.equal(status.body.released, false, 'the test must not release the model while exercising live App calls');
+    assert.equal(status.body.waiting_requests, 1, 'the real model stream must remain alive and blocked');
+    return status.body;
+  };
+  await eventually(async () => {
+    const status = await barrierCommand('status');
+    return status.body.waiting_requests === 1;
+  }, 'final native model request enters its barrier', 15_000);
+  const holdStartedAt = Date.now();
+  for (const [index, view] of views.entries()) {
+    await apps[index].getByRole('heading', { name: `Records ${view}`, exact: true }).waitFor({ timeout: 15_000 });
+  }
+  assert.equal(await page.locator('iframe[title="Interactive tool result"]').count(), 3,
+    'three independent stock App views must be mounted simultaneously');
+  const modelBefore = await (await fetch(`${baseUrl}/__fixture/requests`)).json();
+  const refreshStartedAt = Date.now();
+  await apps[0].getByRole('button', { name: 'Refresh result', exact: true }).click();
+  await apps[0].getByText('8 matching records', { exact: true }).waitFor({ timeout: 5_000 });
+  const refreshMs = Date.now() - refreshStartedAt;
+  assert(refreshMs < 5_000, 'a fresh App action must not wait for the active model turn');
+  await assertHeld();
+  for (const app of apps) await app.getByRole('button', { name: 'Start polling', exact: true }).click();
+  const samples = [];
+  // Cross the stock HTTP action timeout while each App independently polls at
+  // two-second intervals. Every response has its own bounded request deadline.
+  while (Date.now() - holdStartedAt < 66_000) {
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+    const states = await readStates();
+    for (const [index, state] of states.entries()) {
+      assert.equal(state.viewId, views[index]);
+      assert.deepEqual(state.errors, [], `native poller ${views[index]} must remain healthy`);
+      assert.equal(state.polling, true, `native poller ${views[index]} must remain active`);
+      assert(state.completions.every(call => call.latencyMs < 5_000), 'polls must not queue behind the model turn');
+    }
+    const barrier = await assertHeld();
+    samples.push({ atMs: Date.now(), barrier, states });
+    await fs.writeFile(path.join(evidence, 'live-polling-progress.json'), JSON.stringify(samples, null, 2));
+  }
+  for (const app of apps) await app.getByRole('button', { name: 'Stop polling', exact: true }).click();
+  const finalStates = await eventually(async () => {
+    const states = await readStates();
+    return states.every(state => !state.inFlight) ? states : null;
+  }, 'all already-admitted native polls finish', 6_000);
+  const holdFinishedAt = Date.now();
+  for (const state of finalStates) {
+    assert.deepEqual(state.errors, []);
+    assert(state.completions.length >= 25, 'each mounted App must keep polling throughout the long model turn');
+    assert(state.completions.some(call => call.startedAt > holdStartedAt + 60_000), 'each App must complete a fresh poll after sixty seconds');
+    for (let index = 1; index < state.completions.length; index++) {
+      assert(state.completions[index].startedAt - state.completions[index - 1].startedAt < 8_000,
+        'polling must not silently stop and recover only after the model completes');
+    }
+  }
+  await assertHeld();
+  const modelDuring = await (await fetch(`${baseUrl}/__fixture/requests`)).json();
+  assert.deepEqual(modelDuring, modelBefore, 'App polling must not trigger model turns or change the in-flight model request');
+  const actionRequests = requests.filter(request => request.path === '/console/mcp-apps/call-tool' && request.atMs >= holdStartedAt);
+  const pollRequests = actionRequests.filter(request => JSON.parse(request.body).name === 'poll');
+  assert.equal(pollRequests.length, finalStates.reduce((total, state) => total + state.completions.length, 0),
+    'each successful App poll must correspond to exactly one native HTTP action');
+  assert(actionRequests.every(request => request.status === 200 && request.finishedAt <= holdFinishedAt),
+    'all native App responses must complete before releasing the model');
+  await page.screenshot({ path: path.join(evidence, 'stock-native-app-polling-live.png'), fullPage: true });
+  const released = await barrierCommand('release');
+  assert.equal(released.status, 200);
+  await page.locator('[data-testid^="chat-turn:router:main:"] .cc-markdown-document')
+    .getByText('The MCP App is ready.', { exact: true }).waitFor({ timeout: 15_000 });
+
+  // A subsequent real model request reveals the canonical conversation after
+  // polling; neither App action output nor private metadata belongs in it.
+  const configured = await post(baseUrl, '/__fixture/model', { source: 'Follow-up complete.', delay_ms: 0, chunk_chars: 64 });
+  assert.equal(configured.status, 200);
+  await page.getByTestId('chat-composer:router:main').fill('Summarize the records already shown.');
+  await page.locator('button:has-text("Send"):visible, .cc-composer__send-btn:visible').first().click();
+  await page.locator('[data-testid^="chat-turn:router:main:"] .cc-markdown-document')
+    .getByText('Follow-up complete.', { exact: true }).waitFor({ timeout: 15_000 });
+  const modelAfter = await (await fetch(`${baseUrl}/__fixture/requests`)).json();
+  assert(modelAfter.length > modelBefore.length, 'privacy check must include a fresh post-poll model request');
+  for (const marker of ['PRIVATE_POLL_DETAIL', 'APP_POLL_RESULT_', 'APP_REFRESH_RESULT_']) {
+    assert(!JSON.stringify(modelAfter).includes(marker), `${marker} must not enter later model requests`);
+  }
+  const result = { holdStartedAt, holdFinishedAt, heldMs: holdFinishedAt - holdStartedAt, refreshMs,
+    widgets: finalStates, pollActions: pollRequests.length, modelRequestsBefore: modelBefore.length,
+    modelRequestsAfter: modelAfter.length, persistenceWrites: {
+      measured: false, reason: 'requires a separate native instrumented-store regression',
+    } };
+  await fs.writeFile(path.join(evidence, 'live-polling.json'), JSON.stringify(result, null, 2));
+  return result;
+}
+
 async function main() {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Set MOBKIT_EXAMPLE_BIN_DIR to the prebuilt native acceptance fixture; this harness never starts Cargo.");
   const repoRoot = path.resolve(__dirname, "..");
+  const longPolling = process.env.MOBKIT_MCP_APPS_LONG_POLL === '1';
+  const expectedViews = longPolling ? 3 : 1;
   const evidenceRoot = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(repoRoot, "output/playwright");
   await fs.mkdir(evidenceRoot, { recursive: true });
   const evidence = await fs.mkdtemp(path.join(evidenceRoot, "mcp-apps-native-"));
@@ -48,7 +148,7 @@ async function main() {
   await fs.mkdir(stateDir);
   const logPath = path.join(evidence, "mcp-wire.jsonl");
   await fs.writeFile(logPath, "");
-  const bundle = await build({ entryPoints: [path.join(__dirname, "src/mcp-apps/preview-app.ts")], bundle: true,
+  const bundle = await build({ entryPoints: [path.join(__dirname, longPolling ? 'fixtures/mcp-apps-native.ts' : 'src/mcp-apps/preview-app.ts')], bundle: true,
     write: false, format: "esm", platform: "browser", target: "es2022", nodePaths: [path.join(__dirname, "node_modules")] });
   const htmlPath = path.join(evidence, "app.html");
   await fs.writeFile(htmlPath, `<!doctype html><html><body><script type="module">${bundle.outputFiles[0].text.replaceAll("</script", "<\\/script")}</script></body></html>`);
@@ -70,11 +170,12 @@ async function main() {
     if (asset && req.method === "GET") { res.writeHead(200, { "content-type": asset.type }); res.end(asset.bytes); return; }
     if (!backendUrl) { res.writeHead(503); res.end(); return; }
     const target = new URL(req.url, backendUrl);
-    const observed = { method: req.method, path: target.pathname, body: "", status: null };
+    const observed = { method: req.method, path: target.pathname, body: "", status: null, atMs: Date.now(), finishedAt: null };
     requests.push(observed);
     req.on("data", chunk => { if (observed.body.length < 65_536) observed.body += chunk; });
     const upstream = http.request(target, { method: req.method, headers: { ...req.headers, host: target.host } }, incoming => {
       observed.status = incoming.statusCode;
+      incoming.on('end', () => { observed.finishedAt = Date.now(); });
       if (target.pathname === "/console/timeline/stream") {
         incoming.on("data", chunk => { streamEvidence = (streamEvidence + chunk).slice(-1_000_000); });
       }
@@ -105,15 +206,22 @@ async function main() {
       const value = await rpc(baseUrl, "mobkit/wait_ready", { timeout_ms: 1000 });
       return value.body.result?.timeout === false && value.body.result.ready?.length === 2;
     }, "native members ready", 60_000);
-    // Keep the final assistant response streaming for over the host's 15-second
-    // setup limit. A retained view must render without waiting for that turn lock.
+    // The quick case streams beyond the host's 15-second setup limit. The long
+    // case holds that native model request until all live polling checks finish.
     const configured = await post(baseUrl, "/__fixture/model", {
-      source: "Ready.", delay_ms: 1000, chunk_chars: 1,
-      scenario: { kind: "mcp_apps", run_id: "apps-native" },
+      source: "Ready.", delay_ms: longPolling ? 0 : 1000, chunk_chars: longPolling ? 64 : 1,
+      scenario: { kind: longPolling ? 'mcp_apps_polling' : 'mcp_apps', run_id: "apps-native" },
     });
     assert.equal(configured.status, 200);
+    if (longPolling) {
+      const armed = await post(baseUrl, '/__fixture/model-barrier', { action: 'arm', plan: {
+        id: 'apps-live-polling', match_text: '[fixture:apps-native]', source: 'The MCP App is ready.',
+        after_tool_result: 'fixture-apps-native-display-three',
+      } });
+      assert.equal(armed.status, 200);
+    }
     browser = await chromium.launch({ headless: true });
-    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    page = await browser.newPage({ viewport: { width: 1280, height: longPolling ? 1600 : 900 } });
     page.on("console", message => browserLogs.push({ type: message.type(), text: message.text() }));
     page.on("pageerror", error => browserLogs.push({ type: "pageerror", text: error.message }));
     await page.goto(`${baseUrl}/console`, { waitUntil: "domcontentloaded" });
@@ -121,46 +229,71 @@ async function main() {
     await page.getByTestId("chat-composer:router:main").fill("[fixture:apps-native] Show matching records.");
     const sentAt = Date.now();
     await page.locator('button:has-text("Send"):visible, .cc-composer__send-btn:visible').first().click();
-    const app = page.frameLocator('iframe[title="Interactive tool result"]').frameLocator("iframe");
+    const apps = Array.from({ length: expectedViews }, (_, index) => page.frameLocator('iframe[title="Interactive tool result"]').nth(index).frameLocator('iframe'));
+    const app = apps[0];
     await app.getByText("7 matching records", { exact: true }).waitFor({ timeout: 15_000 });
     const firstRenderMs = Date.now() - sentAt;
     assert(firstRenderMs < 15_000, "retained view must render while the final model turn is still running");
     assert.equal(await page.getByText("The MCP App is ready.", { exact: true }).count(), 0,
       "the app must be visible before the delayed final model response completes");
     await app.getByText("PRIVATE_APP_DETAIL", { exact: true }).waitFor();
-    await page.locator('iframe[title="Interactive tool result"]').scrollIntoViewIfNeeded();
+    await page.locator('iframe[title="Interactive tool result"]').first().scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(evidence, "stock-native-app-live.png"), fullPage: true });
-    await app.getByRole("button", { name: "Refresh result" }).click();
-    await app.getByText("8 matching records", { exact: true }).waitFor({ timeout: 30_000 });
-    const locatorRequest = requests.find(request => request.path === "/console/mcp-apps/resolve" && request.status === 200);
+    let pollingEvidence;
+    if (longPolling) {
+      pollingEvidence = await exerciseLivePolling({ baseUrl, page, apps, requests, evidence });
+    } else {
+      await app.getByRole("button", { name: "Refresh result" }).click();
+      await app.getByText("8 matching records", { exact: true }).waitFor({ timeout: 30_000 });
+    }
+    const locatorRequest = requests.find(request => request.path === "/console/mcp-apps/resolve" && request.status === 200
+      && JSON.parse(request.body).toolCallId === 'fixture-apps-native-display');
     assert(locatorRequest, "stock host must resolve via the native gateway");
     const locator = JSON.parse(locatorRequest.body);
     assert.equal(locator.identity, "router:main");
     assert.equal(locator.toolCallId, "fixture-apps-native-display");
     const call = requests.find(request => request.path === "/console/mcp-apps/call-tool" && request.status === 200);
     assert(call, "button action must use native admission");
-    assert.deepEqual(JSON.parse(call.body), { ...locator, name: "refresh", arguments: {} });
+    assert.deepEqual(JSON.parse(call.body), { ...locator, name: "refresh", arguments: longPolling
+      ? { viewId: 'display', requestId: 'display-refresh' } : {} });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await app.getByText("7 matching records", { exact: true }).waitFor({ timeout: 60_000 });
-    await app.getByText("PRIVATE_APP_DETAIL", { exact: true }).waitFor();
+    for (const view of apps) {
+      await view.getByText("7 matching records", { exact: true }).waitFor({ timeout: 60_000 });
+      await view.getByText("PRIVATE_APP_DETAIL", { exact: true }).waitFor();
+    }
     const wire = (await fs.readFile(logPath, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
     const displays = wire.filter(row => row.method === "tools/call" && row.params.name === "display");
     const refreshes = wire.filter(row => row.method === "tools/call" && row.params.name === "refresh");
-    assert.equal(displays.length, 1, "reload must not replay the original tool");
+    const polls = wire.filter(row => row.method === 'tools/call' && row.params.name === 'poll');
+    assert.equal(displays.length, expectedViews, "reload must not replay the original tools");
     assert.equal(refreshes.length, 1, "one button activation must dispatch exactly once");
-    assert.equal(wire.filter(row => row.method === "resources/read").length, 1,
+    assert.equal(wire.filter(row => row.method === "resources/read").length, expectedViews,
       "app actions and reload must reuse the original view instead of prefetching more HTML");
     assert.equal(displays[0].pid, refreshes[0].pid, "app action must use its original physical connection");
+    if (longPolling) {
+      assert.equal(new Set(displays.map(row => row.pid)).size, 1, 'all three original views must come from the same native connection');
+      assert.equal(polls.length, pollingEvidence.pollActions, 'every successful poll must make exactly one physical MCP call');
+      assert(polls.every(row => row.pid === displays[0].pid), 'every poll must use the original physical MCP connection');
+      assert.equal(new Set(polls.map(row => row.params.arguments.requestId)).size, polls.length, 'poll request identities must never replay');
+      assert(polls.every(row => row.atMs >= pollingEvidence.holdStartedAt && row.atMs <= pollingEvidence.holdFinishedAt),
+        'all physical polls must occur while the native model request is held');
+    }
     const init = wire.find(row => row.method === "initialize");
     assert(init.params.capabilities.extensions["io.modelcontextprotocol/ui"].mimeTypes.includes("text/html;profile=mcp-app"));
     const model = await (await fetch(`${baseUrl}/__fixture/requests`)).json();
     assert(!JSON.stringify(model).includes("PRIVATE_APP_DETAIL"), "UI-only metadata must not enter model requests");
     assert(model.some(request => request.tools?.some(tool => tool.name === "display")), "launch tool must be exposed to the native model");
     assert(!model.some(request => request.tools?.some(tool => tool.name === "refresh")), "app-only tool must be absent from model discovery");
+    assert(!model.some(request => request.tools?.some(tool => tool.name === 'poll')), 'polling tool must be absent from model discovery');
     const timeline = await (await fetch(`${baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=500`)).json();
     assert(!JSON.stringify(timeline).includes("PRIVATE_APP_DETAIL"), "UI-only metadata must not enter the browser frame log");
     const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
     assert(!storage.includes("PRIVATE_APP_DETAIL"), "UI-only metadata must not enter browser storage");
+    for (const marker of ['PRIVATE_POLL_DETAIL', 'APP_POLL_RESULT_', 'APP_REFRESH_RESULT_']) {
+      assert(!JSON.stringify(timeline).includes(marker), `${marker} must not enter the browser frame log`);
+      assert(!streamEvidence.includes(marker), `${marker} must not enter timeline events`);
+      assert(!storage.includes(marker), `${marker} must not enter browser storage`);
+    }
     const denied = await post(baseUrl, "/console/mcp-apps/call-tool", { ...locator, identity: "missing:member", name: "refresh", arguments: {} });
     assert.equal(denied.status, 403);
     const forbidden = await post(baseUrl, "/console/mcp-apps/call-tool", { ...locator, name: "display", arguments: {} });
@@ -180,9 +313,10 @@ async function main() {
     ]);
     await fs.writeFile(path.join(evidence, "summary.json"), JSON.stringify({
       passed: true, originalToolCalls: displays.length, appActions: refreshes.length, firstRenderMs,
-      locator, sandboxUrl, evidence,
+      pollActions: polls.length, polling: pollingEvidence, locator, sandboxUrl, evidence,
     }, null, 2));
-    console.log(JSON.stringify({ passed: true, evidence, originalToolCalls: 1, appActions: 1, firstRenderMs }));
+    console.log(JSON.stringify({ passed: true, evidence, originalToolCalls: displays.length,
+      appActions: refreshes.length, pollActions: polls.length, firstRenderMs, heldMs: pollingEvidence?.heldMs }));
   } catch (error) {
     if (backendUrl) {
       await fetch(new URL("/__fixture/requests", backendUrl))

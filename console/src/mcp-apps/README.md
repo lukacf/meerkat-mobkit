@@ -116,6 +116,15 @@ configuration options.
 App results are delivered through MCP Apps rather than added as synthetic model
 transcript entries.
 
+Fresh App IO runs independently of the model turn through an executor owned by
+the original native actor. Calls that produce no session effects or hook
+notices return without queueing a transcript export or session save. Calls that
+do produce them retain the native outcome until that exact actor can apply and
+persist the settlement, including when a post-hook refuses publication or the
+browser stops waiting. Such settlement can wait behind an active turn. The
+runtime uses actual collected effects and notices, never `readOnlyHint`, to
+decide whether session persistence is required.
+
 The proxy applies CSP from resource metadata to fetches and frames, denying
 undeclared origins by default. It rejects grants covering any configured
 Console hostname, including alternate ports, transports and covering wildcards.
@@ -205,3 +214,10 @@ the stock Console, invokes its app-only action, and checks reload, original
 connection custody, private metadata separation and native request rejection.
 It writes screenshots and wire evidence under `output/playwright/` and never
 contacts a model provider.
+
+To also exercise live polling through a model turn longer than the host's
+request timeout, run the same lane with `MOBKIT_MCP_APPS_LONG_POLL=1`. This mounts
+three native App views, polls through their original MCP connection throughout
+the held turn, and checks updates before and after 60 seconds. Core's persistent
+service regressions separately count storage operations to verify that calls
+without session mutations do not cause a save for every poll.

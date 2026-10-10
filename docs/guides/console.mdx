@@ -161,6 +161,15 @@ fresh native authorization, pre- and post-tool hooks and normal execution
 policy, including review when required. A post-hook refusal withholds the result
 while preserving already settled effects. View-only users cannot invoke them.
 
+App resource reads and tool execution can proceed while the model turn is still
+running. A response with no session effects or hook notices does not wait for
+that turn or trigger a session save, so several mounted widgets can poll for
+fresh data. If the call produces session effects or hook notices, the native
+actor applies and persists them before publishing the response; this settlement
+can wait for the active turn. This distinction follows the actual execution
+outcome, not a tool's `readOnlyHint`. Each request still requires fresh admission
+and the original actor and MCP connection.
+
 The current host profile supports inline rendering, resource reads and tool
 calls. It does not advertise conversation handoff, model-context updates,
 external links or downloads. The sandbox restricts fetches and frames through

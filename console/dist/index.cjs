@@ -43497,6 +43497,80 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
   ] });
 }
 
+// src/lib/contract.ts
+var CONSOLE_REST_PATHS2 = {
+  experience: "/console/experience",
+  modules: "/console/modules",
+  identities: "/console/identities",
+  timeline: "/console/timeline",
+  timelineStream: "/console/timeline/stream",
+  identityTimelineStreamTemplate: "/console/identity/{identity}/stream",
+  legacySend: "/console/send",
+  mcpAppsResolve: "/console/mcp-apps/resolve",
+  mcpAppsReadResource: "/console/mcp-apps/read-resource",
+  mcpAppsCallTool: "/console/mcp-apps/call-tool"
+};
+var CONSOLE_RPC_PATHS2 = {
+  jsonRpc: "/console/rpc",
+  multipartJsonRpc: "/console/rpc/multipart"
+};
+var CONSOLE_RPC_METHODS2 = {
+  capabilities: "mobkit/capabilities",
+  send: "mobkit/console/send",
+  listIdentities: "mobkit/console/list_identities",
+  inspectIdentity: "mobkit/console/inspect_identity",
+  queryTimeline: "mobkit/console/query_timeline",
+  blobUpload: "mobkit/blob/upload",
+  retireIdentity: "mobkit/retire",
+  respawnIdentity: "mobkit/respawn",
+  resetIdentity: "mobkit/reset",
+  stopMemberRun: "mobkit/stop_member_run",
+  routingRoutesList: "mobkit/routing/routes/list",
+  deliveryHistory: "mobkit/delivery/history",
+  gatingPending: "mobkit/gating/pending",
+  gatingAudit: "mobkit/gating/audit",
+  gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview",
+  memoryPanelRecords: "mobkit/memory/panel/records",
+  memoryPanelRecord: "mobkit/memory/panel/record",
+  memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
+  memoryPanelDreams: "mobkit/memory/panel/dreams",
+  memoryPanelOverview: "mobkit/memory/panel/overview",
+  memoryPanelProposals: "mobkit/memory/panel/proposals",
+  memoryPanelInjections: "mobkit/memory/panel/injections",
+  memoryPanelHarvests: "mobkit/memory/panel/harvests",
+  memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
+  memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
+  workgraphSnapshot: "mobkit/workgraph/snapshot",
+  workgraphEvents: "mobkit/workgraph/events",
+  workgraphGet: "mobkit/workgraph/get",
+  workgraphGoalStatus: "mobkit/workgraph/goal/status",
+  workgraphClaim: "mobkit/workgraph/claim",
+  workgraphRelease: "mobkit/workgraph/release",
+  workgraphClose: "mobkit/workgraph/close",
+  workgraphGoalConfirm: "mobkit/workgraph/goal/confirm",
+  workgraphGoalRequestClose: "mobkit/workgraph/goal/request_close",
+  workgraphAttentionPause: "mobkit/workgraph/attention/pause",
+  workgraphAttentionResume: "mobkit/workgraph/attention/resume",
+  workgraphAttentionReassign: "mobkit/workgraph/attention/reassign",
+  topologyQuery: "mobkit/topology/query",
+  topologyPlan: "mobkit/topology/plan",
+  topologyApply: "mobkit/topology/apply",
+  topologyOperationGet: "mobkit/topology/operation/get",
+  topologyAuditQuery: "mobkit/topology/audit/query"
+};
+var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
+var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
+
 // src/mcp-apps/native-host.ts
 function createNativeMcpAppsHost(options) {
   const base = new URL(options.baseUrl || "/", window.location.href);
@@ -43504,14 +43578,14 @@ function createNativeMcpAppsHost(options) {
     throw new Error("The stock MCP Apps adapter requires the Console's authenticated origin");
   }
   const sandboxProxyUrl = mcpSandboxUrl(options.sandboxProxyUrl).href;
-  const request = async (operation2, locator, params, signal) => {
+  const request = async (path2, locator, params, signal) => {
     signal.throwIfAborted();
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => controller.abort(new Error("MCP App request timed out")), options.requestTimeoutMs ?? 6e4);
     try {
-      const url2 = new URL("".concat(base.pathname.replace(/\/$/, ""), "/console/mcp-apps/").concat(operation2), base.origin);
+      const url2 = new URL("".concat(base.pathname.replace(/\/$/, "")).concat(path2), base.origin);
       const response = await fetch(url2.href, {
         method: "POST",
         credentials: "same-origin",
@@ -43541,7 +43615,7 @@ function createNativeMcpAppsHost(options) {
     async resolve(locator, signal) {
       const original = { identity: locator.identity, sessionId: locator.sessionId, toolCallId: locator.toolCallId };
       if (Object.values(original).some((value) => typeof value !== "string" || !value.trim())) throw new Error("Invalid MCP App invocation");
-      const response = await request("resolve", original, {}, signal);
+      const response = await request(CONSOLE_REST_PATHS2.mcpAppsResolve, original, {}, signal);
       if (response === null) return null;
       if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("Invalid MCP App response");
       const resolved = response;
@@ -43572,12 +43646,12 @@ function createNativeMcpAppsHost(options) {
             cachedResource = void 0;
             return cached2;
           }
-          return ReadResourceResultSchema.parse(await request("read-resource", original, { uri: uri2 }, requestSignal));
+          return ReadResourceResultSchema.parse(await request(CONSOLE_REST_PATHS2.mcpAppsReadResource, original, { uri: uri2 }, requestSignal));
         },
         ...resolved.canCallTools === true && !options.readOnly ? {
           async callTool(name2, toolArgs, requestSignal) {
             current(requestSignal);
-            return CallToolResultSchema.parse(await request("call-tool", original, { name: name2, arguments: toolArgs }, requestSignal));
+            return CallToolResultSchema.parse(await request(CONSOLE_REST_PATHS2.mcpAppsCallTool, original, { name: name2, arguments: toolArgs }, requestSignal));
           }
         } : {}
       };
@@ -48192,77 +48266,6 @@ function sanitizeConversationEntries(entries) {
   }
   return sanitized;
 }
-
-// src/lib/contract.ts
-var CONSOLE_REST_PATHS2 = {
-  experience: "/console/experience",
-  modules: "/console/modules",
-  identities: "/console/identities",
-  timeline: "/console/timeline",
-  timelineStream: "/console/timeline/stream",
-  identityTimelineStreamTemplate: "/console/identity/{identity}/stream",
-  legacySend: "/console/send"
-};
-var CONSOLE_RPC_PATHS2 = {
-  jsonRpc: "/console/rpc",
-  multipartJsonRpc: "/console/rpc/multipart"
-};
-var CONSOLE_RPC_METHODS2 = {
-  capabilities: "mobkit/capabilities",
-  send: "mobkit/console/send",
-  listIdentities: "mobkit/console/list_identities",
-  inspectIdentity: "mobkit/console/inspect_identity",
-  queryTimeline: "mobkit/console/query_timeline",
-  blobUpload: "mobkit/blob/upload",
-  retireIdentity: "mobkit/retire",
-  respawnIdentity: "mobkit/respawn",
-  resetIdentity: "mobkit/reset",
-  stopMemberRun: "mobkit/stop_member_run",
-  routingRoutesList: "mobkit/routing/routes/list",
-  deliveryHistory: "mobkit/delivery/history",
-  gatingPending: "mobkit/gating/pending",
-  gatingAudit: "mobkit/gating/audit",
-  gatingDecide: "mobkit/gating/decide",
-  accessStatus: "mobkit/access/status",
-  accessGet: "mobkit/access/get",
-  accessSet: "mobkit/access/set",
-  accessEnable: "mobkit/access/enable",
-  accessRuleUpsert: "mobkit/access/rules/upsert",
-  accessRuleDelete: "mobkit/access/rules/delete",
-  accessGroupSet: "mobkit/access/groups/set",
-  accessGroupDelete: "mobkit/access/groups/delete",
-  accessPreview: "mobkit/access/preview",
-  memoryPanelRecords: "mobkit/memory/panel/records",
-  memoryPanelRecord: "mobkit/memory/panel/record",
-  memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
-  memoryPanelDreams: "mobkit/memory/panel/dreams",
-  memoryPanelOverview: "mobkit/memory/panel/overview",
-  memoryPanelProposals: "mobkit/memory/panel/proposals",
-  memoryPanelInjections: "mobkit/memory/panel/injections",
-  memoryPanelHarvests: "mobkit/memory/panel/harvests",
-  memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
-  memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
-  memoryQuarantineDecide: "mobkit/memory/quarantine/decide",
-  workgraphSnapshot: "mobkit/workgraph/snapshot",
-  workgraphEvents: "mobkit/workgraph/events",
-  workgraphGet: "mobkit/workgraph/get",
-  workgraphGoalStatus: "mobkit/workgraph/goal/status",
-  workgraphClaim: "mobkit/workgraph/claim",
-  workgraphRelease: "mobkit/workgraph/release",
-  workgraphClose: "mobkit/workgraph/close",
-  workgraphGoalConfirm: "mobkit/workgraph/goal/confirm",
-  workgraphGoalRequestClose: "mobkit/workgraph/goal/request_close",
-  workgraphAttentionPause: "mobkit/workgraph/attention/pause",
-  workgraphAttentionResume: "mobkit/workgraph/attention/resume",
-  workgraphAttentionReassign: "mobkit/workgraph/attention/reassign",
-  topologyQuery: "mobkit/topology/query",
-  topologyPlan: "mobkit/topology/plan",
-  topologyApply: "mobkit/topology/apply",
-  topologyOperationGet: "mobkit/topology/operation/get",
-  topologyAuditQuery: "mobkit/topology/audit/query"
-};
-var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
-var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
 
 // src/lib/network.ts
 function unwrapConsoleEnvelope(eventName, data) {
